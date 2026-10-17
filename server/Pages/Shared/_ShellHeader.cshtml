@@ -1,0 +1,20 @@
+@inject Ftl.Server.OnboardingCookies Onboarding
+@{
+    var signed = User.Identity?.IsAuthenticated == true;
+    // Local-only visitors have no account: the header offers Enable cloud saves where signed-in users have Sign out.
+    var localMode = !signed && Onboarding.Consented(Context.Request) && Onboarding.Mode(Context.Request) == "local";
+    var current = Context.Request.Path == "/Diagnostics" ? "tests" : Context.Request.Query["view"].ToString();
+    if(string.IsNullOrEmpty(current)) current = "play";
+}
+<header class="site-header navbar">
+    <a class="brand" href="/" aria-label="FTL: Unofficial Browser Edition home"><span class="brand-word">FTL</span><span class="brand-caption" aria-hidden="true"><span class="brand-long">UNOFFICIAL<br>BROWSER EDITION</span><span class="brand-short">BROWSER<br>EDITION</span></span></a>
+    <nav id="identity" hidden="@(signed || localMode ? null : "hidden")" class="main-nav" aria-label="Main navigation">
+    @foreach(var item in new[]{("play", "Play", "play-button"), ("account", "Account", "account-button"), ("saves", "Saves", "saves-button"), ("logs", "Logs", "logs-button"), ("tests", "Tests", "tests-button"), ("users", "Users", "admin-button"), ("about", "About", "about-nav-button")}) {
+        var hidden = item.Item1 == "users" && !Ftl.Server.AccountRoles.Admin(Context) || localMode && item.Item1 is "account" or "tests" || !localMode && item.Item1 == "about";
+        <a id="@item.Item3" class="nav-item @(current == item.Item1 ? "btn-active" : "")" aria-current="@(current == item.Item1 ? "page" : null)" hidden="@(hidden ? "hidden" : null)" href="@(item.Item1 == "tests" ? "/Diagnostics" : "/?view=" + item.Item1)">@item.Item2</a>
+    }
+    </nav>
+    <div class="header-tools">
+        <div class="account-menu" hidden="@(signed || localMode ? null : "hidden")"><span id="username">@(localMode ? "Local only" : User.Identity?.Name)</span><button id="logout" class="btn btn-ghost btn-sm" hidden="@(localMode ? "hidden" : null)">Sign out</button><a id="enable-cloud" class="btn btn-primary btn-sm" href="/?view=register" hidden="@(localMode ? null : "hidden")">Enable cloud saves</a></div>
+    </div>
+</header>

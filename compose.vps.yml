@@ -1,0 +1,15 @@
+services:
+  app:
+    ports: !reset []
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the HTTPS origin}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:?Set the NPM container IP}
+    expose:
+      - "8080"
+    networks:
+      - proxy
+networks:
+  proxy:
+    external: true
+    name: ${NPM_NETWORK:?Set the existing NPM Docker network}

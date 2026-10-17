@@ -1,0 +1,880 @@
+package xyz.znix.xftl.game
+
+import xyz.znix.xftl.*
+import xyz.znix.xftl.math.ConstPoint
+import xyz.znix.xftl.math.IPoint
+import xyz.znix.xftl.rendering.*
+import xyz.znix.xftl.sys.Input
+import xyz.znix.xftl.systems.SystemBlueprint
+import xyz.znix.xftl.weapons.AbstractWeaponBlueprint
+import xyz.znix.xftl.weapons.DroneBlueprint
+import kotlin.math.ceil
+import kotlin.math.roundToInt
+import kotlin.math.sign
+
+abstract class Button(protected val game: InGameState, pos: IPoint, size: IPoint) {
+    val basePos = pos.const
+    var windowOffset: IPoint = ConstPoint.ZERO
+        set(value) {
+            field = value
+            positionUpdated()
+        }
+
+    var pos = basePos
+        private set
+    val size = size.const
+
+    /**
+     * Touch ergonomics: buttons can be drawn larger than vanilla, scaled
+     * by this factor about [pos] (which stays the clickable area's
+     * top-left anchor). contains() converts hit-test points to match, so
+     * the scaled drawing and the hit-testing line up. 1 on vanilla
+     * layouts.
+     */
+    var renderScale: Float = 1f
+
+    /**
+     * Touch ergonomics: when the tap-to-arm gate is active (Window
+     * .tapToArm + isTouchUi), buttons with this set dispatch their clicks
+     * immediately instead of requiring a second confirming tap - for
+     * navigation-style controls (store tabs, page flippers) where arming
+     * would only add friction. No effect on vanilla layouts.
+     */
+    var skipTapToArm: Boolean = false
+
+    var hovered: Boolean = false
+        private set
+
+    /**
+     * Like [hovered], but also set to true if the button is disabled.
+     */
+    var rawHovered: Boolean = false
+        private set
+
+    /**
+     * True if the mouse is hovering over a button in front of this one.
+     */
+    var mouseObstructed = false
+        private set
+
+    /**
+     * True if the 'hoverBeep' sound should play when this button is moused over.
+     */
+    open val makesHoverNoise: Boolean get() = true
+
+    /**
+     * True if this button is disabled and can't be hovered.
+     *
+     * Note this doesn't prevent [click] from being called.
+     */
+    open val disabled: Boolean get() = false
+
+    abstract fun draw(g: Graphics)
+
+    /**
+     * Alert the button that the mouse has been clicked at a specified location.
+     *
+     * @return true if this button absorbed the click, false otherwise
+     */
+    open fun mouseDown(button: Int, x: Int, y: Int): Boolean {
+        if (!contains(x, y)) return false
+        if (mouseObstructed) return false
+        ftl.browser.BrowserDebug.record("ui", "button.action", "{\"target\":${ftl.browser.BrowserDebug.quote(javaClass.simpleName)},\"x\":$x,\"y\":$y,\"button\":$button,\"accepted\":${!disabled}}")
+        if (disabled) return true
+        click(button)
+        return true
+    }
+
+    protected abstract fun click(button: Int)
+    open fun mouseReleased(button: Int, x: Int, y: Int) {}
+
+    fun contains(point: IPoint) = contains(point.x, point.y)
+
+    open fun contains(x: Int, y: Int): Boolean {
+        // Convert the query point into the button's unscaled space (a
+        // no-op at renderScale 1).
+        val sx = if (renderScale == 1f) x
+            else pos.x + ((x - pos.x) / renderScale).roundToInt()
+        val sy = if (renderScale == 1f) y
+            else pos.y + ((y - pos.y) / renderScale).roundToInt()
+        return pos.x <= sx && sx < pos.x + size.x && pos.y <= sy && sy < pos.y + size.y
+    }
+
+    open fun update(x: Int, y: Int, blockHover: Boolean = false) {
+        mouseObstructed = blockHover
+
+        rawHovered = contains(x, y)
+
+        if (disabled || mouseObstructed) {
+            hovered = false
+            return
+        }
+
+        val lastHover = hovered
+        hovered = rawHovered
+
+        if (hovered && !lastHover && makesHoverNoise) {
+            game.sounds.getSample("hoverBeep").play()
+        }
+    }
+
+    protected open fun positionUpdated() {
+        pos = basePos + windowOffset
+    }
+}
+
+class SimpleButton(
+    game: InGameState, pos: IPoint, size: IPoint, imgOffset: IPoint,
+    val normal: Image, val hover: Image?, val tooltip: ITooltipProvider?,
+    private val callback: (Int) -> Unit
+) : Button(game, pos, size) {
+    val imgOffset = imgOffset.const
+    private var imagePos = pos - imgOffset
+
+    override fun draw(g: Graphics) {
+        var image = normal
+        if (hovered && hover != null)
+            image = hover
+        image.draw(imagePos)
+
+        if (hovered) {
+            g.tooltip = tooltip
+        }
+    }
+
+    override fun positionUpdated() {
+        super.positionUpdated()
+        imagePos = pos - imgOffset
+    }
+
+    override fun click(button: Int) = callback(button)
+
+    companion object {
+        // Create a new button by specifying the clickable region within it,
+        // rather than using pos and imgOffset to achive it.
+        fun byRegion(
+            game: InGameState, pos: IPoint, buttonOffset: IPoint, buttonSize: IPoint,
+            normal: Image, hover: Image?, tooltip: ITooltipProvider?,
+            callback: (Int) -> Unit
+        ): SimpleButton {
+            return SimpleButton(game, pos + buttonOffset, buttonSize, buttonOffset, normal, hover, tooltip, callback)
+        }
+    }
+}
+
+data class ButtonImageSet(val normal: Image, val off: Image, val hover: Image, val offHover: Image? = null) {
+    companion object {
+        fun select2(game: InGameState, prefix: String): ButtonImageSet {
+            val normal = game.getImg("${prefix}_on.png")
+            val off = game.getImg("${prefix}_off.png")
+            val hover = game.getImg("${prefix}_select2.png")
+            return ButtonImageSet(normal, off, hover)
+        }
+
+        fun selected(game: InGameState, prefix: String, withOffHover: Boolean = false): ButtonImageSet {
+            val normal = game.getImg("${prefix}_on.png")
+            val off = game.getImg("${prefix}_off.png")
+            val hover = game.getImg("${prefix}_selected.png")
+            var offHover: Image? = null
+            if (withOffHover)
+                offHover = game.getImg("${prefix}_off_selected.png")
+            return ButtonImageSet(normal, off, hover, offHover)
+        }
+
+        fun static(game: InGameState, path: String): ButtonImageSet {
+            val image = game.getImg(path)
+            return ButtonImageSet(image, image, image)
+        }
+    }
+
+    /**
+     * Pick the image matching the disabled/hovered/normal state
+     * of the given button.
+     */
+    fun pick(button: Button): Image {
+        return when {
+            button.disabled -> off
+            button.hovered -> hover
+            else -> normal
+        }
+    }
+}
+
+object Buttons {
+    /**
+     * Draws a 45-degree chamfered / beveled octagon matching native desktop FTL 1.6.14
+     * TextButton::InitPrimitives (0x00591800).
+     */
+    fun drawChamfer(g: Graphics, x: Int, y: Int, width: Int, height: Int, cornerInset: Int) {
+        if (cornerInset <= 0) {
+            g.fillRect(x.f, y.f, width.f, height.f)
+            return
+        }
+        val safeInset = cornerInset.coerceAtMost(height / 2).coerceAtMost(width / 2)
+        for (i in 0 until safeInset) {
+            val inset = safeInset - i
+            val w = (width - 2 * inset).f
+            if (w > 0) {
+                // Top row
+                g.fillRect((x + inset).f, (y + i).f, w, 1f)
+                // Bottom row
+                g.fillRect((x + inset).f, (y + height - 1 - i).f, w, 1f)
+            }
+        }
+        val centerH = (height - 2 * safeInset).f
+        if (centerH > 0) {
+            g.fillRect(x.f, (y + safeInset).f, width.f, centerH)
+        }
+    }
+
+    /**
+     * Renders a complete native TextButton with background fill and centered text
+     * matching desktop FTL 1.6.14 TextButton::OnRender (0x00591f00).
+     */
+    fun drawTextButton(
+        g: Graphics,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        cornerInset: Int,
+        text: String,
+        font: SILFontLoader,
+        bgColour: Colour,
+        textColour: Colour = Constants.TEXT_BUTTON_TEXT,
+        textOffsetY: Int = 0
+    ) {
+        g.colour = bgColour
+        drawChamfer(g, x, y, width, height, cornerInset)
+        val textY = font.centredBaseline(y.f, height.f, text) + textOffsetY
+        font.drawStringCentred(x.f, textY, width.f, text, textColour)
+    }
+
+    fun drawRounded(g: Graphics, x: Int, y: Int, width: Int, height: Int, radius: Int) {
+        drawChamfer(g, x, y, width, height, radius)
+    }
+
+    class JumpButton(
+        pos: IPoint, val ship: Ship, game: InGameState,
+        /** FTLButton's red base, pullout and label while ENGINES CRITICAL is in its bright half (0x00559650). */
+        private val red: () -> Boolean = { false },
+        private val callback: () -> Unit
+    ) :
+        Button(game, pos, ConstPoint(74, 29)) {
+
+        private val font = game.getFont("HL2", 2f)
+        private val labelFont = game.getFont("HL1", 1f)
+        private val jumpStatusFont = game.getFont("HL2", 1f)
+
+        private val outOfFuel: Boolean get() = ship.fuelCount == 0 && game.getEnemyOf(ship) != null
+        // CommandGui::OnLoop (0x536770) sets the button inactive while TutorialManager::AllowJumping (0x4113b0) is
+        // false: the tutorial shows a grey JUMP with no READY until the map lesson.
+        private val tutorialBlocked: Boolean
+            get() = game.mainGame?.tutorialAdapter?.controller?.mapOpeningAllowed == false
+        override val disabled: Boolean get() = !ship.isFtlReady || !ship.canChargeFTL || outOfFuel || tutorialBlocked
+
+        // The progress of the slide-in/slide-out jump unavailable pullout.
+        private var pulloutPos: Float = 0f
+
+        // Color fading timer for charge/ready text.
+        private var fadeTime: Float = 0f
+
+        private var firstUpdate = true
+
+        private val tooltip = HotkeyDelayedTooltip(game, "jump_button", VanillaHotkeys.FTL_JUMP)
+
+        /**
+         * The text under the button. FTLButton::OnRender (0x559650) writes it only while engines and piloting
+         * both function (SystemFunctions, not hacked): "charging" while the drive fills, "ready" once it is full
+         * and the button is active.
+         */
+        internal val statusKey: String?
+            get() = when {
+                !ship.canChargeFTL -> null
+                !ship.isFtlCharged -> "ftl_charging"
+                !disabled -> "ftl_ready"
+                else -> null
+            }
+
+        override fun draw(g: Graphics) {
+            val ftlX = pos.x + 6
+            val ftlY = pos.y + 4
+
+            val canCharge = ship.canChargeFTL
+
+            // Animate the jump unavailable/not charging panel
+            var delta = game.renderingDeltaTime / 0.1f * when {
+                canCharge -> -1f
+                else -> 1f
+            }
+
+            // Set the initial values to stop the panel from flickering when
+            // the buttons are repopulated.
+            if (firstUpdate) {
+                firstUpdate = false
+                delta = delta.sign
+            }
+
+            pulloutPos = (pulloutPos + delta).coerceIn(0f..1f)
+
+            // Draw the pullout under the main button
+            fun drawPullout() {
+                val offset = (35 * (1 - pulloutPos)).roundToInt()
+                val pulloutY = pos.y + 41 - offset
+                val pullout = if (red()) "img/buttons/FTL/ftl_pullout_red.png" else "img/buttons/FTL/FTL_pullout.png"
+                game.getImg(pullout).draw(pos.x + 11 - 7, pulloutY - 7)
+
+                val hasPilot = ship.isAutoScout || ship.friendlyCrew.any { it.room == ship.piloting!!.room }
+                val pilotPath = when (ship.piloting!!.undamagedEnergy > 0 && hasPilot) {
+                    true -> "img/buttons/FTL/FTL_pilot_on.png"
+                    false -> "img/buttons/FTL/FTL_pilot_off1.png"
+                }
+
+                val enginesPath = when (ship.engines!!.powerSelected >= 1) {
+                    true -> "img/buttons/FTL/FTL_engine_on.png"
+                    false -> "img/buttons/FTL/FTL_engine_off1.png"
+                }
+
+                game.getImg(pilotPath).draw(pos.x + 18, pulloutY + 10)
+                game.getImg(enginesPath).draw(pos.x + 45, pulloutY + 10)
+            }
+
+            // Use a stencil to prevent the pullout from being visible while it's animating,
+            // since the button frame image is transparent.
+            if (pulloutPos == 1f) {
+                drawPullout()
+            } else if (pulloutPos != 0f) {
+                Utils.drawStenciled(Utils.StencilMode.BLOCKING, {
+                    // There's a 6px gap between the bottom of the button and the white outline around it,
+                    // and pos refers to the corner of the image not the button.
+                    g.fillRect(pos.x, pos.y, size.x + 6 * 2, size.y + 6 * 2)
+                }) {
+                    drawPullout()
+                }
+            }
+
+            val isRed = red()
+            // FTLButton's constructor (0x00558690) places FTL_base_red 6 px left of and above FTL_base.
+            if (isRed)
+                game.getImg("img/buttons/FTL/FTL_base_red.png").draw(pos.x - 13, pos.y - 13)
+            else
+                game.getImg("img/buttons/FTL/FTL_base.png").draw(pos.x - 7, pos.y - 7)
+
+            if (outOfFuel) {
+                // If the player is in combat without any fuel, their jump button is disabled.
+                g.colour = Constants.WARNING_COLOUR_RED
+                drawRounded(g, pos.x + 5, pos.y + 6, size.x, size.y, 3)
+
+                val jumpText = game.translator["button_jump"]
+                font.drawStringCentred(pos.x.f, pos.y + 26f, 84f, jumpText, Constants.JUMP_DISABLED_TEXT)
+
+                g.colour = Constants.JUMP_DISABLED_TEXT
+                g.fillRect(pos.x + 7, pos.y + 19, 70, 2)
+            } else if (ship.isFtlCharged) {
+                g.colour = if (canCharge && !tutorialBlocked) Constants.JUMP_READY else Constants.JUMP_DISABLED
+                drawRounded(g, pos.x + 5, pos.y + 6, size.x, size.y, 3)
+
+                val textColour = when {
+                    !canCharge || tutorialBlocked -> Constants.JUMP_DISABLED_TEXT
+                    hovered -> Constants.JUMP_READY_TEXT_HOVER
+                    else -> Constants.JUMP_READY_TEXT
+                }
+                val jumpText = game.translator["button_jump"]
+                font.drawStringCentred(pos.x.f, pos.y + 26f, 84f, jumpText, textColour)
+            } else {
+                val suffix = if (canCharge) "" else "_off"
+                val width = (ship.ftlChargeProgress * 74).toInt().coerceAtMost(74)
+                game.getImg("img/buttons/FTL/FTL_loadingbars$suffix.png").drawSection(ftlX - 1, ftlY + 2, width, 29)
+            }
+
+            // Draw the 'FTL Drive' label
+            labelFont.drawStringCentred(
+                pos.x.f, pos.y - 3f, 84f,
+                game.translator["ftl_drive"],
+                if (isRed) Constants.WARNING_COLOUR_RED else Constants.SECTOR_CUTOUT_TEXT
+            )
+
+            // Draw the jump status text below the 'FTL Drive' button
+            val statusKey = statusKey
+            if (statusKey != null) {
+                val statusText = game.translator[statusKey]
+                val statusTextColor =
+                    Colour.lerp(Constants.SECTOR_CUTOUT_TEXT, Constants.JUMP_READY, fadingCycle(1.5f, 0f, 1f))
+                jumpStatusFont.drawStringCentred(
+                    pos.x.toFloat(), pos.y + 51f, 84f,
+                    statusText,
+                    statusTextColor
+                )
+            }
+            fadeTime += game.renderingDeltaTime
+
+            if (hovered) {
+                g.tooltip = tooltip
+            }
+        }
+
+        private fun fadingCycle(period: Float, min: Float, max: Float): Float {
+            val progress = fadeTime.rem(period) / period
+            val changing = when {
+                progress < 0.5f -> progress * 2
+                else -> 2 - progress * 2
+            }
+
+            return min + changing * (max - min)
+        }
+
+        override fun click(button: Int) {
+            if (button != Input.MOUSE_LEFT_BUTTON) return
+            if (disabled) return
+
+            callback()
+        }
+
+        // Apply an offset to make the hoverable area the big yellow centre region - by default the hoverable
+        // section starts at the button's 0,0, and the main region is offset. Thus translate the mouse coordinates
+        // back so 0,0 becomes the origin of the yellow area. The offset is in the button's (scaled) screen space,
+        // so it grows with renderScale.
+        override fun contains(x: Int, y: Int) = super.contains(
+            x - (5 * renderScale).roundToInt(),
+            y - (7 * renderScale).roundToInt()
+        )
+    }
+
+    open class BasicButton(
+        game: InGameState, pos: IPoint, size: IPoint, val label: String,
+        private val radius: Int, private val font: SILFontLoader, private val yOffset: Int,
+        private val cb: () -> Unit
+    ) : Button(game, pos, size) {
+        /** When set, the label is placed like TextButton::OnRender (0x00591f00). */
+        protected open val nativeFont: xyz.znix.xftl.rendering.NativeFonts.NativeFont? get() = null
+
+        override fun draw(g: Graphics) {
+            g.colour = when {
+                disabled -> Constants.JUMP_DISABLED
+                hovered -> Constants.UI_BUTTON_HOVER
+                else -> Constants.SECTOR_CUTOUT_TEXT
+            }
+            drawRounded(g, pos.x, pos.y, size.x, size.y, radius)
+
+            val nativeFont = nativeFont
+            if (nativeFont != null) {
+                nativeFont.printButtonLabel(pos.x, pos.y, size.x, size.y, label, Constants.JUMP_DISABLED_TEXT)
+                return
+            }
+
+            val x = (size.x - font.getWidth(label)) / 2f
+            font.drawString(pos.x + x, pos.y + yOffset.f, label, Constants.JUMP_DISABLED_TEXT)
+        }
+
+        override fun click(button: Int) {
+            if (button == Input.MOUSE_LEFT_BUTTON)
+                cb()
+        }
+    }
+
+    class ShipButton(pos: IPoint, game: InGameState, private val cb: () -> Unit) :
+        Button(game, pos, ConstPoint(60, 41)) {
+        private val imgPos = pos - ConstPoint(7, 7)
+
+        private val imgOff = game.getImg("img/statusUI/top_ship_off.png")
+        private val imgOn = game.getImg("img/statusUI/top_ship_on.png")
+        private val imgHighlight = game.getImg("img/statusUI/top_ship_select2.png")
+
+        override val disabled: Boolean get() = game.isInDanger ||
+            game.mainGame?.tutorialAdapter?.controller?.shipOpeningAllowed == false
+
+        private val tooltip = HotkeyDelayedTooltip(game, "ship_info", VanillaHotkeys.SHIP_UPGRADES)
+
+        override fun draw(g: Graphics) {
+            val img = when {
+                disabled -> imgOff
+                hovered -> imgHighlight
+                else -> imgOn
+            }
+
+            img.draw(imgPos)
+
+            if (rawHovered) {
+                g.tooltip = tooltip
+            }
+        }
+
+        override fun click(button: Int) {
+            if (button == Input.MOUSE_LEFT_BUTTON)
+                cb()
+        }
+    }
+
+    class StoreButton(pos: IPoint, game: InGameState, private val callback: () -> Unit) :
+        Button(game, pos, ConstPoint(88, 41)) {
+
+        private val imgPos = pos - ConstPoint(7, 7)
+
+        private val imgBase = game.getImg("img/statusUI/top_store_base.png")
+
+        private val font = game.getFont("HL2", 2f)
+
+        private val tooltip = HotkeyDelayedTooltip(game, "open_store", VanillaHotkeys.OPEN_STORE)
+
+        override fun draw(g: Graphics) {
+            imgBase.draw(imgPos)
+
+            // Change the colour if the button is hovered. Since there's only
+            // one image, draw a rounded box over it - this is how vanilla
+            // FTL does it.
+            if (hovered) {
+                g.colour = Constants.UI_BUTTON_HOVER
+                drawRounded(g, imgPos.x + 12, imgPos.y + 12, 78, 31, 3)
+                g.tooltip = tooltip
+            }
+
+            font.drawString(pos.x + 11f, pos.y + 26f, "STORE", Constants.JUMP_DISABLED_TEXT)
+        }
+
+        override fun click(button: Int) {
+            if (button == Input.MOUSE_LEFT_BUTTON)
+                callback()
+        }
+    }
+
+    abstract class BlueprintButton(
+        pos: IPoint, size: IPoint, game: InGameState,
+        private val defaultImage: ButtonImageSet?
+    ) :
+        Button(game, pos, size) {
+
+        constructor(pos: IPoint, game: InGameState, image: ButtonImageSet) :
+                this(pos, image.normal.imageSize, game, image)
+
+        open val image: ButtonImageSet
+            get() = defaultImage ?: error("BlueprintButton: no background image, image not overridden!")
+
+        private val systemNameFont = NativeFonts.font(game::getFont, 14)
+        private val weaponNameFont = game.getFont("JustinFont8")
+
+        abstract val blueprint: Blueprint?
+
+        /**
+         * Set to true if the button is disabled for some reason other than
+         * not having an associated blueprint - for example, you can't buy
+         * more weapons when your weapons and cargo bay are full.
+         */
+        open val customDisabled: Boolean get() = false
+
+        open val empty: Boolean get() = blueprint == null
+
+        override val disabled: Boolean get() = empty || customDisabled
+
+        protected val textColour: Colour
+            get() = when {
+                disabled -> Constants.SECTOR_CUTOUT_TEXT
+                hovered -> Constants.STORE_BUY_HOVER
+                else -> Constants.SECTOR_CUTOUT_TEXT
+            }
+
+        override fun draw(g: Graphics) {
+            val image = when {
+                disabled -> image.off
+                hovered -> image.hover
+                else -> image.normal
+            }
+            image.draw(pos)
+
+            // Stop Kotlin from complaining the blueprint could change
+            val blueprint = this.blueprint ?: return
+
+            when (blueprint) {
+                is SystemBlueprint -> {
+                    // StoreBox::OnRender (0x0051f4b0): the name in font 14 from (48,2).
+                    systemNameFont.print(pos.x + 48f, pos.y + 2f, blueprint.translateTitle(game), textColour)
+
+                    val icon = game.getImg(blueprint.onIconPath)
+                    icon.draw(
+                        pos.x - SystemBlueprint.ICON_GLOW + 6f,
+                        pos.y - SystemBlueprint.ICON_GLOW + 7f
+                    )
+                }
+
+                is AbstractWeaponBlueprint -> {
+                    // Draw the weapon name
+                    val name = blueprint.translateShort(game)
+                    val nameWindowWidth = 96
+                    val nameX = (nameWindowWidth - weaponNameFont.getWidth(name)) / 2
+
+                    weaponNameFont.drawString(
+                        pos.x + 11f + nameX,
+                        pos.y + 70f,
+                        name,
+                        textColour
+                    )
+
+                    // StoreBox::OnRender (0x0051f4b0) centres the weapon art on (60,34):
+                    // the sprite is turned 90 degrees, its halves truncated.
+                    val icon = blueprint.getLauncher(game).getChargedImage(game)
+                    blueprint.drawLauncherUI(
+                        icon, g,
+                        (pos.x + 60 - (icon.height - icon.height / 2)).f,
+                        (pos.y + 34 - icon.width / 2).f
+                    )
+                }
+
+                is DroneBlueprint -> {
+                    // Draw the drone name
+                    val name = blueprint.translateShort(game)
+                    val nameWindowWidth = 96
+                    val nameX = (nameWindowWidth - weaponNameFont.getWidth(name)) / 2
+
+                    weaponNameFont.drawString(
+                        pos.x + 11f + nameX,
+                        pos.y + 70f,
+                        name,
+                        textColour
+                    )
+
+                    // Draw the drone icon
+                    blueprint.drawIconUI(game, pos + ConstPoint(60, 35))
+                }
+
+                else -> throw Exception("Can't draw blueprint button for $blueprint")
+            }
+        }
+
+        // Leave click for child classes to override.
+    }
+
+    open class DragDropBlueprintButton(
+        homePos: IPoint, game: InGameState,
+        image: ButtonImageSet?, size: IPoint,
+        val compatible: (Blueprint) -> Boolean,
+        override val blueprint: Blueprint?, val callback: () -> Unit
+    ) : BlueprintButton(homePos, size, game, image) {
+
+        constructor(
+            homePos: IPoint, game: InGameState, image: ButtonImageSet,
+            compatible: (Blueprint) -> Boolean,
+            blueprint: Blueprint?, callback: () -> Unit
+        ) : this(homePos, game, image, image.normal.imageSize, compatible, blueprint, callback)
+
+        override val makesHoverNoise: Boolean get() = false
+
+        private val overlay = game.getImg("img/upgradeUI/Equipment/box_overlay_red.png")
+
+        // Null means we're not dragging, non-null indicates the cursor position
+        var dragPosition: IPoint? = null
+
+        // If a blueprint is being dragged from another blueprint, this is set to
+        // highlight which cells it can and can't be dropped into (this is for
+        // drones and weapons).
+        var currentlyDraggedBlueprint: Blueprint? = null
+
+        override val disabled: Boolean
+            get() {
+                // Un-disable the button when a blueprint is being dragged.
+                // Otherwise, hovered will always be false and dropping won't work.
+                val bp = currentlyDraggedBlueprint
+                if (bp != null && compatible(bp)) {
+                    return false
+                }
+
+                return super.disabled
+            }
+
+        private val labelFont = NativeFonts.font(game::getFont, 6)
+
+        /**
+         * EquipmentBox::OnRender (0x00540150): weapon art centred on (63,35) and drone
+         * art on (60,32) moved 3px down, then RenderLabels' font 6 centred at (60,58).
+         */
+        private fun drawEquipmentCard(g: Graphics) {
+            when (val blueprint = blueprint) {
+                is AbstractWeaponBlueprint -> {
+                    (if (hovered) image.hover else image.normal).draw(pos)
+                    val icon = blueprint.getLauncher(game).getChargedImage(game)
+                    blueprint.drawLauncherUI(
+                        icon, g,
+                        (pos.x + 63 - (icon.height - icon.height / 2)).f,
+                        (pos.y + 35 - icon.width / 2).f
+                    )
+                    labelFont.printCenter(pos.x + 60f, pos.y + 58f, blueprint.translateShort(game), Colour.white)
+                }
+
+                is DroneBlueprint -> {
+                    (if (hovered) image.hover else image.normal).draw(pos)
+                    blueprint.drawIconUI(game, pos + ConstPoint(60, 35))
+                    labelFont.printCenter(pos.x + 60f, pos.y + 58f, blueprint.translateShort(game), Colour.white)
+                }
+
+                else -> super.draw(g)
+            }
+        }
+
+        override fun draw(g: Graphics) {
+            val isCompatible: Boolean? = currentlyDraggedBlueprint?.let(compatible)
+
+            if (dragPosition == null && !empty) {
+                drawEquipmentCard(g)
+            } else {
+                // Hide the card when the item is being dragged, but use the selected
+                // image if the user is dragging an item over us.
+                // This is why we also run this path if this button is empty, to get
+                // the highlighting.
+                val img = when {
+                    hovered && isCompatible == true -> image.offHover ?: image.hover
+                    else -> image.off
+                }
+                img.draw(pos)
+            }
+
+            val colour = when (isCompatible) {
+                null -> return // Nothing being dragged
+                true -> Colour(100, 255, 100, 127) // Transparent SYS_ENERGY_ACTIVE
+                false -> Colour(255, 50, 50, 127) // Transparent SYS_ENERGY_BROKEN
+            }
+            overlay.draw(pos.x.f, pos.y.f, colour)
+        }
+
+        open fun drawDrag(g: Graphics) {
+            // Stop dragPosition from changing under us (it actually won't,
+            // but Kotlin doesn't know that).
+            val dragPosition = dragPosition ?: return
+
+            // Draw only the item itself being dragged, without the whole card.
+            when (val blueprint = blueprint) {
+                is AbstractWeaponBlueprint -> {
+                    val icon = blueprint.getLauncher(game).getChargedImage(game)
+
+                    // The sprite is rotated 90°, so swap the width and height.
+                    val iconX = -icon.height / 2
+                    val iconY = -icon.width / 2
+
+                    blueprint.drawLauncherUI(game, g, dragPosition.x + iconX.f, dragPosition.y + iconY.f)
+                }
+
+                is DroneBlueprint -> {
+                    blueprint.drawIconUI(game, dragPosition)
+                }
+
+                else -> throw Exception("Can't draw dragged blueprint for $blueprint")
+            }
+        }
+
+        override fun click(button: Int) {
+            if (button != Input.MOUSE_LEFT_BUTTON)
+                return
+
+            if (blueprint == null)
+                return
+
+            callback()
+        }
+    }
+}
+
+/**
+ * The click-to-activate timer-based button used for cloaking, hacking and mind control.
+ */
+abstract class SystemPowerButton(
+    game: InGameState,
+    val powerHeight: Int,
+    val powerPos: IPoint
+) :
+    Button(game, powerPos + calculatePosOffset(powerHeight), calculateSize(powerHeight)) {
+
+    open val base = game.getImg("img/systemUI/button_cloaking${powerHeight}_base.png")
+    val buttonImage = ButtonImageSet.select2(game, "img/systemUI/button_cloaking${powerHeight}")
+    val timerIcon = game.getImg("img/systemUI/button_cloaking${powerHeight}_charging_on.png")
+
+    /**
+     * The time remaining on this activation, until the system goes into cooldown.
+     *
+     * Null if the system is not active.
+     */
+    abstract val timeRemaining: Float?
+
+    /**
+     * If this system was activated now, how long it would run for.
+     *
+     * If the system is active, this is the original value of [timeRemaining].
+     */
+    abstract val duration: Float
+
+    /**
+     * Use something like powerSelected==0 || isPowerLocked
+     */
+    abstract val isOff: Boolean
+
+    /**
+     * True if the button should show its highlight image
+     * even if it's not hovered, for example while aiming
+     * a hacking drone.
+     */
+    open val forceHighlight: Boolean get() = false
+
+    override val disabled: Boolean get() = timeRemaining != null || isOff
+
+    val active: Boolean get() = timeRemaining != null
+
+    override fun draw(g: Graphics) {
+        // Note all the images are the same size
+
+        // 23px between the left-hand side (LHS) of the power button and the LHS of the cloak button background
+        //  6px of padding inside the power button background image
+        val imageX = powerPos.x + 23f - 6f
+
+        // 17px between the top of the power icon and the bottom of the button background
+        // 79px between the bottom of the button background and it's top
+        //  7px of padding between the top of the background and the top of it's image
+        val imageY = powerPos.y + 17f - 79f - 7f
+
+        // Draw the outline image
+        base.draw(imageX, imageY)
+
+        // Draw the button itself
+        val image = when {
+            active -> timerIcon
+            isOff -> buttonImage.off
+            hovered || forceHighlight -> buttonImage.hover
+            else -> buttonImage.normal
+        }
+
+        val time = timeRemaining
+        val height = if (time != null) {
+            // If we're cloaked, figure out how much of the image we should show.
+            // The level 1,2,3,4 (there's four levels in the images) have 5,8,11,14 bars
+            // The bars each represent a different amount of time, so combined
+            // they represent the full cloak duration.
+            val totalBars = 2 + powerHeight * 3
+            val timePerBar = duration / totalBars
+
+            // Round up, so at least one bar is always visible.
+            val visibleBars = ceil(time / timePerBar).toInt()
+            26 + visibleBars * 4
+        } else {
+            image.height
+        }
+
+        // Draw the bottom {height} pixels of the image
+        val topY = image.height - height
+        image.draw(
+            imageX, imageY + topY, imageX + image.width, imageY + image.height,
+            0f, topY.f, image.width.f, image.height.f
+        )
+
+        // Debugging aid:
+        // g.colour = Colour.red
+        // g.drawRect(imageX, imageY + topY, 5f, height.f)
+    }
+
+    companion object {
+        private fun calculatePosOffset(power: Int): IPoint {
+            // Find the position of the button relative to the system power icon
+            val height = 11 + power * 12
+            return ConstPoint(27, -3 - height)
+        }
+
+        private fun calculateSize(power: Int): IPoint {
+            val height = 11 + power * 12
+            return ConstPoint(24, height)
+        }
+    }
+}

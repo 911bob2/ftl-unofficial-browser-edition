@@ -1,0 +1,17 @@
+{
+  "name": "ftl-browser-native",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:web": "tailwindcss -i web/styles.css -o web/style.css --minify",
+    "test:diagnostics": "node tests/diagnostic-export.mjs && node tests/diagnostics.mjs",
+    "test:menus": "node tests/menus.mjs"
+  },
+  "devDependencies": {
+    "@fontsource/chakra-petch": "5.3.0",
+    "@tailwindcss/cli": "4.3.3",
+    "daisyui": "5.7.47",
+    "playwright": "1.63.0",
+    "tailwindcss": "4.3.3"
+  }
+}

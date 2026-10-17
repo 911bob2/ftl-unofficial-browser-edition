@@ -1,0 +1,412 @@
+package xyz.znix.xftl.weapons
+
+import org.jdom2.Element
+import xyz.znix.xftl.GameText
+import xyz.znix.xftl.Ship
+import xyz.znix.xftl.augments.AugmentBlueprint
+import xyz.znix.xftl.drones.CombatDrone
+import xyz.znix.xftl.game.InGameState
+import xyz.znix.xftl.game.VanillaHotkeys
+import xyz.znix.xftl.layout.Room
+import xyz.znix.xftl.rendering.Colour
+import xyz.znix.xftl.rendering.DelayedTooltip
+import xyz.znix.xftl.rendering.Graphics
+import xyz.znix.xftl.rendering.ITooltipProvider
+import xyz.znix.xftl.replaceArg
+import xyz.znix.xftl.savegame.ObjectRefs
+import xyz.znix.xftl.savegame.RefLoader
+import xyz.znix.xftl.savegame.SaveUtil
+import xyz.znix.xftl.systems.Artillery
+import xyz.znix.xftl.systems.Weapons
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.random.Random
+
+abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val ship: Ship) {
+    // The time spent charging thus far
+    var timeCharged: Float = 0f
+
+    // For charger weapons, this is how many shots are stored up, in
+    // addition to the one represented by timeCharged.
+    var extraCharges: Int = 0
+
+    // For chain weapons, this is the number of volleys we've fired since
+    // the weapon was powered off. This is limited to the maximum number
+    // of shots that have an effect.
+    var chainCount: Int = 0
+
+    // Native ProjectileFactory counts volleys, not individual burst projectiles.
+    // null means an older save did not retain this encounter's firing history.
+    var browserEncounterVolleys: Int? = 0
+        private set
+
+    // Native SetCurrentShip (0x0040ccc0) clears the count only when the weapon
+    // system receives a different non-null target ship, i.e. a new encounter.
+    // Its callers are the weapon-system target setters, so a volley aimed at a
+    // different ship (a bomb fired at our own ship) still accumulates here.
+    fun browserResetEncounterVolleys() {
+        browserEncounterVolleys = 0
+    }
+
+    protected fun browserRecordVolley(target: Ship) {
+        if (ship.sys.isCurrentlyLoadingSave) return
+        browserEncounterVolleys = browserEncounterVolleys?.let { it + 1 }
+        ftl.browser.BrowserDebug.record("achievement", "weapon.volley",
+            "{\"weapon\":${ftl.browser.BrowserDebug.quote(type.name)},\"player\":${ship.isPlayerShip},\"self\":${target === ship},\"volleys\":$browserEncounterVolleys}")
+    }
+
+    // The number of charges this weapon is ready to fire.
+    val totalReadyCharges: Int get() = extraCharges + if (isCurrentCharged) 1 else 0
+
+    // Is this weapon selected as powered
+    // To set this, use forceSetPowered and read it's JavaDoc.
+    var isPowered: Boolean = false
+        private set
+
+    /**
+     * Per-weapon autofire override: null follows the ship's global autofire
+     * setting, true/false forces it on/off for this weapon. Toggled with
+     * ctrl + aim (or ctrl + weapon hotkey), like vanilla.
+     */
+    var autofireOverride: Boolean? = null
+
+    abstract val isFiring: Boolean
+
+    // Turn missile weapons off once their ship runs out of missiles
+    val hasEnoughMissiles: Boolean get() = ship.missilesCount >= type.missilesUsed
+
+    // How far out is this weapon, on a scale of 0-1. Used for making weapons slide in and out when
+    // powered up and down.
+    var slide: Float = 0f
+
+    /**
+     * True if the weapon is ready to fire. For charge weapons this is true
+     * even when [isCurrentCharged] is false, as long as they've stored away an extra shot.
+     */
+    val isCharged: Boolean get() = isCurrentCharged || extraCharges > 0
+
+    /**
+     * True if the weapon's current charge has finished charging. This is different
+     * to [isCharged] for charge weapons, as this is only true when the currently
+     * charging charge is done.
+     */
+    val isCurrentCharged: Boolean get() = timeCharged >= chargeTime
+    val chargeProgress: Float get() = timeCharged / chargeTime
+
+    val maxTotalCharges get() = type.chargeLevels ?: 1
+    val maxExtraCharges get() = maxTotalCharges - 1
+
+    val animation = type.getLauncher(ship.sys)
+
+    private val boostAnim = animation.boostAnim?.startSingle(ship.sys)
+
+    /**
+     * True if the player can fire this weapon at their own ship, eg for bombs.
+     */
+    open val canTargetOwnShip: Boolean get() = false
+
+    val chargeTime: Float
+        get() {
+            if (type.boost?.type != AbstractWeaponBlueprint.BoostType.COOLDOWN)
+                return type.chargeTime
+
+            return type.chargeTime - chainCount * type.boost.perShot
+        }
+
+    /**
+     * The tooltip displayed when the player hovers the button they click to aim the weapon.
+     */
+    val weaponBarTooltip: ITooltipProvider? by lazy { createWeaponBarTooltip() }
+
+
+    open fun update(dt: Float, chargeTime: Float, canCharge: Boolean) {
+        val speedMult = (1f + ship.getAugmentValue(AugmentBlueprint.AUTOMATED_RELOADERS))
+
+        // ProjectileFactory::Update (0x40dc80): charging runs at
+        // AUTO_COOLDOWN + 1 per second; a hacking pulse (negative
+        // [chargeTime]) drains one per second and an unpowered weapon six,
+        // neither sped up by reloaders.
+        if (isPowered) {
+            if (chargeTime < 0f)
+                timeCharged += chargeTime
+            else if (canCharge)
+                timeCharged += chargeTime * speedMult
+        } else {
+            timeCharged -= abs(chargeTime) * 6f
+
+            if (timeCharged <= 0) {
+                extraCharges = 0
+                chainCount = 0
+            }
+        }
+
+        if (timeCharged > this.chargeTime)
+            timeCharged = this.chargeTime
+        if (timeCharged < 0f)
+            timeCharged = 0f
+
+        if (isCurrentCharged && extraCharges < maxExtraCharges) {
+            timeCharged = 0f
+            extraCharges++
+        }
+    }
+
+    /**
+     * Called when the ship jumps away: anything the weapon refers to from
+     * the previous fight - its targets, a firing animation in progress -
+     * is cancelled, as the ship it was aimed at no longer exists.
+     */
+    open fun onJump() {
+    }
+
+    protected fun damageCloak() {
+        // We only damage the cloak if we're fired from the weapons system. If
+        // we're fired via the artillery system, from a drone, etc then we
+        // don't affect the cloak.
+        if (ship.hardpoints.none { it.weapon == this })
+            return
+
+        ship.cloaking?.weaponFired()
+    }
+
+    protected fun fire() {
+        if (ship.isPlayerShip) {
+            ship.sys.browserAchievements.record(ftl.browser.BrowserAchievementProgress.Action.FIRED_SHOT)
+            if (type.missilesUsed > 0) ship.sys.browserAchievements.record(ftl.browser.BrowserAchievementProgress.Action.USED_MISSILE)
+        }
+        timeCharged = 0f
+        extraCharges = 0
+
+        // Count up
+        if (type.boost != null) {
+            chainCount = (chainCount + 1).coerceIn(0..type.boost.maxCount)
+        }
+
+        // Deduct a missile (or multiple), if this weapon uses them
+        // This really shouldn't be going negative here, but guard
+        // it just in case.
+        if (!ship.sys.debugFlags.infiniteMissiles.set && type.missilesUsed > 0) {
+            // Explosive Replicator: each volley has a chance to consume
+            // no ammo (vanilla: "50 percent chance of not using a missile",
+            // rolled once per volley - multi-shot weapons pay once too).
+            val replicator = ship.getAugmentValue(AugmentBlueprint.EXPLOSIVE_REPLICATOR)
+            if (replicator <= ftl.browser.BrowserRandom.nextFloat()) {
+                ship.missilesCount = max(0, ship.missilesCount - type.missilesUsed)
+            } else {
+                // Vanilla-verified: a proc flashes a '0' by the missile
+                // counter, where a consumed volley flashes '-N'.
+                ship.replicatorProcPopups++
+            }
+        }
+    }
+
+    open fun render(g: Graphics) {
+        val launcher = animation.spriteAt(ship.sys, (animation.chargedFrame * chargeProgress).toInt())
+        launcher.draw(0f, 0f)
+
+        renderChainChargeLights()
+
+        // Draw the charging glow, if present
+        if (isCurrentCharged)
+            return
+        val glowPath = animation.chargeImage ?: return
+        val glow = ship.sys.getImg(glowPath)
+
+        val filter = Colour(1f, 1f, 1f, chargeProgress)
+        glow.draw(0f, 0f, filter)
+    }
+
+    fun renderChainChargeLights() {
+        // For charge weapons, draw on the indicator lights
+        if (boostAnim != null && maxTotalCharges > 1 && totalReadyCharges > 0) {
+            // 0 indicates one extra charge, so we have to -1.
+            boostAnim.spriteAt(totalReadyCharges - 1).draw()
+        }
+
+        // For chain weapons, draw the progress
+        if (boostAnim != null && type.boost != null && chainCount > 0) {
+            // 0 indicates one shot already fired, so -1.
+            boostAnim.spriteAt(chainCount - 1).draw()
+        }
+    }
+
+    fun asWeaponInstance(): AbstractWeaponInstance = this
+
+    /**
+     * Power this weapon on or off.
+     *
+     * This should rarely be used - you should have a very
+     * good reason not to use [Weapons.setWeaponPower], since
+     * this doesn't check if the weapons system is ion-locked.
+     */
+    fun forceSetPowered(newPowerState: Boolean) {
+        isPowered = newPowerState
+    }
+
+    protected open fun createWeaponBarTooltip(): ITooltipProvider {
+        val tr = ship.sys.translator
+        val sb = StringBuilder()
+
+        // Thus function is very heavily based off vanilla's WeaponBlueprint::GetDescription
+
+        // The "Type: Laser" line
+        var typeKey = when (type) {
+            is LaserBlueprint -> if (type.ionDamage > 0) "type_ion" else "type_laser"
+            is MissileBlueprint -> if (type.missilesUsed > 0) "type_missile" else "type_crystal"
+            is BeamBlueprint -> "type_beam"
+            is BombBlueprint -> "type_bomb"
+            is FlakBlueprint -> "type_burst"
+            else -> "type_unknown" // Mods need to override this - TODO find a clean way to do this
+        }
+        if (type.chargeLevels != null) {
+            typeKey += "_charge"
+        }
+        if (type.boost != null) {
+            typeKey += "_chain"
+        }
+        val typeText: GameText = type.flavourType ?: GameText.localised(typeKey)
+        val effectLines = ArrayList<GameText>()
+
+        if (type.missilesUsed > 0) {
+            effectLines.add(GameText.localised("type_missile_effect"))
+        }
+        if (type.ionDamage > 0) {
+            effectLines.add(GameText.localised("type_ion_effect"))
+        }
+        if (type.chargeLevels != null) {
+            effectLines.add(GameText.localised("type_charge_effect"))
+        }
+        if (type.boost != null) {
+            effectLines.add(GameText.localised("type_chain_effect"))
+        }
+
+        val typeEffectsString = effectLines.joinToString { tr[it] + "\n" }
+        sb.append(tr["type_desc"].replaceArg(tr[typeText]).replaceArg(typeEffectsString, 2) + "\n")
+
+        if (type.boost?.type == AbstractWeaponBlueprint.BoostType.COOLDOWN) {
+            sb.append(tr["boost_power_speed"] + "\n")
+            // Max boost speed isn't shown in the tooltip
+        }
+        if (type.boost?.type == AbstractWeaponBlueprint.BoostType.DAMAGE) {
+            // We have to include the initial damage in the max value shown.
+            // How does vanilla FTL do this?
+            // TODO deduplicate this calculation with the one in InfoPanel
+            val baseDamage = max(type.damage, type.ionDamage)
+            val maxDamage = type.boost.maxCount * type.boost.perShot + baseDamage
+            sb.append(tr["boost_power_damage"] + "\n")
+            sb.append(tr["damage_cap"].replaceArg(maxDamage) + "\n")
+        }
+
+        if (type is LaserBlueprint || type is FlakBlueprint || (type is MissileBlueprint && type.shots != 1)) {
+            sb.append(tr["shots"].replaceArg(type.shots) + "\n")
+        }
+
+        if (type.chargeLevels != null) {
+            sb.append(tr["charge"].replaceArg(type.chargeLevels) + "\n")
+        }
+
+        val damageKey = if (type is BeamBlueprint) "damage_room" else "damage_shot"
+        sb.append(tr[damageKey].replaceArg(type.damage) + "\n")
+
+        if (type.shieldPiercing != 0 && type.shieldPiercing != 5) {
+            sb.append(tr["shield_piercing"].replaceArg(type.shieldPiercing) + "\n")
+        }
+
+        val effects = ArrayList<GameText>()
+        if (type.breachChance != 0) {
+            effects.add(GameText.localised("chance_of_breach"))
+        }
+        if (type.fireChance != 0) {
+            effects.add(GameText.localised("chance_of_fire"))
+        }
+        if (type.stunChance != 0) {
+            effects.add(GameText.localised("chance_of_stun"))
+        }
+        if (effects.isNotEmpty()) {
+            // The separator XML tag includes a space (in the English locale),
+            // but we're stripping it out while loading the translations.
+            // It seems unlikely that it won't contain a space, so it's a bit
+            // ugly but we can just put it back in here.
+            val separator = tr["chance_of_separator"] + " "
+
+            val specialEffectsString = effects.joinToString(separator) { tr[it] }
+            sb.append(tr["chance_of"].replaceArg(specialEffectsString) + "\n")
+        }
+
+        if (type.ionDamage != 0) {
+            sb.append(tr["ion_damage"].replaceArg(type.ionDamage) + "\n")
+        }
+        if (type.stun != 0) {
+            sb.append(tr["stun_damage"].replaceArg(type.stun) + "\n")
+        }
+        if (type.personnelDamage != 0) {
+            sb.append(tr["personnel_damage"].replaceArg(type.personnelDamage) + "\n")
+        }
+        if (type.sysDamage != 0) {
+            sb.append(tr["system_damage"].replaceArg(type.sysDamage) + "\n")
+        }
+        if (type.hullBust != 0) {
+            sb.append(tr["double_damage"] + "\n")
+        }
+
+        sb.append("\n")
+        sb.append(tr["hotkey"] + "\n")
+        sb.append(tr["rearrange"])
+
+        // The slot key is filled in when shown, as the weapon can be dragged to another slot.
+        val text = sb.toString()
+        return object : WeaponButtonTooltip(ship.sys, text) {
+            override fun getText(): String {
+                val slot = ship.hardpoints.indexOfFirst { it.weapon === this@AbstractWeaponInstance }
+                return text.replace("\\1", ship.sys.getButtonNameForHotkey(VanillaHotkeys.WEAPON_SLOTS.getOrNull(slot), ""))
+            }
+        }
+    }
+
+    open fun bindToWeaponsSystem(weapons: Weapons) {
+    }
+
+    open fun bindToArtillery(artillery: Artillery) {
+    }
+
+    open fun saveToXML(elem: Element, refs: ObjectRefs) {
+        SaveUtil.addAttr(elem, "type", type.name)
+        SaveUtil.addAttrBool(elem, "powered", isPowered)
+        SaveUtil.addAttrFloat(elem, "chargeTime", timeCharged)
+        SaveUtil.addTagInt(elem, "extraCharges", extraCharges, 0)
+        SaveUtil.addTagInt(elem, "chainCount", chainCount, 0)
+        browserEncounterVolleys?.let { elem.setAttribute("browserEncounterVolleys", it.toString()) }
+
+        val expectedSlide = if (isPowered) 1f else 0f
+        SaveUtil.addTagFloat(elem, "slideAnimation", slide, expectedSlide)
+    }
+
+    open fun loadFromXML(elem: Element, refs: RefLoader) {
+        require(type.name == SaveUtil.getAttr(elem, "type"))
+
+        isPowered = SaveUtil.getAttrBool(elem, "powered")
+        timeCharged = SaveUtil.getAttrFloat(elem, "chargeTime")
+        extraCharges = SaveUtil.getOptionalTagInt(elem, "extraCharges") ?: 0
+        chainCount = SaveUtil.getOptionalTagInt(elem, "chainCount") ?: 0
+        browserEncounterVolleys = elem.getAttributeValue("browserEncounterVolleys")?.toIntOrNull()?.coerceAtLeast(0)
+
+        val expectedSlide = if (isPowered) 1f else 0f
+        slide = SaveUtil.getOptionalTagFloat(elem, "slideAnimation") ?: expectedSlide
+    }
+
+    open class WeaponButtonTooltip(game: InGameState, private val text: String) : DelayedTooltip(game) {
+        override fun getText(): String = text
+        override val customMaxWidth: Int get() = 300
+    }
+}
+
+/**
+ * Represents a weapon that can be fired at individual rooms. Includes basically everything but beams.
+ */
+interface IRoomTargetingWeapon {
+    fun fire(targetSource: () -> Room)
+
+    fun fireFromDrone(drone: CombatDrone, target: Room)
+
+    fun asWeaponInstance(): AbstractWeaponInstance
+}

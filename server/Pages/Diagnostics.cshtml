@@ -1,0 +1,37 @@
+@page
+@inject Ftl.Server.ClientAssets ClientAssets
+@{
+    var allowed = Ftl.Server.AccountRoles.CanPlay(HttpContext);
+    if (!allowed) HttpContext.Response.StatusCode = 403;
+}
+<!doctype html>
+<html lang="en" data-theme="ftl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tests &amp; benchmarks · FTL: Unofficial Browser Edition</title><link rel="stylesheet" href="/web/style.css?v=@ClientAssets.Version"></head>
+<body data-account="@((HttpContext.Items["Player"] as Ftl.Server.Player)?.Id)" data-role="@Ftl.Server.AccountRoles.Role(HttpContext)" class="site-page diagnostics-page bg-base-200 text-base-content">
+@await Html.PartialAsync("Shared/_ShellHeader")
+<main class="diagnostics-main">
+@if (!allowed) {
+    <section class="panel narrow"><h1>Sign in required</h1><p class="mb-4">Sign in and complete any required password change to run tests.</p><a class="btn btn-primary" href="/">Sign in</a></section>
+} else {
+<div id="test-app">
+<div class="diagnostics-heading"><div><h1>Tests &amp; benchmarks</h1><p class="muted text-sm">Temporary runs and profiles. Your saved game is preserved.</p></div><button id="export-results" class="btn btn-sm" disabled>Export report</button></div>
+<div class="diagnostics-workspace">
+<section class="panel diagnostic-controls" aria-label="Test configuration"><h2>Choose checks</h2><div class="actions"><button class="btn btn-sm btn-primary preset" data-preset="quick">Quick checks</button><button class="btn btn-sm preset" data-preset="all">All tests</button><button class="btn btn-sm preset" data-preset="benchmark">Benchmark</button></div><p id="selection-description" class="muted text-sm mb-4"></p>
+<div class="actions"><button id="run-tests" class="btn btn-primary" disabled>Run quick checks</button><button id="stop-tests" class="btn" disabled>Stop</button></div>@if(Ftl.Server.AccountRoles.Admin(HttpContext)){<p id="runner-note" class="muted text-sm"></p>}
+<details id="custom-selection" class="diagnostic-selection"><summary id="selection-count">Customize checks</summary><div id="suite-options" class="space-y-1" aria-label="Individual checks"></div></details>
+<fieldset id="benchmark-settings" hidden class="border-t border-base-300 mt-4 pt-4 space-y-3"><legend class="font-semibold">Benchmark settings</legend><label>Measurement per phase<select id="benchmark-duration" class="select w-full"><option value="5000">5 seconds</option><option value="10000" selected>10 seconds</option><option value="30000">30 seconds</option></select></label><label>FPS limit<select id="benchmark-limit" class="select w-full"><option value="0">Unlimited</option><option>30</option><option>60</option><option>90</option><option>120</option><option>144</option><option>165</option><option>240</option><option>360</option></select></label><p class="muted text-sm">2-second warmup per phase. Unlimited draws on every available browser callback.</p></fieldset>
+<div class="diagnostic-scheduling"><h3 class="font-semibold text-sm">Browser timing</h3><p class="muted text-xs">Measure animation callbacks without the game. Repeat after moving this window.</p><button id="measure-browser" class="btn btn-sm mt-2" disabled>Check browser rate</button><p id="browser-rate" class="text-sm mt-2" role="status">Not measured</p></div>
+@if(Ftl.Server.AccountRoles.Role(HttpContext)=="external-user"){<details class="diagnostic-local"><summary>Local game files</summary>@await Html.PartialAsync("Shared/_LocalAssets", false)</details>}
+<details class="mt-4"><summary class="cursor-pointer text-sm">Run one engine check</summary><div id="individual-tests" class="actions"></div></details>
+</section>
+<section id="preview" class="panel diagnostic-preview" aria-label="Engine preview"><div class="diagnostic-pane-heading"><h2>Engine preview</h2><span id="preview-status" class="muted text-xs">No engine running</span></div><div class="diagnostic-canvas"><canvas id="game" width="1280" height="720" tabindex="0" aria-label="Temporary test run"></canvas><p id="preview-empty">@(Ftl.Server.AccountRoles.Role(HttpContext)=="external-user" ? "Upload ftl.dat in Local game files to run engine tests and benchmarks." : "Start an engine check or benchmark to view the temporary run.")</p></div></section>
+<section class="panel diagnostic-results" aria-label="Test results"><div class="diagnostic-progress"><p id="test-status" role="status" aria-live="polite">Ready</p><p id="test-summary" class="text-sm">No tests run yet.</p><progress id="test-progressbar" class="progress progress-primary w-full" value="0" max="1" aria-label="Test progress"></progress></div>
+<div role="tablist" aria-label="Result views" class="tabs tabs-border"><button id="tab-cases" role="tab" aria-controls="case-results" aria-selected="true" class="tab tab-active" data-result-view="cases">Cases</button><button id="tab-benchmark" role="tab" aria-controls="benchmark-results" aria-selected="false" tabindex="-1" class="tab" data-result-view="benchmark">Benchmark</button><button id="tab-activity" role="tab" aria-controls="activity-results" aria-selected="false" tabindex="-1" class="tab" data-result-view="activity">Activity</button></div>
+<div id="case-results" class="diagnostic-result-view" role="tabpanel" aria-labelledby="tab-cases"><div class="diagnostic-filter"><label class="text-sm">Show<select id="result-filter" class="select select-sm"><option value="attention">Needs attention</option><option value="all">All cases</option><option value="passed">Passed</option><option value="failed">Failed</option></select></label><span class="muted text-xs">Select a case for details</span></div><div class="diagnostic-case-scroll" tabindex="0" aria-label="Case list"><p id="case-empty" class="muted text-sm">No tests run yet.</p><table class="table table-sm"><thead><tr><th scope="col">Check</th><th scope="col">Result</th><th scope="col">Time</th></tr></thead><tbody id="test-results"></tbody></table></div><details id="case-detail"><summary id="case-detail-name">Case details</summary><pre id="case-detail-output" class="text-xs"></pre></details></div>
+<div id="benchmark-results" hidden class="diagnostic-result-view" role="tabpanel" aria-labelledby="tab-benchmark"><p id="benchmark-note" class="muted text-sm">No benchmark run yet. Browser callbacks and game FPS are measured separately.</p><div class="diagnostic-case-scroll" tabindex="0" aria-label="Benchmark measurements"><table class="table table-sm"><thead><tr><th>Phase</th><th>Limit</th><th>Game FPS</th><th>Browser callbacks/s</th><th>Frame p95</th><th>Update p95</th><th>Render p95</th><th>Heap</th></tr></thead><tbody id="benchmark-rows"></tbody></table></div></div>
+<div id="activity-results" hidden class="diagnostic-result-view" role="tabpanel" aria-labelledby="tab-activity"><label class="flex items-center gap-2 text-sm"><input id="follow-output" type="checkbox" class="checkbox checkbox-sm" checked>Follow output</label><pre id="results" tabindex="0" aria-label="Detailed test output" class="bg-base-200 rounded p-3 text-xs">Ready</pre></div>
+</section></div></div>
+<script type="module" src="/web/diagnostics.mjs?v=@ClientAssets.Version"></script>
+}
+</main>@await Html.PartialAsync("Shared/_ShellFooter")<script type="module" src="/web/shell.mjs?v=@ClientAssets.Version"></script>
+</body></html>

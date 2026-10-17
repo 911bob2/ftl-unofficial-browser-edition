@@ -1,0 +1,24 @@
+{
+  "review": "Engine-authored GPL resources and Apache-2.0 Roboto; see third_party/notices/NOTICE.md. Excludes every DAT resource.",
+  "files": [
+    "assets/data/xftl_hotkeys.xml",
+    "assets/data/xftl_ships.xml",
+    "assets/font-data-override.xml",
+    "assets/img/xftl_icon.png",
+    "assets/img/xftl_icon.svg",
+    "assets/lang/en.xml",
+    "assets/ui/confirm.xml",
+    "assets/ui/crew_over_capacity.xml",
+    "assets/ui/escape_menu.xml",
+    "assets/ui/gameover.xml",
+    "assets/ui/options.xml",
+    "assets/ui/sell_drop_box.xml",
+    "assets/ui/ship_list_abc.xml",
+    "baked/editor-door-data.xml",
+    "baked/roboto.font",
+    "shaders/colour_frag.glsl",
+    "shaders/colour_vert.glsl",
+    "shaders/image_rect_frag.glsl",
+    "shaders/image_rect_vert.glsl"
+  ]
+}

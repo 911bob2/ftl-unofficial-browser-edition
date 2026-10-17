@@ -1,0 +1,23 @@
+@page
+@inject Ftl.Server.ClientAssets ClientAssets
+@inject Microsoft.AspNetCore.Hosting.IWebHostEnvironment Host
+@{
+    var directory = System.IO.Path.Combine(Host.ContentRootPath, "notices");
+    var files = System.IO.Directory.Exists(directory)
+        ? System.IO.Directory.EnumerateFiles(directory).OrderBy(path => path, StringComparer.Ordinal).ToArray()
+        : Array.Empty<string>();
+}
+<!doctype html>
+<html lang="en" data-theme="ftl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Licenses · FTL: Unofficial Browser Edition</title><link rel="stylesheet" href="/web/style.css?v=@ClientAssets.Version"></head>
+<body data-account="@((HttpContext.Items["Player"] as Ftl.Server.Player)?.Id)" data-role="@Ftl.Server.AccountRoles.Role(HttpContext)" class="site-page bg-base-200 text-base-content">@await Html.PartialAsync("Shared/_ShellHeader")<main class="site-main"><div class="panel reading-panel"><h1 class="text-2xl font-semibold">Licenses</h1>
+<p class="my-4">FTL © Subset Games. Game assets are supplied separately by the owner.</p>
+<a class="btn btn-sm mb-6" href="/">Back</a>
+@foreach (var file in files)
+{
+    <details class="border border-base-300 rounded-box mb-3 p-4"><summary class="cursor-pointer font-medium">@System.IO.Path.GetFileName(file)</summary><pre class="whitespace-pre-wrap text-sm mt-4">@System.IO.File.ReadAllText(file)</pre></details>
+}
+@if (files.Length == 0)
+{
+    <p>License files are unavailable in this build.</p>
+}
+</div></main>@await Html.PartialAsync("Shared/_ShellFooter")<script type="module" src="/web/shell.mjs?v=@ClientAssets.Version"></script></body></html>

@@ -1,0 +1,23 @@
+    public static int alGetError(){return 0;}
+    public static int alGenBuffers(){return (int)BrowserAudio.call("buffer",0,0,0);}
+    public static void alGenBuffers(IntBuffer b){for(int i=b.position();i<b.limit();i++)b.put(i,alGenBuffers());}
+    public static void alDeleteBuffers(int b){BrowserAudio.call("deleteBuffer",b,0,0);}
+    public static void alDeleteBuffers(IntBuffer b){for(int i=b.position();i<b.limit();i++)alDeleteBuffers(b.get(i));}
+    public static void alBufferData(int b,int f,ByteBuffer d,int rate){throw new UnsupportedOperationException("Audio is decoded with Web Audio");}
+    public static int alGetBufferi(int b,int p){return (int)BrowserAudio.call("getBuffer",b,p,0);}
+    public static int alGenSources(){return (int)BrowserAudio.call("source",0,0,0);}
+    public static void alGenSources(IntBuffer b){for(int i=b.position();i<b.limit();i++)b.put(i,alGenSources());}
+    public static void alDeleteSources(int s){BrowserAudio.call("deleteSource",s,0,0);}
+    public static void alSourcei(int s,int p,int v){BrowserAudio.call("sourcei",s,p,v);}
+    public static void alSourcef(int s,int p,float v){BrowserAudio.call("sourcef",s,p,v);}
+    public static void alSource3f(int s,int p,float a,float b,float c){}
+    public static void alSourcePlay(int s){BrowserAudio.call("play",s,0,0);}
+    public static void alSourcePause(int s){BrowserAudio.call("pause",s,0,0);}
+    public static void alSourceStop(int s){BrowserAudio.call("stop",s,0,0);}
+    public static int alGetSourcei(int s,int p){return (int)BrowserAudio.call("getSource",s,p,0);}
+    public static float alGetSourcef(int s,int p){return (float)BrowserAudio.call("getSource",s,p,0);}
+    public static void alSourceQueueBuffers(int s,IntBuffer b){throw new UnsupportedOperationException("Browser streams use AudioBufferSourceNode");}
+    public static int alSourceUnqueueBuffers(int s,IntBuffer b){return 0;}
+    public static void alListenerf(int p,float v){} public static void alListener3f(int p,float a,float b,float c){}
+    public static void alListenerfv(int p,FloatBuffer b){} public static void alListeneri(int p,int v){}
+    public static void alDistanceModel(int p){} public static void alDopplerFactor(float v){}

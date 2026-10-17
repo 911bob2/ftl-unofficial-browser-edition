@@ -1,0 +1,38 @@
+services:
+  app:
+    platform: linux/amd64
+    build:
+      context: .
+      target: app
+    image: ftl-browser-native:local
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      PUBLIC_ORIGIN: http://localhost:8080
+    volumes:
+      - ftl-data:/data
+      - ./runtime/assets:/assets:ro
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+  prepare-assets:
+    build:
+      context: .
+      target: asset-preparer
+    profiles: [prepare]
+    volumes:
+      - ./game-files/ftl.dat:/game/ftl.dat:ro
+      - ./runtime/assets:/assets
+volumes:
+  ftl-data:
