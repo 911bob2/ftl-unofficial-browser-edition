@@ -106,4 +106,4 @@ real account database.
 
 This project is licensed under the **GNU Affero General Public License v3.0 or later**; see [LICENSE](LICENSE).
 
-Contact: **ftl@911bob.dev** (takedown or other requests) · Discord for feedback.
+Contact: **ftl@911bob.dev** (takedown or other requests) · [Discord](https://discord.gg/KzYfUHfugJ) for feedback.
