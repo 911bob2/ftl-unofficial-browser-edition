@@ -87,6 +87,10 @@ public static class Bootstrap {
     public static async Task Initialize(IServiceProvider services,string dataDir) {
         using var scope=services.CreateScope();var db=scope.ServiceProvider.GetRequiredService<GameDatabase>();
         await db.Database.EnsureCreatedAsync();await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+        // EnsureCreated does not add columns to an existing database. The snapshot kind (2026-10-21) is optional, so older
+        // builds still read the table and the schema version stays 1.
+        if(await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM pragma_table_info('Snapshots') WHERE name='Kind'").SingleAsync()==0)
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE Snapshots ADD COLUMN Kind TEXT NULL;");
         var schema=await db.Settings.FindAsync("schema");if(schema!=null&&schema.Value!="1")throw new InvalidOperationException("Unsupported database schema; restore a compatible build.");
         if(schema==null){db.Settings.Add(new(){Key="schema",Value="1"});await db.SaveChangesAsync();}
         var roles=scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();foreach(var name in AccountRoles.Names)if(!await roles.RoleExistsAsync(name))Check(await roles.CreateAsync(new(name)));

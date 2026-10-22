@@ -41,6 +41,8 @@ public final class BrowserEngine {
     @JSExport public static void focusChanged(boolean focused){if(game!=null)game.setBrowserFocus(focused);}
     @JSExport public static String optionsProbe(){return BrowserOptionsDiagnostics.INSTANCE.run(game,container,graphics);}
     @JSExport public static String gameplayParityProbe(){return BrowserGameplayParityDiagnostics.INSTANCE.run(game,container,graphics);}
+    /** Diagnostics: the reward icons across content swaps, compared pixel for pixel (GameplayParityAssets7Checks). */
+    @JSExport public static String resourceIconsProbe(){return GameplayParityAssets7Checks.INSTANCE.run(game,container,graphics);}
     /** Diagnostics: the tree, map and created events for given seeds as JSON (see BrowserParityGeneration). */
     @JSExport public static String parityGeneration(String json){return BrowserParityGeneration.INSTANCE.run(game,container,json);}
     @JSExport public static String optionsFixture(String kind){return BrowserOptionsDiagnostics.INSTANCE.fixture(game,container,graphics,kind);}

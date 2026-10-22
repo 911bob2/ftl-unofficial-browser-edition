@@ -10,5 +10,6 @@ class CrewRock(blueprint: CrewBlueprint, animations: Animations, room: Room, mod
     override val movementSpeed: Float get() = BASE_MOVEMENT_SPEED * 0.5f
     override val fireFightingSpeed: Float get() = 2f
     override val fireDamageMult: Float get() = 0f
-    override val shootsLasers: Boolean get() = false
+    // RockAnimation: the rock leaves on frame 3 of the throwing strip (FireShot 0x478870).
+    override val throwsOnShootFrame: Boolean get() = true
 }

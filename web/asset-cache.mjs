@@ -1,6 +1,10 @@
 const cacheName='ftl-test-resources-v1';
 const hashPattern=/^[a-f0-9]{64}$/i;
 const pending=new Map();
+// A download that arrives short or garbled (a slow or dropped connection) is fetched again this many times in all.
+const downloadAttempts=3;
+
+async function sha256(bytes){return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(byte=>byte.toString(16).padStart(2,'0')).join('');}
 
 // Call only after fetching a fresh, authorized manifest. This stores asset bytes,
 // never credentials, saves or a manifest that could authorize an offline launch.
@@ -18,23 +22,34 @@ export async function createAssetCache(manifest,fetchBytes){
    await Promise.all(obsolete.map(request=>cache.delete(request)));
   }
  }catch{cache=null;}
+ // Bytes are used only when they have the manifest's exact length and SHA-256, whether they come from the cache
+ // or the network; only such bytes are cached. Without Web Crypto (an insecure origin) nothing is cached.
+ const canVerify=()=>!!globalThis.crypto?.subtle;
  async function read(key,path,hash,length){
   let promise=pending.get(key);
   if(!promise){
    promise=(async()=>{
     if(cache)try{
      const stored=await cache.match(key);
-     if(stored){const bytes=await stored.arrayBuffer();if(bytes.byteLength===length)return bytes;await cache.delete(key);}
+     if(stored){
+      const bytes=await stored.arrayBuffer();
+      // Hashing the 138 MB bundle takes well under a second (about 70 ms with SHA extensions).
+      if(bytes.byteLength===length&&canVerify()&&await sha256(bytes)===hash)return bytes;
+      await cache.delete(key);
+     }
     }catch{cache=null;}
-    const bytes=await fetchBytes(path);
-    if(bytes.byteLength!==length)throw Error('Incomplete game resource download; retry the tests');
-    if(globalThis.crypto?.subtle){
-     const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));
-     const actual=[...digest].map(byte=>byte.toString(16).padStart(2,'0')).join('');
-     if(actual!==hash)throw Error('Game resources changed or failed verification; reload Tests and retry');
+    let failure;
+    for(let attempt=0;attempt<downloadAttempts;attempt++){
+     let bytes;
+     // HTTP refusals (signed out, account changed) are final; a dropped connection is worth another try.
+     try{bytes=await fetchBytes(path);}catch(e){if(e?.status||attempt+1===downloadAttempts)throw e;failure=e;continue;}
+     if(bytes.byteLength!==length){failure=Error('Incomplete game resource download; retry the tests');continue;}
+     if(!canVerify())return bytes;
+     if(await sha256(bytes)!==hash){failure=Error('Game resources changed or failed verification; reload Tests and retry');continue;}
      if(cache)try{await cache.put(key,new Response(bytes));}catch{cache=null;}
+     return bytes;
     }
-    return bytes;
+    throw failure;
    })();
    pending.set(key,promise);
   }

@@ -156,7 +156,7 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
    const backup=JSON.parse(await readFile(await download.path(),'utf8'));const config=await publicConfig(page);
    assert.deepEqual(Object.keys(backup).sort(),['assetVersion','engineBuild','profile','revision','run','schema']);assert.equal(backup.schema,1);assert.equal(backup.revision,14);assert.equal(backup.engineBuild,config.engineBuild);assert.equal(backup.assetVersion,config.assetVersion);assert.match(backup.run,/r13/);
    check(name+': the local backup has the same envelope as a cloud backup');
-   await page.locator('#snapshots-refresh').click();await page.waitForFunction(()=>document.querySelectorAll('#snapshots button').length===10);
+   await page.locator('#snapshots-refresh').click();await page.waitForFunction(()=>document.querySelectorAll('#snapshots .snapshot-row').length===10);
    page.once('dialog',d=>d.accept());
    const reloaded=page.waitForEvent('load');
    await page.setInputFiles('#backup-import',{name:'backup.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({...backup,run:RUN,profile:PROFILE}))});
@@ -167,20 +167,32 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
    await page.goto(origin+'/?view=saves');await ready(page);
    await page.setInputFiles('#backup-import',{name:'bad.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({...backup,assetVersion:'other'}))});
    await page.waitForFunction(()=>/do not match/i.test(document.getElementById('message').textContent));assert.equal((await readLocal(page)).revision,15);
+   // Restore: each snapshot says what made it; restoring one makes it the current save and deletes the newer snapshots.
+   await page.locator('#snapshots-refresh').click();await page.waitForFunction(()=>document.querySelectorAll('#snapshots .snapshot-row').length===10);
+   const rows=await page.locator('#snapshots .snapshot-row').allTextContents();
+   assert.match(rows[0],/Revision 15 .*Imported.*Current save/);assert.doesNotMatch(rows[0],/Restore/);assert.match(rows[1],/Revision 14 .*Restore/);
+   let warning='';page.once('dialog',d=>{warning=d.message();d.accept();});
+   const back=page.waitForEvent('load');
+   await page.locator('#snapshots .snapshot-row',{hasText:'Revision 12 '}).getByRole('button',{name:'Restore'}).click();
+   await back;await ready(page);
+   assert.match(warning,/All progress after this snapshot will be lost/);
+   const RESTORED=RUN.replace('alpha','r11'),after=await readLocal(page);assert.equal(after.revision,16);assert.equal(after.run,RESTORED);
+   assert.deepEqual((await page.evaluate(async()=>(await (await import('/web/local-saves.mjs')).history()).map(h=>[h.revision,h.kind]))).slice(0,2),[[16,'restore'],[12,null]]);
+   check(name+': restoring a snapshot makes it the current save and deletes the newer snapshots');
 
    // IndexedDB loss: the localStorage copy restores the save and repairs the database.
    await page.evaluate(()=>new Promise((res,rej)=>{const r=indexedDB.deleteDatabase('ftl-local-saves');r.onsuccess=res;r.onerror=()=>rej(r.error);r.onblocked=res;}));
    assert.equal(await idbRecord(page),null);
-   const restored=await readLocal(page);assert.deepEqual(restored,{source:'mirror',revision:15,run:RUN,profile:PROFILE});
-   assert.deepEqual(await idbRecord(page),{revision:15,run:RUN},'the database is repaired from the copy');
+   const restored=await readLocal(page);assert.deepEqual(restored,{source:'mirror',revision:16,run:RESTORED,profile:PROFILE});
+   assert.deepEqual(await idbRecord(page),{revision:16,run:RESTORED},'the database is repaired from the copy');
    // IndexedDB unusable: saving still works through the copy and says so.
    await page.evaluate(()=>new Promise(res=>{const r=indexedDB.deleteDatabase('ftl-local-saves');r.onsuccess=res;r.onerror=res;r.onblocked=res;}));
    const broken=await context.newPage();await broken.addInitScript(()=>{const open=IDBFactory.prototype.open;IDBFactory.prototype.open=function(name,...rest){if(name==='ftl-local-saves'){const r={};setTimeout(()=>{r.error=new DOMException('blocked for the test','UnknownError');r.onerror?.({});},0);return r;}return open.call(this,name,...rest);};});
    await broken.goto(origin);await ready(broken);
-   const degraded=await writeLocal(broken,RUN2,PROFILE,15);assert.deepEqual({revision:degraded.revision,durable:degraded.durable},{revision:16,durable:false});
-   assert.deepEqual(await readLocal(broken),{source:'mirror',revision:16,run:RUN2,profile:PROFILE});
+   const degraded=await writeLocal(broken,RUN2,PROFILE,16);assert.deepEqual({revision:degraded.revision,durable:degraded.durable},{revision:17,durable:false});
+   assert.deepEqual(await readLocal(broken),{source:'mirror',revision:17,run:RUN2,profile:PROFILE});
    await broken.close();
-   assert.deepEqual(await readLocal(page),{source:'mirror',revision:16,run:RUN2,profile:PROFILE},'a normal page then finds the newer copy and restores IndexedDB');
+   assert.deepEqual(await readLocal(page),{source:'mirror',revision:17,run:RUN2,profile:PROFILE},'a normal page then finds the newer copy and restores IndexedDB');
    check(name+': losing or blocking IndexedDB falls back to the localStorage copy, and the database is repaired afterwards');
 
    // Browser storage persistence is requested and the result is shown.

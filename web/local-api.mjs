@@ -56,10 +56,18 @@ export async function localApi(path,{method='GET',body,headers={}}={}){
   validateXml(state.run,'xftlSaveGame');validateXml(state.profile,'xftl-profile');
   const expected=Number(String(headers['If-Match']??'').replaceAll('"',''));
   if(!Number.isSafeInteger(expected)||expected!==state.revision)throw fail('A newer save exists',409);
-  const result=await saves.save(state,expected);
+  const result=await saves.save(state,expected,body?.kind);
   return {revision:result.revision,durable:result.durable};
  }
  if(route==='/saves/snapshots'&&method==='GET')return saves.history();
+ const restore=/^\/saves\/snapshots\/(\d+)\/restore$/.exec(route);
+ if(restore&&method==='POST'){
+  requireLease(body?.lease);
+  const expected=Number(String(headers['If-Match']??'').replaceAll('"',''));
+  if(!Number.isSafeInteger(expected))throw fail('A newer save exists',409);
+  const c=await gameConfig();
+  return saves.restore(Number(restore[1]),expected,c);
+ }
  if(route.startsWith('/saves/snapshots/')&&method==='GET')return saves.snapshot(Number(route.split('/').pop()));
  if(route.startsWith('/debug/'))return logs.handle(route,method,body,query);
  throw fail('This is not available in local-only mode.',404);

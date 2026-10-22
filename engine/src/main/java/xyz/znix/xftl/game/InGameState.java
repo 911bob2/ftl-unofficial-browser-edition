@@ -962,6 +962,8 @@ public class InGameState extends MainGame.GameState {
                 Ship gone = enemy;
                 setEnemy(null);
                 currentBeacon.setShip(null);
+                // WorldManager::OnLoop (0x61c7c1): a ship that got away counts as defeated, like a destroyed one.
+                browserProgress.defeatShip();
 
                 if (jumpEvent != null) {
                     showShipEnding(jumpEvent, gone);
@@ -1115,7 +1117,7 @@ public class InGameState extends MainGame.GameState {
             return;
 
         // Hovering over the enemy
-        if (enemy != null && enemyInteriorVisible) {
+        if (enemy != null && enemyInteriorVisible && enemy.getRoomsSelectableByPlayer()) {
             tempPoint.setX(container.getInput().getMouseX());
             tempPoint.setY(container.getInput().getMouseY());
             convertScreenToEnemyShip(tempPoint);
@@ -1243,7 +1245,8 @@ public class InGameState extends MainGame.GameState {
             // If the enemy ship is neutral but we still have crew inside,
             // allow the user to control and recover them.
             boolean anyLivingBoarders = enemy.hasCrewOwnedByShip(player);
-            enemyInteriorVisible = enemyIsHostile || anyLivingBoarders;
+            // ShipManager::OnRender (0x4a3c00) skips the interior of a cloaked ship unless the player has someone aboard.
+            enemyInteriorVisible = (enemyIsHostile && !enemy.isCloakActive()) || anyLivingBoarders || enemy.getHasPlayerPresence();
 
             hostileShipUI.render(container, g, hoveredRoom, enemyInteriorVisible, enemyIsHostile);
         }
@@ -2756,6 +2759,11 @@ public class InGameState extends MainGame.GameState {
     /** Drawing can be capped separately from updates in the browser. */
     public void setRenderingDeltaTime(float delta) {
         renderingDeltaTime = delta;
+    }
+
+    /** Was the enemy interior drawn last frame (ShipManager::OnRender 0x4a3c00)? For the parity checks. */
+    public boolean isEnemyInteriorVisible() {
+        return enemyInteriorVisible;
     }
 
     /**

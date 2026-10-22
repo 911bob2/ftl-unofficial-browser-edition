@@ -91,8 +91,23 @@ assert.equal((await second.request('/api/play-lease/release','POST',{lease:'not-
 assert.equal((await second.request('/api/play-lease/heartbeat','POST',{lease:takeover.lease})).status,204,'A release by another session or with another token must keep the lease');
 assert.equal((await second.request('/api/play-lease/release','POST',{lease:takeover.lease})).status,204);
 assert.equal((await second.request('/api/play-lease/heartbeat','POST',{lease:takeover.lease})).status,409);
-assert.equal((await player.request('/api/play-lease/acquire','POST',{takeOver:false})).status,200,'A released lease can be taken again without a takeover');
+const relock=await player.request('/api/play-lease/acquire','POST',{takeOver:false});assert.equal(relock.status,200,'A released lease can be taken again without a takeover');const release=(await relock.json()).lease;
 check('Releasing the play lease frees it only for the holding session and token');
+// Snapshots record what made them; restoring one makes it the current save and deletes the newer snapshots.
+{const at=(await player.json('/api/saves/current')).revision;
+const put=(r,run,kind)=>player.json('/api/saves/current','PUT',{lease:release,state:{...save,run,revision:r},kind},{'If-Match':`"${r}"`});
+await put(at,'<xftlSaveGame test="auto"/>','auto');await put(at+1,'<xftlSaveGame test="manual"/>','manual');await put(at+2,'<xftlSaveGame test="later"/>','restore');
+assert.deepEqual((await player.json('/api/saves/snapshots')).slice(0,3).map(s=>[s.revision,s.kind]),[[at+3,null],[at+2,'manual'],[at+1,'auto']],'a client cannot label a plain save as a restore');
+const restore=(r,ifMatch,lease=release)=>player.request('/api/saves/snapshots/'+r+'/restore','POST',{lease},{'If-Match':`"${ifMatch}"`});
+assert.equal((await restore(at+1,at+2)).status,409,'restoring needs the current revision');
+assert.equal((await restore(at+1,at+3,'not-the-lease-token')).status,409,'restoring needs the play lease');
+assert.equal((await restore(at+3,at+3)).status,400,'the current save is not restored onto itself');
+assert.equal((await restore(at+9999,at+3)).status,404);
+assert.equal((await (await restore(at+1,at+3)).json()).revision,at+4);
+const restored=await player.json('/api/saves/current');assert.equal(restored.revision,at+4);assert.equal(restored.run,'<xftlSaveGame test="auto"/>');
+assert.deepEqual((await player.json('/api/saves/snapshots')).filter(s=>s.revision>at).map(s=>[s.revision,s.kind]),[[at+4,'restore'],[at+1,'auto']]);
+assert.equal((await player.json('/api/saves/snapshots/'+(at+4))).revision,at+4);}
+check('Snapshots record autosave or manual save; restoring one discards the newer snapshots');
 const other=new Client();await other.login('user09',credentials.get('user09'));await other.json('/api/auth/password','POST',{currentPassword:credentials.get('user09'),newPassword:'isolated-other-test-password-2026'});await other.login('user09','isolated-other-test-password-2026');
 assert.equal((await other.json('/api/saves/current')).run,null);assert.deepEqual(await other.json('/api/saves/snapshots'),[]);
 const users=await admin.json('/api/admin/users');const victim=users.find(u=>u.userName==='user09');await admin.json('/api/admin/users/'+victim.id+'/disable','POST',{disabled:true,version:victim.version});assert.equal((await other.request('/api/auth/me')).status,401);

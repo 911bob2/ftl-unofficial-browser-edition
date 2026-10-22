@@ -75,6 +75,18 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
         if (fleet != null) {
             initFleet(fleet, rand)
         }
+
+        // SpaceManager::SetPlanetaryDefense (0x418ca0): an ASB with no fleet behind it (SpaceManager +0xb4) swaps the
+        // planet for one of PLANET_POPULATED, at its image size, placed at (600, 247) and turned (rand % 2) * 180
+        // degrees; the ASB's shots leave from its centre. The beacon's own seed keeps the picture across a reload.
+        if (type == Beacon.EnvironmentType.PDS && backgroundShips.isEmpty()) {
+            game.eventManager.getImageList("PLANET_POPULATED").getRandom(rand.nextInt())?.let { planet ->
+                planetImage = planet
+                planetX = 600
+                planetY = 247
+                planetTurned = rand.nextInt(Int.MAX_VALUE) % 2 == 1
+            }
+        }
     }
 
     /**

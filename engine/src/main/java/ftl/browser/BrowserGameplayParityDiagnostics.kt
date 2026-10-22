@@ -86,9 +86,15 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityFlow5Checks.run") { GameplayParityFlow5Checks.run(main, container) }
             step("GameplayParityUi3Checks.run") { GameplayParityUi3Checks.run(main, container) }
             step("GameplayParityAsb6Checks.run") { GameplayParityAsb6Checks.run(main, container) }
+            step("GameplayParityAsb7Checks.run") { GameplayParityAsb7Checks.run(main, container) }
             step("GameplayParityShell6Checks.run") { GameplayParityShell6Checks.run(main, container) }
             step("GameplayParityJump6Checks.run") { GameplayParityJump6Checks.run(main, container, graphics) }
             step("GameplayParityCursor7Checks.run") { GameplayParityCursor7Checks.run(main, container) }
+            step("GameplayParityEscape7Checks.run") { GameplayParityEscape7Checks.run(main, container) }
+            step("GameplayParityAssets7Checks.run") { GameplayParityAssets7Checks.run(main, container, graphics) }
+            step("GameplayParityCrew7Checks.run") { GameplayParityCrew7Checks.run(main, container) }
+            step("GameplaySave8Checks.run") { GameplaySave8Checks.run(main, container) }
+            step("GameplayParityCloak7Checks.run") { GameplayParityCloak7Checks.run(main, container, graphics) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)

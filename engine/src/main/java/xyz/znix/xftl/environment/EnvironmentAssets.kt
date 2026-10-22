@@ -41,6 +41,9 @@ object EnvironmentAssets {
         planet?.let { out += it.path }
         out += typeAssets(type)
         out += fleetAssets(beacon.event.fleetBackground, type == Beacon.EnvironmentType.PDS)
+        // An ASB with no fleet swaps in one of the populated planets (AbstractEnvironment, from later draws).
+        if (type == Beacon.EnvironmentType.PDS && beacon.event.fleetBackground == null)
+            game.eventManager.getImageList("PLANET_POPULATED").images.forEach { out += it.path }
         return out.toList()
     }
 

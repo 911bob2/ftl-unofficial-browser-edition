@@ -125,12 +125,18 @@ class Beacon(
         get() {
             actualEnvironment?.let { return it.type }
             var type = if (forcedNebula) EnvironmentType.NEBULA else event.environment ?: EnvironmentType.NORMAL
+            // StarMap::OvertakeLocation (0x5f4ca0) gave the beacon a fresh fleet event, never cleared since, whose own
+            // environment is the hazard (WorldManager::CreateLocation 0x6183a0 -> ModifyEnvironment 0x613640): the ASB
+            // for FLEET_EASY[_DLC], FLEET_EASY_BEACON_DLC and NO_FUEL_FLEET_DLC, an ion storm for FLEET_EASY_NEBULA,
+            // none for the easy exit's FLEET_EASY_BEACON and NO_FUEL_FLEET, a nebula for an exit in a cloud (+0x604 = 3).
+            if (isOvertaken && hasFleetEvent)
+                return type
             if (eventCleared)
                 type = if (type.isNebula) EnvironmentType.NEBULA else EnvironmentType.NORMAL
             return when {
                 !isOvertaken -> type
 
-                // If this beacon has been overtaken, clear any special events,
+                // Overtaken in an older save, with the old event still in place: clear any special events,
                 // though preserving the nebula-ness of this beacon.
                 type == EnvironmentType.NEBULA || type == EnvironmentType.ION_STORM -> EnvironmentType.NEBULA
                 isExit && sector.browserDifficulty == xyz.znix.xftl.game.Difficulty.EASY -> EnvironmentType.NORMAL

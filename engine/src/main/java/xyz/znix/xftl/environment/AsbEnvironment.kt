@@ -154,6 +154,9 @@ class AsbEnvironment(game: InGameState, beacon: Beacon, private var targetMode: 
     /** The shot origin in the player ship's space, for the parity checks. */
     val diagnosticOrigin: ConstPoint get() = playerSpaceOrigin()
 
+    /** The timer's elapsed time and goal (SpaceManager +0x2c0 / +0x2c4), for the parity checks. */
+    val diagnosticTimer: FloatArray get() = floatArrayOf(time, fireAt)
+
     /** The shots of the current volley still to leave, the next one last. */
     val diagnosticQueue: List<AsbProjectile> get() = queue
 
@@ -173,12 +176,17 @@ class AsbEnvironment(game: InGameState, beacon: Beacon, private var targetMode: 
         elem.setAttribute("browserAsbActive", active.toString())
         elem.setAttribute("browserAsbVolley", volleyTimer.toString())
     }
+    /**
+     * SpaceManager::LoadSpace (0x41d070) calls SetPlanetaryDefense again, which restarts the timer with a fresh 20-25 s
+     * goal, then puts back the elapsed time SaveSpace (0x4180c0) wrote in whole milliseconds and the volley timer; the
+     * goal itself is never saved. The warning follows the new goal (SpaceStatus shows it under 5 s, 0x005017f0).
+     */
     override fun loadFromXML(elem: Element) {
-        time = elem.getAttributeValue("browserAsbTime").toFloat()
-        warningAt = elem.getAttributeValue("browserAsbWarningAt").toFloat()
-        fireAt = elem.getAttributeValue("browserAsbFireAt").toFloat()
+        time = (elem.getAttributeValue("browserAsbTime").toFloat() * 1000f).toInt() / 1000f
+        fireAt = nextFireTime()
+        warningAt = fireAt - WARNING_LEAD
+        warned = time >= warningAt
         targetMode = elem.getAttributeValue("browserAsbTarget").toInt()
-        warned = elem.getAttributeValue("browserAsbWarned").toBoolean()
         active = elem.getAttributeValue("browserAsbActive")?.toBoolean() ?: true
         volleyTimer = elem.getAttributeValue("browserAsbVolley")?.toFloatOrNull() ?: volleyTimer
     }

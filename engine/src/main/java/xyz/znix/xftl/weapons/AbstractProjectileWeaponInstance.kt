@@ -269,6 +269,12 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
     override fun saveToXML(elem: Element, refs: ObjectRefs) {
         super.saveToXML(elem, refs)
 
+        // The rest of a volley aimed at a ship that was destroyed or jumped away mid-burst has nothing to hit
+        // and the save holds no such ship: save the weapon as done firing.
+        val aimedAt = listOfNotNull(waitingToFireAt) + targets
+        if (aimedAt.any { !refs.isRegistered(it.ship) })
+            return
+
         if (waitingToFireAt != null) {
             val fireAtElem = Element("waitingToFireAt")
             SaveUtil.addAttr(fireAtElem, "ship", refs[waitingToFireAt!!.ship])

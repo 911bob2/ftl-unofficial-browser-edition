@@ -88,7 +88,7 @@ object BrowserCrewAchievementDiagnostics {
                 if (victim.health > 0f) {
                     attacker.update(.05f)
                     for (shot in room.ship.crewShots.toList()) {
-                        if (!shot.update(.05f)) { room.ship.crewShots.remove(shot); shot.onLanded?.invoke() }
+                        if (!shot.update(.05f)) room.ship.crewShots.remove(shot)
                     }
                 }
             }

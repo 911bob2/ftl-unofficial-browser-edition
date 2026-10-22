@@ -108,7 +108,7 @@ async function record(label,action){
  catch(e){if(cancelled)e=new DOMException('Stopped','AbortError');item.status=e.name==='AbortError'?'cancelled':'failed';item.error=e.message;log(item.status.toUpperCase()+' '+label+': '+e.message);if(e.name==='AbortError')throw e;}
  finally{item.durationMs=performance.now()-start;row.dataset.status=item.status;cells[1].textContent=item.status;cells[1].className=item.status==='passed'?'text-success':item.status==='failed'?'text-error':'muted';cells[2].textContent=(item.durationMs/1000).toFixed(2)+' s';report.results.push(item);if(item.status==='failed'){$('result-filter').value='attention';showView('cases');}summarize();if(selectedItem===item)detail(item);}
 }
-async function fetchBytes(path){const r=await fetch(path,{cache:'no-cache'});if(!r.ok)throw Error('Game resources unavailable (HTTP '+r.status+')');return r.arrayBuffer();}
+async function fetchBytes(path){const r=await fetch(path,{cache:'no-cache'});if(!r.ok)throw Object.assign(Error('Game resources unavailable (HTTP '+r.status+')'),{status:r.status});return r.arrayBuffer();}
 async function boot(ae){
  $('preview-status').textContent='Loading…';
  engine?.stop();engine=null;window.ftlGL?.gl.getExtension('WEBGL_lose_context')?.loseContext();

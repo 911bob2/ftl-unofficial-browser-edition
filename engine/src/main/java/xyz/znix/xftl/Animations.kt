@@ -164,6 +164,9 @@ class Animations {
         return animations[name]
     }
 
+    /** The sprite sheet declared as `<animSheet name="...">`, if any. */
+    fun sheet(name: String): SpriteSheetSpec? = sheets[name]
+
     operator fun get(name: String): AnimationSpec {
         return getOrNull(name) ?: throw IllegalArgumentException("Cannot find animation $name")
     }

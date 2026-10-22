@@ -513,7 +513,7 @@ object BrowserDiagnostics {
         repeat(140) {
             pawn.update(.05f)
             for (shot in state.player.crewShots.toList()) {
-                if (!shot.update(.05f)) { state.player.crewShots.remove(shot); shot.onLanded?.invoke() }
+                if (!shot.update(.05f)) state.player.crewShots.remove(shot)
             }
         }
         check(intruder.health < intruder.maxHealth) { "Battle drone did not fight a boarder" }

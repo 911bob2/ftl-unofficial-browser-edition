@@ -19,7 +19,7 @@ import kotlin.math.hypot
 /**
  * Round 3 combat fixes: the flagship's artillery power (ShipManager::AddSystem 0x4a8370, ShipAI 0x6259b0), the cloak
  * timer rescale (CloakingSystem::OnLoop 0x62f280), manning anywhere in the room (crew loop 0x47b190), the crew laser's
- * damage on arrival (0x481de0 / 0x4881c0), the Rock/Mantis 1 s strike, and the door route (ShipGraph 0x463880).
+ * damage on arrival (0x481de0 / 0x4881c0), the Rock's 1 s throw, and the door route (ShipGraph 0x463880).
  */
 internal object GameplayParityCombat3Checks {
     fun run(main: MainGame, container: GameContainer): String {
@@ -142,30 +142,32 @@ internal object GameplayParityCombat3Checks {
     private fun stepShots(state: InGameState, dt: Float) {
         val shots = state.player.crewShots
         for (shot in shots.toList()) {
-            if (!shot.update(dt)) {
+            // A shot deals its damage on arrival and is removed after its impact puff.
+            if (!shot.update(dt))
                 shots.remove(shot)
-                shot.onLanded?.invoke()
-            }
         }
     }
 
-    /** A Rock shooting from another cell (no crew laser) strikes every 1.0 s, not 1.0..1.3 s. */
+    /**
+     * A Rock shooting from another cell throws a rock (RockAnimation::FireShot 0x478870, frame 3 of its looping 1 s
+     * strip) once a second. (Round 3 read a bogus ZHL address for this FireShot and had Rocks strike without a
+     * projectile; round 7 corrected it.)
+     */
     private fun rockStrike(main: MainGame, container: GameContainer): String {
         val state = BrowserGameplayParityDiagnostics.fresh(main, container)
         val (rock, victim, _) = duel(state, "rock")
-        check(!rock.shootsLasers) { "Rock shoots lasers" }
-        val hits = ArrayList<Float>()
-        var health = victim.health
+        check(rock.throwsOnShootFrame) { "Rock doesn't throw on its shoot strip" }
+        val seen = HashSet<xyz.znix.xftl.crew.CrewShot>()
+        val throws = ArrayList<Float>()
         for (i in 1..240) {
-            rock.update(0.05f); victim.update(0.05f); stepShots(state, 0.05f)
-            check(state.player.crewShots.isEmpty()) { "A Rock fired a crew laser" }
-            if (victim.health < health) hits += i * 0.05f
-            health = victim.health
+            rock.update(0.05f); victim.update(0.05f)
+            for (shot in state.player.crewShots) if (seen.add(shot)) throws += i * 0.05f
+            stepShots(state, 0.05f)
         }
-        check(hits.size >= 8) { "Rock hit ${hits.size} times in 12 s" }
-        val gaps = hits.zipWithNext { a, b -> b - a }
-        check(gaps.all { abs(it - 1f) < 0.06f }) { "Rock strike gaps $gaps" }
-        return "rock strikes every 1.0 s (${hits.size})"
+        check(throws.size >= 8) { "Rock threw ${throws.size} times in 12 s" }
+        val gaps = throws.zipWithNext { a, b -> b - a }
+        check(gaps.all { abs(it - 1f) < 0.06f }) { "Rock throw gaps $gaps" }
+        return "rock throws every 1.0 s (${throws.size})"
     }
 
     /** A crew laser's damage lands when the laser arrives, rolled 3..7, not half-way through the shot cycle. */

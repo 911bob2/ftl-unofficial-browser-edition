@@ -20,15 +20,14 @@ enum class Resource {
     DRONES,
     SCRAP;
 
-    private var image: Image? = null
+    private val iconPath = "img/ui_icons/icon_${name.toLowerCase(Locale.UK)}.png"
 
-    fun getIcon(game: InGameState): Image {
-        image?.let { return it }
-
-        val img = game.getImg("img/ui_icons/icon_${name.toLowerCase(Locale.UK)}.png")
-        image = img
-        return img
-    }
+    /**
+     * The reward icon, from the game's own image cache. It used to be kept in this enum, which outlives the game
+     * content: once the content was replaced (the tutorial, or a run in the other Advanced Edition mode) the kept
+     * image pointed at a deleted texture and reward lines drew garbage next to the right number.
+     */
+    fun getIcon(game: InGameState): Image = game.getImg(iconPath)
 
     fun getBlueprint(game: InGameState): ItemBlueprint? {
         if (this == SCRAP)

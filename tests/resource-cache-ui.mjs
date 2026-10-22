@@ -49,9 +49,20 @@ for(const [name,type,options] of browsers){
  const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],requests=new Map();let manifests=0;
  page.setDefaultTimeout(30000);page.on('pageerror',error=>errors.push(error.message));
  // Routing disables HTTP caching: any reuse here must come from Cache Storage.
+ // Queued answers for the next boot downloads: 'truncated' (a transfer that stopped half way, after a stall) or
+ // 'slow' (complete, after a stall), standing in for a slow or dropped connection.
+ const bootFaults=[];
  await page.route('**/api/assets/**',async route=>{
   const path=new URL(route.request().url()).pathname;
   if(path==='/api/assets/manifest')manifests++;else requests.set(path,(requests.get(path)??0)+1);
+  const fault=path==='/api/assets/boot'?bootFaults.shift():undefined;
+  if(fault){
+   await new Promise(resolve=>setTimeout(resolve,1500));
+   if(fault==='truncated'){
+    const response=await route.fetch(),body=await response.body(),headers={...response.headers()};delete headers['content-length'];
+    await route.fulfill({status:response.status(),headers,body:body.subarray(0,Math.floor(body.length/2))});return;
+   }
+  }
   await route.continue();
  });
  const pass=label=>{checks.push(name+': '+label);console.log('PASS '+name+': '+label);};
@@ -71,6 +82,45 @@ for(const [name,type,options] of browsers){
   assert.equal(requests.get('/api/assets/boot'),1);assert.ok([...requests.values()].every(count=>count===1),JSON.stringify([...requests]));
   assert.ok(manifests>=9,'Every run must fetch a fresh manifest');pass('Page reload preserves the cache with fresh authorization on every run');
   assert.deepEqual(await page.evaluate(async()=>(await(await fetch('/api/saves/current')).json())),before);pass('Cached tests and benchmarks preserve cloud progress');
+  // A corrupted copy in Cache Storage (same length, garbled scrap/missile/drone icons) and a download that stalls
+  // and stops half way are both caught and replaced, and the game draws the true icons.
+  const icons=['img/ui_icons/icon_scrap.png','img/ui_icons/icon_missiles.png','img/ui_icons/icon_drones.png','img/ui_icons/icon_fuel.png'];
+  const cached=()=>page.evaluate(async icons=>{
+   const hex=async bytes=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');
+   const cache=await caches.open('ftl-test-resources-v1'),key=(await cache.keys()).find(r=>new URL(r.url).pathname==='/api/assets/boot');
+   if(!key)return null;const bytes=new Uint8Array(await(await cache.match(key)).arrayBuffer()),n=new DataView(bytes.buffer).getUint32(4);
+   const entries=JSON.parse(new TextDecoder().decode(bytes.subarray(8,8+n))),iconHashes={};
+   for(const name of icons){const e=entries.find(x=>x.name===name);iconHashes[name]=await hex(bytes.subarray(8+n+e.offset,8+n+e.offset+e.length));}
+   return {length:bytes.byteLength,hash:await hex(bytes),iconHashes};
+  },icons);
+  const loadedIcons=()=>page.evaluate(async icons=>{
+   const out={};for(const name of icons)out[name]=[...new Uint8Array(await crypto.subtle.digest('SHA-256',window.ftlFiles.get(name)))].map(b=>b.toString(16).padStart(2,'0')).join('');return out;
+  },icons);
+  const pristine=await cached();assert.equal(pristine.hash,manifest.bootHash);assert.equal(pristine.length,manifest.bootBytes);
+  // The gameplay-parity run includes GameplayParityAssets7Checks, which draws the reward icons after content swaps
+  // and compares them with their pictures pixel for pixel (a run ends by stopping its engine).
+  const iconsDrawn=async label=>{
+   assert.deepEqual(await loadedIcons(),pristine.iconHashes,label+': the engine held other icon bytes');
+   assert.match(await page.locator('#results').textContent(),/assets7 ok: icons after a content swap/,label);
+  };
+  await page.evaluate(async icons=>{
+   const cache=await caches.open('ftl-test-resources-v1'),key=(await cache.keys()).find(r=>new URL(r.url).pathname==='/api/assets/boot');
+   const bytes=new Uint8Array(await(await cache.match(key)).arrayBuffer()),n=new DataView(bytes.buffer).getUint32(4);
+   const entries=JSON.parse(new TextDecoder().decode(bytes.subarray(8,8+n)));
+   for(const name of icons.slice(0,3)){const e=entries.find(x=>x.name===name),start=8+n+e.offset;for(let i=start+(e.length>>1);i<start+e.length-16;i++)bytes[i]^=0x5a;}
+   await cache.put(key,new Response(bytes));
+  },icons);
+  const corrupted=await cached();assert.equal(corrupted.length,manifest.bootBytes);assert.notEqual(corrupted.hash,manifest.bootHash);
+  assert.notDeepEqual(corrupted.iconHashes,pristine.iconHashes);
+  await run(page,'gameplay-parity');assert.equal(requests.get('/api/assets/boot'),2);
+  assert.deepEqual(await cached(),pristine);await iconsDrawn('corrupted cache');
+  pass('A corrupted cached bundle of the right length is rejected, downloaded again and the icons drawn intact');
+  await page.evaluate(async()=>{const cache=await caches.open('ftl-test-resources-v1');for(const key of await cache.keys())if(new URL(key.url).pathname==='/api/assets/boot')await cache.delete(key);});
+  bootFaults.push('truncated','slow');
+  await run(page,'gameplay-parity');assert.equal(requests.get('/api/assets/boot'),4);assert.equal(bootFaults.length,0);
+  assert.deepEqual(await cached(),pristine);await iconsDrawn('interrupted download');
+  await run(page,'mechanics');assert.equal(requests.get('/api/assets/boot'),4);
+  pass('A stalled download cut off half way is retried, only the verified bundle is cached and the icons drawn intact');
   const downloaded=[...requests];
   await page.evaluate(async()=>{
    const csrf=(await(await fetch('/api/auth/csrf')).json()).token;

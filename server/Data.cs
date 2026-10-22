@@ -32,6 +32,8 @@ public sealed class SaveSnapshot {
     public long Revision {get;set;}
     public string Payload {get;set;} = "";
     public DateTime CreatedUtc {get;set;}
+    // "auto", "manual", "import" or "restore"; null for snapshots made before 2026-10-21.
+    public string? Kind {get;set;}
 }
 public sealed class PlayLease {
     [Key] public string UserId {get;set;} = "";

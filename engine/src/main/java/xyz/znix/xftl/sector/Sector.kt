@@ -191,7 +191,8 @@ class Sector {
      * goes, and its event is replaced by a fresh fleet encounter created now, from the global stream:
      * FLEET_EASY_NEBULA in a nebula, FLEET_EASY[_DLC] otherwise (the last stand's exit never gets here),
      * or FLEET_EASY_BEACON[_DLC unless easy] for the exit beacon, which also becomes a fleet beacon (and a
-     * nebula if it lies in a cloud).
+     * nebula if it lies in a cloud). The new event's own environment is the beacon's hazard from then on
+     * ([Beacon.environmentType]).
      */
     fun overtake(game: InGameState, beacon: Beacon) {
         beacon.isOvertaken = true
@@ -205,8 +206,8 @@ class Sector {
             beacon.isMapNebula -> "FLEET_EASY_NEBULA"
             else -> "FLEET_EASY" + (if (game.isAdvancedEdition) "_DLC" else "")
         }
-        if (exitBeacon && beacon.isMapNebula)
-            beacon.forcedNebula = true
+        // The fresh event drops a nebula forced on the old one; only the exit in a cloud gets its own (+0x604 = 3).
+        beacon.forcedNebula = exitBeacon && beacon.isMapNebula
 
         val created = creator.create(creator.eventFor(name), sectorNumber) ?: return
         beacon.createdEvent = created

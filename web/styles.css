@@ -130,6 +130,8 @@ h3 { font-size: 1rem; }
 .actions { margin: 1rem 0; }
 .session { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #52676b; }
 .snapshot-list { display: grid; gap: .7rem; }
+.snapshot-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .65rem; padding: .5rem 0; border-bottom: 1px solid #52676b; }
+.snapshot-row .actions { margin: 0; }
 table { width: 100%; }
 th,td { padding: .7rem; text-align: left; }
 th { font-family: var(--ftl-font); color: #c1d2d1; font-weight: 600; }

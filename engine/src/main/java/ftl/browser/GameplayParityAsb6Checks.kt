@@ -121,8 +121,10 @@ internal object GameplayParityAsb6Checks {
             val next = Point(x + sector.getFleetAdvanceFor(d), sector.dangerZoneCentre.y)
             return d.pos.distToSq(next) < Sector.DANGER_ZONE_RADIUS_SQUARED
         }
+        // A neighbour whose own event brings a sun, asteroids or a pulsar is dangerous for its own sake; pick an
+        // ordinary one (which neighbour that is depends on the fixture seed).
         val dest = from.neighbours.firstOrNull { d ->
-            placeZone(sector) { !flashing(sector, from, d) && flashingAfterArrival(d) }
+            !d.environmentType.isDangerous && placeZone(sector) { !flashing(sector, from, d) && flashingAfterArrival(d) }
         }
         checkNotNull(dest) { "No zone position leaves a neighbour for the next jump" }
 

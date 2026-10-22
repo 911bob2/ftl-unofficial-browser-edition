@@ -49,7 +49,8 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
      * Door::SetLockdown(true) (0x4708a0, from the lockdown creation at 0x494f50) gives the door 50 hit points
      * (0x32, both its current and its maximum), which Door::ApplyDamage (0x46e0f0) wears down one per hit.
      */
-    private var lockdownHealth: Int = LOCKDOWN_HEALTH
+    internal var lockdownHealth: Int = LOCKDOWN_HEALTH
+        private set
 
     fun lockdown() { lockdownTimer = 12f; damage = 0; open = false; lockdownHealth = LOCKDOWN_HEALTH }
 

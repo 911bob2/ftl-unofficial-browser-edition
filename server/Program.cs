@@ -215,12 +215,31 @@ game.MapPut("/saves/current",async(SaveRequest body,HttpContext h,GameDatabase d
     var state=await db.Saves.FindAsync(h.UserId());var revision=state?.Revision??0;
     if(h.Request.Headers.IfMatch.ToString()!=$"\"{revision}\""||body.State.Revision!=revision)return Results.Conflict(new{error="A newer save exists",revision});
     if(state==null){state=new(){UserId=h.UserId()};db.Saves.Add(state);}state.Revision=revision+1;state.Run=body.State.Run;state.Profile=body.State.Profile;state.EngineBuild=a.EngineBuild;state.AssetVersion=a.Version;state.UpdatedUtc=DateTime.UtcNow;
-    db.Snapshots.Add(new(){UserId=state.UserId,Revision=state.Revision,Payload=snapshotPayload,CreatedUtc=DateTime.UtcNow});
+    db.Snapshots.Add(new(){UserId=state.UserId,Revision=state.Revision,Payload=snapshotPayload,CreatedUtc=DateTime.UtcNow,Kind=body.Kind is "auto" or "manual" or "import"?body.Kind:null});
     try{await db.SaveChangesAsync();await db.Snapshots.Where(s=>s.UserId==state.UserId&&s.Revision<=state.Revision-10).ExecuteDeleteAsync();await tx.CommitAsync();}catch(DbUpdateConcurrencyException){return Results.Conflict(new{error="A newer save exists"});}
     h.Response.Headers.ETag=$"\"{state.Revision}\"";return Results.Ok(new{revision=state.Revision});
     });
 });
-game.MapGet("/saves/snapshots",async(HttpContext h,GameDatabase db)=>Results.Ok(await db.Snapshots.Where(s=>s.UserId==h.UserId()).OrderByDescending(s=>s.Revision).Select(s=>new{s.Revision,s.CreatedUtc}).ToListAsync()));
+game.MapGet("/saves/snapshots",async(HttpContext h,GameDatabase db)=>Results.Ok(await db.Snapshots.Where(s=>s.UserId==h.UserId()).OrderByDescending(s=>s.Revision).Select(s=>new{s.Revision,s.CreatedUtc,s.Kind}).ToListAsync()));
+// Restoring a snapshot makes it the current save as a new revision and deletes the newer snapshots: the progress after it is
+// discarded rather than kept as a second branch of history.
+game.MapPost("/saves/snapshots/{revision:long}/restore",async(long revision,HeartbeatRequest body,HttpContext h,GameDatabase db,AssetCatalog a)=>{
+    return await StateWrites.Run(h,app.Logger,async()=>{
+    await using var tx=await db.Database.BeginTransactionAsync();var lease=await db.Leases.FindAsync(h.UserId());if(lease==null||lease.Token!=body.Lease||lease.SessionId!=h.SessionId()||lease.ExpiresUtc<=DateTime.UtcNow)return Results.Conflict(new{error="Play lease is no longer valid"});
+    var state=await db.Saves.FindAsync(h.UserId());var current=state?.Revision??0;
+    if(h.Request.Headers.IfMatch.ToString()!=$"\"{current}\"")return Results.Conflict(new{error="A newer save exists",revision=current});
+    var snapshot=await db.Snapshots.SingleOrDefaultAsync(s=>s.UserId==h.UserId()&&s.Revision==revision);if(snapshot==null||state==null)return Results.NotFound(new{error="That recovery snapshot no longer exists."});
+    if(revision==current)return Results.BadRequest(new{error="That snapshot is already the current save."});
+    var saved=JsonSerializer.Deserialize<SaveEnvelope>(snapshot.Payload,new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    if(saved==null||saved.EngineBuild!=a.EngineBuild||saved.AssetVersion!=a.Version)return Results.BadRequest(new{error="That snapshot was made with other game files or another engine version."});
+    state.Revision=current+1;state.Run=saved.Run;state.Profile=saved.Profile;state.EngineBuild=a.EngineBuild;state.AssetVersion=a.Version;state.UpdatedUtc=DateTime.UtcNow;
+    var payload=JsonSerializer.Serialize(new SaveEnvelope(1,a.EngineBuild,a.Version,state.Revision,saved.Run,saved.Profile),new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    await db.Snapshots.Where(s=>s.UserId==state.UserId&&s.Revision>revision).ExecuteDeleteAsync();
+    db.Snapshots.Add(new(){UserId=state.UserId,Revision=state.Revision,Payload=payload,CreatedUtc=DateTime.UtcNow,Kind="restore"});
+    try{await db.SaveChangesAsync();await db.Snapshots.Where(s=>s.UserId==state.UserId&&s.Revision<=state.Revision-10).ExecuteDeleteAsync();await tx.CommitAsync();}catch(DbUpdateConcurrencyException){return Results.Conflict(new{error="A newer save exists"});}
+    h.Response.Headers.ETag=$"\"{state.Revision}\"";return Results.Ok(new{revision=state.Revision});
+    });
+});
 game.MapGet("/saves/snapshots/{revision:long}",async(long revision,HttpContext h,GameDatabase db)=>{var s=await db.Snapshots.SingleOrDefaultAsync(s=>s.UserId==h.UserId()&&s.Revision==revision);return s==null?Results.NotFound():Results.Text(s.Payload,"application/json");});
 var adminApi=app.MapGroup("/api/admin").RequireAuthorization("ManageUsers");
 var serverTests=game.MapGroup("/tests").RequireAuthorization("ServerTests");
@@ -241,5 +260,5 @@ record PasswordRequest(string CurrentPassword,string NewPassword);
 record LeaseRequest(bool TakeOver,string? Lease=null);
 record HeartbeatRequest(string Lease);
 record SaveEnvelope(int Schema,string EngineBuild,string AssetVersion,long Revision,string? Run,string? Profile);
-record SaveRequest(string Lease,SaveEnvelope State);
+record SaveRequest(string Lease,SaveEnvelope State,string? Kind=null);
 static class DummyPassword { public static readonly string Hash=new PasswordHasher<Player>(Microsoft.Extensions.Options.Options.Create(new PasswordHasherOptions{IterationCount=220000})).HashPassword(new Player(),Secrets.Random()); }

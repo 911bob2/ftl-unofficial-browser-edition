@@ -175,7 +175,13 @@ internal object GameplayParityShell6Checks {
         if (settle) repeat(80) { main.update(container, .05f) }
         for ((label, ship) in listOf("player" to loaded.player, "enemy" to loaded.enemy)) {
             if (!settle) break
-            if (ship != null && ship.isPlayerShip && before["$label.manned"] != manned(ship)) diff["$label.mannedAfterLoad"] = "${before["$label.manned"]} -> ${manned(ship)}"
+            if (ship == null || !ship.isPlayerShip) continue
+            // A system the enemy hacks during the settling seconds can't be manned (its drone can land on any system
+            // depending on the fixture's random stream); it says nothing about the load, so it's left out.
+            val hacked = ship.systems.filter { it.hackedBy != null }.map { it.codename }.toSet()
+            val mannedBefore = before["$label.manned"].orEmpty().removeSurrounding("[", "]").split(", ").filter { it.isNotEmpty() && it !in hacked }
+            val mannedNow = manned(ship).removeSurrounding("[", "]").split(", ").filter { it.isNotEmpty() && it !in hacked }
+            if (mannedBefore != mannedNow) diff["$label.mannedAfterLoad"] = "${before["$label.manned"]} -> ${manned(ship)}"
         }
         val canonicalBefore = canonical(xml)
         val canonicalAfter = canonical(again)
@@ -273,7 +279,9 @@ internal object GameplayParityShell6Checks {
         repeat(30) { state.updateGameState(.05f) }
         check(player.rooms.sumOf { r -> r.fires.count { it != null } } > 0) { "The fire burnt out" }
         check(player.crew.count { it.mode == xyz.znix.xftl.crew.AbstractCrew.SlotType.INTRUDER } == 2) { "Boarders missing" }
-        return expect("fires, breach, thin air, boarders and wounded crew", trip(main, container, state))
+        // Crew projectiles in flight are not saved (CrewAnimation::SaveState 0x479a30 keeps only the teleport state).
+        val lostShots = if (player.crewShots.isNotEmpty()) arrayOf("player.crewShots") else emptyArray()
+        return expect("fires, breach, thin air, boarders and wounded crew", trip(main, container, state), *lostShots)
     }
 
     private fun drones(main: MainGame, container: GameContainer): String {
@@ -390,16 +398,18 @@ internal object GameplayParityShell6Checks {
             check(state.browserJumpPending() && state.player.fuelCount == fuel - 1) { "No jump pending" }
             return Triple(state, from, sector.beacons.indexOf(target))
         }
-        val (plain, from, to) = begin()
+        val (plain, from, _) = begin()
         val fuel = plain.player.fuelCount
         val lostJump = trip(main, container, plain, settle = false)
         check(lostJump.loaded.currentBeacon.sector.beacons.indexOf(lostJump.loaded.currentBeacon) == from && lostJump.loaded.player.fuelCount == fuel) {
             "A plain save mid-jump should hold the old beacon with the fuel spent"
         }
-        val (settled, _, _) = begin()
+        // A second fixture game: its map comes from the random stream at that moment, so it has its own beacons.
+        val (settled, _, settledTo) = begin()
+        val settledFuel = settled.player.fuelCount
         check(settled.browserSettleForSave()) { "Nothing to settle" }
         val loaded = trip(main, container, settled, settle = false).loaded
-        check(loaded.currentBeacon.sector.beacons.indexOf(loaded.currentBeacon) == to && loaded.player.fuelCount == fuel) {
+        check(loaded.currentBeacon.sector.beacons.indexOf(loaded.currentBeacon) == settledTo && loaded.player.fuelCount == settledFuel) {
             "Save and close mid-jump should hold the new beacon"
         }
         check(!loaded.browserJumpPending()) { "A jump is still pending after the settled save" }

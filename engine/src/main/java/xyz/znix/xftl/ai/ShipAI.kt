@@ -59,9 +59,9 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
             return
         }
 
-        // The flag is refreshed before the surrender checks, like WorldManager::OnLoop (0x61b930).
+        // WorldManager::OnLoop (0x61b930): SetStalemate, then the ship's own OnLoop (stalemate block, power, combat,
+        // escape countdown), then the surrender / stalemate / escape checks, which wait while the player is jumping.
         setStalemate(computeStalemate())
-        checkSurrenderAndEscape()
 
         updateStalemate(dt)
 
@@ -73,6 +73,9 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
         updateEscapeTimer(dt)
 
         lastHull = ship.health
+
+        if (!player.browserJumping)
+            checkSurrenderAndEscape()
     }
 
     /**
@@ -115,14 +118,15 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
     // ---- Surrender, escape and stalemate (WorldManager::OnLoop 0x61b930 and ShipAI 0x6251f0-0x625720) ----
 
     /**
-     * The stalemate rule of WorldManager::OnLoop: it needs the player to be unable to jump away (engines or piloting
-     * without any usable power, or no fuel), and nobody boarding this ship.
+     * The stalemate rule of WorldManager::OnLoop (0x61bc30): it needs the player to be unable to jump away - the
+     * engines' or piloting's power cap is zero (ShipSystem::GetPowerCap 0x63b790: the system level, or an event's
+     * power limit; damage and ion don't count) or there is no fuel - and nobody boarding this ship.
      */
     private fun computeStalemate(): Boolean {
         val engines = player.engines
         val piloting = player.piloting
-        val canJump = engines != null && engines.undamagedEnergy != 0
-                && piloting != null && piloting.undamagedEnergy != 0
+        val canJump = engines != null && nativePowerCap(engines) != 0
+                && piloting != null && nativePowerCap(piloting) != 0
                 && player.fuelCount > 0
         if (canJump)
             return false
@@ -153,15 +157,18 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
         val spec = ship.spec
         val health = ship.health
 
+        // WorldManager::OnLoop: a ship that is jumping away still marks itself surrendered, but shows neither event.
         if (health in 1..ship.surrenderHealth && !ship.aiSurrendered) {
             ship.aiSurrendered = true
             val event = spec?.surrender
-            if (event != null)
-                ship.sys.showShipEnding(event, ship)
-            return
+            if (!ship.browserJumping) {
+                if (event != null)
+                    ship.sys.showShipEnding(event, ship)
+                return
+            }
         }
 
-        if (stalemateReached()) {
+        if (stalemateReached() && !ship.browserJumping) {
             // UpdateLocation1 0x61c885: CreateEvent("STALEMATE_SURRENDER", level 0, seed -1), the global stream.
             val event = ship.sys.eventManager["STALEMATE_SURRENDER"]
             ship.sys.eventCreator.create(event, 0)?.let { ship.sys.shipUI.showEventDialogue(it) }
@@ -540,6 +547,9 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
             val goal = chargeGoal.getOrPut(weapon) { selectChargeGoal(levels) }
             if (goal > ready)
                 continue
+            // 0x62c000: a charged weapon aims at nothing while the target ship is cloaked (vtable +0x10), before the roll.
+            if (target.isCloakActive)
+                continue
             if (levels >= 2 && levels != ready && rand.nextInt(levels - ready + 1) != 0)
                 continue
 
@@ -664,6 +674,13 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
         /** CombatAI 0x62d710: the pulse needs the hacked system to be intact and the hacking system to be powered. */
         internal fun canStartPulse(hackedSystemBroken: Boolean, hackingPower: Int): Boolean =
             !hackedSystemBroken && hackingPower != 0
+
+        /**
+         * ShipSystem::GetPowerCap (0x63b790): an event's power limit (+0x11c below 8) or else the system's level
+         * (+0x54). Damage, ion and a power loss leave it alone.
+         */
+        internal fun nativePowerCap(system: AbstractSystem): Int =
+            system.scriptedPowerLimit ?: system.energyLevels
 
         /** 0x884f10: a missing escape timer means 15 seconds. */
         const val DEFAULT_ESCAPE_TIMER = 15f

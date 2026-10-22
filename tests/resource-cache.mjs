@@ -42,22 +42,61 @@ try{
   const next=await createAssetCache(changed,async path=>{calls++;return (path==='/api/assets/boot'?changedBoot:changedSound).slice().buffer;});
   assert.equal(store.entries.size,0);await next.fetchBoot();await next.fetchAudio(changed.audio[0]);assert.equal(calls,2);assert.equal(store.entries.size,2);
  });
- await check('Rejected downloads are not cached and can be retried',async()=>{
+ const cached=async(store,key)=>new Uint8Array(await (await store.cache.match(key)).arrayBuffer());
+ const bootKey='/api/assets/boot?hash='+manifest.bootHash;
+ await check('A dropped connection is retried at once; only verified bytes are cached',async()=>{
   const store=storage();setStorage(store);let calls=0;
   const assets=await createAssetCache(manifest,async path=>{if(++calls===1)throw Error('Connection lost');return bytes(path);});
-  await assert.rejects(assets.fetchBoot(),/Connection lost/);assert.equal(store.entries.size,0);await assets.fetchBoot();assert.equal(calls,2);
+  assert.deepEqual(new Uint8Array(await assets.fetchBoot()),boot);assert.equal(calls,2);
+  assert.equal(store.entries.size,1);assert.deepEqual(await cached(store,bootKey),boot);
  });
- await check('Incomplete and wrong-hash downloads are rejected before persistence',async()=>{
-  for(const invalid of [new Uint8Array([1]),new Uint8Array([9,9,9,9])]){
+ await check('Connections that keep failing reject after three attempts, cache nothing and can be retried',async()=>{
+  const store=storage();setStorage(store);let calls=0,failing=true;
+  const assets=await createAssetCache(manifest,async path=>{calls++;if(failing)throw Error('Connection lost');return bytes(path);});
+  await assert.rejects(assets.fetchBoot(),/Connection lost/);assert.equal(calls,3);assert.equal(store.entries.size,0);
+  failing=false;assert.deepEqual(new Uint8Array(await assets.fetchBoot()),boot);assert.equal(calls,4);assert.equal(store.entries.size,1);
+ });
+ await check('HTTP refusals are final, not retried',async()=>{
+  const store=storage();setStorage(store);let calls=0;
+  const assets=await createAssetCache(manifest,async()=>{calls++;throw Object.assign(Error('Game resources are unavailable'),{status:401});});
+  await assert.rejects(assets.fetchBoot(),/unavailable/);assert.equal(calls,1);assert.equal(store.entries.size,0);
+ });
+ await check('Truncated and garbled downloads are fetched again and never cached or used',async()=>{
+  for(const invalid of [new Uint8Array([1]),new Uint8Array([1,2,3]),new Uint8Array([9,9,9,9]),new Uint8Array([1,2,3,5])]){
    const store=storage();setStorage(store);let calls=0;
    const assets=await createAssetCache(manifest,async path=>++calls===1?invalid.slice().buffer:bytes(path));
-   await assert.rejects(assets.fetchBoot(),/Incomplete|verification/);assert.equal(store.entries.size,0);await assets.fetchBoot();assert.equal(calls,2);
+   assert.deepEqual(new Uint8Array(await assets.fetchBoot()),boot,String(invalid));assert.equal(calls,2);
+   assert.equal(store.entries.size,1);assert.deepEqual(await cached(store,bootKey),boot);
   }
+ });
+ await check('Downloads that never verify reject after three attempts and leave the cache empty',async()=>{
+  for(const invalid of [new Uint8Array([1]),new Uint8Array([9,9,9,9])]){
+   const store=storage();setStorage(store);let calls=0;
+   const assets=await createAssetCache(manifest,async()=>{calls++;return invalid.slice().buffer;});
+   await assert.rejects(assets.fetchBoot(),/Incomplete|verification/);assert.equal(calls,3);assert.equal(store.entries.size,0);
+  }
+ });
+ await check('A slow download shared by concurrent loads is verified once and reaches every caller intact',async()=>{
+  const store=storage();setStorage(store);let calls=0;
+  // The first answer is cut short after a delay (a stalled transfer), the retry arrives later still.
+  const assets=await createAssetCache(manifest,async path=>{calls++;await new Promise(resolve=>setTimeout(resolve,20));return calls===1?boot.slice(0,2).buffer:bytes(path);});
+  const loads=await Promise.all([assets.fetchBoot(),assets.fetchBoot(),(await createAssetCache(manifest,()=>{throw Error('Unexpected second download');})).fetchBoot()]);
+  for(const loaded of loads)assert.deepEqual(new Uint8Array(loaded),boot);assert.equal(calls,2);assert.deepEqual(await cached(store,bootKey),boot);
  });
  await check('Truncated cache entries are replaced from the network',async()=>{
   const store=storage();setStorage(store);const first=await createAssetCache(manifest,bytes);await first.fetchBoot();
   const key=[...store.entries.keys()][0];store.entries.set(key,new Response(new Uint8Array([1])));let calls=0;
   const next=await createAssetCache(manifest,async path=>{calls++;return bytes(path);});assert.deepEqual(new Uint8Array(await next.fetchBoot()),boot);assert.equal(calls,1);
+ });
+ await check('Corrupted cache entries of the right length are caught by their hash and replaced',async()=>{
+  for(const [label,corrupt,manifestKey] of [['boot',new Uint8Array([1,2,3,5]),bootKey],['audio',new Uint8Array([5,6,8]),'/api/assets/audio/'+manifest.audio[0].hash]]){
+   const store=storage();setStorage(store);const first=await createAssetCache(manifest,bytes);await first.fetchBoot();await first.fetchAudio(manifest.audio[0]);
+   store.entries.set(absolute(manifestKey),new Response(corrupt));let calls=0;
+   const next=await createAssetCache(manifest,async path=>{calls++;return bytes(path);});
+   const loaded=label==='boot'?await next.fetchBoot():await next.fetchAudio(manifest.audio[0]);
+   assert.deepEqual(new Uint8Array(loaded),label==='boot'?boot:sound,label);assert.equal(calls,1,label);
+   assert.deepEqual(await cached(store,manifestKey),label==='boot'?boot:sound,label);
+  }
  });
  await check('Unavailable storage and open/read/write/prune failures fall back to network',async()=>{
   for(const operation of ['unavailable','open','match','put','keys','delete']){

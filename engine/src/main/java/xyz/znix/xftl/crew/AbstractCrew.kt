@@ -170,10 +170,15 @@ abstract class AbstractCrew(
     open val canPunch: Boolean get() = true
 
     /**
-     * Whether this race's shooting animation fires a crew laser. Rock and Mantis use the FireShot stub (0x40117a):
-     * their ranged attack is a strike on a fixed 1 s loop with no laser.
+     * How the shooting animation fires. RockAnimation (Rock, Crystal; FireShot 0x478870) and MantisAnimation
+     * (0x478a00) throw when their looping 4-frame shoot strip reaches frame 3, and their strip animates
+     * (GetFiringFrame -1). Every other CrewAnimation (FireShot 0x478b90) fires on its 1.0-1.3 s shot timer and holds
+     * the strip on one aim frame (GetFiringFrame 0x477c30).
      */
-    open val shootsLasers: Boolean get() = true
+    open val throwsOnShootFrame: Boolean get() = false
+
+    /** Whether the shooting animation fires crew projectiles (the Ion intruder's animation has its own pulse). */
+    open val firesCrewShots: Boolean get() = true
     open val canFight: Boolean get() = true
     open val canRepair: Boolean get() = true
     open val canSabotage: Boolean get() = true
@@ -256,6 +261,53 @@ abstract class AbstractCrew(
      * shot that couldn't be fired. CrewMember::OnLoop (0x482a80) deals it to the current target.
      */
     private var pendingShotDamage: Float = 0f
+
+    // CrewAnimation's shot timer (TimerHelper +0x89c, looping 1.0-1.3 s): it only ticks while shooting and carries
+    // over between fights. Its goal is rolled on first use; the constructor's roll is the generation draw that
+    // NativeCrewFactory already makes.
+    private var shotTimerGoal: Float = -1f
+    private var shotTimerElapsed: Float = 0f
+
+    // RockAnimation/MantisAnimation: the shoot strip's clock (the strip loops from the constructor and only advances
+    // while shooting) and the once-per-pass throw latch (+0x9ef / +0x9ee).
+    private var shootStripTime: Float = 0f
+    private var shootFrameThrown: Boolean = false
+
+    // The aim point (CrewAnimation +0x8c4, ship pixels), its lean and whether it's exact (+0x8d4, doors): set while
+    // fighting a crewmember or a door and kept afterwards, so a boarder that goes on to sabotage keeps shooting at the
+    // last spot (each shot moves the stale point by its scatter, UpdateShooting 0x481de0).
+    private var aimX: Int = 0
+    private var aimY: Int = 0
+    private var hasAim: Boolean = false
+    private var aimLean: Int = CrewAim.NONE
+    private var aimDirection: Direction = Direction.UP
+    private var aimExact: Boolean = false
+
+    // The shoot pose currently shown, so it's only rebuilt when the facing changes.
+    private var shootPoseIcon: FTLAnimation? = null
+    private var shootPoseDirection: Direction? = null
+
+    // RockAnimation::UpdateFiring (0x47f100): the stomp latch for frame 9 of the fire-fighting strip.
+    private var rockStompLatched: Boolean = false
+
+    /** This race's projectile: the "crewLaser" frame (x=1, y=0) of its own base sheet (SetupStrips 0x480dc0). */
+    private val crewShotImage: Image? by lazy {
+        val laser = anims.getOrNull("crewLaser") ?: return@lazy null
+        val sheet = anims.sheet(animationRace) ?: return@lazy null
+        val rowFromBottom = laser.sheet.verticalCount - 1 - laser.y
+        val row = sheet.verticalCount - 1 - rowFromBottom
+        if (laser.x !in 0 until sheet.horizontalCount || row !in 0 until sheet.verticalCount)
+            return@lazy null
+        AnimationSpec(sheet, "crewLaser:$animationRace", laser.x, row, 1, 1f).spriteAt(game, 0)
+    }
+
+    /** CrewAnimation +0x9dc: laser races are tinted green (player crew) or red (enemy), everything else white. */
+    private val crewShotColour: Colour
+        get() = when {
+            animationRace !in CrewAim.TINTED_RACES -> Colour.white
+            belongsToPlayer == true -> CrewShot.PLAYER_LASER
+            else -> CrewShot.ENEMY_LASER
+        }
     private var sharesHostileCell: Boolean = false
 
     private var doorAttackPos: IPoint? = null // Where to stand when attacking the door
@@ -567,11 +619,23 @@ abstract class AbstractCrew(
             // Just in case this didn't get reset, we don't want to punch the door.
             isPunching = false
 
-            updateAttack(Action.ATTACKING_DOOR, dt, {
-                repeat(doorAttackMultiplier) { doorToAttack!!.attackDoor() }
-            }, {
-                // Animation start, do nothing.
-            })
+            if (firesCrewShots) {
+                // The door is the crew target (ExactTarget 1, no scatter): each shot that reaches it is one hit
+                // (Door::ApplyDamage 0x46e0f0).
+                val door = doorToAttack!!
+                setAim(door.pixelCentre, exact = true)
+                val hit = {
+                    if (doorToAttack === door && door.isLockedFor(this))
+                        repeat(doorAttackMultiplier) { door.attackDoor() }
+                }
+                updateShooting(Action.ATTACKING_DOOR, dt) { fireCrewShot(hit, hit) }
+            } else {
+                updateAttack(Action.ATTACKING_DOOR, dt, {
+                    repeat(doorAttackMultiplier) { doorToAttack!!.attackDoor() }
+                }, {
+                    // Animation start, do nothing.
+                })
+            }
 
             return
         }
@@ -700,20 +764,28 @@ abstract class AbstractCrew(
                 }
             }
 
-            updateAttack(Action.FIGHTING, dt, {
-                // A punch (or a Rock/Mantis strike) lands now; a crew laser deals its damage when it arrives.
-                if (isPunching || !shootsLasers)
-                    hitCrew(enemyToAttack!!, (3f..7f).random(ftl.browser.BrowserRandom) * attackDamageMult)
-                else
-                    fireCrewLaser(enemyToAttack!!)
-            }, {
-                // If we're punching someone always attack them, otherwise pick
-                // someone in the room at random to shoot. Keep shooting the
-                // crewmember we already targeted while they're still valid
-                // (the fight target at CrewMember+0x188 is only re-rolled
-                // when it becomes invalid, CrewMember 0x47d350).
-                enemyToAttack = pickFightingTarget(sameCell, hostiles)
-            })
+            if (isPunching) {
+                updateAttack(Action.FIGHTING, dt, {
+                    // The punch timer is done half-way through the punch: CrewAnimation::OnUpdate (0x482420) banks
+                    // (rand%4001 + 3000) / 1000.
+                    hitCrew(enemyToAttack!!, rollShotDamage() * attackDamageMult)
+                }, {
+                    // If we're punching someone always attack them.
+                    enemyToAttack = pickFightingTarget(sameCell, hostiles)
+                })
+            } else {
+                // Otherwise pick someone in the room at random to shoot. Keep shooting the crewmember we already
+                // targeted while they're still valid (the fight target at CrewMember+0x188 is only re-rolled when
+                // it becomes invalid, CrewMember 0x47d350).
+                val target = pickFightingTarget(sameCell, hostiles)
+                enemyToAttack = target
+                setAim(target.getPixelPositionCentre(), exact = false)
+                updateShooting(Action.FIGHTING, dt) {
+                    // The damage, (rand%4001 + 3000) / 1000, is rolled when the shot arrives (0x4881c0) and dealt to
+                    // whoever we're fighting then; a shot that can't be fired banks 0.1.
+                    fireCrewShot({ pendingShotDamage = rollShotDamage() }, { pendingShotDamage = 0.1f })
+                }
+            }
 
             return
         }
@@ -727,7 +799,12 @@ abstract class AbstractCrew(
             isPunching = false
             enemyToAttack = null
 
-            updateAttack(Action.SABOTAGE, dt, {}, {})
+            // Sabotage plays the shooting animation (CrewAnimation state 7). Its shots go to the last aim point, which
+            // usually lies outside the room and so fires nothing (UpdateShooting 0x481de0); they deal no damage.
+            if (firesCrewShots)
+                updateShooting(Action.SABOTAGE, dt) { if (hasAim) fireCrewShot(null, null) }
+            else
+                updateAttack(Action.SABOTAGE, dt, {}, {})
 
             // Sabotage doesn't deal damage in bursts - it's constant 8% damage/second.
             // Note this is the same for any crew, regardless of the attack damage multiplier.
@@ -759,6 +836,8 @@ abstract class AbstractCrew(
         if (currentFireSlot != -1) {
             currentAction = Action.FIRE_FIGHTING
             extinguishLoop.continueLoopPlayerOnly(room.ship)
+            if (this is CrewRock)
+                continueRockStomp()
 
             // See doc/fires. [fireFightingSpeed] is the race's
             // GetFireRepairMultiplier (1.2 by default).
@@ -1089,39 +1168,168 @@ abstract class AbstractCrew(
             onKilledCrew(target)
     }
 
+    /** The damage a punch or an arriving shot banks (CrewAnimation +0x8cc): (rand%4001 + 3000) / 1000. */
+    private fun rollShotDamage(): Float = (ftl.browser.BrowserRandom.nextInt(4001) + 3000) / 1000f
+
+    private fun rollShotTimer(): Float =
+        (CrewAim.SHOT_TIMER_MIN_MS + ftl.browser.BrowserRandom.nextInt(CrewAim.SHOT_TIMER_SPAN_MS)) / 1000f
+
+    /** CrewMember::OnLoop (0x482a80) -> CrewAnimation::SetDirection (0x47e550): aim at [point] this tick. */
+    private fun setAim(point: IPoint, exact: Boolean) {
+        aimX = point.x
+        aimY = point.y
+        hasAim = true
+        aimExact = exact
+        val from = getPixelPositionCentre()
+        val aim = CrewAim.aim((point.x - from.x).f, (point.y - from.y).f)
+        aimLean = aim.lean
+        aimDirection = aim.direction
+    }
+
     /**
-     * CrewAnimation::UpdateShooting (0x481de0): a target point in another room more than 22 px away can't be shot
-     * at, and banks 0.1 damage instead. Otherwise a crew laser flies from the shooter to the target, landing
-     * rand%17-8 pixels off its centre on each axis (x rolled before y); its damage, (rand%4001 + 3000) / 1000, is
-     * rolled when it arrives (0x4881c0) and dealt to whoever the shooter is fighting then.
+     * CrewAnimation::UpdateShooting (0x481de0): an aim point in another room more than 22 px away can't be shot at
+     * ([onBlocked]: the animation banks 0.1). Otherwise the aim point moves by rand%17-8 pixels on each axis (x rolled
+     * before y) unless the target is exact (doors), the race's shooting sound plays and the projectile flies there;
+     * [onLanded] runs when it arrives.
      */
-    private fun fireCrewLaser(target: AbstractCrew) {
+    private fun fireCrewShot(onLanded: (() -> Unit)?, onBlocked: (() -> Unit)?) {
         val ship = room.ship
         val from = getPixelPositionCentre()
-        val aim = target.getPixelPositionCentre()
         val fromRoom = ship.rooms.firstOrNull { it.containsPixelInclusive(from.x, from.y) }
-        val aimRoom = ship.rooms.firstOrNull { it.containsPixelInclusive(aim.x, aim.y) }
-        val dx = (aim.x - from.x).f
-        val dy = (aim.y - from.y).f
+        val aimRoom = ship.rooms.firstOrNull { it.containsPixelInclusive(aimX, aimY) }
+        val dx = (aimX - from.x).f
+        val dy = (aimY - from.y).f
         if (fromRoom != aimRoom && sqrt(dx * dx + dy * dy) > 22f) {
-            pendingShotDamage = 0.1f
+            onBlocked?.invoke()
             return
         }
 
-        val scatterX = ftl.browser.BrowserRandom.nextInt(17) - 8
-        val scatterY = ftl.browser.BrowserRandom.nextInt(17) - 8
-        ship.spawnCrewShot(from, Point(aim.x + scatterX, aim.y + scatterY), room) {
-            pendingShotDamage = (ftl.browser.BrowserRandom.nextInt(4001) + 3000) / 1000f
+        if (!aimExact) {
+            aimX += ftl.browser.BrowserRandom.nextInt(17) - 8
+            aimY += ftl.browser.BrowserRandom.nextInt(17) - 8
         }
 
         // The animation's shooting sound (vtable slot 9): Mantis mantisSpit1-3
-        // (0x47f4e0), Rock and Crystal rockThrow1-3 (0x47f5e0), others crewLaser1-3.
+        // (0x47f4e0), Rock and Crystal rockThrow1-3 (0x47f5e0), others crewLaser1-3 (0x47f3e0).
         val shotSound = when (this) {
             is CrewMantis -> "mantisSpit"
             is CrewRock, is CrewCrystal -> "rockThrow"
             else -> "crewLaser"
         }
         game.sounds.getSampleOrWarn("$shotSound${(1..3).random(ftl.browser.BrowserRandom)}")?.play()
+
+        ship.spawnCrewShot(from, Point(aimX, aimY), room, crewShotImage, crewShotColour, onLanded)
+    }
+
+    /**
+     * The shooting state (CrewAnimation::OnUpdate 0x482420, state 7) for fights, door attacks and sabotage. FireShot
+     * runs before the strip advances: Rock/Crystal/Mantis throw once per pass when the strip is on frame 3, every
+     * other race when its shot timer is done (TimerHelper::Done 0x5cb200: elapsed past the goal, then a new goal).
+     */
+    private fun updateShooting(action: Action, dt: Float, fire: () -> Unit) {
+        // A punch that follows starts a fresh punch cycle.
+        attackTimer = null
+        currentAction = action
+
+        if (throwsOnShootFrame) {
+            val strip = anims["${animationRace}_shoot_${dirAsString(shootDirection())}"]
+            val total = strip.totalTime
+            val frame = if (total > 0f) (shootStripTime / total * strip.length).toInt().coerceIn(0, strip.length - 1) else 0
+            if (frame == CrewAim.THROW_FRAME) {
+                if (!shootFrameThrown) {
+                    shootFrameThrown = true
+                    fire()
+                }
+            } else if (frame < CrewAim.THROW_FRAME) {
+                shootFrameThrown = false
+            }
+            if (total > 0f)
+                shootStripTime = (shootStripTime + dt) % total
+        } else {
+            if (shotTimerGoal < 0f)
+                shotTimerGoal = rollShotTimer()
+            shotTimerElapsed += dt
+            if (shotTimerGoal <= shotTimerElapsed && shotTimerElapsed != shotTimerGoal) {
+                shotTimerElapsed = 0f
+                shotTimerGoal = rollShotTimer()
+                fire()
+            }
+        }
+
+        refreshShootPose()
+    }
+
+    /** Which way the shooting animation faces. */
+    private fun shootDirection(): Direction = when {
+        // When sabotaging, boarders in a two-cell room face the obvious
+        // centre, and in a four-cell room the top two point down, the
+        // bottom-left boarder faces right, and the bottom-right one
+        // faces left.
+        currentAction == Action.SABOTAGE -> {
+            val pos = roomPosition ?: ConstPoint.ZERO
+            when {
+                room.width == 1 && pos.y == 0 -> Direction.DOWN
+                room.width == 1 && pos.y == 1 -> Direction.UP
+
+                room.height == 1 && pos.x == 0 -> Direction.RIGHT
+                room.height == 1 && pos.x == 1 -> Direction.LEFT
+
+                pos.y == 0 -> Direction.DOWN
+                pos.x == 0 -> Direction.RIGHT
+                else -> Direction.UP
+            }
+        }
+
+        // If two parties are in the same cell, the crewmember stands
+        // at the top and the intruder stands at the bottom.
+        currentAction == Action.FIGHTING && sharesHostileCell && mode == SlotType.CREW -> Direction.DOWN
+        currentAction == Action.FIGHTING && sharesHostileCell && mode == SlotType.INTRUDER -> Direction.UP
+
+        // When combat is starting, we might not have the target selected yet.
+        !hasAim -> Direction.UP
+
+        // Otherwise face the aim point (a crewmember, or the middle of the door) as SetDirection set it this tick;
+        // the scatter a shot adds to the point doesn't turn the shooter.
+        else -> aimDirection
+    }
+
+    /**
+     * Set the shoot pose's frame: Rock/Crystal/Mantis show their strip at its own clock, the other races hold the
+     * aim frame (CrewAnimation::OnRender 0x477f20 -> GetFiringFrame 0x477c30).
+     */
+    private fun applyShootPoseTime(pose: FTLAnimation, direction: Direction) {
+        if (throwsOnShootFrame) {
+            pose.timer = shootStripTime.coerceIn(0f, pose.duration)
+            return
+        }
+        val frame = CrewAim.firingFrame(direction, aimLean).coerceIn(0, pose.frameCount - 1)
+        pose.timer = (frame + 0.5f) * pose.duration / pose.frameCount
+    }
+
+    private fun refreshShootPose() {
+        val pose = shootPoseIcon
+        val direction = shootDirection()
+        if (isPunching || pose == null || icon !== pose || shootPoseDirection != direction) {
+            updateAnimation()
+            return
+        }
+        applyShootPoseTime(pose, direction)
+    }
+
+    /**
+     * RockAnimation::UpdateFiring (0x47f100): a fire-fighting Rock stomps once per pass of its strip, at frame 9;
+     * the player's Rocks play rockStomp1-2.
+     */
+    private fun continueRockStomp() {
+        if (icon.frame < ROCK_STOMP_FRAME) {
+            rockStompLatched = false
+            return
+        }
+        if (rockStompLatched)
+            return
+        rockStompLatched = true
+        if (this is CrewRock && ownerShip?.isPlayerShip == true)
+            game.sounds.getSampleOrWarn("rockStomp${1 + ftl.browser.BrowserRandom.nextInt(2)}")?.play()
     }
 
     private fun updateAttack(action: Action, dt: Float, dealDamage: () -> Unit, onAnimationStart: () -> Unit) {
@@ -1150,17 +1358,13 @@ abstract class AbstractCrew(
             damageTime = -1f
 
             dealDamage()
-
-            // RockAnimation::UpdateFiring: the player's Rocks stomp
-            // (rockStomp1/2) on each punch.
-            if (isPunching && this is CrewRock && this.ownerShip?.isPlayerShip == true)
-                game.sounds.getSampleOrWarn("rockStomp${1 + ftl.browser.BrowserRandom.nextInt(2)}")?.play()
         }
 
         if (attackTimer == null || attackTimer!! <= 0f) {
-            // A Rock or Mantis shooting animation (no crew laser) strikes on a fixed 1 s loop; punches and laser
-            // shots take 1.0..1.3 s.
-            attackTimer = if (action == Action.FIGHTING && !isPunching && !shootsLasers) 1.0f
+            // A punch (CrewAnimation::OnUpdate 0x482420) restarts the punch timer, (rand%150 + 500) ms, and plays
+            // the punch for twice that; the Ion intruder's door bashing keeps a 1.0..1.3 s cycle.
+            attackTimer = if (action == Action.FIGHTING)
+                2f * (CrewAim.PUNCH_TIMER_MIN_MS + ftl.browser.BrowserRandom.nextInt(CrewAim.PUNCH_TIMER_SPAN_MS)) / 1000f
             else (1.0f..1.3f).random(ftl.browser.BrowserRandom)
             attackDuration = attackTimer!!
 
@@ -1367,72 +1571,46 @@ abstract class AbstractCrew(
 
             Action.REPAIRING, Action.REPAIRING_BREACH -> anims["${animationRace}_repair"].startLooping(game)
 
-            Action.FIGHTING, Action.SABOTAGE, Action.ATTACKING_DOOR -> {
-                // Figure out the direction.
-                val dir: Direction = when {
-                    // When sabotaging, boarders in a two-cell room face the obvious
-                    // centre, and in a four-cell room the top two point down, the
-                    // bottom-left boarder faces right, and the bottom-right one
-                    // faces left.
-                    currentAction == Action.SABOTAGE -> when {
-                        room.width == 1 && roomPosition!!.y == 0 -> Direction.DOWN
-                        room.width == 1 && roomPosition!!.y == 1 -> Direction.UP
-
-                        room.height == 1 && roomPosition!!.x == 0 -> Direction.RIGHT
-                        room.height == 1 && roomPosition!!.x == 1 -> Direction.LEFT
-
-                        roomPosition!!.y == 0 -> Direction.DOWN
-                        roomPosition!!.x == 0 -> Direction.RIGHT
-                        else -> Direction.UP
+            Action.FIGHTING, Action.SABOTAGE, Action.ATTACKING_DOOR -> when {
+                // Punches face the shared cell: the crewmember stands at the top and the intruder at the bottom.
+                // We have to update the icon each time the punch timer expires, so make it obvious if that isn't
+                // done by not looping. The punch lasts twice the punch timer (CrewAnimation::OnUpdate 0x482420);
+                // leave it at its default 1 second until the timer is set (attackDuration, not attackTimer, so the
+                // duration survives serialisation).
+                isPunching -> {
+                    val dir = when {
+                        sharesHostileCell && mode == SlotType.INTRUDER -> Direction.UP
+                        sharesHostileCell -> Direction.DOWN
+                        enemyToAttack == null -> Direction.UP
+                        else -> Direction.bestFit(pixelPosition, enemyToAttack!!.pixelPosition)
                     }
-
-                    // When attacking the door, face towards the middle of the door.
-                    // Since crew are distributed across the face of the door randomly,
-                    // this means a group is all facing towards the same point.
-                    currentAction == Action.ATTACKING_DOOR -> Direction.bestFit(
-                        pixelPositionCentre,
-                        doorToAttack?.pixelCentre ?: ConstPoint.ZERO // Null while deserialising
-                    )
-
-                    // If two parties are in the same cell, the crewmember stands
-                    // at the top and the intruder stands at the bottom.
-                    sharesHostileCell && mode == SlotType.CREW -> Direction.DOWN
-                    sharesHostileCell && mode == SlotType.INTRUDER -> Direction.UP
-
-                    // When combat is starting, we might not have the enemy selected yet.
-                    enemyToAttack == null -> Direction.UP
-
-                    // Otherwise we're standing in the open, shooting at someone.
-                    else -> Direction.bestFit(pixelPosition, enemyToAttack!!.pixelPosition)
+                    shootPoseIcon = null
+                    val punch = anims["${animationRace}_punch_${dirAsString(dir)}"].startSingle(game)
+                    if (attackTimer != null)
+                        punch.duration = attackDuration
+                    punch
                 }
 
-                // We have to update the icon each time the punch timer expires,
-                // so make it obvious if that isn't done by not looping.
-                val icon = when (isPunching) {
-                    true -> anims["${animationRace}_punch_${dirAsString(dir)}"].startSingle(game)
-                    false -> anims["${animationRace}_shoot_${dirAsString(dir)}"].startSingle(game)
+                // The Ion intruder's own animation keeps replaying its strip once per attack cycle.
+                !firesCrewShots -> {
+                    shootPoseIcon = null
+                    val shoot = anims["${animationRace}_shoot_${dirAsString(shootDirection())}"].startSingle(game)
+                    if (attackTimer != null)
+                        shoot.duration = attackDuration
+                    shoot
                 }
 
-                // Vanilla plays the shooting animation once per attack - each
-                // race has fully-authored per-direction shoot strips (3-4
-                // frames, 1s, matching the attack cycle), and the exe has a
-                // CrewAnimation::UpdateShooting/FireShot/GetFiringFrame chain
-                // driving the firing visuals. Restarting per attack and
-                // stretching it over attackDuration (like punches) matches the
-                // vanilla rhythm: strike, hold the final aim frame, strike
-                // again.
-
-                // Leave the animation at its default 1 second if
-                // the attack timer isn't set, as the animation will
-                // be updated again once it's set.
-                // Note we have to use attackDuration not attackTimer,
-                // to avoid the animation duration changing after serialisation
-                // since attackTimer will have decreased.
-                if (attackTimer != null) {
-                    icon.duration = attackDuration
+                // The shooting pose: Rock/Crystal/Mantis run their throwing strip on its own clock, the other races
+                // hold one aim frame (CrewAnimation::OnRender 0x477f20). updateShooting drives both.
+                else -> {
+                    val dir = shootDirection()
+                    val pose = anims["${animationRace}_shoot_${dirAsString(dir)}"].startSingle(game)
+                    pose.isPaused = true
+                    shootPoseIcon = pose
+                    shootPoseDirection = dir
+                    applyShootPoseTime(pose, dir)
+                    pose
                 }
-
-                icon
             }
 
             // Don't loop, we'll disappear when the animation finishes
@@ -1994,6 +2172,9 @@ abstract class AbstractCrew(
         // The frame of the repair animation that carries the rock thud
         // (AddSoundQueue(5, ...) in the RockAlien constructor, 0x48756b).
         private const val ROCK_THUD_FRAME = 5
+
+        /** RockAnimation::UpdateFiring (0x47f100): the stomp frame of the 10-frame rock_fire strip. */
+        private const val ROCK_STOMP_FRAME = 9
 
         // The per-frame time; a full loop of the healing animation takes
         // 11 * this many seconds.

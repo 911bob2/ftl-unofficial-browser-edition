@@ -96,7 +96,8 @@ class Artillery(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         if (chargeProgress >= 1f) {
             val targetShip = ship.sys.getEnemyOf(ship)
-            if (targetShip != null) {
+            // ArtillerySystem::OnLoop (0x634f20): a charged artillery holds its shot while the target is cloaked.
+            if (targetShip != null && !targetShip.isCloakActive) {
                 fireAt(targetShip)
                 chargeProgress = 0f
             }

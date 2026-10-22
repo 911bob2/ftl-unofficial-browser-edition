@@ -95,6 +95,15 @@ class BulkImageRenderer : BulkRenderer() {
         if (numVerts == 0)
             return
 
+        if (image.texture.freed) {
+            // Its game content was replaced and the texture deleted. WebGL refuses to bind it and the quad would
+            // sample whatever texture was bound before, so draw nothing and say so.
+            Texture.reportFreedDraw(image)
+            data.clear()
+            numVerts = 0
+            return
+        }
+
         val shader = getShader()
 
         image.texture.bind(imageFiltering) // Binds to GL_TEXTURE_2D

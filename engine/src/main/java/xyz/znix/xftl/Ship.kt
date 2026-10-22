@@ -1230,6 +1230,14 @@ class Ship(
         get() = crew.any { it.belongsToPlayer == true || (it as? LivingCrew)?.mindControlledBy != null }
 
     /**
+     * Can the player pick one of this ship's rooms (weapon aim, beam start, teleporter, hacking, mind control)?
+     * The hover pass of CombatControl::MouseMove (0x57dd70) and CombatControl::SelectRoom (0x57eba0) select no
+     * room on a dying ship (+0x499) or on a cloaked one (vtable +0x10, 0x49b100) without [hasPlayerPresence].
+     */
+    val roomsSelectableByPlayer: Boolean
+        get() = !isDead && !(isCloakActive && !hasPlayerPresence)
+
+    /**
      * Can the player see (and mind-control-target) the living crew on this
      * ship through the hull, even without room vision? True via a Slug's
      * telepathy - a living player-owned Slug aboard - or, on enemy ships,
@@ -1665,13 +1673,8 @@ class Ship(
             a.update(dt)
         }
 
-        // Update the cosmetic crew combat laser bolts.
-        crewShots.removeAll { shot ->
-            val landed = !shot.update(dt)
-            if (landed)
-                shot.onLanded?.invoke()
-            landed
-        }
+        // Update the crew combat projectiles (they deal their damage on arrival, then play the impact puff).
+        crewShots.removeAll { shot -> !shot.update(dt) }
 
         // update returns false if the number should be removed
         damageNumbers.removeIf { !it.update(dt) }
@@ -2675,12 +2678,12 @@ class Ship(
         }
     }
 
-    fun spawnCrewShot(start: IPoint, end: IPoint, room: Room, onLanded: (() -> Unit)? = null) {
-        if (start == end) {
-            onLanded?.invoke()
-            return
-        }
-        crewShots += CrewShot(room, start, end, onLanded)
+    fun spawnCrewShot(
+        start: IPoint, end: IPoint, room: Room, image: Image?, colour: Colour, onLanded: (() -> Unit)? = null
+    ) {
+        val impact = sys.animations.getOrNull("explosion_missile1")?.startSingle(sys)
+        impact?.duration = CrewShot.IMPACT_TIME
+        crewShots += CrewShot(room, start, end, image, colour, impact, onLanded)
     }
 
     fun playCentredAnimation(animation: AnimationSpec, centre: IPoint): FloatingAnimation {
@@ -2949,6 +2952,10 @@ class Ship(
         // Serialise in-flight projectile
         val projectilesElem = Element("projectiles")
         for (projectile in projectiles) {
+            // A shot still flying at a ship that was destroyed or left has nothing to hit, and the save holds no
+            // such ship to aim it at.
+            if ((projectile as? AbstractProjectile)?.targetShip?.let { refs.isRegistered(it) } == false)
+                continue
             // A flying drone is saved as a drone rather than a projectile,
             // though really it's kinda both.
             if (projectile is FlyingDroneProjectile)

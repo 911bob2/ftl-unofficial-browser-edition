@@ -157,9 +157,9 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             }
         }
 
-        // A cloaked ship does not hide its rooms: the cloak only gates picking a room as a crew target
-        // (CombatControl::SelectRoom 0x57eba0, see Ship.hasPlayerPresence and MindControl.selectRoom), and
-        // the interior blackout (Room::SetBlackout 0x476140, ShipManager::OnLoop) follows the sensors.
+        // The cloak plays no part in the per-room blackout (Room::SetBlackout 0x476140, ShipManager::OnLoop
+        // follows the sensors); it hides the whole interior instead (ShipManager::OnRender 0x4a3c00, see
+        // InGameState.enemyInteriorVisible) and blocks room picking (Ship.roomsSelectableByPlayer).
 
         if (ship.sys.debugFlags.showEverything.set) {
             playerHasVision = true

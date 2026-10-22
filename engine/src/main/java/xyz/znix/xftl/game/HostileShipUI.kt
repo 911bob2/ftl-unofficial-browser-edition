@@ -329,7 +329,9 @@ class HostileShipUI(private val game: InGameState, private val enemy: Ship) {
         // it keeps its full size and headroom even when the box itself
         // is scaled down on touch layouts.
         val centreX = (anchorX + scale * box.width / 2).roundToInt()
-        drawEscapeWarning(centreX, vanillaBoxY - 10)
+        // CombatControl::RenderTarget (0x578950): only for a hostile ship that is escaping and not dying.
+        if (isHostile && !enemy.isDead)
+            drawEscapeWarning(centreX, vanillaBoxY - 10)
     }
 
     private fun drawStatus(x: Int, classY: Int, isHostile: Boolean) {
@@ -359,7 +361,7 @@ class HostileShipUI(private val game: InGameState, private val enemy: Ship) {
 
         val warningKey = when {
             !enemy.canChargeFTL -> "warning_ftl_delayed"
-            timeRemaining < 5f -> "warning_ftl_imminent"
+            timeRemaining <= 5f -> "warning_ftl_imminent"
             else -> "warning_ftl_charging"
         }
 

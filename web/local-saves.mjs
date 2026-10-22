@@ -65,10 +65,12 @@ export async function load(){
  }
  return {record:stored,source:stored?'indexeddb':'none',error:error?.message??null};
 }
-// Commit a new revision of the save. `expected` is the revision the caller last saw (0 for none).
-export async function save(state,expected){
+const KINDS=['auto','manual','import'];
+// Commit a new revision of the save. `expected` is the revision the caller last saw (0 for none). `kind` says what made
+// it: "auto", "manual" or "import" (anything else is stored as unknown).
+export async function save(state,expected,kind){
  if(!state||state.schema!==1)throw Error('Incompatible save format');
- const record={schema:1,engineBuild:state.engineBuild,assetVersion:state.assetVersion,revision:expected+1,run:state.run??null,profile:state.profile??null,savedUtc:new Date().toISOString()};
+ const record={schema:1,engineBuild:state.engineBuild,assetVersion:state.assetVersion,revision:expected+1,run:state.run??null,profile:state.profile??null,savedUtc:new Date().toISOString(),kind:KINDS.includes(kind)?kind:null};
  let durable=true;
  try{await commit(record,expected);}
  catch(e){
@@ -87,13 +89,38 @@ export function flushMirror(state,revision){
 }
 export async function history(){
  const db=await database();
- return new Promise((resolve,reject)=>{const tx=db.transaction('history','readonly'),request=tx.objectStore('history').getAll();tx.oncomplete=()=>resolve(request.result.sort((a,b)=>b.revision-a.revision).map(r=>({revision:r.revision,createdUtc:r.savedUtc})));tx.onerror=tx.onabort=()=>reject(tx.error);});
+ return new Promise((resolve,reject)=>{const tx=db.transaction('history','readonly'),request=tx.objectStore('history').getAll();tx.oncomplete=()=>resolve(request.result.sort((a,b)=>b.revision-a.revision).map(r=>({revision:r.revision,createdUtc:r.savedUtc,kind:r.kind??null})));tx.onerror=tx.onabort=()=>reject(tx.error);});
 }
 export async function snapshot(revision){
  const db=await database();
  const record=await new Promise((resolve,reject)=>{const tx=db.transaction('history','readonly'),request=tx.objectStore('history').get(revision);tx.oncomplete=()=>resolve(request.result);tx.onerror=tx.onabort=()=>reject(tx.error);});
  if(!valid(record))throw Object.assign(Error('That recovery snapshot no longer exists.'),{status:404});
  return envelope(record);
+}
+// Make snapshot `revision` the current save as a new revision and delete the newer snapshots, in one transaction: the
+// progress after it is discarded rather than kept as a second branch of history. `config` holds the current game files.
+export async function restore(revision,expected,config){
+ const db=await database();
+ const record=await new Promise((resolve,reject)=>{
+  const tx=db.transaction(['current','history'],'readwrite'),current=tx.objectStore('current'),history=tx.objectStore('history');
+  let failure=null,result=null;
+  const get=current.get('save'),old=history.get(revision);
+  old.onsuccess=()=>{
+   const existing=get.result,source=old.result;
+   if(valid(existing)&&existing.revision!==expected){failure=conflict('A newer save exists in another tab. Reload before saving.');tx.abort();return;}
+   if(!valid(source)){failure=Object.assign(Error('That recovery snapshot no longer exists.'),{status:404});tx.abort();return;}
+   if(revision===expected){failure=Object.assign(Error('That snapshot is already the current save.'),{status:400});tx.abort();return;}
+   if(source.engineBuild!==config.engineBuild||source.assetVersion!==config.assetVersion){failure=Object.assign(Error('That snapshot was made with other game files or another engine version.'),{status:400});tx.abort();return;}
+   result={schema:1,engineBuild:source.engineBuild,assetVersion:source.assetVersion,revision:expected+1,run:source.run??null,profile:source.profile??null,savedUtc:new Date().toISOString(),kind:'restore'};
+   history.delete(IDBKeyRange.lowerBound(revision,true));
+   current.put(result,'save');history.put(result);
+   history.delete(IDBKeyRange.upperBound(result.revision-KEEP));
+  };
+  tx.oncomplete=()=>resolve(result);
+  tx.onerror=tx.onabort=()=>reject(failure??tx.error??Error('The browser could not store the save.'));
+ });
+ writeMirror(record);
+ return {revision:record.revision,durable:true};
 }
 // The same JSON a cloud backup contains, so a backup moves between local and cloud mode unchanged.
 export const backup=record=>envelope(record);

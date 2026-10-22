@@ -17,6 +17,9 @@ class CrewCrystal(blueprint: CrewBlueprint, animations: Animations, room: Room, 
     override val baseMaxHealth: Float get() = 125f
     override val fireFightingSpeed: Float get() = 1f
 
+    // CrystalAlien builds a RockAnimation (constructor 0x487560): the shard leaves on frame 3 (FireShot 0x478870).
+    override val throwsOnShootFrame: Boolean get() = true
+
     /**
      * The lockdown power charge and the charge it needs (CrystalAlien +0x75c
      * / +0x760). The charge grows with time up to the maximum, and the

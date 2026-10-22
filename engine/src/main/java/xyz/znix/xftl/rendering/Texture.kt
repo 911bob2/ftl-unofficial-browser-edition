@@ -46,4 +46,15 @@ class Texture(
 
         GL11.glDeleteTextures(glName)
     }
+
+    companion object {
+        /** Draws refused because their texture had been deleted (see [BulkImageRenderer.flush]), for the checks. */
+        var freedDraws: Int = 0
+            private set
+
+        fun reportFreedDraw(image: Image) {
+            // Only the first few (a stale image is usually drawn every frame); the output reaches the debug log.
+            if (freedDraws++ < 5) println("[WARN] Skipped drawing a ${image.width}x${image.height} image whose texture was deleted")
+        }
+    }
 }
