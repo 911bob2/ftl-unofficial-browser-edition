@@ -17,12 +17,50 @@ internal object GameplaySave8Checks {
         val rng = BrowserRandom.snapshot()
         val nativeRng = NativeRandom.snapshot()
         try {
-            return "save8 ok: ${killMidVolley(main, container)}"
+            return "save8 ok: ${killMidVolley(main, container)}; ${killMidBeam(main, container)}"
         } finally {
             BrowserEngine.resetInput()
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
         }
+    }
+
+    /** The same crash with a beam: its aim still pointed at the removed ship (Hull Beam firing as the enemy went). */
+    private fun killMidBeam(main: MainGame, container: GameContainer): String {
+        var state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        state.debugSpawnShip(state.eventManager.getShip("PIRATE"), Difficulty.NORMAL, 0, 71)
+        state.debugFlags.noEnemyFire.set = true
+        if (state.isPaused && !state.shipUI.isWindowOpen) state.toggleQuickPause()
+        val player = state.player
+        val weapons = player.weapons!!
+        weapons.energyLevels = 8
+        player.purchasedReactorPower = 25
+        val beam = (state.blueprintManager["BEAM_LONG"] as AbstractWeaponBlueprint).buildInstance(player) as xyz.znix.xftl.weapons.BeamBlueprint.BeamInstance
+        player.hardpoints[0].weapon = beam
+        player.cargoUpdated()
+        check(weapons.setWeaponPower(beam, true)) { "Fixture beam did not power" }
+
+        val enemy = state.enemy!!
+        enemy.health = 0
+        var frames = 0
+        // Fired as late as the wreck allows, so the beam outlasts the ship.
+        repeat(145) { main.update(container, .02f) }
+        check(state.enemy === enemy && enemy.isDead && !enemy.isGone) { "Fixture enemy is not exploding" }
+        val room = enemy.rooms.first()
+        val aim = xyz.znix.xftl.systems.SelectedTarget.BeamAim(beam, 0, enemy, xyz.znix.xftl.math.ConstPoint(room.offsetX + 17, room.offsetY + 17))
+        aim.angle = 0f
+        aim.length = (beam.type as xyz.znix.xftl.weapons.BeamBlueprint).length
+        aim.updateHitRooms()
+        beam.timeCharged = beam.chargeTime
+        beam.fire(aim)
+        while (state.enemy === enemy && frames++ < 100) main.update(container, .02f)
+        check(state.enemy !== enemy) { "Destroyed enemy was not removed" }
+        check(beam.isFiring) { "Fixture did not leave a beam aimed at the destroyed ship" }
+
+        state = BrowserGameplayParityDiagnostics.reload(main, state)
+        val restored = state.player.hardpoints[0].weapon as xyz.znix.xftl.weapons.BeamBlueprint.BeamInstance
+        check(!restored.isFiring) { "Beam at the destroyed ship came back after a reload" }
+        return "saved after a kill mid-beam"
     }
 
     private fun killMidVolley(main: MainGame, container: GameContainer): String {

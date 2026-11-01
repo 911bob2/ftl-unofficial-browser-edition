@@ -228,47 +228,47 @@ async function modsDialog(ctx, r) {
 }
 
 /**
- * New save: Name (prefilled "Save N") and Mods (No mods, the presets, the enabled mods when they are not a preset, any
- * other setup that has saves). Creating an empty save makes it the one Launch FTL plays for that setup; nothing
- * downloads. Resolves the save or null.
+ * New save: Name (prefilled "Save N") and the enabled mods, greyed out: a save starts with those. Other mods are chosen in
+ * the mod picker (Change mods), the one place that enables them. Creating an empty save makes it the one Launch FTL plays
+ * for that setup; nothing downloads. onLeave closes whatever opened this before the picker shows. Resolves the save or null.
  */
-export async function newSave({ctx, preselect = null}) {
+export async function newSave({ctx, onLeave = null}) {
   const {service} = ctx;
   const [rows, enabled] = await Promise.all([service.rows(), ctx.enabled()]);
-  const presets = await ctx.presets(true);
-  const setups = new Map([['vanilla', {setup: {key: 'vanilla', mods: []}, label: 'No mods'}]]);
-  for (const p of presets) setups.set(p.setup.key, {setup: p.setup, label: p.title});
-  if (enabled.key !== 'vanilla' && !setups.has(enabled.key)) setups.set(enabled.key, {setup: enabled, label: 'Enabled mods'});
-  for (const r of rows) if (!setups.has(r.setup.key)) setups.set(r.setup.key, {setup: r.setup, label: await ctx.label(r.setup)});
-  const start = [preselect, enabled.key].find(k => k && setups.has(k)) ?? 'vanilla';
   return new Promise(resolve => {
     document.getElementById('new-save-dialog')?.remove();
     const dialog = el('dialog', {className: 'user-dialog save-dialog', id: 'new-save-dialog', ariaLabelledby: 'new-save-title'});
     document.body.append(dialog);
-    const select = el('select', {className: 'select w-full', id: 'new-save-mods'}, ...[...setups.values()].map(s => el('option', {value: s.setup.key, title: s.setup.mods.length ? modsLabel(s.setup.mods) : undefined}, s.label)));
-    select.value = start;
+    const mods = el('ul', {className: 'new-save-mods', id: 'new-save-mods', ariaLabel: 'Enabled mods'}, ...(enabled.mods.length
+      ? enabled.mods.map(m => el('li', {}, el('input', {type: 'checkbox', className: 'checkbox checkbox-sm', checked: true, disabled: true, tabIndex: -1, ariaHidden: 'true'}), modName(m)))
+      : [el('li', {}, 'No mods: the game as it ships.')]));
     const name = el('input', {className: 'input w-full', id: 'new-save-name', maxLength: 40, autocomplete: 'off', value: service.core.nextName(rows.map(r => r.name))});
     const note = el('p', {className: 'text-sm text-warning', id: 'new-save-note', role: 'status'});
     const create = el('button', {className: 'btn btn-primary', type: 'button', id: 'new-save-create'}, 'Create');
     const cancel = el('button', {className: 'btn btn-ghost', type: 'button', id: 'new-save-cancel'}, 'Cancel');
+    const change = el('button', {className: 'btn btn-sm', type: 'button', id: 'new-save-change-mods'}, 'Change mods');
     let finished = false;
     const done = value => { if (finished) return; finished = true; if (dialog.open) dialog.close(); dialog.remove(); resolve(value); };
     const full = rows.length >= SAVES_LIMIT, blockedNow = ctx.blocked();
     note.textContent = blockedNow ?? (full ? `An account has at most ${SAVES_LIMIT} saves. Delete one first.` : '');
     create.disabled = full || !!blockedNow;
+    change.disabled = !!blockedNow;
     cancel.onclick = () => done(null);
+    change.onclick = () => { done(null); onLeave?.(); ctx.openMods(); };
     dialog.addEventListener('cancel', e => { e.preventDefault(); done(null); });
     create.onclick = async () => {
       if (!service.core.cleanName(name.value)) { note.textContent = 'Use a name of 1 to 40 characters.'; return; }
       create.disabled = true; note.className = 'muted text-sm'; note.textContent = 'Creating…';
-      try { const made = await service.create(setups.get(select.value).setup, name.value); refreshSaves(); done(made); }
+      try { const made = await service.create(enabled, name.value); refreshSaves(); done(made); }
       catch (e) { note.className = 'text-sm text-warning'; note.textContent = e.message; create.disabled = false; }
     };
     name.addEventListener('keydown', e => { if (e.key === 'Enter' && !create.disabled) { e.preventDefault(); create.click(); } });
     fill(dialog, el('h2', {id: 'new-save-title'}, 'New save'),
       el('p', {className: 'muted text-sm'}, 'A new save starts like a fresh install: only the default ships are unlocked.'),
-      el('label', {className: 'field'}, 'Name', name), el('label', {className: 'field'}, 'Mods', select), note,
-      el('div', {className: 'actions'}, create, cancel));
+      el('label', {className: 'field'}, 'Name', name),
+      el('div', {className: 'field'}, el('span', {}, 'Mods'), mods,
+        el('p', {className: 'muted text-sm'}, enabled.mods.length ? 'This save starts with the enabled mods. For other mods, change them first.' : 'To start with mods, enable them first.'), el('div', {}, change)),
+      note, el('div', {className: 'actions'}, create, cancel));
     dialog.showModal(); name.focus(); name.select();
   });
 }
@@ -306,7 +306,7 @@ export function manageSaves({ctx, enabled, label}) {
     document.body.append(dialog);
     const list = el('div', {id: 'save-manager-list'});
     const add = el('button', {className: 'btn btn-sm', type: 'button', id: 'save-manager-new'}, 'New save');
-    add.onclick = () => { newSave({ctx, preselect: enabled.key}); };
+    add.onclick = () => { newSave({ctx, onLeave: () => dialog.close()}); };
     const all = el('button', {className: 'text-action link-button', type: 'button', id: 'save-manager-all'}, 'Show all saves');
     let showAll = false;
     all.onclick = () => { showAll = true; dialog.close(); };

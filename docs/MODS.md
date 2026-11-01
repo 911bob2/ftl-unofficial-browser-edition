@@ -115,9 +115,9 @@ name, a badge for its setup ("No mods", a preset's title, one mod's name, or "3 
 browser lacks ("Downloads when played: …" for catalogue files, "missing mod: name, sha256" for Custom ones), **Play**
 (**Start** for an empty save) and a **⋯** menu with **Rename**, **Download backup**, **Recovery snapshots** (saves in the
 account), **Advanced: mods** and **Delete**. While a game runs, Play and New save are disabled ("A game is running: use
-Save and close first"). **New save** opens a dialog: **Name** (prefilled with the next free "Save N") and **Mods** (No
-mods, every preset, "Enabled mods" when they are not a preset, every other setup that has saves). **Create** makes an
-empty save in that setup and makes it current there; nothing downloads.
+Save and close first"). **New save** opens a dialog: **Name** (prefilled with the next free "Save N") and **Mods**, the
+enabled mods greyed out (other mods are chosen in the mod picker, **Change mods**). **Create** makes an empty save with
+the enabled mods and makes it current for them; nothing downloads.
 
 **Advanced: mods** is the only place a save's mods change: the list in order with Verified/Custom and SHA-256, move
 up/down, Remove, and Add for any mod file in this browser, behind the warning that a changed set can break the run (what

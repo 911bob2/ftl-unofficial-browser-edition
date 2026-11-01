@@ -102,9 +102,10 @@ try {
   await page.waitForFunction(n => document.querySelectorAll('#mods-root [data-badge]').length >= n, all.length, {timeout: 600000});
 
   // A run without mods.
+  for (const box of await page.getByRole('checkbox', {name: /^Enable /}).all()) await box.uncheck();
+  await page.waitForFunction(() => !/with mods/.test(document.getElementById('launch-label').textContent));
   await page.locator('#saves-button').click();
   await page.locator('#new-save').click(); await openDialog(page, 'new-save-dialog').waitFor();
-  await page.locator('#new-save-mods').selectOption('vanilla');
   await page.locator('#new-save-name').fill('Move me'); await page.locator('#new-save-create').click();
   const made = page.locator('#saves-list li.save-row', {hasText: 'Move me'}); await made.waitFor();
   const id = await made.getAttribute('data-id');

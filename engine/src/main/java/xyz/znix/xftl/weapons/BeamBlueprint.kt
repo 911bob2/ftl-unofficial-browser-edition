@@ -341,6 +341,11 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         override fun saveToXML(elem: Element, refs: ObjectRefs) {
             super.saveToXML(elem, refs)
 
+            // A beam still firing at a ship that was destroyed or left has nothing to hit and the save holds no such
+            // ship: save the weapon as done firing.
+            if (target != null && !refs.isRegistered(target!!.targetShip))
+                return
+
             SaveUtil.addTagFloat(elem, "attackTimer", attackTimer, 0f)
             SaveUtil.addTagBoolIfTrue(elem, "browserVolleyCounted", browserVolleyCounted)
             SaveUtil.addTagInt(elem, "firingChainCount", firingChainCount, 0)

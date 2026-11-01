@@ -286,6 +286,8 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
 
         for (target in selectedTargets) {
+            if (!refs.isRegistered(target.targetShip))
+                continue
             val targetElem = Element("target")
             target.saveToXML(targetElem, refs)
             elem.addContent(targetElem)

@@ -259,7 +259,8 @@ class BombBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
 
             SaveUtil.addTagFloat(elem, "firingAnimationTimer", firingAnimationTimer, 0f)
             SaveUtil.addTagBoolIfTrue(elem, "hasFired", hasFired)
-            if (target != null) {
+            // The same for a bomb aimed at a ship that was destroyed or left.
+            if (target != null && refs.isRegistered(target!!.ship)) {
                 SaveUtil.addRoomRef(elem, "target", refs, target!!)
             }
             for (projectile in hsQueue) {

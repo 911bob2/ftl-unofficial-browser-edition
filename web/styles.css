@@ -197,6 +197,8 @@ td button { margin-right: .4rem; }
 .menu-item:disabled { opacity: .5; cursor: not-allowed; }
 .save-dialog { width: min(420px, calc(100vw - 2rem)); }
 .save-dialog .field { display: grid; gap: .3rem; margin: .8rem 0; }
+.new-save-mods { list-style: none; margin: 0; padding: .5rem .7rem; display: grid; gap: .35rem; opacity: .6; border: 1px solid rgba(255, 255, 255, .14); }
+.new-save-mods li { display: flex; align-items: center; gap: .5rem; }
 .dialog-foot { justify-content: space-between; align-items: center; margin-top: 1rem; }
 /* Save model 2: the Saves panel is built by app.mjs; its server markup stays out of sight until then. */
 #saves-panel:not([data-built]) > * { visibility: hidden; }

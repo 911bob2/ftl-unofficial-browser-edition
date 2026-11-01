@@ -64,9 +64,8 @@ const UNLOCKS = '<ship unlockId="engi" diff="EASY"/><layout ship="PLAYER_SHIP_FE
 const WITH_UNLOCKS = `<xftl-profile listTutorial="0">${UNLOCKS}</xftl-profile>`;
 
 /** New save through its dialog; returns its id. */
-async function newSave(page, name, value = null) {
+async function newSave(page, name) {
   await page.locator('#new-save').click(); await openDialog(page, 'new-save-dialog').waitFor();
-  if (value) await page.locator('#new-save-mods').selectOption(value);
   await page.locator('#new-save-name').fill(name); await page.locator('#new-save-create').click();
   const made = page.locator('#saves-list li.save-row', {hasText: name}); await made.waitFor();
   return made.getAttribute('data-id');
@@ -172,9 +171,17 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     const shas = [...hsFiles.map(f => sha(f.buffer)), sha(mine)], key = setHash(shas);
 
     // ---- Another save holds unlocks; a new save in a Hyperspace set takes none of them and asks nothing -------------
-    await page.locator('#saves-button').click();
-    const rich = await newSave(page, 'Rich vanilla', 'vanilla');
+    const setAllMods = async on => {
+      await page.locator('#play-button').click(); await page.evaluate(() => { document.getElementById('mods-panel').open = true; });
+      await page.locator('#mods-panel [aria-label="Mod load order"] .mod-row').first().waitFor();
+      for (const box of await page.getByRole('checkbox', {name: /^Enable /}).all()) await box[on ? 'check' : 'uncheck']();
+      await page.waitForFunction(want => /with mods/.test(document.getElementById('launch-label').textContent) === want, on);
+      await page.locator('#saves-button').click();
+    };
+    await setAllMods(false);
+    const rich = await newSave(page, 'Rich vanilla');
     await giveProfile(page, rich, WITH_UNLOCKS);
+    await setAllMods(true);
     const hsOne = await newSave(page, 'Mods one');
     const one = await deviceSave(page, hsOne);
     assert.equal(one.setup.key, key, 'the set is named by its hash');

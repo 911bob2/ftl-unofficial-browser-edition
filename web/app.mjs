@@ -126,7 +126,7 @@ async function missingMods(setup){
 }
 /** The mod files in this browser as a save names them (Saves > a save > Advanced). */
 async function libraryMods(){const [{listArchives},cat,svc]=await Promise.all([import('./mods/store.mjs'+version),catalogueOnce().catch(()=>null),saveService()]);return (await listArchives()).map(a=>({...svc.core.classify(cat,a.name,a.sha256,a.size),title:a.title}));}
-const savesCtx=()=>({service:saves,enabled:()=>enabledSetup(),label:setupLabel,presets,blocked:()=>engine?SWITCH_BLOCKED:null,playing:()=>engine?session?.id??null:null,play:id=>playSave(id),missing:missingMods,libraryMods,message,download,showAll:()=>show('saves-panel')});
+const savesCtx=()=>({service:saves,enabled:()=>enabledSetup(),label:setupLabel,presets,blocked:()=>engine?SWITCH_BLOCKED:null,playing:()=>engine?session?.id??null:null,play:id=>playSave(id),missing:missingMods,libraryMods,message,download,showAll:()=>show('saves-panel'),openMods:()=>{show('launch-panel');const m=$('mods-panel');if(m){m.open=true;m.scrollIntoView({block:'start'});}}});
 
 // The Saves panel: the list, New save, Import, the sync line, and the cards for saves still to move.
 function buildSavesPanel(){

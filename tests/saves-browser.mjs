@@ -254,7 +254,7 @@ for (const [name, type, options, users] of [['Chromium', chromium, {channel: 'ch
     await modder.waitForFunction(() => /with mods/.test(document.getElementById('launch-label').textContent));
     await modder.locator('#saves-button').click(); await modder.locator('#new-save').click();
     await openDialog(modder, 'new-save-dialog').waitFor();
-    assert.equal(await modder.locator('#new-save-mods option:checked').textContent(), 'Enabled mods');
+    assert.equal(await modder.locator('#new-save-mods li').count(), 2, 'the enabled mods are listed');
     await modder.locator('#new-save-name').fill('Modded run'); await modder.locator('#new-save-create').click();
     const modded = modder.locator('#saves-list li.save-row', {hasText: 'Modded run'});
     await modded.waitFor();

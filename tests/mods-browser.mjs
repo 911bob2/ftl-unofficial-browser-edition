@@ -284,12 +284,12 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     pass('Saves: one list, each save with its setup badge ("No mods", "F1 pair"), Current on the save Play uses, Play and a ⋯ menu');
 
     const openNew = async () => { await page.locator('#new-save').click(); await page.locator('#new-save-dialog[open]').waitFor(); };
-    const options = () => page.locator('#new-save-mods option').evaluateAll(os => os.map(o => [o.textContent, o.value === 'vanilla' ? o.value : 'hash']));
+    const shownMods = () => page.locator('#new-save-mods li').allTextContents();
     // New save without mods: prefilled with the next free name, becomes the current save without mods, the first keeps its run.
     const firstRun = await deviceRun(first.id); assert.ok(firstRun);
     await openNew();
-    assert.deepEqual(await options(), [['No mods', 'vanilla'], ['F1 pair', 'hash']]);
-    assert.equal(await page.locator('#new-save-mods').inputValue(), 'vanilla', 'the enabled setup (none) is preselected');
+    assert.deepEqual(await shownMods(), ['No mods: the game as it ships.']);
+    assert.equal(await page.locator('#new-save-mods input:not([disabled])').count(), 0);
     assert.equal(await page.locator('#new-save-name').inputValue(), 'Save 2');
     await page.locator('#new-save-dialog').screenshot({path: '.build/mods-browser-new-save-' + name + '.png'}).catch(() => {});
     await page.locator('#new-save-create').click(); await page.waitForFunction(() => !document.getElementById('new-save-dialog'));
@@ -297,11 +297,16 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     const save2 = (await listed()).find(r => r.name === 'Save 2');
     assert.equal(save2.buttons[0], 'Start'); assert.equal(await deviceRun(first.id), firstRun, 'the first run is kept');
     // New save with a preset that already has a save.
-    await openNew(); await page.locator('#new-save-mods').selectOption({label: 'F1 pair'});
+    await openMods(); await setMods(true);
+    await page.waitForFunction(() => /F1 pair/.test(document.getElementById('launch-save-text').textContent));
+    await saves(); await openNew();
+    assert.equal(await page.locator('#new-save-mods li').count(), 2, 'the enabled mods are listed');
+    assert.equal(await page.locator('#new-save-mods input:not([disabled])').count(), 0, 'and cannot be changed here');
     assert.equal(await page.locator('#new-save-name').inputValue(), 'Save 3');
     await page.locator('#new-save-create').click(); await page.waitForFunction(() => !document.getElementById('new-save-dialog'));
     await page.waitForFunction(() => [...document.querySelectorAll('#saves-list .save-row strong')].some(s => s.textContent === 'Save 3'));
     assert.equal((await deviceSaves(setHash)).length, 2);
+    await openMods(); await setMods(false);
     pass('New save: "No mods" and a preset with saves each add an empty save (the next free name); the other saves keep their runs');
     // New save with the enabled mods when they are not a preset: the first save of that mod setup, nothing downloaded.
     const hash1 = await modSetHash([sha(content.bytes)]);
@@ -309,8 +314,8 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     await page.waitForFunction(() => document.getElementById('launch-save-text').textContent === 'Save: none · F1 Content 1');
     const downloads = requests.filter(r => r.path.startsWith('/api/mods/files/') || /mega/.test(r.host)).length;
     await saves(); await openNew();
-    assert.deepEqual((await options()).map(o => o[0]), ['No mods', 'F1 pair', 'Enabled mods']);
-    assert.equal(await page.locator('#new-save-mods').inputValue(), hash1, 'the enabled mods are preselected');
+    assert.equal(await page.locator('#new-save-mods li').count(), 1);
+    assert.match((await shownMods())[0], /F1 Content/);
     await page.locator('#new-save-name').fill('Content only'); await page.locator('#new-save-create').click(); await page.waitForFunction(() => !document.getElementById('new-save-dialog'));
     await page.waitForFunction(h => document.querySelector(`#saves-list .save-row[data-setup="${h}"]`)?.dataset.current === 'true', hash1);
     assert.equal(await hasModSave(hash1), true);
@@ -376,14 +381,14 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     await page.evaluate(() => { window.__sameDocument = true; });
     const second = await context.newPage(); second.on('dialog', d => { dialogs.push(d.message()); d.dismiss(); });
     await second.goto(origin + '/?view=saves'); await second.waitForFunction(() => document.body.dataset.sessionReady === 'true'); await second.locator('#saves-list .save-row').first().waitFor();
-    await second.locator('#new-save').click(); await second.locator('#new-save-dialog[open]').waitFor(); await second.locator('#new-save-mods').selectOption('vanilla');
+    await second.locator('#new-save').click(); await second.locator('#new-save-dialog[open]').waitFor();
     await second.locator('#new-save-name').fill('From tab two'); await second.locator('#new-save-create').click(); await second.waitForFunction(() => !document.getElementById('new-save-dialog'));
     await page.bringToFront();
     await page.waitForFunction(() => /From tab two/.test(document.getElementById('saves-list').innerText), {}, {timeout: 15000});
     assert.equal(await page.evaluate(() => window.__sameDocument), true, 'the page did not reload');
     await page.locator('#play-button').click(); await page.waitForFunction(() => document.body.dataset.panel === 'launch-panel');
     await second.bringToFront();
-    const rename = second.locator(`#saves-list .save-row[data-id="${copy.id}"]`); await rename.locator('summary').click(); await rename.locator('[data-action="rename"]').click();
+    const rename = second.locator('#saves-list .save-row', {hasText: 'From tab two'}); await rename.locator('summary').click(); await rename.locator('[data-action="rename"]').click();
     await second.locator('#save-rename-dialog-input').fill('Renamed in tab two'); await second.locator('#save-rename-dialog-ok').click();
     await page.bringToFront();
     await page.waitForFunction(() => /^Save: Renamed in tab two/.test(document.getElementById('launch-save-text').textContent), {}, {timeout: 15000});
@@ -416,12 +421,15 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     assert.equal(await page.locator('#launch-label').textContent(), 'Launch FTL');
     // B: New save with the preset, whose files B has not enabled: the first save of that mod setup, nothing downloaded.
     const fetched = requests.filter(r => r.path.startsWith('/api/mods/files/') || /mega/.test(r.host)).length;
+    await openMods(); await page.getByRole('button', {name: 'Enable preset F1 pair'}).click();
+    await page.waitForFunction(() => document.querySelectorAll('#mods-panel [aria-label="Mod load order"] .mod-row').length === 2);
     await page.goto(origin + '/?view=saves'); await page.waitForFunction(() => document.body.dataset.sessionReady === 'true');
-    await page.locator('#new-save').click(); await page.locator('#new-save-dialog[open]').waitFor(); await page.locator('#new-save-mods').selectOption({label: 'F1 pair'});
+    await page.locator('#new-save').click(); await page.locator('#new-save-dialog[open]').waitFor();
     assert.equal(await page.locator('#new-save-name').inputValue(), 'Save 1');
     await page.locator('#new-save-create').click(); await page.waitForFunction(() => !document.getElementById('new-save-dialog'));
     await page.waitForFunction(h => document.querySelector(`#saves-list .save-row[data-setup="${h}"]`), setHash);
     assert.equal(await hasModSave(setHash), true); assert.equal(requests.filter(r => r.path.startsWith('/api/mods/files/') || /mega/.test(r.host)).length, fetched);
+    await openMods(); await setMods(false);
     await openMods();
     const lists = () => page.evaluate(async ids => { const {getList} = await import('/web/mods/store.mjs'); return Promise.all(ids.map(async id => (await getList(id)).map(e => e.sha256))); }, [accountA, accountB]);
     await page.getByRole('button', {name: 'Enable preset F1 pair'}).click();
