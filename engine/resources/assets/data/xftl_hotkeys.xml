@@ -61,6 +61,8 @@
         <hotkey id="ship_crew" ui_name="hotkey_ship_crew"/>
         <hotkey id="open_store" ui_name="hotkey_store"/>
         <hotkey id="open_options" ui_name="hotkey_options" default_bind="o"/>
+        <hotkey id="increase_font" ui_name="hotkey_increase_font" default_bind="minus"/>
+        <hotkey id="decrease_font" ui_name="hotkey_decrease_font" default_bind="equals"/>
     </group>
 
     <group id="weapons_drones" ui_name="xftl_hotkeys_weapons_group">

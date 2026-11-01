@@ -12,7 +12,7 @@ class SectorType(private val eventManager: EventManager, elem: Element, displayA
     // GenerateMap (0x5f8ca0) creates this for the start beacon. The final
     // sector names BOSS_NEUTRAL, which it then replaces with LAST_STAND_START.
     val startEventName: String = elem.getChildTextTrim("startEvent") ?: "START_BEACON"
-    val startEvent: IEvent get() = startEventName.let { eventManager[it] }
+    val startEvent: IEvent get() = eventManager.getOrNull(startEventName) ?: eventManager["START_BEACON"]
 
     /**
      * The (zero-indexed) earliest sector this is allowed to occur at.
@@ -21,12 +21,14 @@ class SectorType(private val eventManager: EventManager, elem: Element, displayA
 
     val unique: Boolean = elem.getAttributeValue("unique")!!.toBoolean()
 
-    val events: List<EventInfo> = elem.getChildren("event").map {
+    val events: List<EventInfo> = elem.getChildren("event").mapNotNull {
         val name = it.requireAttributeValue("name")
         val count = it.requireAttributeValueInt("min")..it.requireAttributeValueInt("max")
         // The sector event entries go through the same min/max/chance parser
         // as item_modify (0x5e1cd0), so an absent chance is -1.
         val chance = it.getAttributeValue("chance")?.toFloat() ?: -1f
+        // An entry naming an event that is not there places nothing.
+        if (xyz.znix.xftl.hs.HS.modded && eventManager.getOrNull(name) == null) return@mapNotNull null
         EventInfo(name, count, eventManager[name], chance)
     }
 
@@ -39,6 +41,8 @@ class SectorType(private val eventManager: EventManager, elem: Element, displayA
 
     val nameTextId: GameText
     val shortTextId: GameText
+    /** NewGame's first sector names itself after another type (the description's name is that type's). */
+    val displayAsName: Boolean = displayAs != null
 
     val rarityOverrides: Map<String, Int>
 

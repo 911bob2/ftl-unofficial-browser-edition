@@ -1,7 +1,7 @@
 # Desktop tutorial implementation
 
 Target: unmodified desktop FTL 1.6.14, executable hash recorded in
-[original behavior notes](ORIGINAL_BEHAVIOR.md). Private instruction text and
+original behavior notes. Private instruction text and
 artwork are loaded from the owner's DAT, never copied into this repository.
 
 ## Implemented foundation

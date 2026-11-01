@@ -29,9 +29,12 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     // CommandGui's constructor (0x00538710) places shipScreens at (340,85); the
     // native window art lands at (335,78), which puts this origin at (342,85).
     // Native window-relative coordinates below are therefore offset by -7 in x.
+    // Hyperspace (on FTL 1.6.9) sits the window 10 px further left, custom tabs or not (the oracle: 332 against the
+    // original 1.6.14's 342, with 1, 2 and 3 custom tabs and with none: MV frames sw2-ship m0/q1, sw2-switch s-h0, sw4-up24).
+    // The touch layout puts this origin at (50,85) of the HUD block, with the info box to its right.
     override val windowCentreOffset = ConstPoint(
-        if (PlatformSpecific.INSTANCE.isTouchUi) -266 else -4,
-        if (PlatformSpecific.INSTANCE.isTouchUi) -40 else -43
+        if (TouchMode.enabled) -168 else if (PlatformSpecific.INSTANCE.isTouchUi) -266 else -4 - if (xyz.znix.xftl.hs.HS.active) 10 else 0,
+        if (TouchMode.enabled) -67 else if (PlatformSpecific.INSTANCE.isTouchUi) -40 else -43
     )
 
     override val renderScale = if (PlatformSpecific.INSTANCE.isTouchUi) 1.2f else 1f
@@ -51,9 +54,34 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     private val maxFont = game.getFont("HL1", 2f)
     private val sectionFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 62)
 
+    // Hyperspace: `<customReactor>` prices and maximum (CustomReactor.cpp ReactorButton hooks).
+    private val hsDef = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name) else null
+    private val font5 by lazy { xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 5) }
+    private val font52 by lazy { xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 52) }
+
+    /** The price of a reactor column (`reactorCosts[col]`, or the base cost plus `(col - 1) * increment` where it is -1). */
+    private fun hsReactorCost(def: xyz.znix.xftl.hs.ship.CustomShipDefinition, column: Int): Int {
+        val c = def.reactorPrices.getOrNull(column) ?: -1
+        return if (c >= 0) c else def.reactorPrices[0] + (column - 1) * def.reactorPriceIncrement
+    }
+
     private val upgradeSystemSound = game.sounds.getSample("upgradeSystem")
     private val downgradeSystemSound = game.sounds.getSample("downgradeSystem")
     private val undoUpgradesSound = game.sounds.getSample("undoUpgrades")
+
+    // Hyperspace upgrade screen (CustomUpgrades.cpp): the box pages and the ship rename input.
+    private var hsSystemPage = 0
+    private var hsSubsystemPage = 0
+    private var renamingShip = false
+        set(value) {
+            field = value
+            if (TouchMode.enabled) {
+                TouchMode.keyboardWanted = value || renamingCrew != null
+                if (value) TouchMode.keyboardFocusY = 0
+            }
+        }
+    private var renameJustStopped = false
+    private var renameCursorTimer = 0f
 
     private var tab: Tab = initialTab
     val tutorialTab: Tab get() = tab
@@ -75,6 +103,76 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     private val systemUpgradeUndos = HashMap<AbstractSystem, ArrayList<UndoFn>>()
     private val reactorUpgradeUndo = ArrayList<UndoFn>()
 
+    /** Touch layout: a box of the upgrades tab, which a finger selects; the get button then buys its next level. */
+    interface TouchUpgradeBox {
+        val touchIsSelected: Boolean
+        val touchIsSelectable: Boolean
+
+        /** The next level's price, or null when there is none to buy. */
+        val touchPrice: Int?
+        fun touchBuy()
+        fun touchSelect()
+    }
+
+    private var touchFingerDown = false
+    private var touchPressedGet = false
+    private var touchSelectedSystem: AbstractSystem? = null
+    private var touchReactorSelected = false
+
+    private fun touchSelectedBox(): TouchUpgradeBox? =
+        buttons.firstOrNull { it is TouchUpgradeBox && it.touchIsSelected } as TouchUpgradeBox?
+
+    private val touchGet: TouchGetBox? = if (TouchMode.enabled) TouchGetBox(
+        game, game.translator["button_upgrade"], { touchSelectedBox()?.touchPrice },
+        { touchSelectedBox()?.touchPrice.let { it != null && it != Int.MAX_VALUE } }
+    ) { touchSelectedBox()?.touchBuy() } else null
+
+    /** The boxes under the finger select; away from them the selection stays. */
+    private fun touchPickUpgrade(x: Int, y: Int) {
+        if (touchPressedGet) return
+        val box = buttons.lastOrNull { it is TouchUpgradeBox && it.touchIsSelectable && it.contains(x, y) } as TouchUpgradeBox?
+        box?.touchSelect()
+    }
+
+    private val touchUpgradesShown: Boolean get() = TouchMode.enabled && tab == Tab.UPGRADES && customTab < 0
+
+    private fun touchUpdateUpgrades(x: Int, y: Int) {
+        if (touchFingerDown) touchPickUpgrade(x, y)
+        for (button in buttons) {
+            if (button !is TouchUpgradeBox) button.update(x, y)
+            else if (button.touchIsSelected) button.update(button.pos.x + 1, button.pos.y + 1)
+            else button.update(-1, -1)
+        }
+        touchGet?.updateHover(x, y)
+    }
+
+    // Touch layout: a crew box's finger: past 9 px it picks the crew member up; lifted on the name without that, renames.
+    private var touchCrewCandidate: LivingCrew? = null
+    private var touchCrewRename = false
+    private var touchCrewStart: ConstPoint = ConstPoint.ZERO
+
+    private fun touchPressCrew(crew: LivingCrew, onName: Boolean) {
+        touchCrewCandidate = crew
+        touchCrewRename = onName
+        touchCrewStart = ConstPoint(mouseX, mouseY)
+    }
+
+    private fun touchUpdateCrew(x: Int, y: Int) {
+        val candidate = touchCrewCandidate ?: return
+        val dx = x - touchCrewStart.x
+        val dy = y - touchCrewStart.y
+        if (dx * dx + dy * dy > TOUCH_DRAG_DIST * TOUCH_DRAG_DIST) {
+            hsDragging = candidate
+            touchCrewCandidate = null
+        }
+    }
+
+    private fun touchReleaseCrew() {
+        val candidate = touchCrewCandidate ?: return
+        touchCrewCandidate = null
+        if (touchCrewRename) renamingCrew = candidate
+    }
+
     private var crewToDismiss: LivingCrew? = null
 
     // CrewManifest::OnRender (0x004eaf80) opens a 300-wide ConfirmWindow at the
@@ -84,17 +182,51 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
     // If non-null, this is the crewmember whose name we're changing
     private var renamingCrew: LivingCrew? = null
+        set(value) {
+            field = value
+            if (TouchMode.enabled) TouchMode.keyboardWanted = value != null || renamingShip
+        }
     private var cursorFlashTimer = 0f
 
     // If true, the drawing code should re-create any buttons it added
     private var updatingButtons = false
+
+    // Hyperspace customTabs (CustomTabbedWindow.cpp): the custom tab shown, an index into HsTabs.tabs, or -1 for Upgrades,
+    // Crew and Equipment (the three tabs the original has).
+    private var customTab = -1
+    private val hsTabbed = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsTabs.enabled && xyz.znix.xftl.hs.render.HsTabs.tabs.isNotEmpty()
+    private val hsTabCount get() = 3 + xyz.znix.xftl.hs.render.HsTabs.tabs.size
+    private val hsCurrentIndex get() = if (customTab >= 0) 3 + customTab else tab.ordinal
+    private fun hsTabName(i: Int) = if (i < 3) HS_BUILTIN_TABS[i] else xyz.znix.xftl.hs.render.HsTabs.tabs[i - 3].name
+
+    /** TabbedWindow::SetTab hook / TabbedWindow::Close / the done button: TABBED_WINDOW_CONFIRM with the current tab's name. */
+    private fun hsConfirm() {
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.tabbedWindow(xyz.znix.xftl.hs.lua.LuaApi.EV_TABBED_WINDOW_CONFIRM, hsTabName(hsCurrentIndex))
+    }
+
+    // The window opening is SetTab(current tab): the event for the tab it shows (the oracle: one CONFIRM at the open).
+    init {
+        hsConfirm()
+    }
+
+    /** The done button closes the window, which fires TABBED_WINDOW_CONFIRM once (the oracle: one event per click). */
+    private fun hsDoneClicked() {
+        escapePressed()
+    }
+
+    private fun hsSetTab(index: Int) {
+        if (index == hsCurrentIndex) return
+        hsConfirm()
+        if (index < 3) { customTab = -1; tab = Tab.values()[index] } else customTab = index - 3
+        updateButtons()
+    }
 
     private val closeButton = object : Buttons.BasicButton(
         // TabbedWindow::SetPosition (0x00518080) puts the button 23,7 inside its art.
         game, position + ConstPoint(429, 471),
         ConstPoint(132, 32), game.translator["button_accept"],
         4, game.getFont("HL2", 3f), 25,
-        this@ShipWindow::escapePressed
+        { hsDoneClicked() }
     ) {
         override val nativeFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 63)
 
@@ -116,6 +248,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             ship.clonebay?.queue?.remove(crew)
 
             crew.removeFromShip()
+            // CrewEquipBox::RemoveItem hook (dismissSound, "airLoss" by default).
+            if (hsDef != null) xyz.znix.xftl.hs.HS.cfg().dismissSound.takeIf { it.isNotEmpty() }?.let { game.sounds.getSampleOrWarn(it)?.play() }
             crewToDismiss = null
             dismissConfirm = null
             updateButtons()
@@ -136,15 +270,19 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         // The buttons can change their icon depending on which of the other two
         // tabs are selected, so re-create them whenever a different tab is selected.
 
-        if (tab != Tab.UPGRADES)
-            buttons += TabButton(Tab.UPGRADES, ConstPoint(-GLOW_WIDTH, -GLOW_WIDTH), ConstPoint(109, 48))
-        if (tab != Tab.CREW)
-            buttons += TabButton(Tab.CREW, ConstPoint(75, -GLOW_WIDTH), ConstPoint(127, 48))
-        if (tab != Tab.EQUIPMENT)
-            buttons += TabButton(Tab.EQUIPMENT, ConstPoint(175, -GLOW_WIDTH), ConstPoint(123, 48))
+        if (hsTabbed) {
+            for (i in 0 until hsTabCount) if (i != hsCurrentIndex) buttons += HsTabButton(i)
+        } else {
+            if (tab != Tab.UPGRADES)
+                buttons += TabButton(Tab.UPGRADES, ConstPoint(-GLOW_WIDTH, -GLOW_WIDTH), ConstPoint(109, 48))
+            if (tab != Tab.CREW)
+                buttons += TabButton(Tab.CREW, ConstPoint(75, -GLOW_WIDTH), ConstPoint(127, 48))
+            if (tab != Tab.EQUIPMENT)
+                buttons += TabButton(Tab.EQUIPMENT, ConstPoint(175, -GLOW_WIDTH), ConstPoint(123, 48))
+        }
 
         // Switching tabs away from upgrades commits the system upgrades
-        if (tab != Tab.UPGRADES) {
+        if (tab != Tab.UPGRADES || customTab >= 0) {
             commitUpgrades()
         }
 
@@ -156,17 +294,32 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     }
 
     override fun draw(g: Graphics) {
-        val backgroundImage = game.getImg("img/upgradeUI/Equipment/${tab.textureName}_main.png")
+        if (!xyz.znix.xftl.hs.HS.luaActive) { drawBody(g); return }
+        // TabbedWindow::OnRender (CustomTabbedWindow.cpp): RenderEvents.TABBED_WINDOW with the tab's name, in the window's frame
+        // (the art's origin); a pre callback that pre-empts it skips the window.
+        val ox = (position.x - GLOW_WIDTH).f; val oy = (position.y - GLOW_WIDTH).f
+        val re = xyz.znix.xftl.hs.render.HsRenderEvents.preString(xyz.znix.xftl.hs.lua.LuaApi.RE_TABBED_WINDOW, hsTabName(hsCurrentIndex), ox, oy)
+        if (re >= 0) drawBody(g)
+        xyz.znix.xftl.hs.render.HsRenderEvents.postString(xyz.znix.xftl.hs.lua.LuaApi.RE_TABBED_WINDOW, re, ox, oy)
+    }
+
+    private fun drawBody(g: Graphics) {
+        // With custom tabs the equipment window uses HS's wider art, equipment_main_2 (the tab shape moves right).
+        val equipment2 = if (customTab < 0 && hsTabbed && tab == Tab.EQUIPMENT && game.content.datafile.getOrNull("img/upgradeUI/Equipment/equipment_main_2.png") != null)
+            game.getImg("img/upgradeUI/Equipment/equipment_main_2.png") else null
+        val backgroundImage = equipment2 ?: if (customTab >= 0) hsCustomBackground() else game.getImg("img/upgradeUI/Equipment/${tab.textureName}_main.png")
         val baseTint = Graphics.tint
         val dismissing = dismissConfirm != null
+        infoPanel.touchBottom = 0
         fun tinted(factor: Float) = Colour(baseTint.r * factor, baseTint.g * factor, baseTint.b * factor, baseTint.a)
 
         // TabbedWindow::OnRender (0x00518660) draws the other tabs before the window,
         // so the window art's glow overlaps their bottom edge. Under a priority popup
         // it tints them (measured 0.35 of their normal colour).
         if (dismissing) Graphics.tint = tinted(TAB_POPUP_TINT)
-        for (button in buttons) {
-            if (button is TabButton)
+        // A custom tab's window art is drawn first: the oracle shows the tab buttons over it.
+        if (customTab < 0) for (button in buttons) {
+            if (button is TabButton || button is HsTabButton)
                 button.draw(g)
         }
         if (dismissing) Graphics.tint = tinted(MANIFEST_POPUP_TINT)
@@ -175,15 +328,20 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             position.x - GLOW_WIDTH,
             position.y - GLOW_WIDTH
         )
+        if (customTab >= 0) for (button in buttons) {
+            if (button is HsTabButton) button.draw(g)
+        }
 
         if (!dismissing)
             acceptButtonImage.draw(position.x + 406f, position.y + 464f)
 
-        when (tab) {
+        if (customTab >= 0) drawCustomTab(g)
+        else when (tab) {
             Tab.UPGRADES -> drawUpgrades(g)
             Tab.CREW -> drawCrew(g)
             Tab.EQUIPMENT -> drawEquipment(g)
         }
+        if (hsTabbed) drawHsTabOverlays(g)
 
         if (updatingButtons) {
             // Update any newly-created button positions
@@ -197,9 +355,14 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             drawButtonsDismissing(g, baseTint)
         } else {
             for (button in buttons) {
-                if (button !is TabButton)
+                if (button !is TabButton && button !is HsTabButton)
                     button.draw(g)
             }
+        }
+
+        if (touchGet != null) {
+            if (touchUpgradesShown && touchSelectedBox() != null) touchGet.drawBelow(g, infoPanel) else touchGet.hide()
+            hsDragging?.let { it.drawPortrait(mouseX - 34, mouseY - 34, false, 2f) }
         }
 
         equipmentPanel.drawDrag(g)
@@ -208,7 +371,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     private fun drawButtonsDismissing(g: Graphics, baseTint: Colour) {
         // TabbedWindow skips its Accept button under the popup.
         for (button in buttons) {
-            if (dismissHighlightButtons.contains(button) || button is TabButton || button === closeButton)
+            if (dismissHighlightButtons.contains(button) || button is TabButton || button is HsTabButton || button === closeButton)
                 continue
 
             button.draw(g)
@@ -229,9 +392,11 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
     private fun drawUpgrades(g: Graphics) {
         // Draw the ship name
-        val name = game.translator[ship.type.shipTitle!!]
+        // Upgrades::OnRender prints the ship's own name (the one entered in the hangar, or renamed in the run).
+        val name = ship.displayName ?: ship.type.shipTitle?.let { game.translator[it] } ?: ""
 
         shipNameFont.printCenter(position.x + 295f, position.y + 39f, name, Colour.white)
+        if (renamingShip) drawRenameCursor(g, name)
 
         // Upgrades::OnRender (0x0054c7d0) labels the three frames in font 62.
         val labelColour = Colour(25, 49, 51)
@@ -257,24 +422,40 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         // Draw the system power info.
         // Note the reactor button draws this itself.
         val hoveredButton = buttons.filterIsInstance(UpgradeButton::class.java).firstOrNull { it.hovered }
-        val hoveredSystem = hoveredButton?.system
+        val hoveredSystem = if (TouchMode.enabled) touchSelectedSystem else hoveredButton?.system
         if (hoveredSystem != null) {
             val undoablePower = systemUpgradeUndos[hoveredSystem]?.size ?: 0
             infoPanel.drawDescriptionBoxSystem(hoveredSystem)
-            infoPanel.drawSystemPowerBox(g, hoveredSystem.blueprint, hoveredSystem.energyLevels, undoablePower)
+            // InfoBox::SetSystem takes the system's own maximum (ShipSystem), not the blueprint's
+            infoPanel.drawSystemPowerBox(g, hoveredSystem.blueprint, hoveredSystem.energyLevels, undoablePower, hoveredSystem.maxLevel)
         }
+
+        // Hyperspace pages the boxes: eight systems and four subsystems a page, at least the ship's systemLimit /
+        // subsystemLimit boxes (CustomUpgrades.cpp AddUpgradeBox / AddEmptyUpgradeBox).
+        val hsUp = hsDef != null
+        val subsystems = ship.rooms.mapNotNull { it.system as? SubSystem }.sortedBy { it.sortingType }
+        val systemTotal = if (hsDef != null) maxOf(ship.mainSystems.size, hsDef.systemLimit) else 8
+        val subsystemTotal = if (hsDef != null) maxOf(subsystems.size, hsDef.subsystemLimit) else 4
+        val systemPages = xyz.znix.xftl.hs.render.HsUpgrades.pages(systemTotal, 8)
+        val subsystemPages = xyz.znix.xftl.hs.render.HsUpgrades.pages(subsystemTotal, 4)
+        hsSystemPage = hsSystemPage.coerceIn(0, systemPages - 1)
+        hsSubsystemPage = hsSubsystemPage.coerceIn(0, subsystemPages - 1)
 
         // Draw the systems
         for (i in 0 until 8) {
             if (!updatingButtons)
                 continue
+            if (hsUp && hsSystemPage * 8 + i >= systemTotal)
+                continue
 
-            val system = ship.mainSystems.getOrNull(i)
+            val system = ship.mainSystems.getOrNull(if (hsUp) hsSystemPage * 8 + i else i)
 
             val price: Int? = when {
                 system == null -> null
-                system.energyLevels == system.blueprint.maxPower -> null
-                else -> system.blueprint.upgradeCost[system.energyLevels - 1]
+                system.energyLevels == system.maxLevel -> null
+                // a level past the blueprint's price list (a ship `max` above it, HS) reads past UpgradeBox's vector in the
+                // original (oracle sw4-up24: "--" and 0); here it cannot be bought
+                else -> system.blueprint.upgradeCost.getOrNull(system.energyLevels - 1) ?: Int.MAX_VALUE
             }
 
             val isFullyUpgraded = system != null && price == null
@@ -299,17 +480,21 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
         // Draw the subsystems
         // TODO only go until 3 on non-AE?
-        val subsystems = ship.rooms.mapNotNull { it.system as? SubSystem }.sortedBy { it.sortingType }
         for (i in 0 until 4) {
             if (!updatingButtons)
                 continue
+            if (hsUp && hsSubsystemPage * 4 + i >= subsystemTotal)
+                continue
 
-            val system = if (i < subsystems.size) subsystems[i] else null
+            val index = if (hsUp) hsSubsystemPage * 4 + i else i
+            val system = if (index < subsystems.size) subsystems[index] else null
 
             val price: Int? = when {
                 system == null -> null
-                system.energyLevels == system.blueprint.maxPower -> null
-                else -> system.blueprint.upgradeCost[system.energyLevels - 1]
+                system.energyLevels == system.maxLevel -> null
+                // a level past the blueprint's price list (a ship `max` above it, HS) reads past UpgradeBox's vector in the
+                // original (oracle sw4-up24: "--" and 0); here it cannot be bought
+                else -> system.blueprint.upgradeCost.getOrNull(system.energyLevels - 1) ?: Int.MAX_VALUE
             }
 
             val isFullyUpgraded = system != null && price == null
@@ -332,13 +517,43 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             )
         }
 
+        // Hyperspace page arrows (UpgradeBoxSet buttons at (18,182)/(572,182) and (18,315)/(265,315)) and the rename button
+        if (updatingButtons && hsUp) {
+            if (systemPages > 1) {
+                buttons += PageArrow(ConstPoint(11, 182), false) { hsSystemPage = (hsSystemPage + systemPages - 1) % systemPages; updateButtons() }
+                buttons += PageArrow(ConstPoint(565, 182), true) { hsSystemPage = (hsSystemPage + 1) % systemPages; updateButtons() }
+            }
+            if (subsystemPages > 1) {
+                buttons += PageArrow(ConstPoint(11, 315), false) { hsSubsystemPage = (hsSubsystemPage + subsystemPages - 1) % subsystemPages; updateButtons() }
+                buttons += PageArrow(ConstPoint(258, 315), true) { hsSubsystemPage = (hsSubsystemPage + 1) % subsystemPages; updateButtons() }
+            }
+            if (xyz.znix.xftl.hs.HS.cfg().renameShipAllowed && xyz.znix.xftl.hs.HS.cfg().renameShipButton) buttons += RenameButton()
+        }
+
         // Add the reactor button
         if (updatingButtons) {
             val reactorImg = game.getImg("img/upgradeUI/Equipment/equipment_reactor_on.png")
             val reactorHighlight = game.getImg("img/upgradeUI/Equipment/equipment_reactor_select2.png")
-            buttons += object : Button(game, ConstPoint(298, 327), reactorImg.imageSize) {
+            buttons += object : Button(game, ConstPoint(298, 327), reactorImg.imageSize), TouchUpgradeBox {
+                override val disabled: Boolean
+                    get() = hsDef != null && ship.purchasedReactorPower - reactorUpgradeUndo.size >= hsDef.maxReactorLevel
+
+                override val touchIsSelected: Boolean get() = touchReactorSelected
+                override val touchIsSelectable: Boolean get() = true
+                override val touchPrice: Int?
+                    get() = currentPrice.takeIf { !disabled && ship.purchasedReactorPower < ship.maxReactorPower }
+
+                override fun touchBuy() = click(Input.MOUSE_LEFT_BUTTON)
+
+                override fun touchSelect() {
+                    touchReactorSelected = true
+                    touchSelectedSystem = null
+                }
+
                 val currentPrice: Int
                     get() {
+                        hsDef?.let { return hsReactorCost(it, ship.purchasedReactorPower / 5 + 1) }
+
                         // Expensive first power on the Cernkov
                         if (ship.purchasedReactorPower < 5)
                             return 30
@@ -347,6 +562,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                     }
 
                 override fun draw(g: Graphics) {
+                    if (hsDef != null) { drawHs(g, hsDef); return }
                     if (hovered) {
                         reactorHighlight.draw(pos)
 
@@ -405,6 +621,59 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                     )
                 }
 
+                /** ReactorButton::OnRender under Hyperspace: past 25 bars the five columns scroll; column prices on top. */
+                private fun drawHs(g: Graphics, def: xyz.znix.xftl.hs.ship.CustomShipDefinition) {
+                    val maxLevel = def.maxReactorLevel
+                    val tempUpgrade = reactorUpgradeUndo.size
+                    val reactorLevel = ship.purchasedReactorPower - tempUpgrade
+                    val tempLevel = ship.purchasedReactorPower
+                    val active = reactorLevel < maxLevel
+                    val img = if (!active) game.getImg("img/upgradeUI/Equipment/equipment_reactor_off.png") else if (hovered) reactorHighlight else reactorImg
+                    img.draw(pos)
+                    if (hovered) infoPanel.drawDescriptionBox(GameText.localised("upgrade_reactor"), GameText.localised("reactor_desc"), null, emptyList(), InfoPanel.INFO_HEIGHT_SYSTEM)
+
+                    var overCol = 0
+                    var displayReactorLevel = reactorLevel
+                    var displayTempUpgrade = tempUpgrade
+                    if (tempLevel >= 25) {
+                        overCol = (tempLevel - 25) / 5 + 1
+                        if (tempLevel == maxLevel && maxLevel % 5 == 0) overCol--
+                        if (displayReactorLevel < overCol * 5) {
+                            displayTempUpgrade -= overCol * 5 - displayReactorLevel
+                            displayReactorLevel = 0
+                        } else displayReactorLevel -= overCol * 5
+                    }
+                    val displayTempLevel = displayTempUpgrade + displayReactorLevel
+                    var displayMaxLevel = maxLevel
+                    while (displayMaxLevel > 25) displayMaxLevel -= 5
+                    val displayMaxCol = if (displayMaxLevel > 20) 5 else displayMaxLevel / 5
+
+                    val fontColour = if (active && hovered) Constants.STORE_BUY_HOVER else Constants.SECTOR_CUTOUT_TEXT
+                    for (col in 0 until 5) {
+                        for (row in 0 until 5) {
+                            val bar = col * 5 + row + 1
+                            g.colour = when {
+                                bar <= displayReactorLevel -> Constants.SYS_ENERGY_ACTIVE
+                                bar <= displayTempLevel -> Constants.SYS_ENERGY_PURCHASE_UNDOABLE
+                                bar > displayMaxLevel -> continue
+                                else -> HS_EMPTY_BAR
+                            }
+                            g.fillRect(pos.x + 30f + col * 44, pos.y + 66f - row * 13, 32f, 8f)
+                        }
+                        val price = if (col >= displayMaxCol) "--" else hsReactorCost(def, col + 1 + overCol).toString()
+                        font5.printRight(pos.x + 47f + col * 44, pos.y + 2f, price, fontColour)
+                    }
+
+                    val text = game.translator["upgrade_reactor_power"].replaceArg("")
+                    reactorFont.drawStringLeftAligned(pos.x + 179f, pos.y + 105f, text, fontColour)
+                    numberFont.drawStringLeftAligned(pos.x + 47f, pos.y + 105f, tempLevel.toString(), fontColour)
+                    when {
+                        !active -> font52.printCenter(pos.x + 238f, pos.y + 88f, game.translator["upgrade_max"], fontColour)
+                        tempLevel == maxLevel -> font52.print(pos.x + 233f, pos.y + 88f, "--", fontColour)
+                        else -> numberFont.drawString(pos.x + 235f, pos.y + 105f, currentPrice.toString(), fontColour)
+                    }
+                }
+
                 override fun click(button: Int) {
                     if (button == Input.MOUSE_RIGHT_BUTTON) {
                         val undoLast = reactorUpgradeUndo.lastOrNull() ?: return
@@ -443,6 +712,58 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         }
     }
 
+    /** A UpgradeBoxSet page arrow (`upgradeUI/buttons_system_arrow`, the right one mirrored). */
+    private inner class PageArrow(pos: ConstPoint, private val mirrored: Boolean, private val action: () -> Unit) :
+        Button(game, pos, ConstPoint(14, 12)) {
+        override val makesHoverNoise: Boolean get() = true
+
+        override fun draw(g: Graphics) {
+            val image = game.getImg("img/upgradeUI/buttons_system_arrow_${if (hovered) "select2" else "on"}.png")
+            if (mirrored) {
+                g.pushTransform(); g.translate(pos.x + image.width.f, pos.y.f); g.scale(-1f, 1f); image.draw(0, 0); g.popTransform()
+            } else image.draw(pos.x, pos.y)
+        }
+
+        override fun click(button: Int) {
+            if (button == Input.MOUSE_LEFT_BUTTON) action()
+        }
+    }
+
+    /** CustomUpgrades' `renameButton` (`upgradeUI/buttons_system_rename`, allowButton). */
+    private inner class RenameButton : Button(game, ConstPoint(470, 46), ConstPoint(38, 38)) {
+        override fun draw(g: Graphics) {
+            game.getImg("img/upgradeUI/buttons_system_rename_${if (hovered) "select2" else "on"}.png").draw(pos.x, pos.y)
+        }
+
+        override fun click(button: Int) {
+            if (button == Input.MOUSE_LEFT_BUTTON && !renameJustStopped) startShipRename()
+        }
+    }
+
+    private fun startShipRename() {
+        renamingShip = true
+        renameCursorTimer = 0f
+        if (ship.displayName == null) ship.displayName = ship.type.shipTitle?.let { game.translator[it] } ?: ""
+    }
+
+    /** TextInput::Stop plus the empty-name fallback (CustomUpgrades::MouseClick / Close). */
+    private fun stopShipRename() {
+        if (!renamingShip) return
+        renamingShip = false
+        if (ship.displayName.isNullOrEmpty()) ship.displayName = game.translator["nameless_one"]
+    }
+
+    private fun drawRenameCursor(g: Graphics, name: String) {
+        renameCursorTimer += game.renderingDeltaTime
+        val period = 0.5f
+        if (renameCursorTimer > period) renameCursorTimer -= period
+        if (renameCursorTimer < period / 2f) {
+            val width = shipNameFont.width(name)
+            g.colour = Colour.yellow
+            g.fillRect(position.x + 295f + width / 2f + 2f, position.y + 18f, 2f, 22f)
+        }
+    }
+
     inner class UpgradeButton(
         pos: ConstPoint, size: ConstPoint,
         private val selectImage: Image,
@@ -451,8 +772,19 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         private val upgradePrice: Int?,
         /** Subsystem boxes draw their icon and bars one pixel lower than system boxes. */
         private val contentYOffset: Int = 0
-    ) : Button(game, pos, size) {
+    ) : Button(game, pos, size), TouchUpgradeBox {
         override val disabled: Boolean get() = system == null
+
+        override val touchIsSelected: Boolean get() = system != null && system === touchSelectedSystem
+        override val touchIsSelectable: Boolean get() = system != null
+        override val touchPrice: Int? get() = upgradePrice
+
+        override fun touchBuy() = click(Input.MOUSE_LEFT_BUTTON)
+
+        override fun touchSelect() {
+            touchSelectedSystem = system
+            touchReactorSelected = false
+        }
 
         override fun draw(g: Graphics) {
             // Draw the main button image
@@ -479,28 +811,57 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             val lastNonRefundablePower = system.energyLevels - undoablePower + 1 // Power here is 1-indexed
             val refundRange = lastNonRefundablePower..system.energyLevels
 
-            // Draw the energy bars
-            for (level in 1..system.blueprint.maxPower) {
+            // Draw the energy bars (ShipSystem::RenderPowerBoxesPlain: 15x6 bars 2 apart from the bottom up).
+            // Hyperspace (CustomUpgrades.cpp, Upgrades::OnRender + RenderPowerBoxesPlain + GL_RenderPrimitiveWithColor
+            // hooks): over 8 bars, two columns of eight show, 10 px left and 11 px right of the usual place, the left one
+            // the column below the column the bought and pending levels reach into; their top levels are written
+            // above them once the left column is not the first.
+            val bottomY = pos.y + size.y - 76f + contentYOffset
+            val max = system.maxLevel
+            val twoColumns = xyz.znix.xftl.hs.HS.active && max > 8
+            var leftColumn = 0
+            if (twoColumns) {
+                val reached = system.energyLevels
+                leftColumn = if (reached / 8 > 0) reached / 8 - 1 else 0
+                if (reached % 8 == 0 && reached == max && leftColumn > 0) leftColumn--
+                if (leftColumn > 0) {
+                    // easy_printCenter(5, x + 21, y - 62): x is 24 left of the bars, the bottom bar 8 below y (oracle
+                    // sw4-up24 u0: digits' rows 207-213 over a bottom bar at 274)
+                    font5.printCenter(pos.x + 21f, bottomY - 8f - 62f, ((leftColumn + 1) * 8).toString(), Colour.white)
+                    font5.printCenter(pos.x + 42f, bottomY - 8f - 62f, ((leftColumn + 2) * 8).toString(), Colour.white)
+                }
+            }
+            for (level in 1..max) {
+                var dx = 0f
+                var dy = 0f
+                if (twoColumns) {
+                    val column = (level - 1) / 8
+                    dx = when (column) { leftColumn -> -10f; leftColumn + 1 -> 11f; else -> continue }
+                    dy = column * 64f
+                }
                 g.colour = when {
                     level in refundRange -> Constants.SYS_ENERGY_PURCHASE_UNDOABLE
                     system.energyLevels >= level -> Constants.SYS_ENERGY_ACTIVE
+                    // Hyperspace (FTL 1.6.9): the bars still to buy are the reactor's 1,1,100/255 at 0.25 (71,80,50 on the
+                    // panel), hovered or not (oracle sw3-up16 u0, u-h0..h5); 1.6.14 lightens a hovered box's (vn-aug n5-n7)
+                    xyz.znix.xftl.hs.HS.active -> HS_EMPTY_BAR
                     hovered -> Constants.SYS_ENERGY_PURCHASE_HOVER
                     else -> Constants.SYS_ENERGY_PURCHASE
                 }
 
                 g.fillRect(
-                    pos.x + 24f,
-                    pos.y + size.y - 76f - (level - 1) * 8f + contentYOffset,
+                    pos.x + 24f + dx,
+                    bottomY - (level - 1) * 8f + dy,
                     15f, 6f
                 )
             }
 
             // Draw the scrap amount
             if (upgradePrice != null) {
-                numberFont.drawString(pos.x + 30f, pos.y + size.y - 8f, upgradePrice.toString(), fontColour)
+                numberFont.drawString(pos.x + 30f, pos.y + size.y - 8f, xyz.znix.xftl.hs.render.HsUpgrades.priceText(upgradePrice), fontColour)
             }
 
-            if (system.energyLevels == system.blueprint.maxPower) {
+            if (system.energyLevels == system.maxLevel) {
                 val maxStr = game.translator["upgrade_max"]
                 maxFont.drawStringCentred(pos.x.f, pos.y + size.y - 8f, size.x.f, maxStr, fontColour)
             }
@@ -551,8 +912,138 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         }
     }
 
+    /** Diagnostics (WP2 probe): the Hyperspace paging state of the open tab. */
+    val diagnosticState: String get() = "{\"tab\":\"$tab\",\"sysPage\":$hsSystemPage,\"subPage\":$hsSubsystemPage,\"crewPage\":$hsCrewPage," +
+        "\"crewLimit\":${if (hsDef != null) hsCrewLimit() else -1},\"renaming\":$renamingShip,\"name\":${ftl.browser.BrowserDebug.quote(ship.displayName ?: "")}," +
+        "\"boxes\":${hsCrewBoxes.joinToString(",", "[", "]") { "[${it.first.x},${it.first.y},${it.second}]" }},\"equip\":${equipmentPanel.diagnosticState}}"
+
+    // ---- Hyperspace crew manifest (CustomCrewManifest.cpp) ----
+
+    private var hsCrewPage = 0
+    private var hsDragging: LivingCrew? = null
+    private var mouseX = 0
+    private var mouseY = 0
+    private val hsCrewBoxes = ArrayList<Pair<ConstPoint, Int>>() // box position and slot of the boxes drawn last
+
+    /** The crew the manifest lists: those whose `noSlot` stat is off (CustomCrewManifest::Update). */
+    private fun hsListedCrew(): List<LivingCrew> = ship.sys.playerCrew.filter { xyz.znix.xftl.hs.events.HsCrew.noSlot?.invoke(it) != true }
+
+    /** CustomCrewManifest::GetEffectiveCrewLimit: a box for every crew member plus the free slots. */
+    private fun hsCrewLimit(): Int {
+        val limit = xyz.znix.xftl.hs.ship.HsShipState.crewLimit(ship)
+        val count = ship.sys.playerCrew.size
+        val used = xyz.znix.xftl.hs.ship.HsShipState.capacityUsed(ship, count)
+        return if (used > limit) count - kotlin.math.ceil(used - limit).toInt() else count + limit - (used + 0.001f).toInt()
+    }
+
+    /** CustomCrewManifest::OnInit: eight boxes a page, three to a row, a short last row centred. */
+    private fun hsCrewBoxPositions(limit: Int): List<ConstPoint> {
+        val result = ArrayList<ConstPoint>()
+        var boxX = 68
+        var boxY = -45
+        for (i in 0 until limit) {
+            if (i % 8 == 0) { boxX = 68; boxY = -45 }
+            if ((i % 8) % 3 == 0) { boxX = 68; boxY += 133 }
+            if (i == limit - ((limit % 8) % 3)) {
+                if (limit == i + 1) boxX += 170 else if (limit == i + 2) boxX += 86
+            } else if (i % 8 == 6) boxX += 86
+            result += ConstPoint(boxX, boxY)
+            boxX += 170
+        }
+        return result
+    }
+
+    private fun drawCrewHs(g: Graphics) {
+        noteFont.print(position.x + 18f, position.y + 55f, game.translator["rename_note"], Colour.white)
+
+        val listed = hsListedCrew()
+        val limit = hsCrewLimit()
+        val positions = hsCrewBoxPositions(limit)
+        val pages = xyz.znix.xftl.hs.render.HsUpgrades.pages(limit, 8)
+        hsCrewPage = hsCrewPage.coerceIn(0, pages - 1)
+
+        hsCrewBoxes.clear()
+        for (i in hsCrewPage * 8 until minOf(limit, hsCrewPage * 8 + 8)) {
+            drawCrewBox(g, listed, positions[i], i)
+            hsCrewBoxes += Pair(positions[i], i)
+        }
+
+        // The crew past the limit (the first one) goes in the over-capacity box left of the window.
+        val overCrew = listed.getOrNull(limit)
+        if (overCrew != null) {
+            val overPos = if (TouchMode.enabled) ConstPoint(708, 342) else ConstPoint(-188, 107 + 12)
+            drawCrewBox(g, listed, overPos, limit)
+            hsCrewBoxes += Pair(overPos, limit)
+        }
+
+        if (updatingButtons) {
+            if (limit > 8) {
+                buttons += PageCrewArrow(ConstPoint(508, 54), false) { hsCrewPage = (hsCrewPage + pages - 1) % pages; updateButtons() }
+                buttons += PageCrewArrow(ConstPoint(543, 54), true) { hsCrewPage = (hsCrewPage + 1) % pages; updateButtons() }
+            }
+            if (overCrew != null) {
+                buttons += ShipEquipmentPanel.SellDropBox.create(
+                    game, ShipEquipmentPanel.SellDropBox.Type.TOO_MANY_CREW,
+                    if (TouchMode.enabled) ConstPoint(621, 330) else ConstPoint(-275, 107), { null }, { null }
+                )
+            }
+        }
+
+        // The dragged crew member follows the mouse at 2x (CustomCrewManifest::OnRender).
+        if (touchGet == null) hsDragging?.let { it.drawPortrait(mouseX - 34, mouseY - 34, false, 2f) }
+    }
+
+    /** `upgradeUI/Equipment/button_crew_arrow` (the right one mirrored). */
+    private inner class PageCrewArrow(pos: ConstPoint, private val mirrored: Boolean, private val action: () -> Unit) :
+        Button(game, pos, ConstPoint(32, 28)) {
+        override fun draw(g: Graphics) {
+            val image = game.getImg("img/upgradeUI/Equipment/button_crew_arrow_${if (hovered) "select2" else "on"}.png")
+            if (mirrored) {
+                g.pushTransform(); g.translate(pos.x + image.width.f, pos.y.f); g.scale(-1f, 1f); image.draw(0, 0); g.popTransform()
+            } else image.draw(pos.x, pos.y)
+        }
+
+        override fun click(button: Int) {
+            if (button == Input.MOUSE_LEFT_BUTTON) action()
+        }
+    }
+
+    /** CustomCrewManifest::MouseUp: the box under the mouse takes the dragged crew member (swap, or to the end). */
+    private fun hsCrewDrop(x: Int, y: Int) {
+        val dragged = hsDragging ?: return
+        hsDragging = null
+        val listed = hsListedCrew()
+        val target = hsCrewBoxes.firstOrNull { (pos, _) ->
+            x >= position.x + pos.x && x < position.x + pos.x + 100 && y >= position.y + pos.y && y < position.y + pos.y + 133
+        } ?: return
+        val all = ship.sys.playerCrew
+        val other = listed.getOrNull(target.second)
+        if (other == null) {
+            all.remove(dragged); all.add(dragged)
+        } else if (other !== dragged) {
+            java.util.Collections.swap(all, all.indexOf(dragged), all.indexOf(other))
+        }
+        updateButtons()
+    }
+
+    override fun mouseScroll(change: Int) {
+        if (hsDef != null && tab == Tab.EQUIPMENT) { val p = scaleWindowPoint(mouseX, mouseY); equipmentPanel.mouseScroll(change, p.x, p.y); return }
+        // CustomCrewManifest::OnScrollWheel
+        if (hsDef == null || tab != Tab.CREW) return
+        val pages = xyz.znix.xftl.hs.render.HsUpgrades.pages(hsCrewLimit(), 8)
+        if (hsCrewLimit() > 8) {
+            hsCrewPage = if (change < 0) (hsCrewPage + 1) % pages else (hsCrewPage + pages - 1) % pages
+            updateButtons()
+        }
+    }
+
     private fun drawCrew(g: Graphics) {
+        if (hsDef != null) {
+            drawCrewHs(g)
+            return
+        }
         val crew = ship.sys.playerCrew
+        if (TouchMode.enabled) hsCrewBoxes.clear()
 
         // CrewManifest::OnRender (0x004eaf80): font 10 at (25,55) from the native origin.
         noteFont.print(position.x + 18f, position.y + 55f, game.translator["rename_note"], Colour.white)
@@ -584,7 +1075,9 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             // tuck the box against the window's left edge instead (it
             // overlaps one crew box's corner - the per-crew dismiss buttons
             // remain the primary dismissal path).
-            val sellCrewPos = if (PlatformSpecific.INSTANCE.isTouchUi) {
+            val sellCrewPos = if (TouchMode.enabled) {
+                ConstPoint(621, 330)
+            } else if (PlatformSpecific.INSTANCE.isTouchUi) {
                 ConstPoint(-60, 250)
             } else {
                 ConstPoint(-275, 107)
@@ -601,6 +1094,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
     private fun drawCrewBox(g: Graphics, crewList: List<LivingCrew>, boxPos: ConstPoint, id: Int) {
         val crew = crewList.getOrNull(id)
+        // The drop looks these up; the Hyperspace manifest lists its own.
+        if (TouchMode.enabled && hsDef == null) hsCrewBoxes += Pair(boxPos, id)
 
         if (crew == null) {
             val boxEmpty = game.getImg("img/upgradeUI/Equipment/box_crew_off.png")
@@ -638,6 +1133,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                     val height = 23
                     val boxX = pos.x + (size.x - width) / 2
                     val boxY = pos.y + 43
+                    if (TouchMode.enabled) TouchMode.keyboardFocusY = boxY + height
 
                     g.colour = Colour.white
                     g.fillRect(boxX, boxY, width, height)
@@ -659,7 +1155,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                         g.colour = Colour.yellow
                         g.fillRect(nameX + nameWidth - 2, boxY + 8, 2, 13)
                     }
-                } else {
+                } else if (hsDragging !== crew) {
                     // Draw the name
                     // CrewEquipBox::RenderLabels (0x00542470): font 6 centred at (50,49).
                     val name = crew.info.shortName
@@ -667,15 +1163,17 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                         true -> Constants.CREW_RENAME_TEXT_COLOUR
                         false -> Colour.white
                     }
-                    crewLabelFont.printCenter(pos.x + 50f, pos.y + 49f, name, nameColour)
+                    // (with ignoreLanguage for a Latin or Cyrillic name, NativeFonts.nameIgnoresLanguage)
+                    val labelFont = if (xyz.znix.xftl.rendering.NativeFonts.nameIgnoresLanguage(name)) crewLabelFont.english else crewLabelFont
+                    labelFont.printCenter(pos.x + 50f, pos.y + 49f, name, nameColour)
                 }
 
                 // EquipmentBox::OnRender (0x00540150) renders the crew icon at 2x from
                 // (50,27); its 35px frame starts 17 source pixels up and left.
-                crew.drawPortrait(pos.x + 16, pos.y - 7, false, 2f)
+                if (hsDragging !== crew) crew.drawPortrait(pos.x + 16, pos.y - 7, false, 2f)
 
                 // Draw the information about this crewmember while hovering over them
-                if (hovered) {
+                if (hovered && hsDragging == null) {
                     infoPanel.drawCrew(g, crew.info)
                 }
             }
@@ -687,8 +1185,18 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             }
 
             override fun click(button: Int) {
-                if (button != Input.MOUSE_LEFT_BUTTON || !nameHover)
+                if (button != Input.MOUSE_LEFT_BUTTON)
                     return
+                if (TouchMode.enabled) {
+                    if (nameHover || mouseY < pos.y + 62) touchPressCrew(crew, nameHover)
+                    return
+                }
+                if (!nameHover) {
+                    // CustomCrewManifest::MouseClick: pressing a crew box (not its name or dismiss button) picks the crew
+                    // member up to move or swap.
+                    if (hsDef != null && mouseY < pos.y + 62) hsDragging = crew
+                    return
+                }
 
                 renamingCrew = crew
             }
@@ -740,6 +1248,28 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         // If we were renaming a crewmember, we're not any more
         renamingCrew = null
 
+        // CustomUpgrades::MouseClick: a click on the rename button (or, without the button, on the name) starts the
+        // input unless it is running; any other click stops it.
+        if (hsDef != null && xyz.znix.xftl.hs.HS.cfg().renameShipAllowed) {
+            renameJustStopped = renamingShip
+            val p = scaleWindowPoint(x, y)
+            val onName = tab == Tab.UPGRADES && !xyz.znix.xftl.hs.HS.cfg().renameShipButton &&
+                p.x - position.x > 148 && p.x - position.x < 458 && p.y - position.y > 46 && p.y - position.y < 86
+            if (onName && !renamingShip) startShipRename() else stopShipRename()
+        }
+
+        if (touchUpgradesShown && button == Input.MOUSE_LEFT_BUTTON) {
+            touchFingerDown = true
+            touchPressedGet = false
+            if (touchGet?.press(x, y) == true) {
+                touchPressedGet = true
+                return
+            }
+            for (btn in ArrayList(buttons)) if (btn !is TouchUpgradeBox) btn.mouseDown(button, x, y)
+            touchPickUpgrade(x, y)
+            return
+        }
+
         // Deliberately NO tap-to-arm here (user decision): upgrades are
         // single-click on touch too - the UNDO button is the safety net.
         super.mouseClick(button, x, y)
@@ -751,11 +1281,18 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     }
 
     override fun mouseReleased(button: Int, x: Int, y: Int) {
+        if (button == Input.MOUSE_LEFT_BUTTON) {
+            touchFingerDown = false
+            touchPressedGet = false
+        }
         if (dismissConfirm != null) {
             return
         }
 
         super.mouseReleased(button, x, y)
+        if (TouchMode.enabled && button == Input.MOUSE_LEFT_BUTTON) touchReleaseCrew()
+
+        if (hsDragging != null) hsCrewDrop(x, y)
 
         if (tab == Tab.EQUIPMENT) {
             val p = scaleWindowPoint(x, y)
@@ -771,7 +1308,17 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             return
         }
 
+        if (touchUpgradesShown) {
+            mouseX = x
+            mouseY = y
+            touchUpdateUpgrades(x, y)
+            return
+        }
+
         super.updateUI(x, y)
+        mouseX = x
+        mouseY = y
+        if (TouchMode.enabled) touchUpdateCrew(x, y)
 
         if (tab == Tab.EQUIPMENT) {
             val p = scaleWindowPoint(x, y)
@@ -786,6 +1333,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             ftl.browser.BrowserDebug.event("tutorial", "window.accept.rejected", "tab", tab.name)
             return
         }
+        hsConfirm() // TabbedWindow::Close
+        stopShipRename()
         commitUpgrades()
         close()
     }
@@ -812,12 +1361,23 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     override fun positionUpdated() {
         super.positionUpdated()
 
-        infoPanel.position = position + ConstPoint(size.x + 13, 74)
+        infoPanel.position = position + if (TouchMode.enabled) ConstPoint(596, 50) else ConstPoint(size.x + 13, 74)
         equipmentPanel.position = position
     }
 
     override fun onTextInput(key: Int, c: Char): Boolean {
         if (dismissConfirm != null) return key != Input.KEY_ESCAPE
+        if (renamingShip) {
+            // CApp::OnTextInput / OnTextEvent / OnKeyDown hooks of CustomUpgrades.cpp: the input takes every key.
+            var name = ship.displayName ?: ""
+            when {
+                key == Input.KEY_BACK -> name = name.dropLast(1)
+                key == Input.KEY_ENTER || key == Input.KEY_ESCAPE -> { stopShipRename(); return true }
+                c != 0.toChar() && !c.isISOControl() -> if (name.length < xyz.znix.xftl.hs.render.HsUpgrades.NAME_LENGTH) name += c
+            }
+            ship.displayName = name
+            return true
+        }
         val info = renamingCrew?.info ?: return false
 
         if (key == Input.KEY_BACK) {
@@ -832,7 +1392,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         }
 
         if (c != 0.toChar()) {
-            if (info.name.length < 15)
+            // TextInput::OnTextInput: only the characters of the current language's set.
+            if (info.name.length < 15 && xyz.znix.xftl.TextInputChars.accepts(c))
                 info.name += c
             return true
         }
@@ -885,16 +1446,123 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             if (button != Input.MOUSE_LEFT_BUTTON || disabled)
                 return
 
+            hsConfirm() // the TabbedWindow::SetTab hook (priority 1000) fires TABBED_WINDOW_CONFIRM for the tab it leaves
             tab = newTab
             updateButtons()
+        }
+    }
+
+    /** The background of a custom tab: `img/<windowPath>.png` (CustomTabbedWindow::ParseWindowNode), blank when it has none. */
+    private fun hsCustomBackground(): Image {
+        val path = xyz.znix.xftl.hs.render.HsTabs.tabs[customTab].windowPath
+        return game.getImg("img/" + (path ?: "upgradeUI/Equipment/upgrades_main") + ".png")
+    }
+
+    /** A custom tab's window: nothing of its own but the UNDO button of a tab with hasUndo (CustomTabbedWindow::PopulateWindow). */
+    private fun drawCustomTab(g: Graphics) {
+        if (!xyz.znix.xftl.hs.render.HsTabs.tabs[customTab].hasUndo) return
+        undoButtonImage.draw(position.x + 3f, position.y + 464f)
+        if (updatingButtons) {
+            buttons += object : Buttons.BasicButton(
+                game, ConstPoint(26, 471), ConstPoint(97, 32), game.translator["button_undo"], 4, game.getFont("HL2", 3f), 25,
+                {
+                    // CommandGui::LButtonDown: TABBED_WINDOW_UNDO with the tab's name
+                    if (xyz.znix.xftl.hs.HS.luaActive)
+                        xyz.znix.xftl.hs.lua.LuaEvents.tabbedWindow(xyz.znix.xftl.hs.lua.LuaApi.EV_TABBED_WINDOW_UNDO, hsTabName(hsCurrentIndex))
+                }
+            ) {
+                override val nativeFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 63)
+            }
+        }
+    }
+
+    /** TabbedWindow::OnRender's additions: the selected custom tab's backdrop and every tab's icon over its button. */
+    private fun drawHsTabOverlays(g: Graphics) {
+        val n = hsTabCount
+        for (i in 0 until n) {
+            val geo = hsTabGeometry(i)
+            val isLast = i == n - 1
+            if (i == hsCurrentIndex && i > 2) {
+                val back = game.getImg("img/upgradeUI/Equipment/tabButtons/" + if (isLast) "select_button_end.png" else "select_button.png")
+                back.draw((position.x + geo.imageX + if (isLast) -17 else 2).f, (position.y + geo.imageY).f)
+            }
+            val icon = game.getImg("img/upgradeUI/Equipment/tabButtons/icon_" + hsTabName(i) + ".png")
+            icon.draw((position.x + geo.imageX + if (isLast) -10 else 0).f, (position.y + geo.imageY).f)
+        }
+    }
+
+    /** Where tab [i]'s button image and hit box lie (window relative), as TabbedWindow, CustomTabbedWindow::InitialiseButton and SetTab leave them. */
+    private class HsGeo(val imageX: Int, val imageY: Int, val hitX: Int, val hitY: Int, val hitW: Int, val hitH: Int)
+
+    private fun hsTabGeometry(i: Int): HsGeo {
+        val n = hsTabCount
+        // native window-relative x is the port's + 7
+        if (i < 3) {
+            if (n > 3 && i == 2) return HsGeo(182 - 19 - 7, -GLOW_WIDTH, 197 - 5 - 7, 0, 70, 38)
+            return when (i) {
+                0 -> HsGeo(-GLOW_WIDTH, -GLOW_WIDTH, -GLOW_WIDTH, -GLOW_WIDTH, 109, 48)
+                1 -> HsGeo(75, -GLOW_WIDTH, 75, -GLOW_WIDTH, 127, 48)
+                else -> HsGeo(175, -GLOW_WIDTH, 175, -GLOW_WIDTH, 123, 48)
+            }
+        }
+        val butX = xyz.znix.xftl.hs.render.HsTabs.tabs[i - 3].butX
+        if (i == n - 1) {
+            val last = (n - 1) * xyz.znix.xftl.hs.render.HsTabs.HITBOX_WIDTH
+            return HsGeo(last + 20 + 8 - 7, -GLOW_WIDTH, last + 20 + 10 + 15 - 7, 0, 75, 38)
+        }
+        return HsGeo(butX - 7, -GLOW_WIDTH, butX + 25 - 7, 0, 75, 38)
+    }
+
+    /** A tab button with customTabs on: left_start / left / right / right_end images by the tab's place (TabbedWindow::SetTab hook). */
+    private inner class HsTabButton(val index: Int) : Button(
+        game, ConstPoint(hsTabGeometry(index).hitX, hsTabGeometry(index).hitY),
+        ConstPoint(hsTabGeometry(index).hitW, hsTabGeometry(index).hitH)
+    ) {
+        private val geo = hsTabGeometry(index)
+        private val images = run {
+            val n = hsTabCount
+            val cur = hsCurrentIndex
+            val base = when {
+                index == 0 -> "left_start"
+                index == n - 1 -> "right_end"
+                index > cur -> "right"
+                else -> "left"
+            }
+            ButtonImageSet.select2(game, "img/upgradeUI/Equipment/tabButtons/$base")
+        }
+
+        override val disabled: Boolean
+            get() = (!game.isRunningAutomatedTest && game.mainGame.isTutorialRunning) || (index == 1 && game.playerHasTooManyCrew())
+
+        override fun draw(g: Graphics) {
+            val image = when {
+                disabled -> images.off
+                hovered -> images.hover
+                else -> images.normal
+            }
+            image.draw((pos.x - geo.hitX + geo.imageX).f, (pos.y - geo.hitY + geo.imageY).f)
+        }
+
+        override fun click(button: Int) {
+            if (button != Input.MOUSE_LEFT_BUTTON || disabled) return
+            hsSetTab(index)
         }
     }
 
     companion object {
         const val GLOW_WIDTH: Int = 7
 
+        /** Hyperspace reactor box: an unbought bar (255, 255, 100, 0.25). */
+        private val HS_EMPTY_BAR = Colour(1f, 1f, 100 / 255f, 0.25f)
+
         /** CrewManifest's tint under the dismiss popup (0x004eaf80). */
         private const val MANIFEST_POPUP_TINT = 0.25f
+
+        /** How far a finger moves on a crew box before the crew member comes up with it. */
+        private const val TOUCH_DRAG_DIST = 9
+
+        /** TabbedWindow::names of the three tabs the original has (CustomTabbedWindow's icons are named by them). */
+        private val HS_BUILTIN_TABS = arrayOf("upgrades", "crew", "equipment")
 
         /** The other tabs under a TabbedWindow priority popup, as measured. */
         private const val TAB_POPUP_TINT = 0.35f

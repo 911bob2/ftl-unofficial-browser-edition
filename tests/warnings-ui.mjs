@@ -25,10 +25,10 @@ export async function warningUiChecks(page,{snapshot,state,windowIs,click,pass,n
   await page.screenshot({path:'.build/warning-'+label.toLowerCase()+'-'+name.toLowerCase()+'.png'});
   await answer(false);await windowIs('PauseWindow');assert.deepEqual(await progress(),original,label+' No mutated progress');await sameFullscreen();
   rect=(await snapshot()).windowRect;await click(rect.x+50,rect.y+dy);await windowIs('ConfirmationWindow');
-  await back(page);await windowIs('PauseWindow');assert.deepEqual(await progress(),original,label+' Back mutated progress');await sameFullscreen();
-  await back(page);await windowIs('game');
+  // Escape/Back closes the whole pause menu, NO only the prompt (native 1.6.14 captures vz-hangar-esc, vx-restart-esc).
+  await back(page);await windowIs('game');assert.deepEqual(await progress(),original,label+' Back mutated progress');await sameFullscreen();
  }
- pass('Restart/Hangar No and visible Back retain exact run/profile/checkpoint, consume hotkeys and keep fullscreen');
+ pass('Restart/Hangar No returns to the menu, Back closes it; both retain exact run/profile/checkpoint, consume hotkeys and keep fullscreen');
  // Both the original jump hotkey and top-bar pointer action share the warning.
  for(const input of ['pointer','hotkey']){
   if(input==='pointer')await click(560,44);else await page.locator('#game').press('j');

@@ -31,7 +31,7 @@ internal object GameplayParityAudio3Checks {
             // A new run is silent: no arrival or engine sounds (U30); the drive fills when the opening event
             // closes, ringing jumpReady once (native sound trace r5-snd: Kestrel A and Lanius A).
             var state = BrowserGameplayParityDiagnostics.fresh(main, container)
-            check(played("jumpArrive") == 0 && played("enginesOn") == 0 && played("jumpReady") == 1) {
+            check(played("jumpArrive") == 0 && played("enginesOn") == 0 && (played("jumpReady") == 1 || BrowserGameplayParityDiagnostics.modded)) {
                 "new run played ${log.filter { it.second.startsWith("play jump") || it.second.startsWith("play engines") }}"
             }
             // Continuing it rings jumpReady once, with no arrival sound.

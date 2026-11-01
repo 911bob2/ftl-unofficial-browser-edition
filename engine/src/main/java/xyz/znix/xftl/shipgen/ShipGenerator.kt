@@ -41,73 +41,125 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
 
         // CreateShip: the level is the argument minus one on easy (uVar9, -1 in easy's first sector); most budgets
         // use it clamped at zero (uVar13).
-        val level = sector + difficulty.sectorOffset
-        val levelClamped = level.coerceAtLeast(0)
+        var level = sector + difficulty.sectorOffset
+        var levelClamped = level.coerceAtLeast(0)
 
         // WorldManager::CreateShip builds the CompleteShip before calling CreateShip. Its ShipAI constructor
         // (0x625070) draws a surrender default 1..5 and an escape default; only the first can matter below.
         val initialSurrender = rand.nextInt(5) + 1
         rand.nextInt(5)
+        diagnosticMark?.invoke("gpre")
 
         // CreateShip reseeds from the ship event when the event carries a seed.
         val reseed = seed != null && seed != 0 && !spec.fixedBlueprint
         if (reseed)
             NativeRandom.seed(seed!!)
 
+        // Hyperspace with <shipGenerators>: the CreateShip hook reseeds the same way, then picks the blueprint at the
+        // unadjusted sector (HsShipGenerator).
+        val hsHook = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsShipGenerator.enabled && !spec.fixedBlueprint
+
         // BlueprintManager::GetShipBlueprint (0x60ac50)
-        val shipBlueprint = try {
-            selectShipBlueprint(spec.autoBlueprint, levelClamped).real
+        var shipBlueprint = try {
+            selectShipBlueprint(spec.autoBlueprint, if (hsHook) sector else levelClamped).real
         } catch (invalid: NoSuchElementException) {
             throw IllegalStateException("Empty ship blueprint list in encounter " + spec.name, invalid)
         }
 
-        val ship = Ship(shipBlueprint, sys, null, spec, null)
-        ship.generationSeed = if (reseed) seed else null
-        ship.eventSeed = if (seed != null && seed != 0) seed else null
-
-        // The Zoltan shield is dropped from the blueprint before OnInit on easy's first sector.
-        ship.loadDefaultContents(omitAugment = if (!spec.fixedBlueprint && easy && level == -1) "ENERGY_SHIELD" else null)
-
-        // ShipManager::Restart (0x4b1760) builds the ship from the same stream: Ship::OnInit, the starting systems,
-        // then the blueprint's weapons and drones (Equipment::AddDrone 0x53d500 makes a crew drone's body now).
-        ShipConstructionDraws.onInit(ship)
-        ShipConstructionDraws.startingSystems(ship)
-        repeat(ship.hardpoints.count { it.weapon != null }) { ShipConstructionDraws.weapon() }
-        ship.drones?.drones?.forEach { info -> info?.let { ShipConstructionDraws.drone(sys, it.type) } }
-        // The fires come after the blueprint crew, which only a ship that skips CreateShip has (below).
-        if (!spec.fixedBlueprint)
-            ShipConstructionDraws.fires(ship)
-
-        // ShipManager::AddSystem (0x4a8370) never starts a system below one bar, and caps it at the system's maximum.
-        for (slot in ship.systemSlots) {
-            val system = slot.room.system ?: continue
-            if (!slot.isInstalled) continue
-            system.energyLevels = system.energyLevels.coerceAtLeast(1).coerceAtMost(slot.system.maxPower)
+        // The hook's generator for the picked blueprint; without one it calls the vanilla CreateShip with the
+        // blueprint's name, which reseeds again.
+        val hsGen = if (hsHook) xyz.znix.xftl.hs.ship.HsShipGenerator.generatorFor(shipBlueprint.name) else null
+        // Hyperspace CustomShipGenerator.cpp: GENERATOR_CREATE_SHIP (name, sector, ShipEvent, ShipBlueprint, nil) after the
+        // blueprint and generator are picked; the callbacks may replace the sector, the blueprint or the whole ship.
+        var preempted: Ship? = null
+        var sectorArg = sector
+        if (hsHook && xyz.znix.xftl.hs.HS.luaActive) {
+            val r = xyz.znix.xftl.hs.events.HsGeneratorEvents.pre(spec, sector, shipBlueprint, seed ?: 0)
+            sectorArg = r.sector
+            shipBlueprint = r.blueprint
+            preempted = r.ship
         }
-        // CreateSystems (0x4a96f0) builds them in the blueprint's order, each powered as it is made.
-        for (system in ship.mainSystems.sortedBy { xyz.znix.xftl.ai.systemOrderKey(it) })
-            ship.browserPowerAtCreation(system)
-
-        // The blueprint's hull plus the level (not clamped), 20 at most.
-        if (!spec.fixedBlueprint) {
-            ship.browserMaxHealth = nativeMaxHull(ship.type.maxHealth, level)
-            ship.health = ship.maxHealth
+        // no generator: the hook calls the vanilla CreateShip, which reseeds again (after the callbacks)
+        if (hsHook && hsGen == null && reseed)
+            NativeRandom.seed(seed!!)
+        if (hsGen != null) {
+            level = hsGen.level(sectorArg, difficulty)
+            levelClamped = level.coerceAtLeast(0)
         }
 
-        if (!spec.fixedBlueprint) {
-            Build(sys, ship, spec, level, levelClamped, difficulty).generate()
-        } else {
-            // A direct blueprint skips CreateShip: WorldManager::CreateShip only runs OnInit, whose crew comes
-            // from the blueprint's crewCount classes (ShipManager 0x4ae2f0 with an empty list).
-            val picked = ArrayList<CrewPick>()
-            for (crewSpec in ship.type.initialCrew) {
-                repeat(crewSpec.amount) { picked += CrewPick(crewBlueprintFor(sys, crewSpec.race), null) }
+        val ship = preempted ?: Ship(shipBlueprint, sys, null, spec, null)
+        if (preempted == null) {
+            ship.generationSeed = if (reseed) seed else null
+            ship.eventSeed = if (seed != null && seed != 0) seed else null
+
+            // The Zoltan shield is dropped from the blueprint before OnInit on easy's first sector.
+            diagnosticStep = "contents"
+            diagnosticMark?.invoke("sm")
+            ship.loadDefaultContents(omitAugment = if (!spec.fixedBlueprint && easy && level == -1) "ENERGY_SHIELD" else null)
+
+            // ShipManager::Restart (0x4b1760) builds the ship from the same stream: Ship::OnInit, the starting systems,
+            // then the blueprint's weapons and drones (Equipment::AddDrone 0x53d500 makes a crew drone's body now).
+            diagnosticStep = "onInit"
+            ShipConstructionDraws.onInit(ship)
+            ShipConstructionDraws.startingSystems(ship)
+            repeat(ship.hardpoints.count { it.weapon != null }) { ShipConstructionDraws.weapon() }
+            ship.drones?.drones?.forEach { info -> info?.let { ShipConstructionDraws.drone(sys, it.type, it) } }
+            // The fires come after the blueprint crew, which only a ship that skips CreateShip has (below).
+            if (!spec.fixedBlueprint) {
+                ShipConstructionDraws.fires(ship)
+                // Hyperspace's OnInit hook (ShipManager_Extend::Initialize): the definition's <crew> list.
+                if (xyz.znix.xftl.hs.HS.active) hsDefinitionCrew(sys, ship)
+                if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.shipLoopDuringGeneration(ship)
             }
-            spawnCrew(sys, ship, difficulty, picked)
-            ShipConstructionDraws.fires(ship)
-            ship.instantPowerShields()
+
+            // ShipManager::AddSystem (0x4a8370) never starts a system below one bar, and caps it at the system's maximum.
+            for (slot in ship.systemSlots) {
+                val system = slot.room.system ?: continue
+                if (!slot.isInstalled) continue
+                system.energyLevels = system.energyLevels.coerceAtLeast(1).coerceAtMost(slot.system.maxPower)
+            }
+            // CreateSystems (0x4a96f0) builds them in the blueprint's order, each powered as it is made.
+            for (system in ship.mainSystems.sortedBy { xyz.znix.xftl.ai.systemOrderKey(it) })
+                ship.browserPowerAtCreation(system)
+
+            // The blueprint's hull plus the level (not clamped), 20 at most. Hyperspace: SetMaximumHull caps it at the
+            // definition's hpCap instead (none for -1, MV's default); without the HS generator, CustomShips.cpp's
+            // CreateShip hook sets the blueprint hull plus the sector (minus one on easy) with the same cap.
+            if (!spec.fixedBlueprint) {
+                ship.browserMaxHealth = if (xyz.znix.xftl.hs.HS.active) {
+                    val cap = xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name).hpCap
+                    val hull = ship.type.maxHealth + (if (hsGen != null) level else sector - (if (easy) 1 else 0))
+                    if (cap != -1 && hull > cap) cap else hull
+                } else nativeMaxHull(ship.type.maxHealth, level)
+                ship.health = ship.maxHealth
+            }
+
+            if (!spec.fixedBlueprint) {
+                diagnosticStep = "generate"
+                Build(sys, ship, spec, level, levelClamped, difficulty, hsGen).generate()
+                // Both HS CreateShip paths end with the definition's forceAutomated.
+                if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name).forceAutomated?.let { ship.isAutomated = it }
+            } else {
+                // A direct blueprint skips CreateShip: WorldManager::CreateShip only runs OnInit, whose crew comes
+                // from the blueprint's crewCount classes (ShipManager 0x4ae2f0 with an empty list).
+                val picked = ArrayList<CrewPick>()
+                for (crewSpec in ship.type.initialCrew) {
+                    repeat(crewSpec.amount) { picked += CrewPick(crewBlueprintFor(sys, crewSpec.race), null) }
+                }
+                spawnCrew(sys, ship, difficulty, ship.type.hsCrewCount?.let { ArrayList(picked.take(it)) } ?: picked)
+                ShipConstructionDraws.fires(ship)
+                if (xyz.znix.xftl.hs.HS.active) {
+                    hsDefinitionCrew(sys, ship)
+                    xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name).forceAutomated?.let { ship.isAutomated = it }
+                }
+                ship.instantPowerShields()
+            }
+            ship.crewAI.initialCrewCount = ship.crew.size
         }
-        ship.crewAI.initialCrewCount = ship.crew.size
+        // Diagnostics: where Hyperspace's GENERATOR_CREATE_SHIP_POST fires (the end of ShipGenerator::CreateShip).
+        diagnosticCreated?.invoke(spec.name)
+        // GENERATOR_CREATE_SHIP_POST (name, sector, ShipEvent, ShipBlueprint, ShipManager): after the generator ran
+        if (hsHook && xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.events.HsGeneratorEvents.post(spec, sectorArg, shipBlueprint, seed ?: 0, ship)
 
         // WorldManager::CreateShip: the escape threshold is rolled first (ShipAI 0x6255d0), then the timer, then the
         // surrender threshold (0x6255b0); both get worldLevel/2 added, and the earlier one is lowered when they
@@ -122,6 +174,18 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
         ship.escapeHealth = if (spec.escape != null) escape else 0
         ship.surrenderHealth = if (spec.surrender != null) surrender else 0
 
+        // WorldManager::AddShip (0x613d00; 1.6.9 0x5ee6b0, the same calls) ends WorldManager::CreateShip by aiming the
+        // new ship's space drones at the player and then the player's at the new ship; combat drones draw there (native
+        // traces: two hops per combat drone right after the escape and surrender rolls, the enemy's before the
+        // player's). Hyperspace hooks none of these calls; MV oracle vn-dord (a player COMBAT_1 against MU_AUTO_RIGGER
+        // and MU_GHOST_REBEL_RIGGER, reseeded at GENERATOR_CREATE_SHIP_POST) fits the enemy-first order only.
+        ShipConstructionDraws.targetShip(ship)
+        (sys.player as Ship?)?.let { ShipConstructionDraws.targetShip(it) }
+
+        // Hyperspace WorldManager::CreateShip (CustomShips.cpp, after super): <enemyPreigniterFix>.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsWeapons.enemyCreated(ship)
+
+        diagnosticStep = "built"
         return ship
     }
 
@@ -171,7 +235,9 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
      */
     private inner class Build(
         val sys: InGameState, val ship: Ship, val spec: EnemyShipSpec,
-        val level: Int, val levelClamped: Int, val difficulty: Difficulty
+        val level: Int, val levelClamped: Int, val difficulty: Difficulty,
+        /** Hyperspace's CustomShipGenerator (null: the vanilla CreateShip). */
+        val hs: xyz.znix.xftl.hs.ship.HsShipGenerator.Generator? = null
     ) {
         val rand = NativeRandom
         val easy = difficulty == Difficulty.EASY
@@ -179,7 +245,10 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
 
         // The blueprint's system templates by native system id; a system listed twice keeps its last element
         // (the original stores them in a map keyed by id).
-        val templates = arrayOfNulls<ShipBlueprint.ParsedSystem>(SYSTEM_COUNT)
+        // Hyperspace: every id up to the last custom system (temporal is 20; 16-19 are never systems).
+        val systemCount = if (hs != null) xyz.znix.xftl.hs.systems.HsSystems.lastSystemId() + 1 else SYSTEM_COUNT
+        val templates = arrayOfNulls<ShipBlueprint.ParsedSystem>(systemCount)
+        val allSystems: IntArray = if (hs != null) (0 until systemCount).filter { it !in 16..19 }.toIntArray() else ALL_SYSTEMS
 
         // Weapon/drone slot counts default to four when the blueprint has none (ShipBlueprint 0x760db0).
         val weaponSlots: Int = min(ship.weaponSlots ?: DEFAULT_SLOTS, ship.hardpoints.size)
@@ -189,7 +258,8 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
 
         init {
             for (parsed in ship.type.systems) {
-                val id = SYSTEM_IDS[parsed.systemName] ?: continue
+                val id = idOf(parsed.systemName) ?: continue
+                if (id >= systemCount) continue
                 templates[id] = parsed
             }
         }
@@ -202,23 +272,27 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             }
 
             // GenerateSystemMaxes (0x61f640)
+            diagnosticStep = "maxes"
             maxes = systemMaxes()
 
             // ModifyScrapCount(pool - current): (int)(25 * (level+1)^1.8 + 150) with the exe's 1.8f as a double.
-            ship.scrap = (Math.pow((levelClamped + 1).toDouble(), 1.7999999523162842) * 25.0 + 150.0).toInt()
+            // The HS generator leaves the scrap alone.
+            if (hs == null)
+                ship.scrap = (Math.pow((levelClamped + 1).toDouble(), 1.7999999523162842) * 25.0 + 150.0).toInt()
 
             // Budgets: offensive level+1, defensive level+2 (signed), general level/3+1 (+1 on hard).
-            var offensive = levelClamped + 1
+            // HS GenerateShipBudget: the same with the unclamped level for all three.
+            var offensive = if (hs != null) level + 1 else levelClamped + 1
             var defensive = level + 2
-            var general = levelClamped / 3 + 1 + (if (hard) 1 else 0)
+            var general = (if (hs != null) level / 3 else levelClamped / 3) + 1 + (if (hard) 1 else 0)
 
             // Optional systems, in system-id order, for each id the blueprint knows and the ship lacks:
-            // random32() % 10 < level + 1/2/3 installs it.
+            // random32() % 10 < level + 1/2/3 installs it. HS AddSystems: random32() % 100 < 10 * (level + 1/2/3).
             val chance = levelClamped + (if (easy) 1 else if (hard) 3 else 2)
-            for (id in 0 until SYSTEM_COUNT) {
+            for (id in allSystems) {
                 if (hasSystem(id) || maxes[id] <= 0)
                     continue
-                if (rand.nextInt(10) < chance) {
+                if (if (hs != null) rand.nextInt(100) < 10 * chance else rand.nextInt(10) < chance) {
                     upgrade(id)
                     if (id == 3 || id == 4 || id == 9)
                         offensive--
@@ -242,21 +316,26 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
                 defensive--
             }
             general += offensive + defensive
-            list = candidates(ALL_SYSTEMS)
+            list = candidates(allSystems)
             while (list.isNotEmpty() && general > 0) {
                 upgrade(list[rand.nextInt(list.size)])
-                list = candidates(ALL_SYSTEMS)
+                list = candidates(allSystems)
                 general--
             }
 
+            diagnosticStep = "scripted"
             addScriptedEquipment()
+            diagnosticStep = "weapons"
             val flags = addProceduralWeapons()
+            diagnosticStep = "drones"
             addProceduralDrones(flags)
 
             // Crew: ShipEvent crew entries, or one entry of the blueprint's class.
+            diagnosticStep = "crew"
             addCrew()
 
             // End of CreateShip: shields up (InstantPowerShields 0x49d710), drone parts.
+            diagnosticStep = "shields"
             ship.instantPowerShields()
             val droneCount = ship.drones?.drones?.count { it != null } ?: 0
             if (ship.dronesCount < droneCount * 2)
@@ -267,7 +346,10 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
 
         // ---- system access by native id ----
 
-        private fun slotsFor(id: Int) = ship.systemSlots.filter { SYSTEM_IDS[it.spec.systemName] == id }
+        private fun slotsFor(id: Int) = ship.systemSlots.filter { idOf(it.spec.systemName) == id }
+
+        private fun idOf(name: String): Int? =
+            if (hs != null) xyz.znix.xftl.hs.systems.HsSystems.nameToId(name).takeIf { it >= 0 } else SYSTEM_IDS[name]
 
         fun hasSystem(id: Int): Boolean = slotsFor(id).any { it.isInstalled }
 
@@ -293,11 +375,16 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
 
         /** GenerateSystemMaxes: one draw per template, in id order. */
         private fun systemMaxes(): IntArray {
-            val out = IntArray(SYSTEM_COUNT)
-            for (id in 0 until SYSTEM_COUNT) {
+            val out = IntArray(systemCount)
+            for (id in 0 until systemCount) {
                 val template = templates[id] ?: continue
                 val start = template.startingPower
                 val max = template.aiMaxPower ?: -1
+                // HS GenerateSystemMaxes: the generator's scaling (templates in id order, custom systems included).
+                if (hs != null) {
+                    out[id] = hs.systemMax(id, start, max, level, difficulty)
+                    continue
+                }
                 var m = 1
                 if (level > -1) {
                     m = if (level > 1) 3 else 2
@@ -364,13 +451,13 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             // GetWeaponBlueprint (0x60a9a0): a list name picks a random member; anything else that is unknown
             // is the inert default blueprint.
             val ref = bp.getOrNull(name)
-            val picked = if (ref is BlueprintList) bp.getOrNull(ref.names[rand.nextInt(ref.names.size)]) else ref
+            val picked = if (ref is BlueprintList) ref.names.takeIf { it.isNotEmpty() }?.let { bp.getOrNull(it[rand.nextInt(it.size)]) } else ref
             return picked as? AbstractWeaponBlueprint
         }
 
         private fun resolveDrone(name: String): DroneBlueprint? {
             val ref = bp.getOrNull(name)
-            val picked = if (ref is BlueprintList) bp.getOrNull(ref.names[rand.nextInt(ref.names.size)]) else ref
+            val picked = if (ref is BlueprintList) ref.names.takeIf { it.isNotEmpty() }?.let { bp.getOrNull(it[rand.nextInt(it.size)]) } else ref
             return picked as? DroneBlueprint
         }
 
@@ -398,8 +485,9 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             for (slot in drones.drones.indices) {
                 if (drones.drones[slot] != null)
                     continue
-                drones.drones[slot] = Drones.DroneInfo(drone, null)
-                ShipConstructionDraws.drone(sys, drone)
+                val info = Drones.DroneInfo(drone, null)
+                drones.drones[slot] = info
+                ShipConstructionDraws.drone(sys, drone, info)
                 return true
             }
             return false
@@ -589,7 +677,7 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
 
         private fun addCrew() {
             val type = ship.type
-            val minCrew = type.initialCrew.sumOf { it.amount }
+            val minCrew = type.hsCrewCount ?: type.initialCrew.sumOf { it.amount }
             var baseCrew = 0
             var defaultRace = "human"
             val overrides = spec.crewOverride?.specifiers ?: emptyList()
@@ -598,17 +686,24 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
                 entries += CrewEntry(o.race, o.prop, o.amount)
 
             if (minCrew == 0) {
-                // No crew: an automated ship unless the event lists crew.
-                ship.isAutomated = overrides.isEmpty()
+                // No crew: an automated ship unless the event lists crew (HS: or the definition has a <crew> list).
+                ship.isAutomated = overrides.isEmpty() &&
+                    (hs == null || xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name).crewList.isEmpty())
             } else {
                 defaultRace = type.initialCrew.first { it.amount > 0 }.race
-                val maxCrew = type.initialCrew.lastOrNull { it.max != null }?.max ?: DEFAULT_MAX_CREW
+                val maxCrew = type.hsMaxCrew ?: type.initialCrew.lastOrNull { it.max != null }?.max ?: DEFAULT_MAX_CREW
 
                 // (int)((max - min) * min(level/8, 1) + min), with the level clamped.
-                var scaled = (maxCrew - minCrew).toFloat()
-                if (levelClamped.toFloat() * 0.125f < 1f)
-                    scaled = scaled * levelClamped.toFloat() * 0.125f
-                baseCrew = (scaled + minCrew.toFloat()).toInt()
+                // HS InitShip: (int)(defaultSectorScaling(level) * (max - min) + min).
+                if (hs != null) {
+                    val v = hs.defaultScaling(difficulty).value(level)
+                    baseCrew = hsF32(hsF32(v * (maxCrew - minCrew).toFloat()) + minCrew.toFloat()).toInt()
+                } else {
+                    var scaled = (maxCrew - minCrew).toFloat()
+                    if (levelClamped.toFloat() * 0.125f < 1f)
+                        scaled = scaled * levelClamped.toFloat() * 0.125f
+                    baseCrew = (scaled + minCrew.toFloat()).toInt()
+                }
                 ship.isAutomated = false
 
                 if (entries.isEmpty())
@@ -679,7 +774,9 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
     private fun crewBlueprintFor(sys: InGameState, race: String): CrewBlueprint {
         if (race == "random")
             return sys.lootPool.getCrewOrRandom(NativeRandom, "random")
-        return bp[race].resolve(NativeRandom) as CrewBlueprint
+        // Hyperspace: BlueprintManager::GetCrewBlueprint hook (one list pick; unknown names are human).
+        if (xyz.znix.xftl.hs.HS.active) return xyz.znix.xftl.hs.crew.HsCrewContent.crewBlueprint(bp, race, NativeRandom)
+        return (bp.getOrNull(race) as? xyz.znix.xftl.BlueprintList)?.takeIf { it.names.isNotEmpty() }?.resolve(NativeRandom) as? CrewBlueprint ?: bp.crewOrHuman(race)
     }
 
     /**
@@ -704,6 +801,7 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
         val present = priority.filter { if (it == ARTILLERY) artillery.isNotEmpty() else systemRoom(ship, it) != null }
 
         for ((i, pick) in picked.withIndex()) {
+            diagnosticMark?.invoke("crew")
             // 0x4ae2f0 chooses the room first: a member beyond the priority list draws `random32() % room count`
             // before 0x4a24a0 draws the name, the timer and the colours (native traces, 14 of 14 members).
             val room: Room? = if (i < present.size) {
@@ -721,7 +819,8 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             NativeRandom.next31() // the animation timer's start delay (TimerHelper::Start)
             val colours = factory.drawColours(pick.blueprint)
             // CrystalAlien's constructor (0x487e70) then draws whether its lockdown ever gets ready.
-            val crystalNeverReady = if (pick.blueprint.name == "crystal") NativeRandom.next31() and 1 == 0 else false
+            xyz.znix.xftl.crew.NativeCrewFactory.hsInitializeDraw(pick.blueprint.name)
+            val crystalNeverReady = factory.crystalPowerDraw(pick.blueprint.name)
             val info = LivingCrewInfo(sys, pick.blueprint, name.name, factory.colourIndex(pick.blueprint, colours, name.male))
 
             val member = if (room != null)
@@ -735,12 +834,67 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
         }
     }
 
+    private fun hsF32(v: Float): Float = java.lang.Float.intBitsToFloat(java.lang.Float.floatToIntBits(v))
+
+    /**
+     * Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Ship/CustomShips.cpp (ShipManager_Extend::Initialize,
+     * not revisiting) and src/game/Ship/CustomCrew.cpp (the AddCrewMemberFromString hook): every ship, enemies too,
+     * gets its definition's `<crew>` list after OnInit. Per member: `list="true"` picks a race with `rand() % size`
+     * ("human" for an empty list; drawn from [NativeRandom] like the player's start), `random32() % 2` for the sex
+     * argument, list names resolved with `random32() % size`, then AddCrewMemberFromString's own draws (name,
+     * blueprint, timer, colours: [NativeCrewFactory.createBoarder]); the member goes to its room and the ship is no
+     * longer automated.
+     */
+    private fun hsDefinitionCrew(sys: InGameState, ship: Ship) {
+        val def = xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name)
+        for (p in def.crewList) {
+            diagnosticMark?.invoke("defcrew")
+            var species = p.species
+            if (p.isList) {
+                val list = (bp.getOrNull(p.species) as? BlueprintList)?.names ?: emptyList()
+                species = if (list.isNotEmpty()) list[NativeRandom.nextInt(list.size)] else "human"
+            }
+            val maleArg = NativeRandom.next31() % 2 == 1 // random32() % 2: the male argument
+            var list = (bp.getOrNull(species) as? BlueprintList)?.names
+            while (list != null && list.isNotEmpty()) {
+                species = list[NativeRandom.nextInt(list.size)]
+                list = (bp.getOrNull(species) as? BlueprintList)?.names
+            }
+            // 0x4aea60 as NativeCrewFactory.createBoarder models it: a name, GetCrewBlueprint (its own name draw,
+            // dropped; HS: unknown races are human), the animation timer, the colours, a crystal's start-up roll.
+            val factory = sys.crewFactory
+            // A member the definition names draws no name of its own (AddCrewMemberFromString keeps the argument).
+            val first = if (p.name.isEmpty()) factory.newName() else null
+            val race = xyz.znix.xftl.hs.crew.HsCrewContent.crewBlueprint(bp, species, NativeRandom)
+            factory.newName()
+            NativeRandom.next31() // the animation timer's start delay (TimerHelper::Start)
+            val colours = factory.drawColours(race)
+            xyz.znix.xftl.crew.NativeCrewFactory.hsInitializeDraw(race.name)
+            val crystalNeverReady = sys.crewFactory.crystalPowerDraw(race.name)
+            val info = LivingCrewInfo(sys, race, p.name.ifEmpty { first?.name ?: "" }, factory.colourIndex(race, colours, first?.male ?: maleArg))
+            val room = ship.rooms.getOrNull(p.roomId) ?: ship.rooms[0]
+            val member = ship.addCrewMemberInRoom(info, room, false)
+            (member as? CrewCrystal)?.initEnemyPower(crystalNeverReady)
+            ship.isAutomated = false
+            sys.eventCreator.refreshUsedNames()
+        }
+    }
+
     private fun systemRoom(ship: Ship, id: Int): Room? {
         val name = SYSTEM_NAMES[id]
         return ship.systems.firstOrNull { it.blueprint.type == name }?.room
     }
 
     companion object {
+        /** The last generation step reached (enemies probe: where a build failed); [diagnosticMark] sees each step too. */
+        @JvmStatic var diagnosticStep = ""
+            set(value) { field = value; diagnosticMark?.invoke(value) }
+
+        /** Diagnostics: called at the end of ShipGenerator::CreateShip's part (the events probe's storescan). */
+        @JvmField var diagnosticCreated: ((String) -> Unit)? = null
+
+        /** Diagnostics: named points of a ship's creation (the events probe's storescan). */
+        @JvmField var diagnosticMark: ((String) -> Unit)? = null
         private const val SYSTEM_COUNT = 16
         private const val DEFAULT_SLOTS = 4
         private const val DEFAULT_MAX_CREW = 8
@@ -782,16 +936,20 @@ class EnemyShipSpec(elem: Element, bp: BlueprintManager, ev: EventManager) {
     val name = elem.requireAttributeValue("name")
     val fixedBlueprint: Boolean = elem.getAttributeValue("blueprint") != null
 
-    val escape: IEvent? by loadEvent(elem, ev, name, "escape")
+    // The ship parser (0x5e3c10) reads these in this order; Hyperspace's event names count them in it.
     val surrender: IEvent? by loadEvent(elem, ev, name, "surrender")
-    val destroyed: IEvent? by loadEvent(elem, ev, name, "destroyed")
+    val escape: IEvent? by loadEvent(elem, ev, name, "escape")
     val deadCrew: IEvent? by loadEvent(elem, ev, name, "deadCrew")
+    val destroyed: IEvent? by loadEvent(elem, ev, name, "destroyed")
     val gotaway: IEvent? by loadEvent(elem, ev, name, "gotaway")
 
     // Two ships (TUTORIAL_PIRATE and IMPOSSIBLE_PIRATE) have 'blueprint' attributes instead. While it's
     // unlikely we'll care about them for a long time (if ever), it's nice to load all the ships without
     // having to carry around a list of exceptions.
-    val autoBlueprint = bp[elem.getAttributeValue("blueprint") ?: elem.requireAttributeValue("auto_blueprint")]
+    /** The ShipEvent's auto_blueprint (or blueprint) name: the `name` of Hyperspace's GENERATOR_CREATE_SHIP. */
+    val autoBlueprintName: String = elem.getAttributeValue("blueprint") ?: elem.requireAttributeValue("auto_blueprint")
+    // The original builds its fallback ship for a blueprint it does not know. Game files without one lose the ship.
+    val autoBlueprint = bp.getOrNull(autoBlueprintName) ?: bp.getOrNull("DEFAULT") ?: bp[autoBlueprintName]
 
     val escapeTimer: Float = elem.getChild("escape")?.getAttributeValue("timer")?.toFloat() ?: 15f
     val escapeHealth: RandomWithChance? = elem.getChild("escape")?.let(::RandomWithChance)

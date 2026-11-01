@@ -4,17 +4,22 @@ import {join} from 'node:path';
 const suites=process.argv[2]?.split(',')??[];
 // Optional third argument: run only these scripts of the chosen suites, e.g. `menus local-mode`.
 const only=process.argv[3]?.split(',');
-const scripts={unit:['audio','frame-pacer','diagnostic-export','resource-cache','dat'],security:['server-security','security','accounts','account-recovery','onboarding'],menus:['session-ui','local-mode','menus','tutorial-ui','launcher','diagnostics-ui','diagnostics-assets-ui','resource-cache-ui'],diagnostics:['diagnostics'],storage:['debug-storage'],production:['production'],engine:['baseline']};
+const scripts={unit:['audio','frame-pacer','diagnostic-export','resource-cache','dat','mods-merge','mods-mega','saves-client'],security:['server-security','security','accounts','account-recovery','onboarding','mods-security','saves-v2'],menus:['session-ui','local-mode','menus','tutorial-ui','launcher','diagnostics-ui','diagnostics-assets-ui','resource-cache-ui','mods-ui','mods-browser','mods-play','mods-move','saves-browser','saves-softlock'],diagnostics:['diagnostics'],storage:['debug-storage'],production:['production'],engine:['baseline']};
 if(!suites.length||suites.some(s=>!Object.hasOwn(scripts,s)))throw Error('Invalid test suite');
 const root=process.cwd(),children=new Set();
+// Every non-production fixture offers the test mod catalogue (tests/fixtures/mods/catalogue.mjs): our F1 archives stand in
+// for the pinned mod files, so mod downloads and their role rules are tested without any real mod content.
+let modsFixture=null;
+async function mods(){return modsFixture??=await (await import('/app/tests/fixtures/mods/catalogue.mjs')).writeModsFixture(join(root,'.build/mods-fixture'));}
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 // A new instance has exactly one account, `admin`. Fixtures that need ordinary players create them offline through the
 // server's own provisioning command (temporary passwords land in the fixture's bootstrap-credentials.txt).
 const fixtureAccounts=Array.from({length:10},(_,i)=>'user'+String(i+1).padStart(2,'0')+':user');
-async function fixture(port,directory,production=false,unavailable=false) {
+async function fixture(port,directory,production=false,unavailable=false,extra={}) {
  const data=join(root,directory);await mkdir(data,{recursive:true});
  if(unavailable)await writeFile(join(data,'debug-logs'),'Deliberately unavailable diagnostic storage');
- const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_ENVIRONMENT:production?'Production':'Development',FTL_DATA_DIR:data,FTL_ASSETS_DIR:'/assets',PUBLIC_ORIGIN:production?'https://ftl-test.example':'http://localhost:'+port,TRUSTED_PROXIES:'127.0.0.1',FTL_DEBUG_TOTAL_BYTES:'2097152',FTL_DEBUG_SEGMENT_BYTES:'524288',FTL_TEST_RUNNER_ENABLED:'false',FTL_REGISTER_LIMIT:'200',FTL_LOGIN_LIMIT:'500',FTL_PUBLIC_LIMIT:'5000'};
+ const modEnv=production?{}:await mods().then(m=>({FTL_MODS_DIR:m.files,FTL_MODS_CATALOGUE:m.catalogue}));
+ const env={...process.env,...modEnv,...extra,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_ENVIRONMENT:production?'Production':'Development',FTL_DATA_DIR:data,FTL_ASSETS_DIR:'/assets',PUBLIC_ORIGIN:production?'https://ftl-test.example':'http://localhost:'+port,TRUSTED_PROXIES:'127.0.0.1',FTL_DEBUG_TOTAL_BYTES:'2097152',FTL_DEBUG_SEGMENT_BYTES:'524288',FTL_TEST_RUNNER_ENABLED:'false',FTL_REGISTER_LIMIT:'200',FTL_LOGIN_LIMIT:'500',FTL_PUBLIC_LIMIT:'5000'};
  if(!production){
   const code=await new Promise(resolve=>{const provisioning=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts',...fixtureAccounts],{cwd:'/app',stdio:'ignore',env});provisioning.on('error',()=>resolve(1));provisioning.on('exit',resolve);});
   if(code!==0)throw Error('Could not create the fixture accounts');
@@ -46,16 +51,19 @@ async function audioSink(){
 function command(script,env) {return new Promise((resolve,reject)=>{const child=spawn(script==='server-security'?'dotnet':'/usr/local/bin/node',script==='server-security'?['/app/security-tests/Ftl.SecurityTests.dll']:['/app/tests/'+script+'.mjs'],{cwd:root,env:{...process.env,...env},stdio:['ignore','pipe','pipe']});children.add(child);child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.on('error',reject);child.on('exit',code=>{children.delete(child);resolve(code??1);});});}
 try {
  await mkdir('.build',{recursive:true});
- if(suites.includes('security'))await fixture(8081,'.build/test-data');
+ // A 4 MiB account storage limit lets tests/saves-v2.mjs reach it.
+ if(suites.includes('security'))await fixture(8081,'.build/test-data',false,false,{FTL_SAVE_BYTES_LIMIT:'4194304',FTL_SAVE_WRITE_LIMIT:'100000'});
  if(suites.includes('storage'))await fixture(8085,'.build/debug-unavailable-data',false,true);
  const productionData=suites.includes('production')?await fixture(8086,'.build/production-data',true):null;
- const screen=suites.includes('menus')?await display():null;
- const pulse=suites.includes('menus')?await audioSink():null;
+ // Firefox has WebGL2 and an audio device here only in a window on the test display.
+ const firefoxMenus=suites.includes('menus')&&(process.env.MENU_BROWSERS??'Chromium,Firefox').split(',').includes('Firefox')||suites.includes('engine')&&process.env.BASELINE_BROWSER==='firefox';
+ const screen=firefoxMenus?await display():null;
+ const pulse=firefoxMenus?await audioSink():null;
  let failures=0;
  for(const suite of suites) {
   console.log('BEGIN '+suite);const started=Date.now();let failed=false;
   for(const script of scripts[suite].filter(name=>!only||only.includes(name))){
-   const testFixture=['session-ui','accounts','onboarding','local-mode','menus','tutorial-ui','launcher','diagnostics-ui','diagnostics-assets-ui','resource-cache-ui','diagnostics','baseline'].includes(script)?await fixture(8084,'.build/fixture-'+script):null;
+   const testFixture=['session-ui','accounts','onboarding','local-mode','menus','tutorial-ui','launcher','diagnostics-ui','diagnostics-assets-ui','resource-cache-ui','mods-ui','mods-browser','mods-play','mods-move','saves-browser','saves-softlock','diagnostics','baseline'].includes(script)?await fixture(8084,'.build/fixture-'+script):null;
    try{if(await command(script,{ACCOUNT_TEST_ORIGIN:'http://localhost:8084',PRODUCTION_TEST_TARGET:'http://127.0.0.1:8086',PRODUCTION_FIXTURE_DIR:productionData?.data??'',PRODUCTION_RESULTS_DIR:join(root,'.build'),DEBUG_FIXTURE_DIR:testFixture?.data??'',LAUNCHER_TEST_JOBS:'0',RUNNER_FIREFOX_WINDOWED:screen?'1':'0',...(screen?{DISPLAY:screen,PULSE_SERVER:pulse}:{})}))failed=true;}
    finally{if(testFixture)await stop(testFixture.child);}
   }

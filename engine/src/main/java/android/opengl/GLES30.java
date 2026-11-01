@@ -36,7 +36,7 @@ public final class GLES30 {
     public static void glTexImage2D(int t,int l,int internal,int w,int h,int border,int f,int ty,Buffer d){texture(t,l,internal,w,h,f,ty,bytes(d));}
     public static void glTexSubImage2D(int t,int l,int x,int y,int w,int h,int f,int ty,Buffer d){textureRows(t,l,x,y,w,h,f,ty,bytes(d));}
     public static void glStencilFunc(int f,int r,int m){call("stencilFunc",f,r,m,0,0,0);} public static void glStencilOp(int a,int b,int c){call("stencilOp",a,b,c,0,0,0);}
-    public static void glStencilMask(int m){call("stencilMask",m);} public static void glDrawArrays(int m,int f,int n){call("drawArrays",m,f,n,0,0,0);}
+    public static void glStencilMask(int m){call("stencilMask",m);} public static void glColorMask(boolean r,boolean g,boolean b,boolean a){call("colorMask",r?1:0,g?1:0,b?1:0,a?1:0,0,0);} public static void glScissor(int x,int y,int w,int h){call("scissor",x,y,w,h,0,0);} public static void glDrawArrays(int m,int f,int n){call("drawArrays",m,f,n,0,0,0);}
     public static int glCreateShader(int t){return call("createShader",t);} public static void glShaderSource(int s,String text){text("shaderSource",s,text);}
     public static void glCompileShader(int s){call("compileShader",s);} public static void glGetShaderiv(int s,int p,int[] a,int o){a[o]=call("getShaderParameter",s,p);}
     public static String glGetShaderInfoLog(int s){return log("getShaderInfoLog",s);} public static void glDeleteShader(int s){call("deleteShader",s);}

@@ -6,7 +6,9 @@ public static class AccountAdmin {
     public static void Map(RouteGroupBuilder api) {
         api.MapGet("/users/{id}/data", async (string id, GameDatabase db, DebugLogs logs) => {
             if (!await db.Users.AnyAsync(p => p.Id == id)) return Results.NotFound();
-            return Results.Ok(new { currentSave = await db.Saves.AnyAsync(s => s.UserId == id), snapshots = await db.Snapshots.CountAsync(s => s.UserId == id), diagnostics = await logs.AccountData(id) });
+            // currentSave and saveSlots keep the save model 1 shape for pages that still read it.
+            var saves = await db.CloudSaves.CountAsync(s => s.UserId == id);
+            return Results.Ok(new { saves, snapshots = await db.CloudSnapshots.CountAsync(s => s.UserId == id), currentSave = saves > 0, saveSlots = Math.Max(0, saves - 1), diagnostics = await logs.AccountData(id) });
         });
         api.MapGet("/users", async (UserManager<Player> users, GameDatabase db) => {
             var now = DateTime.UtcNow;

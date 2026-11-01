@@ -42,26 +42,27 @@ class Animations {
             when (elem.name) {
                 "animSheet" -> {
                     val name = elem.getAttributeValue("name")
-                    sheets[name] = buildSheet(elem, name) ?: continue
+                    sheets[name] = xyz.znix.xftl.hs.HsLoad.item("animations", { "animSheet $name" }) { buildSheet(elem, name) } ?: continue
                 }
 
                 "anim" -> {
                     val name = elem.getAttributeValue("name")
-                    animations[name] = buildAnimation(elem, name) ?: continue
+                    animations[name] = xyz.znix.xftl.hs.HsLoad.item("animations", { "anim $name" }) { buildAnimation(elem, name) } ?: continue
                 }
 
                 "weaponAnim" -> {
                     val name = elem.getAttributeValue("name")
-                    weaponAnimations[name] = buildWeaponAnimation(elem) ?: continue
+                    weaponAnimations[name] = xyz.znix.xftl.hs.HsLoad.item("animations", { "weaponAnim $name" }) { buildWeaponAnimation(elem) } ?: continue
                 }
 
-                else -> error("Invalid element name '${elem.name}' in animations XML")
+                else -> if (!xyz.znix.xftl.hs.HsLoad.skipUnknown("animations", elem.name))
+                    error("Invalid element name '${elem.name}' in animations XML")
             }
         }
 
         // Late-bind the weapon animations to their boost animations
         for (weapon in weaponAnimations.values) {
-            weapon.finishLoading(this)
+            xyz.znix.xftl.hs.HsLoad.item("animations", { "weaponAnim boost" }) { weapon.finishLoading(this) }
         }
     }
 
@@ -155,10 +156,16 @@ class Animations {
         )
     }
 
-    fun getOrNull(name: String): AnimationSpec? {
+    fun getOrNull(name: String): AnimationSpec? = getOrNull(name, ftl.browser.BrowserRandom)
+
+    /**
+     * AnimationControl::GetAnimation (0x5a6450): `explosion_random` is one of explosion_big2-4, picked in this call
+     * (random32() % 3) from [random], the stream of the caller's other draws.
+     */
+    fun getOrNull(name: String, random: kotlin.random.Random): AnimationSpec? {
         if (name == "explosion_random") {
             val test = arrayOf("explosion_big2", "explosion_big3", "explosion_big4")
-            return this[test.random(ftl.browser.BrowserRandom)]
+            return this[test[random.nextBits(31) % test.size]]
         }
 
         return animations[name]
@@ -170,6 +177,20 @@ class Animations {
     operator fun get(name: String): AnimationSpec {
         return getOrNull(name) ?: throw IllegalArgumentException("Cannot find animation $name")
     }
+
+    /**
+     * A strip of a crew race. Races are free to leave strips out: the original then has an empty animation for that
+     * status, which draws nothing, while the crew member keeps doing what the status stands for. The stand-in has a
+     * crew-sized frame, so the crew member can still be hovered and selected, and callers have to skip drawing it.
+     */
+    fun crewStrip(name: String): AnimationSpec =
+        getOrNull(name) ?: AnimationSpec(BLANK_CREW_SHEET, name, 0, 0, 1, BLANK_CREW_STRIP_TIME, true)
+
+    /**
+     * An animation named by mod data, which may not exist: the original then has an empty animation, which draws nothing
+     * and is over at once, and whatever it belonged to carries on.
+     */
+    fun orEmpty(name: String): AnimationSpec = crewStrip(name)
 
     class WeaponAnimationSpec(
         val sheet: SpriteSheetSpec, val x: Int, val y: Int, val length: Int, val chargedFrame: Int,
@@ -277,7 +298,12 @@ class Animations {
     }
 
     companion object {
-        val TMP_BROKEN_IMAGES = setOf("explosion_big1", "room_touch2x2", "room_touch2x1")
+        private const val CREW_FRAME_SIZE = 35
+        private const val BLANK_CREW_STRIP_TIME = .01f
+        private val BLANK_CREW_SHEET =
+            SpriteSheetSpec("img/nullResource.png", CREW_FRAME_SIZE, CREW_FRAME_SIZE, CREW_FRAME_SIZE, CREW_FRAME_SIZE)
+
+        val TMP_BROKEN_IMAGES = setOf("room_touch2x2", "room_touch2x1")
 
         // How long it takes a weapon animation to play from the charged frame to the end.
         // These were reverse-engineered from vanilla FTL.

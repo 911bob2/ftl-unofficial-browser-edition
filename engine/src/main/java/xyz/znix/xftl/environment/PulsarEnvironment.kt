@@ -27,9 +27,6 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
     private val waveBack = game.getImg("img/effects/pulsar_backL.png")
     private val waveFront = game.getImg("img/effects/pulsar_frontL.png")
 
-    // This is white, and is filtered differently for the sun and pulsar
-    private val flareImage = game.getImg("img/stars/planet_sun_flare.png")
-
     private val warningSound = game.sounds.getSample("environWarning")
     private val pulseSound = game.sounds.getSample("pulsar")
 
@@ -45,13 +42,16 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
         get() = timeToPulse < 5f
 
     init {
-        prepareNextFlare()
+        // SetPulsarLevel starts its timer on the global stream; a loaded save restores the timer.
+        prepareNextFlare(if (game.isCurrentlyLoadingSave) ftl.browser.BrowserRandom else ftl.browser.NativeRandom)
     }
 
     override fun renderBackground(gc: GameContainer, g: Graphics) {
         val ps = pauseShade(game)
 
         // This draws the normal background with all its adjustments
+        // (Hyperspace render layers: the pulsar is drawn with the backdrop, as the engine draws it unscaled.)
+        if (!hsBackdrop) return
         realBackground.draw(0f, 0f, ps)
 
         val whiteAlpha = alphaCycle(7f, 0.1f, 1f)
@@ -94,8 +94,8 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
         }
     }
 
-    override fun renderOverlay(gc: GameContainer, g: Graphics) {
-        val pulseTimer = pulseTimer ?: return
+    override fun nativeFlashOpacity(): Float {
+        val pulseTimer = pulseTimer ?: return 0f
 
         // Find how long it's been since/until the middle of this flare
         val middleTimer = abs(pulseTimer - 0.5f)
@@ -104,16 +104,13 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
         val progress = 1 - middleTimer / 0.5f
 
         // The alpha is the cube of how far we are from the flare
-        val alpha = progress.pow(3)
-
-        val filter = Colour(Constants.PULSAR_PULSE_FILTER)
-        filter.a = alpha
-        flareImage.draw(
-            -360f, -640f,
-            flareImage.width * 4f, flareImage.height * 4f,
-            filter
-        )
+        return progress.pow(3)
     }
+
+    override val flashFilter: Colour get() = Constants.PULSAR_PULSE_FILTER
+
+    override fun sceneBackdrop() = realBackground
+    override val drawsPlanet: Boolean get() = false
 
     override fun update(dt: Float) {
         super.update(dt)
@@ -161,8 +158,8 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
         return min + changing * (max - min)
     }
 
-    private fun prepareNextFlare() {
-        timeToPulse = (11f..18f).random(ftl.browser.BrowserRandom)
+    private fun prepareNextFlare(random: kotlin.random.Random = ftl.browser.BrowserRandom) {
+        timeToPulse = (11f..18f).random(random)
         hasPlayedSound = false
         hasPlayedWarning = false
     }

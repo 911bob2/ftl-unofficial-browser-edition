@@ -7,7 +7,8 @@ import xyz.znix.xftl.layout.Room
 import xyz.znix.xftl.rendering.Colour
 
 class CrewBlueprint(elem: Element) : Blueprint(elem) {
-    override val cost: Int = elem.getChildTextTrim("cost").toInt()
+    private val xmlCost: Int = elem.getChildTextTrim("cost").toInt()
+    override val cost: Int get() = hsCost ?: xmlCost
 
     /**
      * A list of text ID keys corresponding to this race's special abilities.
@@ -71,7 +72,22 @@ class CrewBlueprint(elem: Element) : Blueprint(elem) {
     }
 
     fun spawn(room: Room, mode: AbstractCrew.SlotType): LivingCrew {
+        val crew = spawnRace(room, mode)
+        // Hyperspace CONSTRUCT_CREWMEMBER (CrewMember::constructor, priority 900).
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaCrewEvents.constructCrewMember(crew)
+        return crew
+    }
+
+    /** The crew member as the factory makes it, without CONSTRUCT_CREWMEMBER (Hyperspace's dummy crew fires it itself). */
+    internal fun hsSpawnSilent(room: Room, mode: AbstractCrew.SlotType): LivingCrew = spawnRace(room, mode)
+
+    private fun spawnRace(room: Room, mode: AbstractCrew.SlotType): LivingCrew {
         val animations = room.ship.sys.animations
+
+        // Hyperspace: every race of hyperspace.xml <crew> is a plain CrewMember driven by its definition
+        // (CustomCrewManager::CreateCrewMember), vanilla names included.
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.crew.CustomCrewManager.isRace(name))
+            return xyz.znix.xftl.hs.crew.HsCrewMember(this, animations, room, mode)
 
         return when (name) {
             "human" -> CrewHuman(this, animations, room, mode)
@@ -88,8 +104,10 @@ class CrewBlueprint(elem: Element) : Blueprint(elem) {
             // CrewMember from the 'human' blueprint for any race name that
             // isn't one of the nine above, so this is the original's behaviour.
             else -> {
+                // Not silent in a Hyperspace session: the race is recorded as a capability gap.
+                if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.HS.unsupported("race", "spawn", name)
                 val human = room.ship.sys.blueprintManager["human"] as CrewBlueprint
-                return human.spawn(room, mode)
+                return human.spawnRace(room, mode)
             }
         }
     }

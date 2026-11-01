@@ -24,7 +24,8 @@ internal object GameplayParityEnemyGenChecks {
      * stream state before CreateShip), difficulty, world level, ship-event seed -> what the original built. [sample]
      * names the native dump in the ignored `.build/gameplay-1to1/native` / `scan/native-gen` folders. [draws] is the
      * number of generator draws the native ring shows from CreateShip (0x6251e5) to its first post-creation draw
-     * (ship animation / drone flight); 0 where the ring ended first.
+     * (ship animation), the combat drones' WorldManager::AddShip hops included (the player's Kestrel has none); 0 where
+     * the ring ended first.
      */
     private class Case(
         val spec: String?, val difficulty: Difficulty, val sector: Int, val seed: Int, val sample: String, val draws: Int,
@@ -40,13 +41,15 @@ internal object GameplayParityEnemyGenChecks {
             "ROCK_FIGHT_P_DLC hull=17 scrap=1205 reactor=23 [shields:8,engines:4,oxygen:1,weapons:7,pilot:3,teleporter:1,cloaking:1,clonebay:1] w=[ION_2,MISSILES_3,LASER_BURST_1,BOMB_1] d=[] parts=0 crew=4"),
         Case("REBEL", Difficulty.NORMAL, 1, 1492159524, "enemygen-e-normal-ae-s008", 109,
             "REBEL_SKINNY hull=11 scrap=237 reactor=9 [shields:3,engines:2,oxygen:1,weapons:3,pilot:1] w=[SHOTGUN,LASER_BURST_1] d=[] parts=0 crew=3"),
-        Case("REBEL", Difficulty.NORMAL, 0, 209709959, "enemygen-e-normal-ae-s007", 116,
+        // 116 creation draws and the COMBAT_BEAM's two PickDestination hops of WorldManager::AddShip (ret 0x4272d5).
+        Case("REBEL", Difficulty.NORMAL, 0, 209709959, "enemygen-e-normal-ae-s007", 118,
             "REBEL_FAT hull=9 scrap=175 reactor=10 [shields:2,engines:2,oxygen:1,weapons:2,drones:3,pilot:2] w=[MISSILES_1,LASER_BURST_1] d=[COMBAT_BEAM,ANTI_DRONE] parts=4 crew=3"),
         Case("PIRATE", Difficulty.EASY, 4, 1943381924, "enemygen-e-easy-ae-s004", 122,
             "MANTIS_FIGHTER_P hull=12 scrap=453 reactor=19 [shields:5,engines:2,oxygen:2,weapons:3,medbay:2,pilot:2,teleporter:1] w=[LASER_CHARGEGUN,ION_STUN] d=[] parts=0 crew=3"),
         Case("PIRATE_BRIBER", Difficulty.HARD, 0, 727316529, "gen-n0-hard-ae-j1", 95,
             "ROCK_SCOUT_P hull=8 scrap=175 reactor=10 [shields:2,engines:1,oxygen:1,weapons:2,pilot:2] w=[MISSILES_1,LASER_BURST_1] d=[] parts=0 crew=2"),
-        Case(null, Difficulty.NORMAL, 4, 0, "enemygen-m-normal-ae-1-s064", 132,
+        // 132 creation draws and the COMBAT_BEAM's two hops (four draws, ret 0x4272d5 / 0x427285, from angle 67).
+        Case(null, Difficulty.NORMAL, 4, 0, "enemygen-m-normal-ae-1-s064", 136,
             "ZOLTAN_BOMBER hull=11 scrap=602 reactor=21 [shields:5,engines:4,oxygen:1,weapons:5,drones:3,pilot:1,doors:1] w=[MISSILES_3,LASER_BURST_2_A] d=[COMBAT_BEAM] parts=2 crew=4", list = "SHIPS_ZOLTAN", state = "-6981595672619710477"),
         Case(null, Difficulty.NORMAL, 8, 0, "enemygen-m-normal-ae-2-s008", 0,
             "ZOLTAN_FIGHTER_P_DLC hull=15 scrap=1454 reactor=32 [shields:8,engines:5,oxygen:1,weapons:8,pilot:1,clonebay:3,mind:1] w=[BEAM_2,ION_2,BEAM_FIRE,MISSILES_1] d=[] parts=0 crew=3", list = "SHIPS_ZOLTAN_PIRATE", state = "-6879950643615434945"),
@@ -63,6 +66,11 @@ internal object GameplayParityEnemyGenChecks {
             "MANTIS_FIGHTER_P hull=11 scrap=330 reactor=18 [shields:4,engines:3,oxygen:1,weapons:2,medbay:2,pilot:2,teleporter:2] w=[BEAM_1,LASER_HEAVY_1] d=[] parts=0 crew=3"),
         Case("REBEL", Difficulty.HARD, 0, 208260689, "enemygen-e-hard-van-s007", 111,
             "REBEL_FAT hull=9 scrap=175 reactor=11 [shields:3,engines:2,oxygen:2,weapons:1,drones:3,pilot:1] w=[LASER_HEAVY_1] d=[DEFENSE_2_ENEMY] parts=4 crew=3"),
+        // Combat drones: the creation draws plus two PickDestination hops per combat drone (WorldManager::AddShip).
+        Case("PIRATE", Difficulty.NORMAL, 6, 605961507, "enemygen-e-normal-van-s005", 144,
+            "REBEL_FAT_P hull=15 scrap=980 reactor=23 [shields:6,engines:4,oxygen:1,weapons:3,drones:7,medbay:2,pilot:1,doors:1] w=[MISSILES_2,LASER_BURST_1] d=[DEFENSE_2_ENEMY,COMBAT_2] parts=4 crew=4"),
+        Case("REBEL", Difficulty.NORMAL, 4, 1654031163, "enemygen-e-normal-van-s011", 136,
+            "REBEL_FAT hull=13 scrap=602 reactor=20 [shields:6,engines:4,oxygen:1,weapons:3,drones:5,medbay:1,pilot:1,doors:1] w=[LASER_BURST_2_A,MISSILES_1] d=[BOARDER,COMBAT_BEAM] parts=4 crew=4"),
         Case("MANTIS_FIGHT", Difficulty.EASY, 8, 1097785254, "enemygen-e-easy-van-s020", 141,
             "MANTIS_FIGHTER hull=16 scrap=1205 reactor=29 [shields:8,engines:4,oxygen:1,weapons:8,medbay:2,pilot:1,doors:1,teleporter:2] w=[MISSILES_BREACH,LASER_BURST_2_A,BEAM_1,LASER_BURST_2_A] d=[] parts=0 crew=4"),
         Case(null, Difficulty.NORMAL, 1, 0, "enemygen-m-normal-van-1-s001", 0,

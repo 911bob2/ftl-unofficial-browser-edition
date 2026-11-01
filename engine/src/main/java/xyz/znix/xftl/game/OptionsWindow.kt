@@ -31,15 +31,18 @@ class OptionsWindow(
     private val labelFont = NativeFonts.font(context::getFont, 13)
     private val frameFont = NativeFonts.font(context::getFont, 62)
     private val buttonFont = NativeFonts.font(context::getFont, 63)
-    private val title = context.translator["options_tab"]
-    private val titleFont = if (buttonFont.measure(title) > 144) frameFont else buttonFont
+    // OptionsScreen::OnInit reads its labels again after a language change (OptionsScreen::OnLoop).
+    private val title get() = context.translator["options_tab"]
+    private val titleFont get() = if (buttonFont.measure(title) > 144) frameFont else buttonFont
 
     private enum class Row(val column: Int) {
         FULLSCREEN(0), V_SYNC(0), FRAME_LIMIT(0), DYNAMIC_BACK(0), COLORBLIND(0), LANGUAGE(0),
-        EVENT_CHOICE(1), SHOW_PATHS(1), ACHIEVEMENT_POPUP(1), WINDOW_FOCUS(1), CONTROLS(1),
+        EVENT_CHOICE(1), SHOW_PATHS(1), ACHIEVEMENT_POPUP(1), WINDOW_FOCUS(1), CONTROLS(1), TOUCH_AUTO_PAUSE(1),
     }
 
-    private val rows = Row.entries
+    // The touch layout has no window, frame rate or key settings.
+    private val rows = if (TouchMode.enabled) listOf(Row.COLORBLIND, Row.LANGUAGE, Row.SHOW_PATHS, Row.ACHIEVEMENT_POPUP, Row.TOUCH_AUTO_PAUSE)
+    else Row.entries - Row.TOUCH_AUTO_PAUSE
 
     /** A volume SlideBar: a 200x20 bar and a 15x30 knob kept 5px inside it. */
     private inner class VolumeBar(val y: Int, value: Float) {
@@ -83,11 +86,17 @@ class OptionsWindow(
     private val music = VolumeBar(391, context.mainGame.profile.musicVolume)
     private val bars = listOf(sound, music)
 
-    private val closeLabel = context.translator["button_close"]
-    private val closeWidth = maxOf(buttonFont.measure(closeLabel) + 6, 0x67)
-    private val closePos = ConstPoint(792 - closeWidth, 301)
-    private val deleteLabel = context.translator["button_delete_profile"]
-    private val deletePos = ConstPoint(24, 334)
+    private val closeLabel get() = context.translator["button_close"]
+    private val closeWidth get() = maxOf(buttonFont.measure(closeLabel) + 6, 0x67)
+    private val closePos get() = ConstPoint(792 - closeWidth, 301)
+    private val deleteLabel get() = context.translator["button_delete_profile"]
+    private var languages: LanguageChooser? = null
+    val diagnosticLanguageChooser: String get() = languages?.diagnosticState ?: "null"
+    // OptionsScreen::OnInit: SetBaseImage(button_deleteprofile_base, -15, -15, 131), SetAutoWidth(true, rightAlign
+    // true, margin 4): TextButton::OnRender widens it to the label's measure plus the margins and moves
+    // it left by the growth.
+    private val deleteWidth get() = maxOf(buttonFont.measure(deleteLabel) + 8, 131)
+    private val deletePos get() = ConstPoint(24 - (deleteWidth - 131), 334)
 
     private var notice: NoticeWindow? = null
     val diagnosticActiveWindow: Window get() = notice ?: this
@@ -119,7 +128,8 @@ class OptionsWindow(
             Row.COLORBLIND -> text("colorblind", enabled(false))
             Row.LANGUAGE -> text("change_language")
             Row.EVENT_CHOICE -> text("event_choice", context.translator[profile.eventChoiceHotkeys.textKey])
-            Row.SHOW_PATHS -> text("show_paths", enabled(profile.showBeaconPaths))
+            Row.SHOW_PATHS -> text(if (TouchMode.enabled) "show_paths_ipad" else "show_paths", enabled(profile.showBeaconPaths))
+            Row.TOUCH_AUTO_PAUSE -> text("touch_autopause", onOff(profile.touchAutoPause))
             Row.ACHIEVEMENT_POPUP -> text("achievement_popup", enabled(profile.achievementPopups))
             Row.WINDOW_FOCUS -> text("window_focus", onOff(profile.autoPauseOnFocusLoss))
             Row.CONTROLS -> text("configure_controls")
@@ -127,27 +137,39 @@ class OptionsWindow(
     }
 
     private fun rowX(row: Row) = 35 + row.column * 400
-    private fun rowY(row: Row) = 87 + 34 * rows.filter { it.column == row.column }.indexOf(row)
+    /**
+     * A row's top: the choices stack by font 13's line height plus 12, from 65 plus one line height (87 + 34 * i in
+     * English, Japanese and Chinese; Hyperspace's Korean font override has a 23 px line, oracle swl-ko: 88 + 35 * i).
+     */
+    private fun rowY(row: Row): Int {
+        val lh = choiceFont.lineHeight
+        return 65 + lh + (lh + 12) * rows.filter { it.column == row.column }.indexOf(row)
+    }
 
     /** The ChoiceBox hit box: the text's extent, from 10px above it to the next row. */
     private fun rowAt(x: Int, y: Int): Int {
         val lx = x - position.x
         val ly = y - position.y
         return rows.indexOfFirst { row ->
-            lx >= rowX(row) && lx < rowX(row) + choiceFont.measure(rowText(row)) &&
-                    ly >= rowY(row) - 10 && ly < rowY(row) + 24
+            val slack = if (TouchMode.enabled) 10 else 0
+            lx >= rowX(row) - slack && lx < rowX(row) + choiceFont.measure(rowText(row)) + slack &&
+                    ly >= rowY(row) - 10 && ly < rowY(row) + choiceFont.lineHeight + 2
         }
     }
 
     private fun inClose(x: Int, y: Int) = x - position.x in closePos.x until closePos.x + closeWidth &&
             y - position.y in closePos.y until closePos.y + 32
 
-    private fun inDelete(x: Int, y: Int) = titleMenu && x - position.x in deletePos.x until deletePos.x + 131 &&
+    private fun inDelete(x: Int, y: Int) = titleMenu && x - position.x in deletePos.x until deletePos.x + deleteWidth &&
             y - position.y in deletePos.y until deletePos.y + 60
 
     override fun draw(g: Graphics) {
         val ox = position.x
         val oy = position.y
+        // OptionsScreen::OnRender: with the LanguageChooser open the window is drawn under
+        // CSurface::GL_SetColorTint(0.25, 0.25, 0.25, 1), removed again before the chooser.
+        val oldTint = Graphics.tint
+        if (languages != null) Graphics.tint = Colour(.25f, .25f, .25f, 1f)
         art.draw(ox.f, oy.f)
 
         val frameText = Colour(25, 49, 51)
@@ -158,6 +180,20 @@ class OptionsWindow(
 
         for ((i, row) in rows.withIndex()) {
             val colour = if (i == hoveredRow || i == focusedRow) OPTION_HOVER else Colour.white
+            if (TouchMode.enabled) {
+                // The touch layout boxes its rows.
+                val bx = ox + rowX(row) - 7
+                val by = oy + rowY(row)
+                val bw = choiceFont.measure(rowText(row)) + 14
+                val bh = choiceFont.lineHeight + 2
+                g.colour = Colour(0f, 0f, 0f, 0.5f)
+                g.fillRect(bx, by, bw, bh)
+                g.colour = colour
+                g.fillRect(bx, by, bw, 2)
+                g.fillRect(bx, by + bh - 2, bw, 2)
+                g.fillRect(bx, by, 2, bh)
+                g.fillRect(bx + bw - 2, by, 2, bh)
+            }
             choiceFont.print((ox + rowX(row)).f, (oy + rowY(row)).f, rowText(row), colour)
         }
 
@@ -165,13 +201,16 @@ class OptionsWindow(
         labelFont.printCenter(ox + 256f, oy + 394f, context.translator["music_volume"], Colour.white)
         bars.forEach { it.draw(g, ox, oy) }
 
-        closeArt.draw((ox + closePos.x - 23).f, (oy + closePos.y - 7).f)
+        drawAutoBase(closeArt, ox + closePos.x - 23, oy + closePos.y - 7, closeWidth - 0x67)
         drawTextButton(g, ox + closePos.x, oy + closePos.y, closeWidth, 32, 4, closeLabel, closeHovered)
         if (titleMenu) {
-            deleteArt.draw((ox + deletePos.x - 15).f, (oy + deletePos.y - 15).f)
-            drawTextButton(g, ox + deletePos.x, oy + deletePos.y, 131, 60, 8, deleteLabel, deleteHovered)
+            val width = deleteWidth
+            drawAutoBase(deleteArt, ox + deletePos.x - 15, oy + deletePos.y - 15, width - 131)
+            drawTextButton(g, ox + deletePos.x, oy + deletePos.y, width, 60, 8, deleteLabel, deleteHovered)
         }
 
+        Graphics.tint = oldTint
+        languages?.draw(g)
         notice?.let {
             g.tooltip = null
             g.colour = Colour(0f, 0f, 0f, .65f)
@@ -180,14 +219,30 @@ class OptionsWindow(
         }
     }
 
+    /**
+     * TextButton::UpdateBase: an auto-width button grown past its base image's minimum width draws the
+     * image in three parts: the left half (floor(width / 2) columns), a strip [extra] wide stretched from the texture
+     * coordinate of that column edge, and the right half.
+     */
+    private fun drawAutoBase(img: xyz.znix.xftl.rendering.Image, x: Int, y: Int, extra: Int) {
+        if (extra <= 0) { img.draw(x.f, y.f); return }
+        val w = img.width.f
+        val h = img.height.f
+        val half = Math.floor(0.5 * img.width).toFloat()
+        img.draw(x.f, y.f, x + half, y + h, 0f, 0f, half, h)
+        img.draw(x + half, y.f, x + half + extra, y + h, half, 0f, half, h)
+        img.draw(x + half + extra, y.f, x + w + extra, y + h, half, 0f, w, h)
+    }
+
     private fun drawTextButton(g: Graphics, x: Int, y: Int, w: Int, h: Int, inset: Int, label: String, hovered: Boolean) {
-        g.colour = if (hovered) Constants.TEXT_BUTTON_HOVER else Constants.TEXT_BUTTON_NORMAL
+        g.colour = if (hovered) xyz.znix.xftl.hs.render.HsColors.tbSelected() else xyz.znix.xftl.hs.render.HsColors.tbActive()
         Buttons.drawChamfer(g, x, y, w, h, inset)
-        buttonFont.printButtonLabel(x, y, w, h, label, Constants.TEXT_BUTTON_TEXT)
+        buttonFont.printButtonLabel(x, y, w, h, label, xyz.znix.xftl.hs.render.HsColors.tbText())
     }
 
     override fun updateUI(x: Int, y: Int) {
         notice?.let { it.updateUI(x, y); return }
+        languages?.let { it.mouseMove(x, y); return }
         val hovered = rowAt(x, y)
         val close = inClose(x, y)
         val delete = inDelete(x, y)
@@ -207,6 +262,7 @@ class OptionsWindow(
     override fun mouseClick(button: Int, x: Int, y: Int) {
         notice?.let { it.mouseClick(button, x, y); return }
         if (button != Input.MOUSE_LEFT_BUTTON) return
+        languages?.let { it.mouseClick(x, y); return }
         if (inClose(x, y)) { escapePressed(); return }
         if (inDelete(x, y)) { showWorkInProgress(deleteLabel.replace("\\n", " ").replace("\n", " "), "delete_profile"); return }
         if (bars.any { it.press(x - position.x, y - position.y) }) { updateVolumes(); return }
@@ -227,6 +283,8 @@ class OptionsWindow(
 
     override fun onTextInput(key: Int, c: Char): Boolean {
         notice?.let { return it.onTextInput(key, c) }
+        // Escape still reaches escapePressed, which closes the open LanguageChooser (the HS oracle's swl-mv frames)
+        if (languages != null) return key != Input.KEY_ESCAPE
         if (key == Input.KEY_TAB) {
             val reverse = context.input.isKeyDown(Input.KEY_LSHIFT) || context.input.isKeyDown(Input.KEY_RSHIFT)
             focusedRow = if (focusedRow < 0) (if (reverse) rows.size - 1 else 0)
@@ -244,7 +302,18 @@ class OptionsWindow(
         val profile = context.mainGame.profile
         when (row) {
             Row.FULLSCREEN -> { ftl.browser.BrowserEngine.toggleFullscreen(); return }
-            Row.V_SYNC, Row.DYNAMIC_BACK, Row.COLORBLIND, Row.LANGUAGE -> {
+            Row.LANGUAGE -> {
+                // OptionsScreen::CheckSelection: open the LanguageChooser.
+                releaseBars()
+                hoveredRow = -1
+                // On the touch layout it is centred in the HUD block.
+                languages = LanguageChooser(context, if (TouchMode.enabled) TouchMode.hudX + 368 else 496, if (TouchMode.enabled) 384 else 360) { code ->
+                    languages = null
+                    LanguageSwitch.apply(context.mainGame, code)
+                }
+                return
+            }
+            Row.V_SYNC, Row.DYNAMIC_BACK, Row.COLORBLIND -> {
                 showWorkInProgress(rowText(row).substringBefore(':'), row.name.lowercase())
                 return
             }
@@ -252,6 +321,7 @@ class OptionsWindow(
             Row.CONTROLS -> { releaseBars(); openControls(); return }
             Row.EVENT_CHOICE -> profile.eventChoiceHotkeys = EventChoiceHotkeyMode.fromId((profile.eventChoiceHotkeys.id + direction + 3) % 3)
             Row.SHOW_PATHS -> profile.showBeaconPaths = !profile.showBeaconPaths
+            Row.TOUCH_AUTO_PAUSE -> profile.touchAutoPause = !profile.touchAutoPause
             Row.ACHIEVEMENT_POPUP -> profile.achievementPopups = !profile.achievementPopups
             Row.WINDOW_FOCUS -> { profile.autoPauseOnFocusLoss = !profile.autoPauseOnFocusLoss; context.mainGame.refreshFocusPause() }
         }
@@ -296,6 +366,7 @@ class OptionsWindow(
 
     override fun escapePressed() {
         notice?.let { it.escapePressed(); return }
+        if (languages != null) { languages = null; return }
         releaseBars()
         updateVolumes()
         context.mainGame.profile.markDirty()

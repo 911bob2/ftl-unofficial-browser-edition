@@ -20,7 +20,9 @@ class NativeSectorGenerator(
     private val creator: EventCreator,
     private val specialEvents: GameMap.SpecialEvents,
     private val difficulty: Difficulty,
-    private val tutorial: Boolean
+    private val tutorial: Boolean,
+    /** Hyperspace: the game whose HS hooks run (null in vanilla, where nothing below changes). */
+    private val hsGame: xyz.znix.xftl.game.InGameState? = null
 ) {
     private val rand = NativeRandom
 
@@ -64,6 +66,7 @@ class NativeSectorGenerator(
     private var cellAttempts = 0
     private var cellsSkipped = 0
     private val clouds = ArrayList<Sector.NebulaCloud>()
+    private var hsStart: Location? = null
 
     /**
      * Generate the map. [storedLayoutSeed] is the seed saved with a loaded
@@ -71,6 +74,11 @@ class NativeSectorGenerator(
      */
     fun generate(storedLayoutSeed: Int?): Layout {
         val layoutSeed = storedLayoutSeed ?: rand.next31()
+        if (hsGame != null) {
+            xyz.znix.xftl.hs.sector.HsGeneration.beforeGenerateMap(info)
+            xyz.znix.xftl.hs.sector.HsSeeds.currentSectorSeed = layoutSeed
+            xyz.znix.xftl.hs.sector.HsSeeds.onGenerateMap()
+        }
         rand.seed(layoutSeed)
 
         // The fleet starts off the left of the map, at a random height.
@@ -97,6 +105,7 @@ class NativeSectorGenerator(
             // (0x5f9e00) then replaces the text of a run's first beacon with
             // START_GAME's (TUTORIAL_START in the tutorial).
             start.event = creator.create(info.type.startEvent, level)
+            hsStart = start
 
             // Up to 16 attempts at an exit with the right path length, then
             // the whole map is generated again.
@@ -301,6 +310,13 @@ class NativeSectorGenerator(
         loc.overtaken = true
         if (loc.event == null)
             return
+        if (hsGame != null && hsGame.eventManager.hs != null) {
+            val (created, nebulaExit) = xyz.znix.xftl.hs.sector.HsGeneration.fleetEvent(hsGame, creator, info, loc.isExit,
+                loc.nebula, isLastStand, level, creator.dlcEnabled)
+            loc.event = created
+            if (nebulaExit) loc.forcedNebula = true
+            return
+        }
 
         val name = when {
             !loc.isExit || isLastStand -> when {
@@ -325,7 +341,8 @@ class NativeSectorGenerator(
         }
 
         // Entries naming a nebula event become nebula clouds first.
-        val entries = ArrayList(info.type.events)
+        val entries = if (hsGame != null) ArrayList(xyz.znix.xftl.hs.sector.HsGeneration.eventCounts(hsGame, info, hsGame.delayedQuests))
+        else ArrayList(info.type.events)
         val nebulaNames = ArrayList<SectorType.EventInfo>()
         var index = 0
         while (index < entries.size) {
@@ -339,23 +356,43 @@ class NativeSectorGenerator(
                 nebulaNames.add(entry)
             entries.removeAt(index)
         }
-        if (nebulaNames.isNotEmpty())
-            placeNebulas(nebulaNames)
+        if (nebulaNames.isNotEmpty()) {
+            val priorityFix = hsGame != null && xyz.znix.xftl.hs.sector.HsGeneration.priorityNebulaFix(hsGame, info)
+            if (hsGame != null && !priorityFix) xyz.znix.xftl.hs.sector.HsGeneration.capNebulaNames(hsGame, info, nebulaNames, locations.size)
+            if (priorityFix) {
+                xyz.znix.xftl.hs.sector.HsGeneration.priorityNebulaNames(hsGame!!, info, nebulaNames, locations.size)
+                if (nebulaNames.isNotEmpty()) placeNebulasPriority(nebulaNames, xyz.znix.xftl.hs.sector.HsGeneration.priorityEventCount(hsGame, info))
+            }
+            else placeNebulas(nebulaNames)
+            if (hsGame != null && xyz.znix.xftl.hs.sector.HsGeneration.removeFirstBeaconNebula(hsGame, info)) {
+                hsStart?.let { it.nebula = false; it.forcedNebula = false }
+            }
+        }
 
         // Each remaining entry claims random beacons in turn; beacons that
         // already have an event are used up without counting.
         val pool = ArrayList(locations)
+        val pt = placementTrace
+        val draws = if (pt != null) ArrayList<Int>().also { ftl.browser.NativeRandom.trace = it } else null
         entries@ for (entry in entries) {
             val count = rollCount(entry)
+            pt?.invoke("entry ${entry.name} count=$count pool=${pool.size} draws=${draws!!.size}")
             if (count > 0) {
                 if (pool.isEmpty())
                     break
                 var placed = 0
                 while (true) {
-                    val loc = pool.removeAt(rand.nextInt(pool.size))
+                    val size = pool.size
+                    val pick = rand.nextInt(size)
+                    val loc = pool.removeAt(pick)
+                    pt?.invoke("  pick $pick/$size at=${loc.pos.x},${loc.pos.y} used=${loc.event != null}")
                     if (loc.event == null) {
                         placed++
+                        val before = draws?.size ?: 0
                         loc.event = creator.create(entry.event, level)
+                        pt?.invoke("    created ${loc.event?.template?.hsName ?: loc.event?.template?.debugId} draws=${draws!!.size - before}")
+                        if (loc.event == null && xyz.znix.xftl.hs.HS.modded)
+                            xyz.znix.xftl.hs.HS.unsupported("generation", "sector events", "${entry.name}: no event")
                     }
                     if (placed >= count)
                         break
@@ -367,6 +404,7 @@ class NativeSectorGenerator(
                 break
         }
 
+        if (pt != null) ftl.browser.NativeRandom.trace = null
         val filler = creator.eventFor("NEUTRAL")
         for (loc in pool) {
             if (loc.event == null)
@@ -453,9 +491,91 @@ class NativeSectorGenerator(
         lastNebulaCap = NebulaCap(requested, free, kept, placedNames)
     }
 
+    /**
+     * Hyperspace's GenerateNebulas rewrite (CustomEvents.cpp, priority 9998), used only for a sector with
+     * `<priorityNebulaFix/>`: the same random32 draws as the original in a different order, no name cap to the beacon
+     * count, a beacon whose names ran out in mid-pass gets its plain NEBULA event afterwards, and as many of those
+     * as the non-nebula priority events need are taken out of the nebula again.
+     */
+    private fun placeNebulasPriority(names: ArrayList<SectorType.EventInfo>, pEventCount: Int) {
+        val images = if (names.size < 6) SMALL_CLOUDS else LARGE_CLOUDS
+        var image = images[rand.nextInt(images.size)]
+
+        val free = ArrayList(locations.filter { !it.nebula })
+        val defaults = ArrayList<Location>()
+
+        // size_t arithmetic: only a count within [free - 3, free] is topped up (a larger count wraps and passes)
+        while (names.size <= free.size && free.size - names.size < 4)
+            names.removeAt(rand.nextInt(names.size))
+
+        var anchor = free[rand.nextInt(free.size)]
+        var x = (anchor.pos.x - (image.width / 2).toFloat()).toInt()
+        var y = (anchor.pos.y - (image.height / 2).toFloat()).toInt()
+
+        var count = 0
+        while (names.isNotEmpty()) {
+            if (free.isEmpty()) {
+                count++
+            } else {
+                var placedAny = false
+                var i = 0
+                while (i < free.size) {
+                    val loc = free[i]
+                    val px = loc.pos.x
+                    val py = loc.pos.y
+                    if (x + 5 < px && px < x + 5 + image.width - 10 && y + 5 < py && py < y + 5 + image.height - 10) {
+                        loc.nebula = true
+                        if (loc.event == null) {
+                            if (names.isNotEmpty()) {
+                                loc.event = creator.create(names.removeAt(rand.nextInt(names.size)).event, level)
+                            } else {
+                                defaults.add(loc)
+                            }
+                        } else {
+                            if (loc.isExit)
+                                loc.event = creator.create(specialEvents.exitNebula, level)
+                            loc.forcedNebula = true
+                        }
+                        free.removeAt(i)
+                        placedAny = true
+                        continue
+                    }
+                    i++
+                }
+                if (!placedAny) count++
+                else clouds.add(Sector.NebulaCloud(image.path, x, y, image.width, image.height))
+            }
+            if (count < 21) {
+                val existing = clouds[rand.nextInt(clouds.size)]
+                image = images[rand.nextInt(images.size)]
+                x = existing.x + rand.nextInt(existing.width + image.width) - image.width
+                y = existing.y + rand.nextInt(existing.height + image.height) - image.height
+            } else {
+                count = 0
+                if (free.isEmpty())
+                    break
+                anchor = free[rand.nextInt(free.size)]
+                x = (anchor.pos.x - (image.width / 2).toFloat()).toInt()
+                y = (anchor.pos.y - (image.height / 2).toFloat()).toInt()
+            }
+        }
+
+        var i = pEventCount - free.size
+        while (i >= 0 && defaults.isNotEmpty()) {
+            defaults.removeAt(defaults.size - 1).nebula = false
+            i--
+        }
+        for (loc in defaults)
+            loc.event = creator.create(creator.eventFor("NEBULA"), level)
+    }
+
     private fun buildLayout(start: Location, exit: Location, flagship: Location?, dangerZone: Point, layoutSeed: Int): Layout {
         val beacons = HashMap<Location, Beacon>()
         for ((index, loc) in locations.withIndex()) {
+            // A modded sector can leave a beacon without an event (an entry whose CreateEvent finds only consumed
+            // unique events): FTL keeps its LocationEvent nullptr, which [EventManager.hsNoEvent] stands for.
+            if (loc.event == null && xyz.znix.xftl.hs.HS.modded)
+                loc.event = creator.hsNoEvent(level)
             val beacon = Beacon(
                 loc.pos, loc.event!!,
                 loc.isExit && !isLastStand,
@@ -490,6 +610,9 @@ class NativeSectorGenerator(
         class NebulaCap(val requested: Int, val free: Int, val kept: Int, val placed: Int)
 
         @JvmStatic var lastNebulaCap: NebulaCap? = null
+
+        /** Diagnostics hook: GenerateEvents' placement steps (entries, pool picks, draws per created event); null normally. */
+        @JvmField var placementTrace: ((String) -> Unit)? = null
 
         // The StarMap constructor's cloud lists: the small set is used for
         // fewer than six nebula events.

@@ -265,8 +265,23 @@ object Buttons {
         private val font = game.getFont("HL2", 2f)
         private val labelFont = game.getFont("HL1", 1f)
         private val jumpStatusFont = game.getFont("HL2", 1f)
+        private val jumpFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 62)
 
-        private val outOfFuel: Boolean get() = ship.fuelCount == 0 && game.getEnemyOf(ship) != null
+        /**
+         * FTLButton is a TextButton made with CommandGui ( -> OnInit), so TextButton::OnRender
+         * places JUMP by font 62's line height and offset in the language the game started in, centred
+         * on (42, 20) from the button's spot.
+         */
+        private fun printJumpLabel(text: String, colour: Colour) {
+            val (lineHeight, offset) = xyz.znix.xftl.rendering.NativeFonts.buttonMetricsAtStart(62)
+            jumpFont.printButtonLabel(pos.x, pos.y, 84, 40, text, colour, lineHeight, offset)
+        }
+
+        // Hyperspace (CommandGui::OnLoop hook): an enemy whose definition has `<noJump>` keeps the button inactive and
+        // "out of fuel" (bOutOfFuel), with tooltip_jump_noJump on hover.
+        private val hsNoJump: Boolean get() = xyz.znix.xftl.hs.ship.HsShipState.enemyNoJump(game, ship)
+        private val noJumpTooltip by lazy { HotkeyDelayedTooltip(game, "tooltip_jump_noJump", null) }
+        private val outOfFuel: Boolean get() = ship.fuelCount == 0 && game.getEnemyOf(ship) != null || hsNoJump
         // CommandGui::OnLoop (0x536770) sets the button inactive while TutorialManager::AllowJumping (0x4113b0) is
         // false: the tutorial shows a grey JUMP with no READY until the map lesson.
         private val tutorialBlocked: Boolean
@@ -324,13 +339,16 @@ object Buttons {
                 val pullout = if (red()) "img/buttons/FTL/ftl_pullout_red.png" else "img/buttons/FTL/FTL_pullout.png"
                 game.getImg(pullout).draw(pos.x + 11 - 7, pulloutY - 7)
 
-                val hasPilot = ship.isAutoScout || ship.friendlyCrew.any { it.room == ship.piloting!!.room }
-                val pilotPath = when (ship.piloting!!.undamagedEnergy > 0 && hasPilot) {
+                // A ship without piloting or engines (R&D's station) shows that half off: the original asks whether
+                // the system functions, which a missing system never does.
+                val piloting = ship.piloting
+                val hasPilot = ship.isAutoScout || (piloting != null && ship.friendlyCrew.any { it.room == piloting.room })
+                val pilotPath = when (piloting != null && piloting.undamagedEnergy > 0 && hasPilot) {
                     true -> "img/buttons/FTL/FTL_pilot_on.png"
                     false -> "img/buttons/FTL/FTL_pilot_off1.png"
                 }
 
-                val enginesPath = when (ship.engines!!.powerSelected >= 1) {
+                val enginesPath = when ((ship.engines?.powerSelected ?: 0) >= 1) {
                     true -> "img/buttons/FTL/FTL_engine_on.png"
                     false -> "img/buttons/FTL/FTL_engine_off1.png"
                 }
@@ -360,27 +378,37 @@ object Buttons {
             else
                 game.getImg("img/buttons/FTL/FTL_base.png").draw(pos.x - 7, pos.y - 7)
 
+            // Hyperspace <colors><textButtons> jump colours (CustomColors.cpp FTLButton/TextButton::OnRender):
+            // 0 no engines, 1 its text, 2 active, 3 hovered, 4 text, 5 hovered text, 6 no fuel, 7 its text.
+            val hs = xyz.znix.xftl.hs.HS.active
             if (outOfFuel) {
                 // If the player is in combat without any fuel, their jump button is disabled.
-                g.colour = Constants.WARNING_COLOUR_RED
+                g.colour = if (hs) xyz.znix.xftl.hs.render.HsColors.jump(6) else Constants.WARNING_COLOUR_RED
                 drawRounded(g, pos.x + 5, pos.y + 6, size.x, size.y, 3)
 
+                val noFuelText = if (hs) xyz.znix.xftl.hs.render.HsColors.jump(7) else Constants.JUMP_DISABLED_TEXT
                 val jumpText = game.translator["button_jump"]
-                font.drawStringCentred(pos.x.f, pos.y + 26f, 84f, jumpText, Constants.JUMP_DISABLED_TEXT)
+                printJumpLabel(jumpText, noFuelText)
 
-                g.colour = Constants.JUMP_DISABLED_TEXT
+                g.colour = noFuelText
                 g.fillRect(pos.x + 7, pos.y + 19, 70, 2)
             } else if (ship.isFtlCharged) {
-                g.colour = if (canCharge && !tutorialBlocked) Constants.JUMP_READY else Constants.JUMP_DISABLED
+                val down = !canCharge || tutorialBlocked
+                g.colour = when {
+                    hs -> if (down) xyz.znix.xftl.hs.render.HsColors.jump(0) else if (hovered) xyz.znix.xftl.hs.render.HsColors.jump(3) else xyz.znix.xftl.hs.render.HsColors.jump(2)
+                    !down -> Constants.JUMP_READY
+                    else -> Constants.JUMP_DISABLED
+                }
                 drawRounded(g, pos.x + 5, pos.y + 6, size.x, size.y, 3)
 
                 val textColour = when {
-                    !canCharge || tutorialBlocked -> Constants.JUMP_DISABLED_TEXT
+                    hs -> if (down) xyz.znix.xftl.hs.render.HsColors.jump(1) else if (hovered) xyz.znix.xftl.hs.render.HsColors.jump(5) else xyz.znix.xftl.hs.render.HsColors.jump(4)
+                    down -> Constants.JUMP_DISABLED_TEXT
                     hovered -> Constants.JUMP_READY_TEXT_HOVER
                     else -> Constants.JUMP_READY_TEXT
                 }
                 val jumpText = game.translator["button_jump"]
-                font.drawStringCentred(pos.x.f, pos.y + 26f, 84f, jumpText, textColour)
+                printJumpLabel(jumpText, textColour)
             } else {
                 val suffix = if (canCharge) "" else "_off"
                 val width = (ship.ftlChargeProgress * 74).toInt().coerceAtMost(74)
@@ -400,7 +428,7 @@ object Buttons {
                 val statusText = game.translator[statusKey]
                 val statusTextColor =
                     Colour.lerp(Constants.SECTOR_CUTOUT_TEXT, Constants.JUMP_READY, fadingCycle(1.5f, 0f, 1f))
-                jumpStatusFont.drawStringCentred(
+                (if (xyz.znix.xftl.Languages.current == "ja") labelFont else jumpStatusFont).drawStringCentred(
                     pos.x.toFloat(), pos.y + 51f, 84f,
                     statusText,
                     statusTextColor
@@ -410,6 +438,8 @@ object Buttons {
 
             if (hovered) {
                 g.tooltip = tooltip
+            } else if (rawHovered && hsNoJump) {
+                g.tooltip = noJumpTooltip
             }
         }
 
@@ -449,21 +479,23 @@ object Buttons {
         protected open val nativeFont: xyz.znix.xftl.rendering.NativeFonts.NativeFont? get() = null
 
         override fun draw(g: Graphics) {
+            // TextButton colours (Hyperspace <colors><textButtons>, HsColors)
             g.colour = when {
-                disabled -> Constants.JUMP_DISABLED
-                hovered -> Constants.UI_BUTTON_HOVER
-                else -> Constants.SECTOR_CUTOUT_TEXT
+                disabled -> if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.tbInactive() else Constants.JUMP_DISABLED
+                hovered -> if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.tbSelected() else Constants.UI_BUTTON_HOVER
+                else -> if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.tbActive() else Constants.SECTOR_CUTOUT_TEXT
             }
             drawRounded(g, pos.x, pos.y, size.x, size.y, radius)
+            val textColour = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.tbText() else Constants.JUMP_DISABLED_TEXT
 
             val nativeFont = nativeFont
             if (nativeFont != null) {
-                nativeFont.printButtonLabel(pos.x, pos.y, size.x, size.y, label, Constants.JUMP_DISABLED_TEXT)
+                nativeFont.printButtonLabel(pos.x, pos.y, size.x, size.y, label, textColour)
                 return
             }
 
             val x = (size.x - font.getWidth(label)) / 2f
-            font.drawString(pos.x + x, pos.y + yOffset.f, label, Constants.JUMP_DISABLED_TEXT)
+            font.drawString(pos.x + x, pos.y + yOffset.f, label, textColour)
         }
 
         override fun click(button: Int) {
@@ -614,7 +646,7 @@ object Buttons {
                     blueprint.drawLauncherUI(
                         icon, g,
                         (pos.x + 60 - (icon.height - icon.height / 2)).f,
-                        (pos.y + 34 - icon.width / 2).f
+                        (pos.y + 34 - icon.width / 2).f, game
                     )
                 }
 
@@ -693,7 +725,7 @@ object Buttons {
                     blueprint.drawLauncherUI(
                         icon, g,
                         (pos.x + 63 - (icon.height - icon.height / 2)).f,
-                        (pos.y + 35 - icon.width / 2).f
+                        (pos.y + 35 - icon.width / 2).f, game
                     )
                     labelFont.printCenter(pos.x + 60f, pos.y + 58f, blueprint.translateShort(game), Colour.white)
                 }

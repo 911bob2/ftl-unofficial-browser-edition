@@ -29,8 +29,8 @@ export async function gameBarUiChecks(page,{pass,name}){
  for(const id of ['console','save','fullscreen','save-close','debug-mark'])assert.ok(await page.locator('#'+id).isVisible(),'#'+id+' missing from the bar');
  assert.equal(await page.locator('#save-close').textContent(),'Save and close');
  assert.ok(await page.locator('#hide-header').isHidden(),'Hide header is only for fullscreen');
- // Exporting a save moved out of the bar: the Saves panel keeps the cloud download and the import, and the pause panel the pending-progress download.
- assert.equal(await page.locator('#saves-panel #backup-download').count(),1);assert.equal(await page.locator('#saves-panel #backup-import').count(),1);assert.equal(await page.locator('#recovery-export').count(),1);
+ // Exporting a save moved out of the bar: the Saves panel imports backups and each save's menu downloads one.
+ assert.equal(await page.locator('#saves-panel #backup-import').count(),1);assert.equal(await page.locator('#saves-panel #new-save').count(),1);assert.equal(await page.locator('#recovery-export').count(),0);
  assert.equal(await page.locator('#fullscreen').textContent(),'Fullscreen');
  pass('Game bar has no Back/Pause/Export, Save and close replaces Export and Hide header waits for fullscreen');
 
@@ -123,37 +123,36 @@ export async function hangarEscapeCheck(page,{click,state,pass}){
 }
 
 /**
- * Save and close, cloud path: a save that cannot be written keeps the game running and says why; once it can be
- * written the whole run reaches the cloud before the game stops, the play lease is handed back so the account can
- * launch again at once (no takeover prompt), and the next launch continues exactly that run.
+ * Save and close (docs/SAVES.md): a save this browser cannot store keeps the game running and says why; once it can be
+ * stored the run goes to the device store, then to the account, the save's lock is given back so the account can play
+ * it at once anywhere (no lock question), and the next launch continues exactly that run.
  */
 export async function saveCloseUiChecks(page,{snapshot,state,click,pass}){
  await leaveFullscreen(page);
  await page.evaluate(()=>window.ftlEngine.newRun('PLAYER_SHIP_HARD',1));await state('InGameState');
  await page.evaluate(()=>window.ftlEngine.consoleExecute('rich'));
  await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).scrap===5000);
- await page.route('**/api/saves/current',route=>route.request().method()==='PUT'?route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'Storage is full'})}):route.continue());
+ // The device store refuses writes (as a full disk would).
+ await page.evaluate(()=>{const put=IDBObjectStore.prototype.put;window.ftlTestRestorePut=()=>{IDBObjectStore.prototype.put=put;};IDBObjectStore.prototype.put=function(...args){const tx=this.transaction;if(tx.db.name==='ftl-saves'&&this.name==='runs')queueMicrotask(()=>{try{tx.abort();}catch{}});return put.apply(this,args);};});
  await page.locator('#save-close').click();
- await page.waitForFunction(()=>!document.getElementById('connection-panel').hidden&&/^Not saved/.test(document.getElementById('save-status').textContent));
+ await page.waitForFunction(()=>/^Not saved/.test(document.getElementById('save-status').textContent));
  assert.ok(await page.evaluate(()=>!!window.ftlEngine),'A failed save must not stop the game');
  assert.equal((await snapshot()).state,'InGameState');
  assert.equal((await snapshot()).scrap,5000,'A failed save loses nothing');
  await page.waitForFunction(()=>!document.getElementById('save-close').disabled&&document.getElementById('save-close').textContent==='Save and close');
- await page.unroute('**/api/saves/current');
- // The failure paused the flight for reconnection (existing machinery); reconnect, then close for real.
- await page.locator('#reconnect').click();
- await page.waitForFunction(()=>document.getElementById('connection-panel').hidden);
+ await page.evaluate(()=>window.ftlTestRestorePut());
  const reloaded=page.waitForEvent('framenavigated',{timeout:60000});
  await page.locator('#save-close').click();await reloaded;
  await page.waitForFunction(()=>document.body.dataset.sessionReady==='true');
- const cloud=await page.evaluate(async()=>(await fetch('/api/saves/current')).json());
- assert.ok(cloud.run&&cloud.run.length>1000,'The run is in the cloud save');
+ const list=await page.evaluate(async()=>(await fetch('/api/saves')).json());
+ const saved=list.saves.find(s=>s.meta?.summary?.scrap===5000);
+ assert.ok(saved&&saved.hasRun,'The run is in the account');assert.equal(saved.lock,null,'Save and close gave the lock back');
  await page.locator('#launch').click();
- await page.waitForFunction(()=>!!window.ftlEngine||!document.getElementById('takeover').hidden,{},{timeout:90000});
- assert.ok(await page.evaluate(()=>!!window.ftlEngine),'Launching right after Save and close must not ask to take over the lease');
+ await page.waitForFunction(()=>!!window.ftlEngine||!!document.querySelector('dialog[open]'),{},{timeout:90000});
+ assert.ok(await page.evaluate(()=>!!window.ftlEngine),'Launching right after Save and close asks nothing');
  await state('MainMenuState');
- assert.ok(await page.evaluate(()=>!!window.ftlEngine.runSave()),'The launch loads the cloud run');
+ assert.ok(await page.evaluate(()=>!!window.ftlEngine.runSave()),'The launch loads the saved run');
  await click(1180,295);await state('InGameState');
  assert.equal((await snapshot()).scrap,5000,'Progress made just before closing is in the continued run');
- pass('Save and close keeps the game on a failed save, then writes the run, hands the lease back and the next launch continues it');
+ pass('Save and close keeps the game on a failed save, then stores the run, syncs it, gives the lock back and the next launch continues it');
 }

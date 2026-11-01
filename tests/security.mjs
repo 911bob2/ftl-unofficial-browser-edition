@@ -21,7 +21,7 @@ class Client {
 }
 const checks=[];const check=(name)=>{checks.push(name);console.log('PASS '+name);};
 const anonymous=new Client();
-for(const path of ['/api/assets/manifest','/api/assets/boot','/api/saves/current','/api/admin/users'])assert.equal((await anonymous.request(path)).status,401);
+for(const path of ['/api/assets/manifest','/api/assets/boot','/api/saves','/api/admin/users'])assert.equal((await anonymous.request(path)).status,401);
 check('Anonymous requests cannot read original assets, saves, or admin data');
 await anonymous.token();assert.equal((await anonymous.request('/api/auth/login','POST',{username:'admin',password:'invalid'}, {},false)).status,400);
 assert.equal((await anonymous.request('/api/auth/login','POST',{username:'admin',password:'invalid'},{Origin:'https://other.example'})).status,403);
@@ -59,57 +59,34 @@ check('Test-start rate limits are enforced per account without spawning fixture 
 const manifest=await player.json('/api/assets/manifest');
 // Server game files must not stay in the browser's HTTP cache after the account signs out or loses access.
 {const audio=await player.request('/api/assets/audio/'+manifest.audio[0].hash);assert.equal(audio.status,200);assert.equal(audio.headers.get('cache-control'),'private, no-store');await audio.arrayBuffer();}
-const cloud=await player.json('/api/saves/current');
-const held=await player.json('/api/play-lease/acquire','POST',{takeOver:false});
-const sameCookieTab=new Client();sameCookieTab.cookies=new Map(player.cookies);await sameCookieTab.token();
-assert.equal((await sameCookieTab.request('/api/play-lease/acquire','POST',{takeOver:false})).status,409);
-assert.equal((await player.json('/api/play-lease/acquire','POST',{takeOver:false,lease:held.lease})).lease,held.lease);
-check('Shared-cookie tabs require takeover while the current lease holder reconnects idempotently');
-const save={...cloud,run:'<xftlSaveGame test="security-fixture"/>',profile:'<xftl-profile/>'};
-const simultaneous=await Promise.all(Array.from({length:6},()=>player.request('/api/saves/current','PUT',{lease:held.lease,state:save},{'If-Match':'"0"'})));
+// Save model 2 (docs/SAVES.md): per-save revisions and locks; tests/saves-v2.mjs covers the full API.
+const saveId=crypto.randomUUID(),tab=instance=>({'X-FTL-Instance':instance,'X-FTL-Device':'browser;security-fixture;Security fixture'});
+const save={name:'Security',setup:{key:'vanilla',mods:[]},meta:{},run:'<xftlSaveGame test="security-fixture"/>'};
+const simultaneous=await Promise.all(Array.from({length:6},()=>player.request('/api/saves/'+saveId,'PUT',save,{...tab('tab-a'),'If-Match':'"0"'})));
 assert.deepEqual(simultaneous.map(r=>r.status).sort(),[200,409,409,409,409,409]);
-const revision=(await simultaneous.find(r=>r.status===200).json()).revision;
-assert.equal(revision,1);assert.equal((await player.request('/api/saves/current','PUT',{lease:held.lease,state:save},{'If-Match':'"0"'})).status,409);
-assert.equal((await player.request('/api/saves/current','PUT',{lease:held.lease,state:{...save,revision:1,run:'<!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><xftlSaveGame>&e;</xftlSaveGame>'}},{'If-Match':'"1"'})).status,400);
+assert.equal((await simultaneous.find(r=>r.status===200).json()).revision,1);
+assert.equal((await player.request('/api/saves/'+saveId,'PUT',save,{...tab('tab-a'),'If-Match':'"0"'})).status,409);
+assert.equal((await player.request('/api/saves/'+saveId,'PUT',{...save,run:'<!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><xftlSaveGame>&e;</xftlSaveGame>'},{...tab('tab-a'),'If-Match':'"1"'})).status,400);
 const deepXml = '<xftlSaveGame>' + '<a>'.repeat(70) + '</a>'.repeat(70) + '</xftlSaveGame>';
-assert.equal((await player.request('/api/saves/current','PUT',{lease:held.lease,state:{...save,revision:1,run:deepXml}},{'If-Match':'"1"'})).status,400);
-assert.equal((await player.json('/api/saves/snapshots/1')).schema,1);
-assert.equal((await player.json('/api/saves/snapshots')).length,1);
-check('Save revision conflicts, XML entity and depth rejection, and compatible recovery snapshots');
+assert.equal((await player.request('/api/saves/'+saveId,'PUT',{...save,run:deepXml},{...tab('tab-a'),'If-Match':'"1"'})).status,400);
+assert.equal((await player.json('/api/saves/'+saveId+'/snapshots/1')).revision,1);
+assert.equal((await player.json('/api/saves/'+saveId+'/snapshots')).length,1);
+check('Save revision conflicts, XML entity and depth rejection, and recovery snapshots');
+const held=await player.json('/api/saves/'+saveId+'/lock','POST',{override:false},tab('tab-a'));
+const sameCookieTab=new Client();sameCookieTab.cookies=new Map(player.cookies);await sameCookieTab.token();
+assert.equal((await sameCookieTab.request('/api/saves/'+saveId+'/lock','POST',{override:false},tab('tab-b'))).status,409);
+assert.equal((await player.json('/api/saves/'+saveId+'/lock','POST',{override:false},tab('tab-a'))).since,held.since);
+check('Shared-cookie tabs need an override while the holding tab relocks idempotently');
 const second=new Client();await second.login('user10','isolated-player-test-password-2026');
-assert.equal((await second.request('/api/play-lease/acquire','POST',{takeOver:false})).status,409);
-const takeover=await second.json('/api/play-lease/acquire','POST',{takeOver:true});
-assert.equal((await player.request('/api/play-lease/heartbeat','POST',{lease:held.lease})).status,409);
-assert.equal((await player.request('/api/play-lease/acquire','POST',{takeOver:false,lease:held.lease})).status,409);
-assert.equal((await player.request('/api/saves/current','PUT',{lease:held.lease,state:{...save,revision:1}},{'If-Match':'"1"'})).status,409);
-assert.equal((await second.request('/api/play-lease/heartbeat','POST',{lease:takeover.lease})).status,204);
-await second.json('/api/saves/current','PUT',{lease:takeover.lease,state:{...save,run:null,profile:null,revision:1}},{'If-Match':'"1"'});
+assert.equal((await second.request('/api/saves/'+saveId+'/lock','POST',{override:false},tab('tab-c'))).status,409);
+await second.json('/api/saves/'+saveId+'/lock','POST',{override:true},tab('tab-c'));
+for(const r of [await player.request('/api/saves/'+saveId+'/lock','POST',{override:false},tab('tab-a')),await player.request('/api/saves/'+saveId,'PUT',save,{...tab('tab-a'),'If-Match':'"1"'})])assert.equal((await r.json()).code,'lock_overridden');
+assert.equal((await player.request('/api/saves/'+saveId+'/unlock','POST',undefined,tab('tab-a'))).status,409);
+await second.json('/api/saves/'+saveId,'PUT',{...save,run:null},{...tab('tab-c'),'If-Match':'"1"'});
 check('A second session cannot silently overwrite an active flight');
-// Save and close hands the lease back; only the session and token that hold it can.
-assert.equal((await player.request('/api/play-lease/release','POST',{lease:held.lease})).status,204);
-assert.equal((await second.request('/api/play-lease/release','POST',{lease:'not-the-lease-token'})).status,204);
-assert.equal((await second.request('/api/play-lease/heartbeat','POST',{lease:takeover.lease})).status,204,'A release by another session or with another token must keep the lease');
-assert.equal((await second.request('/api/play-lease/release','POST',{lease:takeover.lease})).status,204);
-assert.equal((await second.request('/api/play-lease/heartbeat','POST',{lease:takeover.lease})).status,409);
-const relock=await player.request('/api/play-lease/acquire','POST',{takeOver:false});assert.equal(relock.status,200,'A released lease can be taken again without a takeover');const release=(await relock.json()).lease;
-check('Releasing the play lease frees it only for the holding session and token');
-// Snapshots record what made them; restoring one makes it the current save and deletes the newer snapshots.
-{const at=(await player.json('/api/saves/current')).revision;
-const put=(r,run,kind)=>player.json('/api/saves/current','PUT',{lease:release,state:{...save,run,revision:r},kind},{'If-Match':`"${r}"`});
-await put(at,'<xftlSaveGame test="auto"/>','auto');await put(at+1,'<xftlSaveGame test="manual"/>','manual');await put(at+2,'<xftlSaveGame test="later"/>','restore');
-assert.deepEqual((await player.json('/api/saves/snapshots')).slice(0,3).map(s=>[s.revision,s.kind]),[[at+3,null],[at+2,'manual'],[at+1,'auto']],'a client cannot label a plain save as a restore');
-const restore=(r,ifMatch,lease=release)=>player.request('/api/saves/snapshots/'+r+'/restore','POST',{lease},{'If-Match':`"${ifMatch}"`});
-assert.equal((await restore(at+1,at+2)).status,409,'restoring needs the current revision');
-assert.equal((await restore(at+1,at+3,'not-the-lease-token')).status,409,'restoring needs the play lease');
-assert.equal((await restore(at+3,at+3)).status,400,'the current save is not restored onto itself');
-assert.equal((await restore(at+9999,at+3)).status,404);
-assert.equal((await (await restore(at+1,at+3)).json()).revision,at+4);
-const restored=await player.json('/api/saves/current');assert.equal(restored.revision,at+4);assert.equal(restored.run,'<xftlSaveGame test="auto"/>');
-assert.deepEqual((await player.json('/api/saves/snapshots')).filter(s=>s.revision>at).map(s=>[s.revision,s.kind]),[[at+4,'restore'],[at+1,'auto']]);
-assert.equal((await player.json('/api/saves/snapshots/'+(at+4))).revision,at+4);}
-check('Snapshots record autosave or manual save; restoring one discards the newer snapshots');
 const other=new Client();await other.login('user09',credentials.get('user09'));await other.json('/api/auth/password','POST',{currentPassword:credentials.get('user09'),newPassword:'isolated-other-test-password-2026'});await other.login('user09','isolated-other-test-password-2026');
-assert.equal((await other.json('/api/saves/current')).run,null);assert.deepEqual(await other.json('/api/saves/snapshots'),[]);
+assert.deepEqual((await other.json('/api/saves')).saves,[]);assert.equal((await other.request('/api/saves/'+saveId)).status,404);assert.equal((await other.request('/api/saves/'+saveId+'/snapshots/1')).status,404);
+assert.equal((await other.request('/api/saves/'+saveId,'PUT',save,{...tab('tab-x'),'If-Match':'"2"'})).status,404);
 const users=await admin.json('/api/admin/users');const victim=users.find(u=>u.userName==='user09');await admin.json('/api/admin/users/'+victim.id+'/disable','POST',{disabled:true,version:victim.version});assert.equal((await other.request('/api/auth/me')).status,401);
 check('Account save isolation and immediate session revocation on disable');
 const lock=new Client();await lock.token();for(let i=0;i<5;i++)assert.equal((await lock.request('/api/auth/login','POST',{username:'user10',password:'wrong-password'})).status,401);

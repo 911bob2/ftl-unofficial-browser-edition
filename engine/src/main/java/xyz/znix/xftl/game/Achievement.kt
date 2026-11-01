@@ -24,7 +24,7 @@ class Achievement(elem: Element) {
             achievements = HashMap()
 
             for (elem in doc.rootElement.getChildren("achievement")) {
-                val ach = Achievement(elem)
+                val ach = xyz.znix.xftl.hs.HsLoad.item("data/achievements.xml", { "achievement" }) { Achievement(elem) } ?: continue
                 achievements[ach.id] = ach
             }
         }

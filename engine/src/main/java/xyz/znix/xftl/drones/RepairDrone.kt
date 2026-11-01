@@ -83,8 +83,8 @@ class RepairDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
     override fun makePawn(room: Room): Pawn = RepairPawn(room)
 
     private inner class RepairPawn(room: Room) : AbstractIndoorsDrone.Pawn(room) {
-        override val baseMaxHealth: Float get() = 25f
-        override val canRepair: Boolean get() = true
-        override val repairSpeed: Float get() = 2f
+        override val vanillaMaxHealth: Float get() = 25f
+        override val canRepair: Boolean get() = hsFlag(xyz.znix.xftl.hs.stat.CrewStat.CAN_REPAIR)?.let { it && isPowered } ?: true
+        override val repairSpeed: Float get() = hsStat(xyz.znix.xftl.hs.stat.CrewStat.REPAIR_SPEED_MULTIPLIER) ?: 2f
     }
 }

@@ -13,7 +13,7 @@ import xyz.znix.xftl.savegame.RefLoader
 import xyz.znix.xftl.savegame.SaveUtil
 
 abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, ship: Ship) :
-    AbstractWeaponInstance(type, ship), IRoomTargetingWeapon {
+    AbstractWeaponInstance(type, ship), IRoomTargetingWeapon, HsProjectileQueue {
 
     // The list of all the rooms to fire at. This is required since artillery
     // weapons and all enemy-fired weapons aim at different rooms for each shot.
@@ -38,7 +38,7 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
     // To support weapons that fire multiple shots per charge (assuming
     // a mod adds one), we have to divide out the number of shots to get
     // the index of the charge we're currently on.
-    private val chargeIndex: Int get() = shotsFired / type.shots
+    private val chargeIndex: Int get() = shotsFired / hsNumShots
 
     private val fireAnimationFrame: Int
         get() {
@@ -46,14 +46,75 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
 
             // firingAnimationTimer resets for each shot, so we have to add
             // an extra offset to get the time in the sequence for charger weapons.
-            val time = firingAnimationTimer + chargeIndex * Animations.PROJECTILE_WEAPON_FIRE_TIME
+            val time = firingAnimationTimer + (chargeIndex + hsAnimChargeOffset) * shotFireTime
 
             return animation.fireIndex(time, totalAnimationTime)
         }
 
-    private val totalAnimationTime: Float get() = Animations.PROJECTILE_WEAPON_FIRE_TIME * maxTotalCharges
+    private val totalAnimationTime: Float get() = fireTime
 
-    protected var entryAngle: Float = 0f
+    /**
+     * WeaponAnimation::SetFireTime's time: the frames from the charged one to the end of the launcher animation take
+     * it. ProjectileFactory's constructor (1.6.14 0x40bff0) sets 0.25 s for lasers, missiles and bursts and 1 s for
+     * a weapon with more than one charge level; Hyperspace `<fireTime>` replaces it.
+     */
+    internal var fireTime: Float = type.hs?.fireTime?.takeIf { it != 0f }
+        ?: if ((type.chargeLevels ?: 1) > 1) 1f else Animations.PROJECTILE_WEAPON_FIRE_TIME
+
+    /**
+     * The time of one shot's segment: WeaponAnimation::Update splits the frames after the charged one into
+     * iChargeLevels segments of (frames - charged) / iChargeLevels frames (integer division); a single-charge weapon
+     * plays them all per shot.
+     */
+    internal val shotFireTime: Float
+        get() {
+            if (maxTotalCharges <= 1) return fireTime
+            val span = animation.length - animation.chargedFrame
+            if (span <= 0) return fireTime
+            return fireTime * (span / maxTotalCharges) / span
+        }
+
+    internal var entryAngle: Float = 0f
+
+    /**
+     * Hyperspace `<simultaneousFire>` (CustomWeapons.cpp ProjectileFactory::GetProjectile / WeaponAnimation::StartFire):
+     * the whole volley leaves on the first shot's fire frame, from that shot's position (the charge-flak offset fix),
+     * and a charge weapon's animation starts at the segment of its last charge (iChargedFrame + chargeLength *
+     * boostLevel). [hsAnimChargeOffset] is that jump, in charges.
+     */
+    private val hsSimultaneousFire: Boolean get() = xyz.znix.xftl.hs.HS.active && type.hs?.simultaneousFire == true
+    private var hsAnimChargeOffset: Int = 0
+
+    /** The charges of the volley being fired (WeaponAnimation::boostLevel + 1 while it fires), 0 when idle. */
+    var hsVolleyCharges: Int = 0
+        private set
+
+    /** Hyperspace ProjectileFactory::queuedProjectiles: the shots of the volley still to leave. */
+    val hsQueuedShots: Int get() = if (hsQueueMode) hsQueue.size else targets.size + if (waitingToFireAt != null) 1 else 0
+
+    /**
+     * Hyperspace ProjectileFactory::queuedProjectiles (CustomWeapons.cpp Update rewrite): the volley's projectiles,
+     * constructed in target order when the weapon fires and handed out from the back by [hsGetProjectile]. The
+     * rooms in [targets] / [waitingToFireAt] only time the fire frames while this is in use.
+     */
+    override val hsQueue = ArrayList<AbstractProjectile>()
+    override var hsFiredOnce: Boolean = false
+
+    /** WeaponAnimation::bFireShot: set at a fire frame, consumed by the next GetProjectile (FireShot()). */
+    private var hsFireShot = false
+    internal val hsFireShotPending: Boolean get() = hsFireShot
+
+    /** The fire animation's time past the charged frame (0 while idle): the Lua view of anim.tracker. */
+    internal val hsFireSequenceTime: Float
+        get() = if (!isFiring) 0f else firingAnimationTimer + (chargeIndex + hsAnimChargeOffset) * shotFireTime
+
+    private val hsQueueMode: Boolean get() = xyz.znix.xftl.hs.HS.active
+
+    /** Set when a volley is fired; the next [update] starts the fire animation without advancing it. */
+    private var hsStartPending = false
+
+    /** WeaponBlueprint::miniProjectiles size of a BURST launcher, 0 for everything else. */
+    protected open val hsMiniCount: Int get() = 0
 
     // Where our shots leave the ship. None of this is serialised, since it's
     // worked out again each time we launch a shot: weapons can be dragged to
@@ -81,7 +142,15 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
             return
         }
 
-        firingAnimationTimer += dt
+        // The fire frame set WeaponAnimation::bFireShot last frame; ShipManager drains the factory (GetProjectile until
+        // it returns nothing: one shot, a burst's pieces or a simultaneousFire volley) on the frame after it, as the
+        // HS oracle shows (wp4-queue: first shot one frame after the browser's fire frame, every family).
+        if (hsFireShot) hsDrain()
+
+        // Hyperspace ProjectileFactory::Update: the volley is built, the launcher's WeaponAnimation::Update runs (not
+        // firing yet) and only then StartFire, so the fire animation first advances on the next frame.
+        if (hsStartPending) hsStartPending = false
+        else firingAnimationTimer += dt
 
         // Surprisingly, weapons charge while firing.
 
@@ -91,16 +160,35 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
 
         if (waitingToFireAt != null && singleChargeFrame >= animation.fireFrame) {
             if (shotsFired == 0) browserRecordVolley(waitingToFireAt!!.ship)
+            if (hsQueueMode) {
+                hsFireShot = true
+                waitingToFireAt = null
+                if (hsSimultaneousFire) targets.clear()
+            } else {
             fireFrameHit()
             waitingToFireAt = null
+            }
+            if (!hsQueueMode && hsSimultaneousFire && targets.isNotEmpty()) {
+                while (targets.isNotEmpty()) {
+                    waitingToFireAt = targets.removeAt(targets.lastIndex)
+                    fireFrameHit()
+                    waitingToFireAt = null
+                }
+                damageCloak()
+            }
         }
 
-        if (firingAnimationTimer >= Animations.PROJECTILE_WEAPON_FIRE_TIME) {
+        if (firingAnimationTimer >= shotFireTime) {
             if (targets.isEmpty()) {
+                if (hsFireShot) hsDrain()
                 stopFiring()
             } else {
                 shotsFired++
+                // WeaponAnimation::Update (0x4609e0) runs one continuous tracker over the charge segments: the next
+                // segment starts where this one overshot (HS oracle wp4-queue, LASER_CHARGEGUN anim.tracker times).
+                val overshoot = firingAnimationTimer - shotFireTime
                 primeShot()
+                firingAnimationTimer = overshoot
             }
         }
     }
@@ -146,13 +234,20 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
     }
 
     protected open fun fireFrameHit() {
-        val projectile = buildProjectile(waitingToFireAt!!)
+        val aimedRoom = waitingToFireAt!!
+        val projectile = if (xyz.znix.xftl.hs.HS.active) {
+            val initial = spawnPosition(chargeIndex) + ship.weaponFireDirection * launchAdvance
+            val context = xyz.znix.xftl.hs.weapons.HsProjectileConstruction.Context(
+                xyz.znix.xftl.math.ConstFPoint(initial.x.toFloat(), initial.y.toFloat()), aimedRoom.pixelCentre,
+                ship, xyz.znix.xftl.hs.weapons.HsWeapons.shipId(ship))
+            xyz.znix.xftl.hs.weapons.HsProjectileConstruction.with(context) { buildProjectile(aimedRoom) }
+        } else buildProjectile(aimedRoom)
         projectile.entryAngle = entryAngle
         launchProjectile(projectile)
 
         // For the chain ion, mark the projectile as doing more damage
         if (type.boost?.type == AbstractWeaponBlueprint.BoostType.DAMAGE) {
-            projectile.chainDamage = (type.boost.perShot * firingChainCount).toInt()
+            projectile.chainDamage = (type.boost!!.perShot * firingChainCount).toInt()
         }
 
         type.launchSounds?.get()?.play()
@@ -174,8 +269,110 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         val endPos = spawnPos + ship.weaponFireDirection * 5000
 
         projectile.setInitialPath(spawnPos, endPos)
+        // Native keeps the actual destination target separately from the outgoing heading.
+        if (xyz.znix.xftl.hs.HS.active && projectile is AbstractWeaponProjectile)
+            projectile.targetPos = projectile.calculateTargetPosition()
 
         ship.projectiles += projectile
+
+        // Hyperspace ProjectileFactory::GetProjectile (priority -1000): PROJECTILE_FIRE.
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.weapons.HsWeaponsLua.projectileFire(projectile, this)
+    }
+
+    /**
+     * ProjectileFactory::Update (HS rewrite, CustomWeapons.cpp): the volley is constructed when the weapon fires, one
+     * projectile per target in target order, the idx-th at the fire location moved by iChargeOffset * idx (missiles
+     * 16 px further along the firing direction); entryAngle, then the chain damage boost ((boostLevel - 1) * amount).
+     */
+    protected open fun hsConstructVolley(aims: List<Room>) {
+        hsQueue.clear()
+        for ((idx, room) in aims.withIndex()) hsQueue += hsConstruct(room, idx) { buildProjectile(room) }
+    }
+
+    protected fun <P : AbstractWeaponProjectile> hsConstruct(room: Room, idx: Int, build: () -> P): P {
+        val initial = spawnPosition(idx) + ship.weaponFireDirection * launchAdvance
+        val context = xyz.znix.xftl.hs.weapons.HsProjectileConstruction.Context(
+            xyz.znix.xftl.math.ConstFPoint(initial.x.toFloat(), initial.y.toFloat()), room.pixelCentre,
+            ship, xyz.znix.xftl.hs.weapons.HsWeapons.shipId(ship))
+        val projectile = xyz.znix.xftl.hs.weapons.HsProjectileConstruction.with(context, build)
+        projectile.entryAngle = entryAngle
+        projectile.setInitialPath(initial, initial + ship.weaponFireDirection * 5000)
+        projectile.targetPos = projectile.calculateTargetPosition()
+        if (type.boost?.type == AbstractWeaponBlueprint.BoostType.DAMAGE)
+            projectile.chainDamage = (type.boost!!.perShot * firingChainCount).toInt()
+        return projectile
+    }
+
+    /** ShipManager's loop over the factory: every projectile GetProjectile hands out enters its owner's space. */
+    private fun hsDrain() {
+        while (true) {
+            val projectile = hsGetProjectile() ?: break
+            if (projectile !in ship.projectiles) ship.projectiles += projectile
+        }
+    }
+
+    /**
+     * ProjectileFactory::GetProjectile. Native 0x40d120: with FireShot() (the fire frame) a non-empty queue plays a
+     * launch sound (not for a bomb, nor for a burst with fewer left than its pieces), FiredWeapon on the cloak when the
+     * queue holds NumTargetsRequired, pops the back and sets bFiredOnce; without FireShot only a burst with fewer
+     * left than its pieces pops. Hyperspace (CustomWeapons.cpp): a burst keeps popping until a whole number of
+     * groups is left and the group takes the position of its first piece (the charge flak offset fix);
+     * simultaneousFire keeps popping until the queue is empty; then PROJECTILE_FIRE(projectile, weapon)
+     * (priority -1000, outermost).
+     */
+    override fun hsGetProjectile(): AbstractProjectile? {
+        val fireShot = hsFireShot
+        hsFireShot = false
+        val queue = hsQueue
+        val minis = hsMiniCount
+        val burst = minis > 0
+        var ret: AbstractProjectile? = null
+        if (queue.isNotEmpty()) {
+            val n = queue.size
+            val partial = burst && n < minis
+            if (fireShot || partial) {
+                if (fireShot && !partial) type.launchSounds?.get()?.play()
+                val required = if (maxTotalCharges > 1) maxOf(1, totalReadyCharges) else hsNumShots
+                if (required == n) damageCloak()
+                ret = queue.removeAt(queue.lastIndex)
+                hsFiredOnce = true
+            }
+        }
+        if (queue.isNotEmpty()) {
+            if (fireShot && hsSimultaneousFire) HsProjectileQueue.simultaneousFireWeapon = this
+            val simultaneous = HsProjectileQueue.simultaneousFireWeapon === this
+            if (burst) {
+                if (!fireShot && ret == null) {
+                    if (queue.size % minis != 0) return hsFired(queue.removeAt(queue.lastIndex))
+                    else if (simultaneous) ret = queue.removeAt(queue.lastIndex)
+                }
+                if (ret != null) {
+                    val i = (queue.size / minis) * minis
+                    if (i < queue.size) {
+                        for (j in i + 1 until queue.size) hsPlaceAt(queue[j], queue[i])
+                        hsPlaceAt(ret, queue[i])
+                    }
+                }
+            } else if (simultaneous && !fireShot && ret == null) ret = queue.removeAt(queue.lastIndex)
+        } else if (HsProjectileQueue.simultaneousFireWeapon === this) HsProjectileQueue.simultaneousFireWeapon = null
+        return hsFired(ret)
+    }
+
+    private fun hsFired(projectile: AbstractProjectile?): AbstractProjectile? {
+        if (projectile != null && xyz.znix.xftl.hs.HS.luaActive)
+            xyz.znix.xftl.hs.weapons.HsWeaponsLua.projectileFire(projectile, this)
+        return projectile
+    }
+
+    /** position and last_position copied from another queued projectile; the heading stays. */
+    private fun hsPlaceAt(projectile: AbstractProjectile, from: AbstractProjectile) {
+        val target = projectile.targetPos
+        val at = from.position
+        val far = xyz.znix.xftl.math.ConstFPoint(at.xf + ship.weaponFireDirection.x * 5000f, at.yf + ship.weaponFireDirection.y * 5000f)
+        projectile.setInitialPath(at, far)
+        projectile.targetPos = target
+        val last = from.hsExt?.lastPosition
+        if (last != null) projectile.hsExt?.lastPosition?.set(last)
     }
 
     override fun fire(targetSource: () -> Room) {
@@ -184,7 +381,7 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // This weapon is firing from its own hardpoint.
         artilleryOrigin = null
 
-        for (i in 0 until totalReadyCharges * type.shots) {
+        for (i in 0 until totalReadyCharges * hsNumShots) {
             targets.add(targetSource())
         }
 
@@ -192,8 +389,13 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // (we need the pre-firing value, as it determines the projectile damage)
         firingChainCount = chainCount
 
-        entryAngle = (ftl.browser.BrowserRandom.nextDouble() * Math.PI * 2).toFloat()
+        // Hyperspace ProjectileFactory::Fire: currentEntryAngle = random32() % 360 degrees (oracle wp4-queue).
+        entryAngle = if (hsQueueMode) Math.toRadians((xyz.znix.xftl.hs.weapons.HsWeapons.r32() % 360).toDouble()).toFloat()
+            else (ftl.browser.BrowserRandom.nextDouble() * Math.PI * 2).toFloat()
+        if (hsSimultaneousFire && maxTotalCharges > 1) hsAnimChargeOffset = totalReadyCharges - 1
+        hsVolleyCharges = totalReadyCharges
         fire()
+        if (hsQueueMode) { hsConstructVolley(targets); hsStartPending = true; hsSpendMissiles() }
         primeShot()
     }
 
@@ -201,7 +403,18 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // If this is a multi-shot weapon, only fire a single shot.
         // We don't have any way of doing more than that.
 
-        val projectile = buildProjectile(target)
+        // SpaceDrone::GetNextProjectile (0x429ee0) builds the shot at Point((int)x, (int)y) of the drone: whole pixels,
+        // cut toward zero (native 1.6.14 drone-order probe 5), as the defence drone's laser.
+        val position = drone.flightController.position
+        val start = xyz.znix.xftl.math.ConstFPoint(position.xf.toInt().toFloat(), position.yf.toInt().toFloat())
+        val projectile = if (xyz.znix.xftl.hs.HS.active) {
+            val context = xyz.znix.xftl.hs.weapons.HsProjectileConstruction.Context(
+                start, target.pixelCentre, target.ship,
+                xyz.znix.xftl.hs.weapons.HsWeapons.shipId(drone.ownerShip))
+            xyz.znix.xftl.hs.weapons.HsProjectileConstruction.with(context) { buildProjectile(target) }
+        } else buildProjectile(target)
+        // Hyperspace SpaceDrone::GetNextProjectile (priority -100): DRONE_FIRE may stop the shot.
+        if (xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.weapons.HsWeaponsLua.droneFire(projectile, drone)) return
         target.ship.projectiles += projectile
 
         // Draw the projectile on top of the ship. By default it's
@@ -212,7 +425,8 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // Prevent defence drones from firing on this shot.
         projectile.firedByDrone = true
 
-        projectile.setInitialPath(drone.flightController.position, projectile.calculateTargetPosition())
+        projectile.setInitialPath(start, projectile.calculateTargetPosition())
+        if (xyz.znix.xftl.hs.HS.active) projectile.hsCurrentSpace = target.ship
 
         type.launchSounds?.get()?.play()
     }
@@ -228,7 +442,7 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // same room with more than one projectile.
         // (Note that flak overrides this function since it doesn't
         //  have this requirement)
-        for (i in 0 until type.shots) {
+        for (i in 0 until hsNumShots) {
             val target = remaining.random(ftl.browser.BrowserRandom)
             remaining.remove(target)
             targets += target
@@ -239,6 +453,7 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // This applies boost for artillery weapons
         // Eg multiverse's playable flagship.
         fire()
+        if (hsQueueMode) { hsConstructVolley(targets); hsSpendMissiles() }
 
         primeShot()
     }
@@ -264,6 +479,13 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         firingAnimationTimer = 0f
         shotsFired = 0
         firingChainCount = 0
+        hsAnimChargeOffset = 0
+        hsVolleyCharges = 0
+        // ProjectileFactory::Update unpowered: the queued projectiles are deleted (a jump leaves them behind too).
+        hsQueue.clear()
+        hsFireShot = false
+        hsStartPending = false
+        if (HsProjectileQueue.simultaneousFireWeapon === this) HsProjectileQueue.simultaneousFireWeapon = null
     }
 
     override fun saveToXML(elem: Element, refs: ObjectRefs) {
@@ -272,7 +494,7 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // The rest of a volley aimed at a ship that was destroyed or jumped away mid-burst has nothing to hit
         // and the save holds no such ship: save the weapon as done firing.
         val aimedAt = listOfNotNull(waitingToFireAt) + targets
-        if (aimedAt.any { !refs.isRegistered(it.ship) })
+        if (aimedAt.any { !refs.isRegistered(it.ship) } || hsQueue.any { !refs.isRegistered(it.targetShip) })
             return
 
         if (waitingToFireAt != null) {
@@ -287,6 +509,7 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         SaveUtil.addTagFloat(elem, "fireAnimationTimer", firingAnimationTimer, 0f)
         SaveUtil.addTagInt(elem, "shotsFired", shotsFired, 0)
         SaveUtil.addTagInt(elem, "firingChainCount", firingChainCount, 0)
+        SaveUtil.addTagInt(elem, "hsAnimChargeOffset", hsAnimChargeOffset, 0)
 
         for (target in targets) {
             val targetElem = Element("target")
@@ -294,6 +517,15 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
             SaveUtil.addAttrInt(targetElem, "roomId", target.id)
             elem.addContent(targetElem)
         }
+
+        // The constructed volley (queuedProjectiles), front to back.
+        for (projectile in hsQueue) {
+            val queuedElem = Element("hsQueued")
+            SaveUtil.addAttr(queuedElem, "loadType", projectile.serialisationType)
+            projectile.saveToXML(queuedElem, refs)
+            elem.addContent(queuedElem)
+        }
+        SaveUtil.addTagBoolIfTrue(elem, "hsFiredOnce", hsFiredOnce)
     }
 
     override fun loadFromXML(elem: Element, refs: RefLoader) {
@@ -304,6 +536,7 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         isFiring = SaveUtil.getOptionalTagBool(elem, "isFiring") ?: false
         shotsFired = SaveUtil.getOptionalTagInt(elem, "shotsFired") ?: 0
         firingChainCount = SaveUtil.getOptionalTagInt(elem, "firingChainCount") ?: 0
+        hsAnimChargeOffset = SaveUtil.getOptionalTagInt(elem, "hsAnimChargeOffset") ?: 0
 
         val waitingToFireAtElem = elem.getChild("waitingToFireAt")
         if (waitingToFireAtElem != null) {
@@ -317,6 +550,17 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
             val shipRef = SaveUtil.getAttr(targetElem, "ship")
             refs.asyncResolve(Ship::class.java, shipRef) { targets += it!!.rooms[roomId] }
         }
+
+        hsFiredOnce = SaveUtil.getOptionalTagBool(elem, "hsFiredOnce") ?: false
+        hsQueue.clear()
+        val queued = elem.getChildren("hsQueued")
+        val slots = arrayOfNulls<AbstractProjectile>(queued.size)
+        for ((i, queuedElem) in queued.withIndex()) {
+            IProjectile.loadFromXML(ship.sys, queuedElem, refs, SaveUtil.getAttr(queuedElem, "loadType")) {
+                slots[i] = it as AbstractProjectile
+                hsQueue.clear(); slots.filterNotNullTo(hsQueue)
+            }
+        }
     }
 
     private fun primeShot() {
@@ -324,8 +568,8 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         waitingToFireAt = targets.removeAt(targets.lastIndex)
         firingAnimationTimer = 0f
 
-        // Damage the cloak when the last shot is fired
-        if (targets.isEmpty()) {
+        // Damage the cloak when the last shot is fired (Hyperspace: GetProjectile decides, see hsGetProjectile)
+        if (targets.isEmpty() && !hsQueueMode) {
             damageCloak()
         }
     }

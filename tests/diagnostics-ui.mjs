@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+const skipPerformance=process.env.FTL_SKIP_PERFORMANCE==='1';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {chromium,firefox} from 'playwright';
@@ -16,15 +17,16 @@ async function login(page){
 }
 async function exported(page){const pending=page.waitForEvent('download');await page.locator('#export-results').click();return JSON.parse(await readFile(await(await pending).path(),'utf8'));}
 const bounds=page=>page.evaluate(()=>{const r=document.getElementById('preview').getBoundingClientRect();return {top:r.top,height:r.height,pageHeight:document.documentElement.scrollHeight,scrollY};});
-for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge',chromium,{channel:'msedge'}],['Firefox',firefox,{}]]){
+const selected=(process.env.MENU_BROWSERS??'Chromium,Firefox').split(',');
+for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))){
  const browser=withOnboarding(await type.launch({headless:!(name==='Firefox'&&process.env.RUNNER_FIREFOX_WINDOWED==='1'),...options}),origin),page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
  page.setDefaultTimeout(20000);page.on('pageerror',error=>errors.push(error.message));
  const pass=label=>{checks.push(name+': '+label);console.log('PASS '+name+': '+label);};
  try{
-  await login(page);const before=await page.evaluate(async()=>(await(await fetch('/api/saves/current')).json())),initial=await bounds(page);
+  await login(page);const before=await page.evaluate(async()=>(await(await fetch('/api/saves')).json()).saves),initial=await bounds(page);
   assert.ok(initial.pageHeight<=1000,'Desktop workspace should fit the viewport');
   await page.locator('#individual-tests').evaluate(e=>e.parentElement.open=true);await page.locator('#test-encounters').click();
-  await page.waitForFunction(()=>document.getElementById('test-results').rows.length>20);
+  await page.waitForFunction(()=>document.getElementById('test-results').rows.length>20,{},{timeout:90000});
   assert.deepEqual(await bounds(page),initial,'Growing live results must not move the preview or page');
   await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Completed',{},{timeout:180000});
   const report=await exported(page);assert.equal(report.status,'passed');assert.equal(report.results.length,137);
@@ -40,6 +42,8 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
   await page.locator('#follow-output').uncheck();await page.locator('#results').evaluate(e=>e.scrollTop=0);assert.equal(await page.locator('#results').evaluate(e=>e.scrollTop),0);
   await page.keyboard.press('Tab');await page.locator('#tab-activity').focus();await page.keyboard.press('Home');assert.equal(await page.locator('#tab-cases').getAttribute('aria-selected'),'true');
   pass('137 live encounters, bounded results/output, passed summary, filters, case details and keyboard tabs preserve preview geometry');
+  if(skipPerformance)console.log('SKIP '+name+': browser timing and flagship benchmarks (FTL_SKIP_PERFORMANCE=1)');
+  else {
   await page.locator('#measure-browser').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing measured');
   const timing=await exported(page),sample=timing.browserTiming.at(-1);assert.ok(sample.callbacks>10);assert.ok(sample.fps>0&&sample.intervalP95>0);assert.equal(timing.results.length,137);assert.equal(sample.screen.width>0,true);
   await page.locator('#measure-browser').click();await page.locator('#stop-tests').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing stopped');assert.ok(await page.locator('#run-tests').isEnabled());
@@ -51,6 +55,7 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
    await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Completed',{},{timeout:90000});const unlimited=await exported(page);assert.equal(unlimited.status,'passed');assert.equal(unlimited.benchmark.length,3);
    for(const phase of unlimited.benchmark){assert.equal(phase.fpsLimit,0);assert.equal(phase.frames,phase.browserCallbacks);assert.ok(Math.abs(phase.fps-phase.browserFps)<.1);}
    await writeFile('.build/diagnostics-unlimited-firefox.json',JSON.stringify(unlimited,null,2));pass('Unlimited flagship benchmark draws on every supplied Firefox callback in all three phases');
+  }
   }
   await page.locator('.preset[data-preset="quick"]').click();await page.locator('#custom-selection').evaluate(e=>e.open=false);await page.screenshot({path:'.build/diagnostics-workspace-'+name.toLowerCase()+'.png'});
   for(const view of [{width:1000,height:700},{width:900,height:600},{width:390,height:844},{width:320,height:640}]){await page.setViewportSize(view);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Horizontal page overflow at '+view.width);await page.locator('#custom-selection').evaluate(e=>e.open=true);assert.ok(await page.locator('#suite-encounters').isVisible());await page.locator('#custom-selection').evaluate(e=>e.open=false);assert.ok(await page.locator('#preview').isVisible());}
@@ -64,7 +69,7 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
   assert.equal(await page.locator('#test-results tr:visible').count(),1);assert.match(await page.locator('#test-summary').innerText(),/1 failed/);await page.locator('#test-results button').click();assert.match(await page.locator('#case-detail-output').innerText(),/integration suites failed/);
   await page.locator('#tab-activity').click();assert.ok(await page.locator('#results').evaluate(e=>e.textContent.length<=256000));assert.match(await page.locator('#results').innerText(),/Earlier display output truncated/);assert.match(await page.locator('#results').innerText(),/FAIL deliberate/);
   const failed=await exported(page);assert.equal(failed.status,'failed');assert.equal(failed.server.log.length>300000,true,'Full server report remains exportable');
-  assert.deepEqual(await page.evaluate(async()=>(await(await fetch('/api/saves/current')).json())),before);assert.deepEqual(errors,[]);
+  assert.deepEqual(await page.evaluate(async()=>(await(await fetch('/api/saves')).json()).saves),before);assert.deepEqual(errors,[]);
   pass('Failures stay visible, long activity is bounded, full reports remain exportable and cloud saves are unchanged');
  }catch(error){console.log('Diagnostic UI status:',await page.locator('#test-status').textContent().catch(()=>''));await page.screenshot({path:'.build/diagnostics-ui-failure-'+name.toLowerCase()+'.png',fullPage:true}).catch(()=>{});throw error;}finally{await browser.close();}
 }

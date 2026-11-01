@@ -500,7 +500,7 @@ object VanillaSaveWriter {
         w.int(0)
         w.int(member.info.colour)
 
-        w.bool(member.mindControlledBy != null)
+        w.bool(member.isMindControlled)
 
         // Saved position (used by mind control release)
         val saved = member.savedPosition
@@ -605,7 +605,9 @@ object VanillaSaveWriter {
             // Background art: xftl generates this visually rather than
             // storing it, so write a valid generic entry with a sprite
             // path verified to exist in the dat.
-            w.string("stars/bg_dullstars2.png")
+            // Hyperspace: Location::spaceImage carries a changeBackground image list; HS's StarMap::LoadGame
+            // passes it to SpaceManager::SwitchBackground.
+            w.string(beacon.hsSpaceImage?.takeIf { xyz.znix.xftl.hs.HS.active } ?: "stars/bg_dullstars2.png")
             w.string(VERIFIED_SPRITES[beacon.pos.x % VERIFIED_SPRITES.size])
             w.int(0)
             w.int(0)

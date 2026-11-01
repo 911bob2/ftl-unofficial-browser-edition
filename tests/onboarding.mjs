@@ -81,7 +81,7 @@ const admin=new Client();await admin.login('admin',credentials.get('admin'));awa
  const config=await anonymous.request('/api/public/game/config');assert.equal(config.status,200);const publicConfig=await config.json();
  assert.equal(publicConfig.accountId,null);assert.equal(publicConfig.assetSource,'local');assert.ok(publicConfig.engineBuild&&publicConfig.assetVersion&&publicConfig.resourcesUrl);
  const resources=await anonymous.request(publicConfig.resourcesUrl);assert.equal(resources.status,200);assert.equal((await resources.arrayBuffer()).byteLength,publicConfig.resourcesBytes);
- for(const path of ['/api/game/config','/api/assets/manifest','/api/assets/boot','/api/game/resources','/api/saves/current','/api/saves/snapshots','/api/debug/sessions','/api/admin/users','/api/admin/settings','/api/auth/me'])assert.equal((await anonymous.request(path)).status,401,path+' needs an account');
+ for(const path of ['/api/game/config','/api/assets/manifest','/api/assets/boot','/api/game/resources','/api/saves','/api/saves/'+crypto.randomUUID(),'/api/debug/sessions','/api/admin/users','/api/admin/settings','/api/auth/me'])assert.equal((await anonymous.request(path)).status,401,path+' needs an account');
  check('Anonymous visitors can read only public game metadata and the engine resources; every account API still returns 401');
  globalThis.publicConfig=publicConfig;
 }

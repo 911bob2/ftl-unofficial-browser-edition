@@ -1,8 +1,6 @@
 using System.Net;
 using System.Security.Claims;
-using System.Text.Json;
 using System.Threading.RateLimiting;
-using System.Xml;
 using Ftl.Server;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
@@ -54,10 +52,16 @@ builder.Services.AddRateLimiter(o=>{
     o.AddPolicy("public",h=>RateLimitPartition.GetSlidingWindowLimiter(h.Connection.RemoteIpAddress?.ToString()??"unknown",_=>new(){PermitLimit=publicPermits,Window=TimeSpan.FromMinutes(1),SegmentsPerWindow=4,QueueLimit=0}));
     o.AddPolicy("tests",h=>RateLimitPartition.GetFixedWindowLimiter(h.User.FindFirstValue(ClaimTypes.NameIdentifier)??"anon",_=>new(){PermitLimit=5,Window=TimeSpan.FromMinutes(5),QueueLimit=0}));
     o.AddPolicy("debug-export",h=>RateLimitPartition.GetConcurrencyLimiter(h.User.FindFirstValue(ClaimTypes.NameIdentifier)??"anon",_=>new(){PermitLimit=1,QueueLimit=0}));
+    // Save and profile writes per account in a minute: far more than autosaves and a sync need.
+    var saveWritePermits=int.TryParse(builder.Configuration["FTL_SAVE_WRITE_LIMIT"],out var saveWriteLimit)&&saveWriteLimit>0?saveWriteLimit:300;
+    o.AddPolicy("save-writes",h=>RateLimitPartition.GetSlidingWindowLimiter(h.User.FindFirstValue(ClaimTypes.NameIdentifier)??"anon",_=>new(){PermitLimit=saveWritePermits,Window=TimeSpan.FromMinutes(1),SegmentsPerWindow=4,QueueLimit=0}));
+    // Mod file downloads stream up to 712 MB each; two at a time per account.
+    o.AddPolicy("mod-download",h=>RateLimitPartition.GetConcurrencyLimiter(h.User.FindFirstValue(ClaimTypes.NameIdentifier)??"anon",_=>new(){PermitLimit=2,QueueLimit=0}));
 });
 builder.Services.AddRazorPages();builder.Services.AddSingleton(new AssetCatalog(builder.Configuration["FTL_ASSETS_DIR"]??"/assets"));
 builder.Services.AddSingleton<LauncherTests>();
 builder.Services.AddSingleton<EngineResources>();
+builder.Services.AddSingleton<ModCatalog>();
 builder.Services.AddSingleton<AccountLifecycle>();
 builder.Services.AddHostedService(p => p.GetRequiredService<AccountLifecycle>());
 builder.Services.AddSingleton(new ClientAssets(builder.Environment.WebRootPath??Path.Combine(builder.Environment.ContentRootPath,"wwwroot")));
@@ -68,7 +72,8 @@ var app=builder.Build();await Bootstrap.Initialize(app.Services,dataDir);
 if(args.FirstOrDefault()=="reset-game-progress") {
     using var scope=app.Services.CreateScope();var db=scope.ServiceProvider.GetRequiredService<GameDatabase>();
     await using var tx=await db.Database.BeginTransactionAsync();
-    await db.Saves.ExecuteDeleteAsync();await db.Snapshots.ExecuteDeleteAsync();await db.Leases.ExecuteDeleteAsync();
+    await db.Saves.ExecuteDeleteAsync();await db.Snapshots.ExecuteDeleteAsync();await db.SaveSlots.ExecuteDeleteAsync();await db.Leases.ExecuteDeleteAsync();
+    await db.CloudSaves.ExecuteDeleteAsync();await db.CloudSnapshots.ExecuteDeleteAsync();await db.SaveTombstones.ExecuteDeleteAsync();await db.LockOverrides.ExecuteDeleteAsync();await db.Profiles.ExecuteDeleteAsync();
     db.Audits.Add(new(){Action="game-progress-reset"});await db.SaveChangesAsync();await tx.CommitAsync();
     Console.WriteLine("Game progress reset; accounts and identity settings retained.");return;
 }
@@ -99,11 +104,13 @@ if(args.FirstOrDefault()=="backup") {
     using var source=new SqliteConnection($"Data Source={Path.Combine(dataDir,"ftl.sqlite")}");using var target=new SqliteConnection($"Data Source={Path.Combine(dest,"ftl.sqlite")}");source.Open();target.Open();source.BackupDatabase(target);
     Directory.CreateDirectory(Path.Combine(dest,"keys"));foreach(var file in Directory.GetFiles(Path.Combine(dataDir,"keys")))File.Copy(file,Path.Combine(dest,"keys",Path.GetFileName(file)));Console.WriteLine($"Backup created: {dest}");return;
 }
+app.Services.GetRequiredService<ModCatalog>(); // starts the background check of operator-placed mod files
 app.UseForwardedHeaders();
 app.Use(async(h,next)=>{try{await next();}catch(Exception e){app.Logger.LogError(e,"Request failed: {Path}",h.Request.Path);if(h.Response.HasStarted)throw;h.Response.Clear();h.Response.StatusCode=500;await h.Response.WriteAsJsonAsync(new{error="The request could not be completed"});}});
 app.Use(async(h,next)=>{
     h.Response.Headers["X-Content-Type-Options"]="nosniff";h.Response.Headers["Referrer-Policy"]="same-origin";h.Response.Headers["X-Frame-Options"]="DENY";
-    h.Response.Headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
+    // connect-src: the Mods panel's own MEGA downloader talks to MEGA's API and the storage hosts the API returns (gfs*.userstorage.mega.co.nz).
+    h.Response.Headers["Content-Security-Policy"]="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self' https://g.api.mega.co.nz https://*.userstorage.mega.co.nz; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
     h.Response.Headers["Permissions-Policy"]="camera=(), microphone=(), geolocation=()";
     if(!local)h.Response.Headers["Strict-Transport-Security"]="max-age=31536000";
     if(!local&&!h.Request.Path.StartsWithSegments("/health")&&!h.Request.IsHttps){h.Response.StatusCode=403;return;}
@@ -171,6 +178,9 @@ app.MapPost("/api/auth/password",async(PasswordRequest body,HttpContext h,UserMa
 var game=app.MapGroup("/api").RequireAuthorization("Play");
 DebugLogs.Map(game);
 var serverAssets=game.MapGroup("/assets").RequireAuthorization("ServerAssets");
+// Account storage for saves and snapshots; only test fixtures lower it (FTL_SAVE_BYTES_LIMIT, Development only).
+var saveBytes=local&&long.TryParse(builder.Configuration["FTL_SAVE_BYTES_LIMIT"],out var saveBytesLimit)&&saveBytesLimit>0?saveBytesLimit:CloudSaves.BytesLimit;
+ModCatalog.Map(game,app);CloudSaves.Map(game,app.Logger,saveBytes);
 game.MapGet("/game/config",(HttpContext h,AssetCatalog a,ClientAssets client,EngineResources resources)=>Results.Ok(new{
     accountId=h.UserId(),
     assetSource=AccountRoles.Role(h)=="external-user"?"local":"server",a.EngineBuild,assetVersion=a.Version,clientVersion=client.Version,
@@ -181,66 +191,6 @@ game.MapGet("/game/resources",(EngineResources resources)=>resources.Bytes==0?Re
 serverAssets.MapGet("/manifest",(AssetCatalog a,ClientAssets client)=>{var result=System.Text.Json.Nodes.JsonNode.Parse(a.Manifest.RootElement.GetRawText())!;result["clientVersion"]=client.Version;result["bootHash"]=a.BootHash;return Results.Json(result);});
 serverAssets.MapGet("/boot",(HttpContext h,AssetCatalog a)=>{var gzip=h.Request.Headers.AcceptEncoding.ToString().Contains("gzip");if(gzip)h.Response.Headers.ContentEncoding="gzip";h.Response.Headers.CacheControl="private, no-store";return Results.File(Path.Combine(a.Directory,gzip?"boot.pack.gz":"boot.pack"),"application/octet-stream",enableRangeProcessing:!gzip);});
 serverAssets.MapGet("/audio/{hash}",(string hash,HttpContext h,AssetCatalog a)=>{if(!a.Audio.TryGetValue(hash,out var path))return Results.NotFound();h.Response.Headers.CacheControl="private, no-store";return Results.File(path,path.EndsWith(".ogg")?"audio/ogg":"audio/wav",enableRangeProcessing:true);});
-game.MapPost("/play-lease/acquire",async(LeaseRequest body,HttpContext h,GameDatabase db)=>{
-    return await StateWrites.Run(h,app.Logger,async()=>{
-    await using var tx=await db.Database.BeginTransactionAsync();
-    var now=DateTime.UtcNow;var id=h.UserId();var lease=await db.Leases.FindAsync(id);
-    var owns=lease!=null&&lease.SessionId==h.SessionId()&&lease.Token==body.Lease;
-    if(lease!=null&&lease.ExpiresUtc>now&&!owns&&!body.TakeOver)return Results.Conflict(new{error="This account is playing in another tab or device"});
-    if(lease==null){lease=new(){UserId=id};db.Leases.Add(lease);}
-    if(!owns||body.TakeOver||lease.ExpiresUtc<=now)lease.Token=Secrets.Random();
-    lease.SessionId=h.SessionId();lease.ExpiresUtc=now.AddSeconds(90);await db.SaveChangesAsync();await tx.CommitAsync();return Results.Ok(new{lease=lease.Token,expiresUtc=lease.ExpiresUtc});
-    });
-});
-game.MapPost("/play-lease/heartbeat",async(HeartbeatRequest body,HttpContext h,GameDatabase db)=>{
-    return await StateWrites.Run(h,app.Logger,async()=>{
-    var now=DateTime.UtcNow;var changed=await db.Leases.Where(l=>l.UserId==h.UserId()&&l.Token==body.Lease&&l.SessionId==h.SessionId()&&l.ExpiresUtc>now).ExecuteUpdateAsync(s=>s.SetProperty(l=>l.ExpiresUtc,now.AddSeconds(90)));return changed==1?Results.NoContent():Results.Conflict(new{error="Play lease expired or taken over"});
-    });
-});
-// Save and close, and moving a browser save into the account, hand the lease back so the account can launch again at once
-// (another device would otherwise wait up to 90 seconds for it to expire).
-game.MapPost("/play-lease/release",async(HeartbeatRequest body,HttpContext h,GameDatabase db)=>{
-    return await StateWrites.Run(h,app.Logger,async()=>{
-    await db.Leases.Where(l=>l.UserId==h.UserId()&&l.Token==body.Lease&&l.SessionId==h.SessionId()).ExecuteDeleteAsync();return Results.NoContent();
-    });
-});
-game.MapGet("/saves/current",async(HttpContext h,GameDatabase db,AssetCatalog a)=>{var save=await db.Saves.FindAsync(h.UserId());h.Response.Headers.ETag=$"\"{save?.Revision??0}\"";return Results.Ok(save==null?new SaveEnvelope(1,a.EngineBuild,a.Version,0,null,null):new SaveEnvelope(1,save.EngineBuild,save.AssetVersion,save.Revision,save.Run,save.Profile));});
-game.MapPut("/saves/current",async(SaveRequest body,HttpContext h,GameDatabase db,AssetCatalog a)=>{
-    if(body.State==null||body.State.Schema!=1||body.State.EngineBuild!=a.EngineBuild||body.State.AssetVersion!=a.Version)return Results.BadRequest(new{error="Incompatible save format or assets"});
-    try{SaveValidation.Xml(body.State.Run,"xftlSaveGame");SaveValidation.Xml(body.State.Profile,"xftl-profile");}catch(Exception e) when(e is XmlException or InvalidDataException){return Results.BadRequest(new{error="Invalid save XML"});}
-    // Serialize outside SQLite's writer lock; the transaction verifies this revision.
-    var snapshotPayload=JsonSerializer.Serialize(new SaveEnvelope(1,a.EngineBuild,a.Version,body.State.Revision+1,body.State.Run,body.State.Profile),new JsonSerializerOptions(JsonSerializerDefaults.Web));
-    return await StateWrites.Run(h,app.Logger,async()=>{
-    await using var tx=await db.Database.BeginTransactionAsync();var lease=await db.Leases.FindAsync(h.UserId());if(lease==null||lease.Token!=body.Lease||lease.SessionId!=h.SessionId()||lease.ExpiresUtc<=DateTime.UtcNow)return Results.Conflict(new{error="Play lease is no longer valid"});
-    var state=await db.Saves.FindAsync(h.UserId());var revision=state?.Revision??0;
-    if(h.Request.Headers.IfMatch.ToString()!=$"\"{revision}\""||body.State.Revision!=revision)return Results.Conflict(new{error="A newer save exists",revision});
-    if(state==null){state=new(){UserId=h.UserId()};db.Saves.Add(state);}state.Revision=revision+1;state.Run=body.State.Run;state.Profile=body.State.Profile;state.EngineBuild=a.EngineBuild;state.AssetVersion=a.Version;state.UpdatedUtc=DateTime.UtcNow;
-    db.Snapshots.Add(new(){UserId=state.UserId,Revision=state.Revision,Payload=snapshotPayload,CreatedUtc=DateTime.UtcNow,Kind=body.Kind is "auto" or "manual" or "import"?body.Kind:null});
-    try{await db.SaveChangesAsync();await db.Snapshots.Where(s=>s.UserId==state.UserId&&s.Revision<=state.Revision-10).ExecuteDeleteAsync();await tx.CommitAsync();}catch(DbUpdateConcurrencyException){return Results.Conflict(new{error="A newer save exists"});}
-    h.Response.Headers.ETag=$"\"{state.Revision}\"";return Results.Ok(new{revision=state.Revision});
-    });
-});
-game.MapGet("/saves/snapshots",async(HttpContext h,GameDatabase db)=>Results.Ok(await db.Snapshots.Where(s=>s.UserId==h.UserId()).OrderByDescending(s=>s.Revision).Select(s=>new{s.Revision,s.CreatedUtc,s.Kind}).ToListAsync()));
-// Restoring a snapshot makes it the current save as a new revision and deletes the newer snapshots: the progress after it is
-// discarded rather than kept as a second branch of history.
-game.MapPost("/saves/snapshots/{revision:long}/restore",async(long revision,HeartbeatRequest body,HttpContext h,GameDatabase db,AssetCatalog a)=>{
-    return await StateWrites.Run(h,app.Logger,async()=>{
-    await using var tx=await db.Database.BeginTransactionAsync();var lease=await db.Leases.FindAsync(h.UserId());if(lease==null||lease.Token!=body.Lease||lease.SessionId!=h.SessionId()||lease.ExpiresUtc<=DateTime.UtcNow)return Results.Conflict(new{error="Play lease is no longer valid"});
-    var state=await db.Saves.FindAsync(h.UserId());var current=state?.Revision??0;
-    if(h.Request.Headers.IfMatch.ToString()!=$"\"{current}\"")return Results.Conflict(new{error="A newer save exists",revision=current});
-    var snapshot=await db.Snapshots.SingleOrDefaultAsync(s=>s.UserId==h.UserId()&&s.Revision==revision);if(snapshot==null||state==null)return Results.NotFound(new{error="That recovery snapshot no longer exists."});
-    if(revision==current)return Results.BadRequest(new{error="That snapshot is already the current save."});
-    var saved=JsonSerializer.Deserialize<SaveEnvelope>(snapshot.Payload,new JsonSerializerOptions(JsonSerializerDefaults.Web));
-    if(saved==null||saved.EngineBuild!=a.EngineBuild||saved.AssetVersion!=a.Version)return Results.BadRequest(new{error="That snapshot was made with other game files or another engine version."});
-    state.Revision=current+1;state.Run=saved.Run;state.Profile=saved.Profile;state.EngineBuild=a.EngineBuild;state.AssetVersion=a.Version;state.UpdatedUtc=DateTime.UtcNow;
-    var payload=JsonSerializer.Serialize(new SaveEnvelope(1,a.EngineBuild,a.Version,state.Revision,saved.Run,saved.Profile),new JsonSerializerOptions(JsonSerializerDefaults.Web));
-    await db.Snapshots.Where(s=>s.UserId==state.UserId&&s.Revision>revision).ExecuteDeleteAsync();
-    db.Snapshots.Add(new(){UserId=state.UserId,Revision=state.Revision,Payload=payload,CreatedUtc=DateTime.UtcNow,Kind="restore"});
-    try{await db.SaveChangesAsync();await db.Snapshots.Where(s=>s.UserId==state.UserId&&s.Revision<=state.Revision-10).ExecuteDeleteAsync();await tx.CommitAsync();}catch(DbUpdateConcurrencyException){return Results.Conflict(new{error="A newer save exists"});}
-    h.Response.Headers.ETag=$"\"{state.Revision}\"";return Results.Ok(new{revision=state.Revision});
-    });
-});
-game.MapGet("/saves/snapshots/{revision:long}",async(long revision,HttpContext h,GameDatabase db)=>{var s=await db.Snapshots.SingleOrDefaultAsync(s=>s.UserId==h.UserId()&&s.Revision==revision);return s==null?Results.NotFound():Results.Text(s.Payload,"application/json");});
 var adminApi=app.MapGroup("/api/admin").RequireAuthorization("ManageUsers");
 var serverTests=game.MapGroup("/tests").RequireAuthorization("ServerTests");
 serverTests.MapGet("",(HttpContext h,LauncherTests tests)=>Results.Ok(new { available=tests.Available, suites=LauncherTests.Suites, runs=tests.List(h.UserId()) }));
@@ -257,8 +207,4 @@ await app.RunAsync();
 
 record LoginRequest(string Username,string Password);
 record PasswordRequest(string CurrentPassword,string NewPassword);
-record LeaseRequest(bool TakeOver,string? Lease=null);
-record HeartbeatRequest(string Lease);
-record SaveEnvelope(int Schema,string EngineBuild,string AssetVersion,long Revision,string? Run,string? Profile);
-record SaveRequest(string Lease,SaveEnvelope State,string? Kind=null);
 static class DummyPassword { public static readonly string Hash=new PasswordHasher<Player>(Microsoft.Extensions.Options.Options.Create(new PasswordHasherOptions{IterationCount=220000})).HashPassword(new Player(),Secrets.Random()); }

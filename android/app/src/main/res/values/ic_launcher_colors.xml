@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_01_bg">#282A36</color>
+    <color name="ic_launcher_02_bg">#3D3842</color>
+    <color name="ic_launcher_05_bg">#1E2332</color>
+    <color name="ic_launcher_10_bg">#302B28</color>
+    <color name="ic_launcher_11_bg">#27314E</color>
+    <color name="ic_launcher_15_bg">#262425</color>
+    <color name="ic_launcher_16_bg">#442754</color>
+    <color name="ic_launcher_17_bg">#764F2D</color>
+    <color name="ic_launcher_20_bg">#2A2935</color>
+</resources>

@@ -39,11 +39,15 @@ class BrowserTutorialAdapter(definition: BrowserTutorialDefinition) {
             beamEquipped = weapons.any { it.type is BeamBlueprint },
             upgradesOpen = game.shipUI.tutorialShipWindow?.tutorialTab == ShipWindow.Tab.UPGRADES,
             pendingWeaponUpgrades = game.shipUI.tutorialShipWindow?.pendingWeaponUpgrades ?: 0,
-            beamPowered = weapons.any { it.type is BeamBlueprint && it.isPowered }
+            beamPowered = weapons.any { it.type is BeamBlueprint && it.isPowered },
+            doorsSelected = game.shipUI.touch?.doorsSelected == true,
+            drawerOpened = game.shipUI.touch?.drawerOpened == true,
+            weaponsSelected = game.shipUI.touch?.weaponsSelected == true
         )
     }
 
     fun update(game: InGameState): BrowserTutorialController.Transition? {
+        if (xyz.znix.xftl.hs.tutorial.HsTutorial.disabled) return null // Hyperspace <disableDefaultTutorial>: TutorialManager::OnLoop does nothing
         events.update(game)
         if (controller.completed || game.isDebugConsoleVisible || game.shipUI.tutorialOverlayOpen) return null
         applyEntry(game)
@@ -57,6 +61,7 @@ class BrowserTutorialAdapter(definition: BrowserTutorialDefinition) {
     }
 
     fun continueStep(game: InGameState): BrowserTutorialController.Transition? {
+        if (xyz.znix.xftl.hs.tutorial.HsTutorial.disabled) return null
         if (controller.completed || game.isDebugConsoleVisible || game.shipUI.tutorialOverlayOpen || game.shipUI.tutorialDialogueOpen) return null
         applyEntry(game)
         return record(game, controller.continueStep())

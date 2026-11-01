@@ -1,6 +1,6 @@
 package ftl.browser
 
-import org.newdawn.slick.opengl.InternalTextureLoader
+import org.lwjgl.opengl.GL11
 import org.newdawn.slick.opengl.PNGDecoder
 import xyz.znix.xftl.environment.EnvironmentAssets
 import xyz.znix.xftl.game.Difficulty
@@ -8,6 +8,7 @@ import xyz.znix.xftl.game.ImagePrefetcher
 import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.game.MainGame
 import xyz.znix.xftl.hangar.SelectShipState
+import xyz.znix.xftl.rendering.Colour
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.rendering.Image
 import xyz.znix.xftl.rendering.StagedImageLoad
@@ -32,6 +33,10 @@ import kotlin.math.abs
  * And the hangar's Advanced Edition toggle, which used to rebuild the game content and the hangar on every click.
  */
 internal object GameplayParityJump6Checks {
+    private val SCALES_OF_PLAY = listOf(0.25f, 0.4f, 0.625f, 0.75f, 0.875f, 0.95f, 1.0667f, 1.2f, 4f / 3f)
+    /** Rounding of a filtered sample: 1 of 255 was measured on a desktop GPU and on the software renderer of the tests. */
+    private const val WORST_FILTERED_DIFFERENCE = 2
+
     fun run(main: MainGame, container: GameContainer, graphics: Graphics): String {
         val rng = BrowserRandom.snapshot()
         val nativeRng = NativeRandom.snapshot()
@@ -40,11 +45,12 @@ internal object GameplayParityJump6Checks {
             val flare = flareCurve(main, container)
             val scene = sceneTimeline(main, container, graphics)
             val staged = stagedLoad(main, container)
+            val tight = tightTextures(main, container, graphics)
             val queue = prefetchQueue(main, container)
             val assets = environmentAssets(main, container)
             val ahead = jumpPrefetch(main, container)
-            val toggle = aeToggle(main, container, graphics)
-            return "jump6 ok: $zoom, $flare, $scene, $staged, $queue, $assets, $ahead, $toggle"
+            val toggle = BrowserGameplayParityDiagnostics.vanillaOnly("toggle") { aeToggle(main, container, graphics) }
+            return "jump6 ok: $zoom, $flare, $scene, $staged, $tight, $queue, $assets, $ahead, $toggle"
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
@@ -155,19 +161,14 @@ internal object GameplayParityJump6Checks {
         return out.toList()
     }
 
-    /** The plain load, written out separately: decode into a power-of-two buffer, then copy the edge into the padding. */
+    /** The plain load, written out separately: decode into a buffer of the image's own size. */
     private fun plainPixels(bytes: ByteArray): Triple<ByteArray, Int, Int> {
         val decoder = PNGDecoder(ByteArrayInputStream(bytes))
         val w = decoder.width
         val h = decoder.height
-        val tw = InternalTextureLoader.get2Fold(w)
-        val th = InternalTextureLoader.get2Fold(h)
-        val buffer = ByteBuffer.allocate(tw * th * 4)
-        decoder.decode(buffer, tw * 4, PNGDecoder.RGBA)
-        val a = buffer.array()
-        for (y in 0 until h) for (x in w until tw) for (c in 0 until 4) a[(y * tw + x) * 4 + c] = a[(y * tw + w - 1) * 4 + c]
-        for (y in h until th) for (x in 0 until tw * 4) a[y * tw * 4 + x] = a[(h - 1) * tw * 4 + x]
-        return Triple(a, tw, th)
+        val buffer = ByteBuffer.allocate(w * h * 4)
+        decoder.decode(buffer, w * 4, PNGDecoder.RGBA)
+        return Triple(buffer.array(), w, h)
     }
 
     private fun stagedMatches(df: xyz.znix.xftl.Datafile, path: String, budget: Double): Int {
@@ -198,27 +199,144 @@ internal object GameplayParityJump6Checks {
 
     /**
      * A load spread over many calls (a budget of nothing does one unit of work a call) and a load in one go leave
-     * exactly the pixels the plain decode and edge copy do, uploaded in full, for every picture a beacon can show.
+     * exactly the pixels the plain decode does, uploaded in full, for every picture a beacon can show.
      */
     private fun stagedLoad(main: MainGame, container: GameContainer): String {
         val df = BrowserGameplayParityDiagnostics.fresh(main, container).content.datafile
         val paths = allEnvironmentPaths() + EnvironmentAssets.warmPaths()
         var maxCalls = 0
-        var narrow = 0
-        var short = 0
         for (path in paths) {
             check(df.getOrNull(path) != null) { "the prefetch names $path, which the data does not have" }
             val calls = stagedMatches(df, path, 0.0)
             stagedMatches(df, path, Double.POSITIVE_INFINITY)
             stagedMatches(df, path, 0.5)
             maxCalls = maxOf(maxCalls, calls)
-            val decoder = PNGDecoder(ByteArrayInputStream(df.read(df[path])))
-            if (decoder.width < InternalTextureLoader.get2Fold(decoder.width)) narrow++
-            if (decoder.height < InternalTextureLoader.get2Fold(decoder.height)) short++
         }
         check(maxCalls > 20) { "the biggest picture took only $maxCalls calls, so nothing is being sliced" }
-        check(narrow > 0 && short > 0) { "no picture needs right ($narrow) or bottom ($short) padding, so the edge copy is untested" }
         return "staged load of ${paths.size} pictures (up to $maxCalls slices)"
+    }
+
+    /** One clear, one draw of [image] at [scale] in a corner of the frame, and the frame read back. */
+    private fun drawScaled(graphics: Graphics, image: Image, scaleX: Float, scaleY: Float): ByteArray {
+        val savedTint = Graphics.tint
+        GL11.glClearColor(0f, 0f, 0f, 1f)
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT)
+        graphics.markCurrentImageTransformSource()
+        graphics.pushTransform()
+        try {
+            Graphics.tint = Colour.white
+            graphics.loadIdentityMatrix()
+            image.draw(7f, 11f, image.width * scaleX, image.height * scaleY)
+        } finally {
+            graphics.popTransform()
+            Graphics.tint = savedTint
+        }
+        return BrowserPixels.read(0, 720 - 311, 400, 300)
+    }
+
+    /** A picture through the transform, the way the game's scaled draws go: filtered at any scale but 1. */
+    private fun drawThroughTransform(graphics: Graphics, image: Image, scale: Float): ByteArray {
+        val savedTint = Graphics.tint
+        GL11.glClearColor(0f, 0f, 0f, 1f)
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT)
+        graphics.markCurrentImageTransformSource()
+        graphics.pushTransform()
+        try {
+            Graphics.tint = Colour.white
+            graphics.loadIdentityMatrix()
+            graphics.scale(scale, scale)
+            image.draw(7f, 11f)
+        } finally {
+            graphics.popTransform()
+            Graphics.tint = savedTint
+        }
+        return BrowserPixels.read(0, 0, 1280, 720)
+    }
+
+    /** Whether every pixel of [b] that [a] lacks can be found in [a] at most two pixels away: nothing but a texel to one side. */
+    private fun onlyNeighboursDiffer(a: ByteArray, b: ByteArray, w: Int, h: Int): Boolean {
+        fun same(i: Int, k: Int) = b[i] == a[k] && b[i + 1] == a[k + 1] && b[i + 2] == a[k + 2]
+        for (y in 2 until h - 2) for (x in 2 until w - 2) {
+            val i = (y * w + x) * 4
+            if (same(i, i)) continue
+            var found = false
+            for (dy in -2..2) for (dx in -2..2) if (same(i, ((y + dy) * w + x + dx) * 4)) found = true
+            if (!found) return false
+        }
+        return true
+    }
+
+    /**
+     * A texture of the image's own size draws what the old power-of-two texture with repeated edge pixels drew, both
+     * loaded from each picture. Without a filter at 1:1 and 2:1, the frames are the same; at 3:2 a fragment can land on the
+     * line between two texels and take either, so a pixel may only come from next door. Through the transform at
+     * the scales of play (the jump zoom's 0.25 to 0.95, the touch layout's 0.75 and 0.875, and the stretched canvases),
+     * filtered samples may differ by rounding only. A wrong coordinate, a filter reaching past the edge or a wrapped edge
+     * changes whole edges and areas by far more.
+     */
+    private fun tightTextures(main: MainGame, container: GameContainer, graphics: Graphics): String {
+        val df = BrowserGameplayParityDiagnostics.fresh(main, container).content.datafile
+        val sprites = listOf("img/ship/kestral_base.png", "img/ship/kestral_gib1.png", "img/people/human_base.png",
+            "img/combatUI/box_hostiles2.png", "img/box_shield.png")
+        val paths = (sprites + allEnvironmentPaths() + EnvironmentAssets.warmPaths()).distinct().filter { df.getOrNull(it) != null }.take(12)
+        check(paths.isNotEmpty()) { "no pictures to compare" }
+        var unpadded = 0
+        var drawn = 0L
+        var rounding = 0L
+        var worst = 0
+        val context = ResourceContext()
+        try {
+            for (path in paths) {
+                val bytes = df.read(df[path])
+                val tight = StagedImageLoad(context, path, bytes).finish()
+                val decoder = PNGDecoder(ByteArrayInputStream(bytes))
+                val w = decoder.width
+                val h = decoder.height
+                val tw = org.newdawn.slick.opengl.InternalTextureLoader.get2Fold(w)
+                val th = org.newdawn.slick.opengl.InternalTextureLoader.get2Fold(h)
+                check(tight.texture.rawTextureWidth == w && tight.texture.rawTextureHeight == h) {
+                    "$path of $w x $h has a ${tight.texture.rawTextureWidth} x ${tight.texture.rawTextureHeight} texture"
+                }
+                if (tw != w || th != h) unpadded++
+                val buffer = ByteBuffer.allocate(tw * th * 4)
+                decoder.decode(buffer, tw * 4, PNGDecoder.RGBA)
+                buffer.position(0)
+                val padded = xyz.znix.xftl.rendering.TextureLoader.loadImage(context, object : org.newdawn.slick.opengl.ImageData {
+                    override fun getHeight(): Int = h
+                    override fun getTexWidth(): Int = tw
+                    override fun getDepth(): Int = 32
+                    override fun getImageBufferData(): ByteBuffer = buffer
+                    override fun getWidth(): Int = w
+                    override fun getTexHeight(): Int = th
+                })
+                for (scale in listOf(1f, 2f)) {
+                    check(drawScaled(graphics, tight, scale, scale).contentEquals(drawScaled(graphics, padded, scale, scale))) {
+                        "$path at ${scale}x: the frame differs from the padded texture"
+                    }
+                }
+                check(onlyNeighboursDiffer(drawScaled(graphics, tight, 1.5f, 1.5f), drawScaled(graphics, padded, 1.5f, 1.5f), 400, 300)) {
+                    "$path at 3:2: a pixel differs from the padded texture and from its neighbours"
+                }
+                for (scale in SCALES_OF_PLAY) {
+                    val a = drawThroughTransform(graphics, tight, scale)
+                    val b = drawThroughTransform(graphics, padded, scale)
+                    for (i in a.indices) {
+                        if (i % 4 == 3) continue
+                        val d = Math.abs((a[i].toInt() and 255) - (b[i].toInt() and 255))
+                        if (b[i].toInt() != 0) drawn++
+                        if (d > 0) rounding++
+                        if (d > worst) worst = d
+                    }
+                }
+            }
+        } finally {
+            context.freeAll()
+        }
+        check(unpadded > 0) { "none of the pictures needed padding" }
+        check(drawn > 0) { "nothing drawn" }
+        check(worst <= WORST_FILTERED_DIFFERENCE) { "through the transform: of $drawn bytes drawn $rounding differ, the worst by $worst" }
+        return "tight textures draw as padded ($unpadded of ${paths.size} pictures padded before; " +
+            "through the transform $rounding of $drawn bytes differ, the worst by $worst)"
     }
 
     /**
@@ -282,21 +400,29 @@ internal object GameplayParityJump6Checks {
         val nativeRng = NativeRandom.snapshot()
         var planets = 0
         val beacons = state.currentBeacon.sector.beacons
+        val named = HashMap<Beacon, List<String>>()
         for (beacon in beacons) {
             val paths = EnvironmentAssets.paths(state, beacon)
             check(paths == EnvironmentAssets.paths(state, beacon)) { "the list changes between calls" }
             for (path in paths) check(df.getOrNull(path) != null) { "beacon ${beacons.indexOf(beacon)} names missing $path" }
+            named[beacon] = paths
+        }
+        check(BrowserRandom.snapshot() == rng && NativeRandom.snapshot() == nativeRng) { "naming the pictures drew random numbers" }
+        for (beacon in beacons) {
             // The nebula builds itself from the frame that creates it, so only the plain kinds are built here.
             if (beacon.environmentType != Beacon.EnvironmentType.NORMAL) continue
+            // A beacon the ship never reached has no scene yet, so building its environment draws one (CreateLocation's
+            // picks); the streams are put back below.
             val planet = beacon.getEnvironment(state).diagnosticPlanetImage
             if (beacon !== state.currentBeacon) beacon.clearEnvironment()
             if (planet != null) {
-                check(planet.path in paths) { "the environment's planet ${planet.path} is not in $paths" }
+                check(planet.path in named.getValue(beacon)) { "the environment's planet ${planet.path} is not in ${named[beacon]}" }
                 planets++
             }
         }
         check(planets > 0) { "no plain beacon had a planet to compare" }
-        check(BrowserRandom.snapshot() == rng && NativeRandom.snapshot() == nativeRng) { "naming the pictures drew random numbers" }
+        BrowserRandom.restore(rng)
+        NativeRandom.restore(nativeRng)
         return "environment pictures (${beacons.size} beacons)"
     }
 
@@ -356,7 +482,7 @@ internal object GameplayParityJump6Checks {
             first.changeMode(other)
             val flipped = main.currentState as SelectShipState
             check(flipped !== first && flipped.advancedEdition == other) { "the toggle did not take" }
-            check(main.profile.lastAdvancedEdition == other && BrowserXml.write(main.profile.save()).contains("hangarAE=\"$other\"")) {
+            check(main.profile.lastAdvancedEdition == other && BrowserXml.write(main.profile.snapshot()).contains("hangarAE=\"$other\"")) {
                 "the choice was not saved at once"
             }
             check(BrowserFiles.enableAE == other) { "the loader's mode is ${BrowserFiles.enableAE}, not $other" }

@@ -12,9 +12,9 @@ while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){
 }
 const browserName=process.env.BASELINE_BROWSER??'chromium';
 const resultsPath=process.env.BASELINE_RESULTS??('.build/'+(origin.endsWith('8083')?'fork-baseline':'fork-current')+'-results.json');
-if(!['chromium','chrome','edge','firefox'].includes(browserName))throw Error('Unknown diagnostic browser '+browserName);
+if(!['chromium','firefox'].includes(browserName))throw Error('Unknown diagnostic browser '+browserName);
 const type=browserName==='firefox'?firefox:chromium;
-const options={headless:true};if(browserName==='chrome'||browserName==='edge')options.channel=browserName==='edge'?'msedge':'chrome';
+const options={headless:!(browserName==='firefox'&&process.env.RUNNER_FIREFOX_WINDOWED==='1')};if(browserName==='chromium')options.channel='chromium';
 const browser=withOnboarding(await type.launch(options),origin),page=await browser.newPage();page.setDefaultTimeout(90000);
 page.on('console',event=>{if(event.type()==='error')console.log('BROWSER ERROR',event.text());else if(event.text().startsWith('TEST '))console.log(event.text());});
 page.on('pageerror',error=>console.log('PAGE ERROR',error.stack));
@@ -23,7 +23,17 @@ try {
   await page.goto(origin);await ready;await page.waitForFunction(()=>document.body.dataset.sessionReady==='true');
   await page.evaluate(async({initial,password,name})=>{const token=async()=> (await (await fetch('/api/auth/csrf')).json()).token;let csrf=await token();const post=(path,body)=>fetch('/api/auth/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-TOKEN':csrf},body:JSON.stringify(body)});let r=await post('login',{username:name,password});if(r.status===401)r=await post('login',{username:name,password:initial});if(!r.ok)throw Error('Fixture login failed '+r.status);csrf=await token();const me=await (await fetch('/api/auth/me')).json();if(me.mustChangePassword){r=await post('password',{currentPassword:initial,newPassword:password});if(!r.ok)throw Error('Rotation failed');csrf=await token();await post('login',{username:name,password});}}, {initial:initial.get(name),name,password});
   await page.goto(origin+'/Diagnostics');await page.locator('#individual-tests').evaluate(e=>e.parentElement.open=true);const results=[];
-  for(const mode of (process.env.BASELINE_MODES??'vanilla,ae,encounters,mechanics,warnings,gameplay-options,gameplay-parity,progress,combat,campaign,tutorial,tutorial-isolation,tutorial-gates,tutorial-adapter,tutorial-overlay,tutorial-entry,tutorial-encounters,tutorial-play').split(',')){await page.locator('#test-'+mode).click();await page.waitForFunction(()=>/DONE (passed|failed|cancelled)\s*$/.test(document.getElementById('results').textContent)&&document.getElementById('stop-tests').disabled,{},{timeout:180000});const output=await page.locator('#results').textContent();results.push({mode,output});await writeFile(resultsPath,JSON.stringify({at:new Date().toISOString(),browser:browserName,results},null,2));assert.ok(!/FAIL|FATAL|[1-9]\d* failed/.test(output),output);console.log('PASS '+output.slice(output.lastIndexOf('DONE')).trim());}
+  for(const mode of (process.env.BASELINE_MODES??'vanilla,ae,encounters,mechanics,warnings,gameplay-options,gameplay-parity,progress,combat,campaign,tutorial,tutorial-isolation,tutorial-gates,tutorial-adapter,tutorial-overlay,tutorial-entry,tutorial-encounters,tutorial-play').split(',')){
+    // A long list can run in slices, each on a fresh page: BASELINE_ENCOUNTER_BATCH cases at a time, from BASELINE_ENCOUNTER_RANGE ("first,end").
+    const failures=[],batch=mode==='encounters'?Number(process.env.BASELINE_ENCOUNTER_BATCH??0):0,[first,end]=(process.env.BASELINE_ENCOUNTER_RANGE??'0,Infinity').split(',').map(Number);
+    for(let from=first;from<end;from+=batch){
+      if(batch){await page.goto(origin+'/Diagnostics?encounters='+from+','+Math.min(batch,end-from));await page.locator('#individual-tests').evaluate(e=>e.parentElement.open=true);}
+      await page.locator('#test-'+mode).click();await page.waitForFunction(()=>/DONE (passed|failed|cancelled)\s*$/.test(document.getElementById('results').textContent)&&document.getElementById('stop-tests').disabled,{},{timeout:Number(process.env.BASELINE_MODE_TIMEOUT_MS??180000)});
+      const output=await page.locator('#results').textContent();results.push({mode,from,output});await writeFile(resultsPath,JSON.stringify({at:new Date().toISOString(),browser:browserName,results},null,2));if(/^\s*(FAIL|FATAL)|[1-9]\d* failed/m.test(output)){if(!batch)assert.fail(output);failures.push(output);console.log('FAILED SLICE from '+from+'\n'+output.split('\n').filter(l=>/^FAILED/.test(l)).map(l=>l.slice(0,400)).join('\n'));}else console.log('PASS '+(batch?'from '+from+' ':'')+output.slice(output.lastIndexOf('DONE')).trim());
+      if(!batch||/DONE encounters: 0 passed, 0 failed/.test(output))break;
+    }
+    assert.equal(failures.length,0,failures.length+' slices failed');
+  }
   await writeFile(resultsPath,JSON.stringify({at:new Date().toISOString(),browser:browserName,results},null,2));
 } catch(e) { console.log('Diagnostic output:',await page.locator('#results').textContent().catch(()=>'')); console.log('Diagnostic state:',await page.evaluate(()=>{try{return window.debugSnapshot?.();}catch(e){return String(e);}})); throw e; }
 finally {await browser.close();}

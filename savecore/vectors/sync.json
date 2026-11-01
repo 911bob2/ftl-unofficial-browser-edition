@@ -1,0 +1,21 @@
+{
+ "about": "Sync decisions (docs/SAVES.md). local/cloud are LocalSave/CloudSave JSON with defaults filled in by the test runner: id s1, name Save 1, setup vanilla, hasRun true.",
+ "cases": [
+  {"name": "never uploaded, cloud has nothing", "local": {"base": 0, "dirty": true}, "cloud": null, "deleted": false, "expect": {"status": "LOCAL", "action": "CREATE", "rename": false}},
+  {"name": "in sync", "local": {"base": 3, "dirty": false}, "cloud": {"revision": 3}, "deleted": false, "expect": {"status": "SYNCED", "action": "NONE", "rename": false}},
+  {"name": "unsynced progress here", "local": {"base": 3, "dirty": true}, "cloud": {"revision": 3}, "deleted": false, "expect": {"status": "PENDING", "action": "UPLOAD", "rename": false}},
+  {"name": "cloud newer, nothing unsynced here", "local": {"base": 3, "dirty": false}, "cloud": {"revision": 5}, "deleted": false, "expect": {"status": "BEHIND", "action": "FETCH", "rename": false}},
+  {"name": "both changed", "local": {"base": 3, "dirty": true}, "cloud": {"revision": 5}, "deleted": false, "expect": {"status": "CONFLICT", "action": "ASK_CONFLICT", "rename": false}},
+  {"name": "cloud went back (server restore)", "local": {"base": 7, "dirty": false}, "cloud": {"revision": 5}, "deleted": false, "expect": {"status": "CONFLICT", "action": "ASK_CONFLICT", "rename": false}},
+  {"name": "deleted elsewhere, nothing unsynced", "local": {"base": 3, "dirty": false}, "cloud": null, "deleted": true, "expect": {"status": "DELETED", "action": "REMOVE_LOCAL", "rename": false}},
+  {"name": "deleted elsewhere, unsynced progress", "local": {"base": 3, "dirty": true}, "cloud": null, "deleted": true, "expect": {"status": "DELETED", "action": "ASK_DELETED", "rename": false}},
+  {"name": "gone from the cloud without a tombstone", "local": {"base": 3, "dirty": false}, "cloud": null, "deleted": false, "expect": {"status": "DELETED", "action": "REMOVE_LOCAL", "rename": false}},
+  {"name": "only in the cloud", "local": null, "cloud": {"revision": 2}, "deleted": false, "expect": {"status": "CLOUD", "action": "LIST_ONLY", "rename": false}},
+  {"name": "listed here, run not downloaded", "local": {"base": 2, "dirty": false, "hasRun": false}, "cloud": {"revision": 2}, "deleted": false, "expect": {"status": "CLOUD", "action": "LIST_ONLY", "rename": false}},
+  {"name": "listed here, profile not downloaded", "local": {"base": 2, "dirty": false, "hasProfile": false}, "cloud": {"revision": 2, "hasProfile": true}, "deleted": false, "expect": {"status": "CLOUD", "action": "LIST_ONLY", "rename": false}},
+  {"name": "no run left, profile in sync (the run ended)", "local": {"base": 2, "dirty": false, "hasRun": false, "hasProfile": true}, "cloud": {"revision": 2, "hasRun": false, "hasProfile": true}, "deleted": false, "expect": {"status": "SYNCED", "action": "NONE", "rename": false}},
+  {"name": "overridden while unsynced", "local": {"base": 3, "dirty": true, "overridden": {"device": "Pixel 8", "platform": "android", "at": "2026-10-29T14:05:00Z"}}, "cloud": {"revision": 4}, "deleted": false, "expect": {"status": "OVERRIDDEN", "action": "NOTIFY_OVERRIDDEN", "rename": false}},
+  {"name": "renamed here while offline", "local": {"base": 3, "dirty": false, "name": "Kestrel run", "nameDirty": true}, "cloud": {"revision": 3}, "deleted": false, "expect": {"status": "SYNCED", "action": "NONE", "rename": true}},
+  {"name": "nothing anywhere", "local": null, "cloud": null, "deleted": true, "expect": {"status": "DELETED", "action": "NONE", "rename": false}}
+ ]
+}

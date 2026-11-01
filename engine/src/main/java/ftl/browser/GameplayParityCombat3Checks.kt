@@ -32,9 +32,9 @@ internal object GameplayParityCombat3Checks {
             val laser = laserOnArrival(main, container)
             val route = doorRoute(main, container)
             val bossPath = bossPathTieBreak(main, container)
-            val zoltan = zoltanBonus(main, container)
+            val zoltan = BrowserGameplayParityDiagnostics.vanillaOnly("zoltan") { zoltanBonus(main, container) }
             val telepathy = telepathyColour()
-            val boarder = flagshipOpeningBoarder(main, container)
+            val boarder = BrowserGameplayParityDiagnostics.vanillaOnly("boarder") { flagshipOpeningBoarder(main, container) }
             val built = enemyCreationPower(main, container)
             val stun = droneStunExplosion(main, container)
             val asb = asbVolley(main, container)
@@ -327,7 +327,7 @@ internal object GameplayParityCombat3Checks {
         flagship.update(0f)
         val boarders = flagship.crew.filter { it.currentAction == AbstractCrew.Action.TELEPORTING } +
             state.player.crew.filter { (it as? LivingCrew)?.ownerShip === flagship }
-        check(boarders.size == 1) { "Opening boarders: ${boarders.size}" }
+        check(boarders.size == 1) { "Opening boarders: ${boarders.size} strategy ${flagship.type.boardingStrategy} initial ${flagship.crewAI.initialCrewCount} crew ${flagship.crew.map { it.codename + ":" + it.standingPosition?.room?.id }} teleporter room ${teleporter.room?.id} power ${teleporter.powerSelected} waves ${flagship.aiTeleportWaves}" }
         check(abs(teleporter.ionTimer - 15f) < 0.01f) { "Teleporter lock after the opening send: ${teleporter.ionTimer}" }
         flagship.update(0f)
         val after = flagship.crew.count { it.currentAction == AbstractCrew.Action.TELEPORTING } +
@@ -500,6 +500,8 @@ internal object GameplayParityCombat3Checks {
             ship.superShield = 5
             ship.projectiles.clear()
         }
+        // DamageArea rolls Rock Plating for the PDS hit as for any other; the generated pirate may carry it.
+        if (enemy.augments.removeAll { it.name == xyz.znix.xftl.augments.AugmentBlueprint.ROCK_ARMOR }) enemy.cargoUpdated()
         check(player.evasion == 0 && enemy.evasion == 0) { "Evasion ${player.evasion}/${enemy.evasion}" }
         val env = xyz.znix.xftl.environment.AsbEnvironment(state, state.currentBeacon, 2)
         val origin = env.diagnosticOrigin
@@ -563,14 +565,17 @@ internal object GameplayParityCombat3Checks {
         val missFlight = fly(missShot)
         check(missFlight.hullAt.isEmpty() && missShot !in player.projectiles && missShot.showsMiss) { "ASB miss flight" }
         check(missShot.position.xf < -800f || missShot.position.yf > 800f || missShot.position.yf < -800f) { "ASB miss exit ${missShot.position}" }
-        check(missFlight.firstSpeed == 368) { "ASB start speed ${missFlight.firstSpeed}" }
+        // UpdatePDSFire's Initialize("PDS_SHOT") leaves its speed of 20 for the first frame (native 1.6.14 capture).
+        check(missFlight.firstSpeed == 320) { "ASB start speed ${missFlight.firstSpeed}" }
 
         // A hit on the player: shields and the Zoltan shield don't stop it, 3 hull, a breach, then it flies on.
         val playerRoom = player.rooms.first()
         val playerShot = xyz.znix.xftl.environment.AsbProjectile.hit(playerRoom, player, origin)
         player.projectiles.add(playerShot)
         val playerFlight = fly(playerShot)
-        check(playerFlight.hullAt.size == 1 && playerFlight.hullAt[0].first == 300 && abs(playerFlight.hullAt[0].second - 8f) < 0.01f) {
+        // PDSFire::CollisionCheck (0x456ea0) hits once, when Projectile::AtTarget first holds (within one frame's
+        // travel of the aim), so the scale is just under 8 on the player's side.
+        check(playerFlight.hullAt.size == 1 && playerFlight.hullAt[0].first == 300 && playerFlight.hullAt[0].second in 7.75f..8.01f) {
             "ASB player hit ${playerFlight.hullAt}"
         }
         check(player.superShield == 5 && playerRoom.breaches.any { it != null }) { "ASB player hit shield/breach" }
@@ -584,7 +589,9 @@ internal object GameplayParityCombat3Checks {
         player.projectiles.add(enemyShot)
         val enemyFlight = fly(enemyShot)
         check(enemyFlight.enteredAt.size == 1 && abs(enemyFlight.enteredAt[0] - 600f) < 1f) { "ASB entry ${enemyFlight.enteredAt}" }
-        check(enemyFlight.hullAt.size == 1 && enemyFlight.hullAt[0].first == 3 && abs(enemyFlight.hullAt[0].second - 8f) < 0.01f &&
+        // In the enemy's space the scale still measures from the player-space start, so with a random entry angle the hit
+        // (within one frame's travel, about 22 px, of the aim) lands at 8 +- 7 * 22 / that distance.
+        check(enemyFlight.hullAt.size == 1 && enemyFlight.hullAt[0].first == 3 && enemyFlight.hullAt[0].second in 7.6f..8.4f &&
             enemy.superShield == 5) { "ASB enemy hit ${enemyFlight.hullAt}" }
 
         // Save and load mid-flight.

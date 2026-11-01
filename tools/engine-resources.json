@@ -15,10 +15,6 @@
     "assets/ui/sell_drop_box.xml",
     "assets/ui/ship_list_abc.xml",
     "baked/editor-door-data.xml",
-    "baked/roboto.font",
-    "shaders/colour_frag.glsl",
-    "shaders/colour_vert.glsl",
-    "shaders/image_rect_frag.glsl",
-    "shaders/image_rect_vert.glsl"
+    "baked/roboto.font"
   ]
 }

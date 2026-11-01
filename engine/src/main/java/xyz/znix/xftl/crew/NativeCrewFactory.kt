@@ -47,17 +47,24 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
      * times while it is in use; the last name is taken (and recorded)
      * either way.
      */
+    /** Diagnostics: the names drawn again because they were in use (FUN_00605750's retries), since the last reset. */
+    @JvmField var browserNameRetries = 0
+
     fun newName(): NewName {
         val table = nameManager.flatNames
+        // Hyperspace (CrewNames.cpp): one random32() seeds a std::mt19937, whose `() >> 1` replaces every random32()
+        // inside BlueprintManager::GetUnusedCrewName.
+        val hsNames = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.Mt19937(NativeRandom.next31()) else null
         var tries = 21
         var entry: Pair<String, Boolean>
         while (true) {
-            entry = table[NativeRandom.nextInt(table.size)]
+            entry = table[if (hsNames == null) NativeRandom.nextInt(table.size) else (hsNames.next() ushr 1) % table.size]
             if (usedNames.isEmpty() || !usedNames.contains(entry.first))
                 break
             tries--
             if (tries == 0)
                 break
+            browserNameRetries++
         }
         usedNames.add(entry.first)
         return NewName(entry.first, entry.second)
@@ -72,6 +79,17 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
      * one index (the race's largest layer; the only layer with a choice in
      * vanilla) and humans add the base count for the female sprite.
      */
+    /**
+     * Keeps the drawn index of every layer on [info] when a layer other than the largest has a choice (Hyperspace
+     * races: each layer is drawn with its own choice); vanilla races have one such layer and keep only [colourIndex].
+     */
+    fun layered(info: LivingCrewInfo, colours: IntArray): LivingCrewInfo {
+        val race = info.race
+        val choosing = colours.indices.count { race.colourFilters[it].size > 1 }
+        if (choosing > 1) info.hsLayerColours = colours.copyOf()
+        return info
+    }
+
     fun colourIndex(race: CrewBlueprint, colours: IntArray, male: Boolean): Int {
         if (colours.isEmpty())
             return 0
@@ -126,11 +144,18 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
     fun createRandom(game: xyz.znix.xftl.game.InGameState, race: CrewBlueprint, skillsForLevel: Int? = null): LivingCrewInfo {
         val colours = drawColours(race)
         val name = newName()
-        val info = LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male))
+        val info = layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male)), colours)
         if (skillsForLevel != null)
             randomSkills(info, skillsForLevel)
         return info
     }
+
+    /**
+     * CrystalAlien's constructor draws whether its lockdown ever gets ready. Hyperspace makes a crew race its own
+     * body, which does not draw this.
+     */
+    fun crystalPowerDraw(race: String): Boolean =
+        race == "crystal" && !xyz.znix.xftl.hs.crew.CustomCrewManager.isRace(race) && NativeRandom.next31() and 1 == 0
 
     /** An event boarder with the crystal start-up roll its constructor draws (CrystalAlien 0x487e70). */
     class Boarder(val info: LivingCrewInfo, val crystalNeverReady: Boolean)
@@ -147,14 +172,34 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
         val first = newName()
         val race = game.lootPool.getCrewOrRandom(NativeRandom, raceName)
         var name = first.name
-        if (raceName == "random")
-            name = newName().name
-        else
+        if (raceName == "random") {
+            // Hyperspace keeps the first name: a random boarder draws no second one under it.
+            if (!xyz.znix.xftl.hs.HS.active) name = newName().name
+        } else
             newName()
         NativeRandom.next31() // the animation timer's start delay (TimerHelper::Start)
         val colours = drawColours(race)
-        val crystalNeverReady = if (race.name == "crystal") NativeRandom.next31() and 1 == 0 else false
-        return Boarder(LivingCrewInfo(game, race, name, colourIndex(race, colours, first.male)), crystalNeverReady)
+        hsInitializeDraw(race.name)
+        val crystalNeverReady = crystalPowerDraw(race.name)
+        return Boarder(layered(LivingCrewInfo(game, race, name, colourIndex(race, colours, first.male)), colours), crystalNeverReady)
+    }
+
+    /**
+     * ShipManager::AddCrewMemberFromString (1.6.14 0x4aea60) with an empty name, as BossShip::StartStage (0x406980)
+     * and Hyperspace's flagship crew make them: "random" first picks the class (BlueprintManager::GetRandomCrew);
+     * the class's blueprint comes from GetCrewBlueprint (0x60e020), which draws a name (0x605750) for it; the empty
+     * name then makes 0x4aea60 draw a second one with its sex, which is kept; the crew constructor (0x4685a0) draws
+     * the animation timer and the colours, and a crystal whether its power ever gets ready.
+     */
+    fun createFromString(game: xyz.znix.xftl.game.InGameState, raceName: String): Boarder {
+        val race = game.lootPool.getCrewOrRandom(NativeRandom, raceName)
+        newName() // GetCrewBlueprint's name, replaced below
+        val name = newName()
+        NativeRandom.next31() // the animation timer's start delay (TimerHelper::Start)
+        val colours = drawColours(race)
+        hsInitializeDraw(race.name)
+        val crystalNeverReady = crystalPowerDraw(race.name)
+        return Boarder(layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male)), colours), crystalNeverReady)
     }
 
     /**
@@ -162,15 +207,39 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
      * draws the name first, then the colours, then the skills of the world
      * level (events draw the colours first and skills only when unauthored).
      */
-    fun createStoreCrew(game: xyz.znix.xftl.game.InGameState, race: CrewBlueprint, worldLevel: Int): LivingCrewInfo {
+    fun createStoreCrew(game: xyz.znix.xftl.game.InGameState, race: CrewBlueprint, worldLevel: Int,
+                        namedBlueprint: Boolean = false): LivingCrewInfo {
+        // CrewStoreBox named-species path: GetCrewBlueprint creates a discarded name, then
+        // GetUnusedCrewName chooses the displayed name (1.6.9 0x508380; 1.6.14 0x51ae20).
+        // The ordinary random section takes its blueprint from the pool without this lookup.
+        if (namedBlueprint) newName()
         val name = newName()
         val colours = drawColours(race)
-        val info = LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male))
+        val info = layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male)), colours)
         randomSkills(info, worldLevel)
         return info
     }
 
     companion object {
+        /**
+         * Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Ship/CustomCrew.cpp (CrewMember constructor
+         * hook, CrewMember_Extend::Initialize): a crew member whose race hyperspace.xml defines gets a new crew
+         * animation after the original's constructor, whose start-up timer draws once more (after the colours, before
+         * a crystal's own draw). Ion intruders keep theirs. Measured against the original's stream (storescan).
+         *
+         * A race whose `<animBase>` is rock gets a RockAnimation there instead and draws once more (r7b oracle probes,
+         * AddCrewMemberFromBlueprint from fixed seeds: rock, rock_outcast and rock_commando 1 + layers + 2, every other
+         * race 1 + layers + 1; in seed 505's sector-5 guard ship the three rock_outcasts were the 3 missing draws).
+         */
+        @JvmStatic
+        fun hsInitializeDraw(race: String, ionDrone: Boolean = false) {
+            if (xyz.znix.xftl.hs.HS.active && !ionDrone && xyz.znix.xftl.hs.crew.CustomCrewManager.isRace(race)) {
+                NativeRandom.next31()
+                if (xyz.znix.xftl.hs.crew.CustomCrewManager.definitionOrNull(race)?.animBase == "rock")
+                    NativeRandom.next31()
+            }
+        }
+
         // The skill step table (0x884760): (min, max) steps for world levels 0-7.
         private val RANDOM_SKILL_LEVELS = intArrayOf(0, 0, 0, 0, 0, 1, 0, 2, 1, 2, 1, 2, 1, 3, 2, 3)
     }

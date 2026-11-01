@@ -2,9 +2,8 @@ package xyz.znix.xftl.rendering
 
 import org.lwjgl.opengl.GL30.*
 import xyz.znix.xftl.math.Point
-import xyz.znix.xftl.sys.XftlResources
 
-class ShaderProgramme(vertPath: String, fragPath: String) : AutoCloseable {
+class ShaderProgramme(vertSource: String, fragSource: String) : AutoCloseable {
     var handle: Int = -1
         private set
 
@@ -17,8 +16,8 @@ class ShaderProgramme(vertPath: String, fragPath: String) : AutoCloseable {
         var vert = -1
         var frag = -1
         try {
-            vert = createShader(vertPath, GL_VERTEX_SHADER)
-            frag = createShader(fragPath, GL_FRAGMENT_SHADER)
+            vert = createShader(vertSource, GL_VERTEX_SHADER, "vertex")
+            frag = createShader(fragSource, GL_FRAGMENT_SHADER, "fragment")
 
             handle = glCreateProgram()
             glAttachShader(handle, vert)
@@ -31,13 +30,13 @@ class ShaderProgramme(vertPath: String, fragPath: String) : AutoCloseable {
             val log = glGetProgramInfoLog(handle, logLength + 1)
 
             if (log.isNotEmpty()) {
-                println("Message when linking shader '$vertPath'/'$fragPath':")
+                println("Message when linking a shader:")
                 println(log.trim())
             }
 
             val status = glGetProgrami(handle, GL_LINK_STATUS)
             if (status != 1) {
-                error("Failed to link shader '$vertPath'/'$fragPath'!")
+                error("Failed to link a shader!")
             }
 
             checkError()
@@ -76,10 +75,8 @@ class ShaderProgramme(vertPath: String, fragPath: String) : AutoCloseable {
         return location
     }
 
-    private fun createShader(path: String, type: Int): Int {
-        val bytes = XftlResources.open(path)?.use { it.readBytes() }
-            ?: error("Could not find shader file '$path'")
-        val content = toGlesShader(bytes.toString(Charsets.UTF_8), type)
+    private fun createShader(source: String, type: Int, path: String): Int {
+        val content = toGlesShader(source, type)
 
         val shader = glCreateShader(type)
         glShaderSource(shader, content)

@@ -53,6 +53,9 @@ class Sector {
      */
     var fleetAdvanceModifier: Int = 0
 
+    /** Hyperspace: StarMap::potentialLoc while the fleet advances for a jump (null on a wait). Not saved. */
+    @JvmField var hsJumpTarget: Beacon? = null
+
     /**
      * If true, all beacons are displayed with their full information
      * visible (environmental hazards, ship presence, store/distress
@@ -169,6 +172,17 @@ class Sector {
     }
 
     /**
+     * StarMap::UpdateDangerZone's pass while a wait moves the zone: every beacon, in list order, that the fleet has
+     * not taken yet and that lies within the zone's radius of its current centre is overtaken ([overtake]).
+     */
+    fun overtakeReached(game: InGameState) {
+        for (beacon in beacons) {
+            if (!beacon.isOvertaken && distanceToDangerZone(beacon) < DANGER_ZONE_RADIUS)
+                overtake(game, beacon)
+        }
+    }
+
+    /**
      * StarMap::LoadGame (0x5fb9a0): every visited beacon other than the current one has its event cleared
      * (ClearEvent unforced, 0x6119f0), so a hazard only survives where the player is.
      */
@@ -195,11 +209,27 @@ class Sector {
      * ([Beacon.environmentType]).
      */
     fun overtake(game: InGameState, beacon: Beacon) {
+        // Hyperspace's outer TurnIntoFleetLocation hook: <preventFleet> keeps the fleet out, <runFromFleet> moves the event.
+        if (xyz.znix.xftl.hs.HS.active && game.eventManager.hs != null &&
+            !xyz.znix.xftl.hs.sector.HsGeneration.beforeOvertake(game, this, beacon, hsJumpTarget)) return
         beacon.isOvertaken = true
         beacon.browserFleetThreatened = false
         beacon.clearEnvironment()
 
         val creator = game.eventCreator
+        if (xyz.znix.xftl.hs.HS.active && game.eventManager.hs != null) {
+            // The fleet's fresh event was never cleared: a beacon the player left earlier (eventCleared) must not
+            // also open Hyperspace's revisit dialogue on the next arrival, which replaced the fleet event's box
+            // (seed 12345 sector 3, 177,293: the oracle fights the elite there, ours lost the box).
+            beacon.eventCleared = false
+            beacon.hasQuest = false // the replacement hook removes the quest marker from an overtaken beacon
+            val (created, nebulaExit) = xyz.znix.xftl.hs.sector.HsGeneration.fleetEvent(game, creator, info, beacon.isExit,
+                beacon.isMapNebula, isLastStand, sectorNumber, game.isAdvancedEdition)
+            beacon.forcedNebula = nebulaExit
+            beacon.createdEvent = created ?: return
+            beacon.hasFleetEvent = true
+            return
+        }
         val exitBeacon = beacon.isExit && !isLastStand
         val name = when {
             exitBeacon -> "FLEET_EASY_BEACON" + (if (browserDifficulty != Difficulty.EASY) "_DLC" else "")
@@ -225,8 +255,14 @@ class Sector {
      * If [ignoreDistance] is not set, then beacons that the player can't
      * reach before they're overtaken will not be used.
      */
-    fun addQuest(currentBeacon: Beacon, creator: EventCreator, questName: String, ignoreDistance: Boolean = false): QuestPlacement {
-        val quest = creator.create(creator.eventFor(questName), sectorNumber) ?: return QuestPlacement.NO_EVENT
+    @JvmOverloads
+    fun addQuest(
+        currentBeacon: Beacon, creator: EventCreator, questName: String, ignoreDistance: Boolean = false,
+        /** Hyperspace: the quest event (created once for all tries) and the beacons its options rule out. */
+        hsCreate: (() -> CreatedEvent?)? = null, hsRestricted: ((Beacon) -> Boolean)? = null
+    ): QuestPlacement {
+        val quest = (if (hsCreate != null) hsCreate() else creator.eventOrNull(questName)?.let { creator.create(it, sectorNumber) })
+            ?: return QuestPlacement.NO_EVENT
 
         // The placement (0x5f8920): an unvisited beacon outside nebulas, the
         // exit, the fleet and other quests, without a store or distress
@@ -234,7 +270,7 @@ class Sector {
         // trunc((distance to the fleet centre - 767) / 64 - 1). Delayed
         // quests only need a path.
         val suitable = beacons.filter {
-            if (it.visited || it.isMapNebula || it == currentBeacon)
+            if (it.visited || (if (hsRestricted != null) hsRestricted(it) else it.isMapNebula) || it == currentBeacon)
                 return@filter false
             if (it.isExit || it.hasQuest || it.hasStore || it.event.isDistressBeacon)
                 return@filter false
@@ -255,10 +291,20 @@ class Sector {
             return@filter true
         }
 
+        questDebug?.let { dbg ->
+            dbg(questName + " " + beacons.joinToString(";") { b ->
+                val path = findShortestPath(currentBeacon, b)
+                val dx = (b.pos.x - dangerZoneCentre.x).toFloat(); val dy = (b.pos.y - dangerZoneCentre.y).toFloat()
+                "${b.pos.x},${b.pos.y}:v${b.visited.compareTo(false)}r${(if (hsRestricted != null) hsRestricted(b) else b.isMapNebula).compareTo(false)}" +
+                    "x${b.isExit.compareTo(false)}q${b.hasQuest.compareTo(false)}s${b.hasStore.compareTo(false)}d${b.event.isDistressBeacon.compareTo(false)}" +
+                    "o${b.isOvertaken.compareTo(false)}p${path?.size ?: -1}t${((kotlin.math.sqrt(dx * dx + dy * dy) - 767f) * 0.015625f - 1f).toInt()}"
+            })
+        }
         if (suitable.isEmpty())
             return QuestPlacement.NO_SPACE
 
         val beacon = suitable[NativeRandom.nextInt(suitable.size)]
+        questTrace?.invoke(questName, suitable, beacon)
         beacon.hasQuest = true
         beacon.questName = questName
         beacon.createdEvent = quest
@@ -474,6 +520,12 @@ class Sector {
     }
 
     companion object {
+        /** Diagnostics: each quest placement (event, the suitable beacons in order, the chosen one). */
+        @JvmField var questTrace: ((String, List<Beacon>, Beacon) -> Unit)? = null
+
+        /** Diagnostics: every beacon's placement tests at each quest placement (r7b). */
+        @JvmField var questDebug: ((String) -> Unit)? = null
+
         /**
          * The order the fleet takes beacons while its centre (integer x, as the original truncates it) moves from
          * [start] to [end] along [centreY]. The original steps the centre with the jump animation and, every

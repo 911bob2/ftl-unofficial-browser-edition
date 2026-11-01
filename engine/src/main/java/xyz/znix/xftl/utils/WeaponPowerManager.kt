@@ -1,6 +1,7 @@
 package xyz.znix.xftl.utils
 
 import xyz.znix.xftl.systems.MainSystem
+import kotlin.math.min
 
 /**
  * This class is responsible for managing the power to weapons-like systems,
@@ -46,8 +47,29 @@ class WeaponPowerManager(
             }
 
             // And add the forced power back on at the end.
-            return reactorPower + system.forcedPower
+            return (reactorPower + hsBarOffset).coerceAtLeast(0) + system.forcedPower
         }
+
+    /**
+     * WeaponSystem::iStartingBatteryPower (+0x20c): battery bars a script forced (ForceBatteryPower 0x635630) that
+     * PowerWeapon (0x636230) spends before the reactor. Only Hyperspace scripts set it. Not saved.
+     */
+    var hsBatteryPool: Int = 0
+
+    /**
+     * The native system's reactor bars minus the ones its powered items account for here. Natively the bar count
+     * (powerState.first) and the powered flags are separate: a weapon powered from [hsBatteryPool] holds no bar
+     * (negative), and [hsRemoveBatteryPower] can take a weapon's bars from the battery, leaving its reactor bars
+     * with the system (positive). Zero unless a script used the battery calls. Not saved.
+     */
+    var hsBarOffset: Int = 0
+        private set
+
+    /** The native powerState.first: the reactor bars this system holds. */
+    private val reactorBars: Int get() = currentPower - system.forcedPower
+
+    /** Hyperspace: powerState.first written by a script. */
+    fun hsWriteBars(bars: Int) { hsBarOffset += bars - reactorBars }
 
 
     /**
@@ -107,6 +129,9 @@ class WeaponPowerManager(
         }
 
         // The items are arranged in order of priority, so turn the last ones off if possible.
+        // WeaponSystem::CheckMaxPower (0x637540) / DroneSystem::CheckMaxPower (0x639fd0): from the last item, each
+        // one goes off with its own bars while the power is over the maximum; bars held without an item
+        // ([hsBarOffset]) are cut only after that, by ShipSystem's clamp (0x63b430).
         for (slot in items.count - 1 downTo 0) {
             if (!items.isItemPowered(slot))
                 continue
@@ -120,6 +145,9 @@ class WeaponPowerManager(
             // we took damage while ion-locked.
             items.setItemPowered(slot, false)
         }
+
+        if (hsBarOffset > 0 && system.powerSupplied < currentPower)
+            hsBarOffset = (hsBarOffset - (currentPower - system.powerSupplied)).coerceAtLeast(0)
 
         // If the system has too much power - more than the items are
         // using - then get rid of that excess.
@@ -203,12 +231,25 @@ class WeaponPowerManager(
             return false
 
         if (newPower) {
+            // PowerWeapon (0x636230) with script battery bars in play: the weapon must fit under the system's
+            // maximum beside the reactor bars already held, and the pool pays first (all of it when it is short).
+            var fromPool = 0
+            if (hsBatteryPool > 0 || hsBarOffset != 0) {
+                if (nonZoltanPower > system.undamagedEnergy - reactorBars)
+                    return false
+                fromPool = min(hsBatteryPool, nonZoltanPower)
+                hsBatteryPool = if (hsBatteryPool >= nonZoltanPower) hsBatteryPool - nonZoltanPower else 0
+                hsBarOffset -= fromPool
+            }
+
             // Try to increase the system power to accommodate this weapon.
             // This increase will be instantly reverted by powerStateChanged,
             // as the weapon isn't actually turned on yet, but it lets us
             // check if we have the available power or not.
-            if (!items.setSystemPower(currentPower + nonZoltanPower))
+            if (fromPool < nonZoltanPower && !items.setSystemPower(currentPower + nonZoltanPower)) {
+                hsBarOffset += fromPool
                 return false
+            }
         }
 
         if (!newPower)
@@ -217,6 +258,65 @@ class WeaponPowerManager(
         items.setItemPowered(slot, newPower)
         items.setSystemPower(currentPower)
         return true
+    }
+
+    /**
+     * WeaponSystem::RemoveBatteryPower (0x636660), for the [battery] bars a script forced on this system: from the
+     * last powered item, take at least one bar (each item's own bars, the battery's first, then the reactor's;
+     * PowerManager 0x6476c0), switching the item off, then power again, from the last one, every item that was on
+     * before ([setItemPower]: the pool, then the reactor). Returns the battery bars left.
+     */
+    fun hsRemoveBatteryPower(battery: Int): Int {
+        val wasOn = BooleanArray(items.count) { items.isItemPowered(it) }
+        var need = 1
+        var left = battery
+        for (slot in items.count - 1 downTo 0) {
+            if (!items.isItemPowered(slot))
+                continue
+            val cost = items.getItemPowerDraw(slot) - forcedPower[slot]
+            need -= cost
+            var fromBattery = 0
+            var fromReactor = 0
+            var failed = false
+            for (bar in 0 until cost) {
+                when {
+                    left > 0 -> { left--; fromBattery++ }
+                    reactorBars - fromReactor > 0 -> fromReactor++
+                    else -> { failed = true; break }
+                }
+            }
+            if (failed) {
+                // The bars taken so far are gone, the item stays on.
+                hsBarOffset -= fromReactor
+                if (need > 0) continue else break
+            }
+            // Switching it off here gives back all its bars; natively only the reactor ones went.
+            items.setItemPowered(slot, false)
+            hsBarOffset += fromBattery
+            if (need < 1)
+                break
+        }
+        if (system.powerSupplied != currentPower)
+            items.setSystemPower(currentPower)
+        for (slot in items.count - 1 downTo 0) {
+            if (wasOn[slot] && !items.isItemPowered(slot))
+                setItemPower(slot, true)
+        }
+        return left
+    }
+
+    /**
+     * After a save is loaded. ShipManager::ImportShip (0x4b3ce6) restores every other system's saved power, but not
+     * the weapons' or drones' (system ids 3 and 4 skip that IncreasePower loop): their bars come only from powering
+     * each saved-powered item again (PowerWeapon force=1; the saved battery bars, given back by ForceBatteryPower as
+     * the pool, pay first). So held bars are not kept, the browser's battery source already holds the battery bars,
+     * and the system holds what its powered items need.
+     */
+    fun afterSaveLoad() {
+        hsBarOffset = 0
+        hsBatteryPool = 0
+        if (system.powerSupplied != currentPower)
+            items.setSystemPower(currentPower)
     }
 
     /**

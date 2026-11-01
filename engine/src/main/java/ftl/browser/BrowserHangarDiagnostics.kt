@@ -10,17 +10,17 @@ import xyz.znix.xftl.sys.Input
 /** Disposable preview/name/save fixture. No earned progress survives this probe. */
 object BrowserHangarDiagnostics {
     fun run(main: MainGame,container: GameContainer,graphics: Graphics): String {
-        val profile=BrowserXml.write(main.profile.save())
+        val profile=BrowserXml.write(main.profile.snapshot())
         val storedProfile=BrowserFiles.getProfile();val storedRun=BrowserFiles.getRun()
         val rng=BrowserRandom.snapshot();val mode=main.gameContent.enableAdvancedEdition
         val originalRun=(main.currentState as? InGameState)?.let { BrowserXml.write(it.saveGameState()) }
         var phase="preview"
         try {
-            main.profile.load(SaveProfile.createBlank().save())
+            main.profile.restore(SaveProfile.createBlank().snapshot())
             for(ae in listOf(false,true)) {
                 main.changeHangarMode(ae,ShipProgression.KESTREL,Difficulty.NORMAL)
                 val hangar=main.currentState as SelectShipState
-                val before=BrowserXml.write(main.profile.save());val seed=BrowserRandom.snapshot()
+                val before=BrowserXml.write(main.profile.snapshot());val seed=BrowserRandom.snapshot()
                 check(hangar.ships.size==if(ae) 28 else 18) { "BrowserHangarDiagnostics.kt:24" }
                 for(ship in hangar.ships) {
                     phase="preview $ae ${ship.name}"
@@ -31,7 +31,7 @@ object BrowserHangarDiagnostics {
                     check(ui.crew.all { it.name.isNotBlank() }) { "BrowserHangarDiagnostics.kt:31" }
                     check(ui.shipName.isNotBlank()) { "BrowserHangarDiagnostics.kt:32" }
                 }
-                check(before==BrowserXml.write(main.profile.save())) { "Preview changed progression" }
+                check(before==BrowserXml.write(main.profile.snapshot())) { "Preview changed progression" }
                 check(seed==BrowserRandom.snapshot()) { "Preview consumed gameplay RNG" }
                 hangar.restoreSelection(ShipProgression.KESTREL,Difficulty.NORMAL)
                 hangar.mouseClicked(0,92,264,1) // Locked Layout B.
@@ -52,7 +52,7 @@ object BrowserHangarDiagnostics {
                 hangar.restoreSelection("PLAYER_SHIP_HARD_2",Difficulty.NORMAL)
                 hangar.selectNextShip(1);check(hangar.selectedShipId=="PLAYER_SHIP_CIRCLE_2") { "BrowserHangarDiagnostics.kt:53" }
                 hangar.selectNextShip(-1);check(hangar.selectedShipId=="PLAYER_SHIP_HARD_2") { "BrowserHangarDiagnostics.kt:54" }
-                main.profile.load(SaveProfile.createBlank().save())
+                main.profile.restore(SaveProfile.createBlank().snapshot())
             }
             phase="name input"
             main.changeHangarMode(true,ShipProgression.KESTREL,Difficulty.HARD)
@@ -105,7 +105,7 @@ object BrowserHangarDiagnostics {
         } catch(e: Exception) { throw IllegalStateException("Hangar $phase: ${e.message}",e) }
         finally {
             main.changeHangarMode(mode,ShipProgression.KESTREL,Difficulty.NORMAL)
-            main.profile.load(BrowserXml.parse(profile))
+            main.profile.restore(BrowserXml.parse(profile))
             if(originalRun!=null) main.loadSavedGame(BrowserXml.parse(originalRun)) else main.switchToMainMenu()
             BrowserFiles.setRun(storedRun);BrowserFiles.setProfile(storedProfile);BrowserRandom.restore(rng)
         }

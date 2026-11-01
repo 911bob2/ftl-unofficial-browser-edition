@@ -4,16 +4,14 @@ import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.sector.Beacon
 import xyz.znix.xftl.sector.FleetBackground
 import xyz.znix.xftl.sector.ImageList
-import kotlin.random.Random
 
 /**
  * The images a beacon's environment will draw on the first frame after the jump arrives, so the game can load them
  * while the ship is still jumping away (see [xyz.znix.xftl.game.ImagePrefetcher]).
  *
  * This only names files. It does not build the environment: the nebula's set-up, for one, depends on the frame that
- * creates it, so that stays where it was. The choice of backdrop and planet repeats the two draws that
- * [AbstractEnvironment] makes from the beacon's own seed, and cannot disagree with them except by loading a picture
- * too many or too few early; neither changes what is drawn.
+ * creates it, so that stays where it was. The picks are made at the arrival from the game's stream (see
+ * [BeaconScene]), so before it every picture the beacon's lists hold is named; neither choice changes what is drawn.
  */
 object EnvironmentAssets {
     private const val SKY = "img/stars/bg_dullstars.png"
@@ -23,22 +21,17 @@ object EnvironmentAssets {
         val out = LinkedHashSet<String>()
         val type = beacon.environmentType
 
-        // AbstractEnvironment's picks. The backdrop is only drawn by the plain kinds; the others draw their own.
-        var backgroundList: ImageList = game.eventManager.getImageList("BACKGROUND")
-        var planetList: ImageList = game.eventManager.getImageList("PLANET")
-        beacon.event.backImg?.let { backgroundList = it }
-        beacon.event.planetImg?.let { planetList = it }
-        val text = beacon.createdEvent.text
-        text?.back?.let { backgroundList = game.eventManager.getImageList(it) }
-        text?.planet?.let { planetList = game.eventManager.getImageList(it) }
+        // The scene's picks. The backdrop is only drawn by the plain kinds; the others draw their own. A beacon that has
+        // not been arrived at has no picks yet (they come from the game's stream at the arrival), so every image of its
+        // lists is wanted.
+        val scene = beacon.scene
+        val (backgroundList, planetList) = BeaconScene.lists(game, beacon)
+        val backgrounds = if (scene != null) listOfNotNull(scene.backdrop) else backgroundList.images.map { it.path }
+        val planets = if (scene != null) listOfNotNull(scene.planet) else planetList.images.map { it.path }
 
-        val rand = Random(beacon.environmentSeed)
-        val background = backgroundList.getRandom(rand.nextInt())
-        val planet = planetList.getRandom(rand.nextInt())
-
-        if (usesPickedBackground(type)) background?.let { out += it.path }
+        if (usesPickedBackground(type)) out += backgrounds
         out += typeBackdrop(type)
-        planet?.let { out += it.path }
+        out += planets
         out += typeAssets(type)
         out += fleetAssets(beacon.event.fleetBackground, type == Beacon.EnvironmentType.PDS)
         // An ASB with no fleet swaps in one of the populated planets (AbstractEnvironment, from later draws).

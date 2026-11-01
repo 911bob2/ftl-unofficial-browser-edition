@@ -29,6 +29,9 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
 
     override val type: Beacon.EnvironmentType get() = Beacon.EnvironmentType.ASTEROID
 
+    // A field starting (SpaceManager's asteroid setup) draws on the global stream; a loaded save restores its state.
+    private fun startDraw(): Int = if (game.isCurrentlyLoadingSave) r31() else ftl.browser.NativeRandom.next31()
+
     private var asteroidAnimationTimer = 0f
 
     // The actual background
@@ -43,8 +46,9 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
     private var shieldCount: Int = game.player.shields?.energyLevels?.let { it / 2 } ?: 0
 
     // AsteroidGenerator state (0x40b960): 0 is idle, 1 fires the slow
-    // cadence and 2 the fast one. The state picked on arrival is random.
-    private var state: Int = if (ftl.browser.BrowserRandom.rollChance(50)) 1 else 2
+    // cadence and 2 the fast one. The constructor (0x40a7d0) picks
+    // 2 - (random32() & 1): an odd draw is the slow cadence.
+    private var state: Int = 2 - (startDraw() and 1)
     private var phaseTimeRemaining: Float = 0f
 
     // Starts below zero, so the first firing state fires at once.
@@ -65,14 +69,22 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
     private val fastTime: Range get() = ranges[4]
 
     init {
-        phaseTimeRemaining = (if (state == 1) slowTime else fastTime).next().toFloat()
+        // The first state time comes from the global stream too, like the state above.
+        phaseTimeRemaining = (if (state == 1) slowTime else fastTime).next(startDraw()).toFloat()
     }
+
+    /** Diagnostics (native 1.6.14 replay): state, phase timer, firing timer, next target index. */
+    internal fun diagnosticTimers(): FloatArray = floatArrayOf(state.toFloat(), phaseTimeRemaining, firingTimer, targetIndex.toFloat())
+
+    override fun sceneBackdrop() = realBackground
+    override val drawsPlanet: Boolean get() = false
 
     override fun renderBackground(gc: GameContainer, g: Graphics) {
         val ps = pauseShade(game)
 
         // This draws the normal background with all its adjustments
-        realBackground.draw(0f, 0f, ps)
+        if (hsBackdrop) realBackground.draw(0f, 0f, ps)
+        if (!hsAsteroids) return
 
         // Rough speeds measured from FTL
         // back img = ~13sec to traverse weapons bar (~400px)
@@ -110,7 +122,7 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
         phaseTimeRemaining -= dt
         if (phaseTimeRemaining < 0f) {
             if (state == 0) {
-                state = if (ftl.browser.BrowserRandom.rollChance(50)) 1 else 2
+                state = if (r31() and 1 != 0) 1 else 2
                 phaseTimeRemaining = (if (state == 1) slowTime else fastTime).next().toFloat()
             } else {
                 state = 0
@@ -122,9 +134,9 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
         // carries over the idle gap.
         if (state != 0) {
             if (firingTimer <= 0f) {
-                fireAsteroid()
-
+                // The next period is drawn before the asteroid.
                 firingTimer = (if (state == 1) slowPeriod else fastPeriod).next() / 1000f
+                fireAsteroid()
                 targetIndex = if (targetIndex == numShips - 1) 0 else targetIndex + 1
             } else {
                 firingTimer -= dt
@@ -132,22 +144,33 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
         }
     }
 
+    /**
+     * The native draw order of one asteroid. AsteroidGenerator::OnLoop (0x40b960): the side (the player's from any
+     * side, sideMode 6: random32() % 4; every other ship's from the right, in the upper half), RandomSidePoint
+     * (0x45ce70), the Asteroid constructor (0x45bb10: image, angle). The same frame SpaceManager::OnLoop takes it from
+     * the queue (GetAsteroid 0x40aa00: hitShieldSound "hitShield" + (r % 3 + 1), then hitSolidSound "hitHull" +
+     * (r % 3 + 1)) and gives it to the ship with that index, aimed at GetRandomRoomCenter (0x49dce0: room r % count).
+     * An asteroid for a ship that is gone keeps its draws and is dropped.
+     */
     private fun fireAsteroid() {
-        // If the enemy ship is missing, discard its asteroids.
-        val ship = (if (targetIndex == 0) game.player else game.enemy) ?: return
-
-        val asteroid = AsteroidProjectile(ship.rooms.random(ftl.browser.BrowserRandom))
-
-        // AsteroidGenerator::OnLoop (0x40b960) and Projectile::RandomSidePoint
-        // (0x45ce70): the player's asteroids come from any side, but every
-        // other ship is always hit from the right, in the upper half.
-        val side = if (targetIndex == 0) ftl.browser.BrowserRandom.nextInt(4) else 1
+        val side = if (targetIndex == 0) r31() % 4 else 1
         val startPos = when (side) {
-            0 -> ConstPoint(-400, ftl.browser.BrowserRandom.nextInt(800))
-            1 -> ConstPoint(800, ftl.browser.BrowserRandom.nextInt(800) / 2)
-            2 -> ConstPoint(ftl.browser.BrowserRandom.nextInt(800), -400)
-            else -> ConstPoint(ftl.browser.BrowserRandom.nextInt(800), 800)
+            0 -> ConstPoint(-400, r31() % 800)
+            1 -> ConstPoint(800, r31() % 800 / 2)
+            2 -> ConstPoint(r31() % 800, -400)
+            else -> ConstPoint(r31() % 800, 800)
         }
+        val image = r31() % 10
+        val angle = r31() % 360
+        val shieldSound = "hitShield" + (r31() % 3 + 1)
+        val hullSound = "hitHull" + (r31() % 3 + 1)
+
+        val ship = (if (targetIndex == 0) game.player else game.enemy) ?: return
+        val room = ship.rooms[r31() % ship.rooms.size]
+        val asteroid = AsteroidProjectile(room, intArrayOf(image, angle))
+        asteroid.nativeFields.hitShieldSound = shieldSound
+        asteroid.nativeFields.hitSolidSound = hullSound
+        asteroid.nativeFields.missSound = "miss"
 
         asteroid.setInitialPath(startPos, asteroid.target.pixelCentre)
 
@@ -169,11 +192,11 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
      * for as long as the field lasts.
      */
     class Range(val min: Int, var max: Int) {
-        fun next(): Int {
+        fun next(draw: Int = r31()): Int {
             if (max == 0)
                 return min
             max++
-            return min + ftl.browser.BrowserRandom.nextInt(max - min)
+            return min + draw % (max - min)
         }
     }
 
@@ -216,6 +239,9 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
     private companion object {
         val PHASE_NAMES = listOf("IDLE", "FIRING_SLOW", "FIRING_FAST")
 
+        /** random32() on the gameplay stream: every native use is `r % n` on the 31-bit value. */
+        fun r31(): Int = ftl.browser.BrowserRandom.nextBits(31)
+
         /**
          * The ranges set by the AsteroidGenerator constructor (0x40a7d0),
          * picked by half the shield level: the slow and fast firing periods
@@ -248,13 +274,22 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
     }
 }
 
-class AsteroidProjectile(target: Room) : AbstractWeaponProjectile(TYPE, target) {
+/**
+ * The native Asteroid body (1.6.14 constructor 0x45bb10, OnUpdate 0x458800, OnRenderSpecific 0x456820): the shared
+ * Projectile motion and CollisionCheck, an image picked by random32() % 10 and a start angle of random32() % 360
+ * degrees, in that order. The angle grows by 10 * SpeedFactor (160 degrees/s) while alive, returns to 0 past 360 and
+ * is held at 0 while the death animation runs.
+ */
+class AsteroidProjectile(target: Room, drawn: IntArray? = null) : AbstractWeaponProjectile(TYPE, target) {
     override val defaultSpeed: Int get() = 35
 
     // Asteroids hit everyone's drones
     override val antiDroneExemption: Ship? get() = null
 
     override val isMissileForDD: Boolean get() = true
+
+    override val nativeType: Int get() = 2
+    override val nativeBody: Boolean get() = true
 
     // Asteroids can kill ships that have surrendered
     override val missDeadEnemies: Boolean get() = false
@@ -263,59 +298,64 @@ class AsteroidProjectile(target: Room) : AbstractWeaponProjectile(TYPE, target) 
     // in the blueprint manager and thus can't otherwise be deserialised.
     override val serialisationType: String get() = SERIALISATION_TYPE
 
-    private var angle: Float = ftl.browser.BrowserRandom.nextFloat() * TWO_PI
-    private var imageId = ftl.browser.BrowserRandom.nextInt(10)
+    /** Asteroid::imageId (the texture index) and angle (degrees). */
+    var imageId = drawn?.get(0) ?: (ftl.browser.BrowserRandom.nextBits(31) % 10)
+    var angle: Float = (drawn?.get(1) ?: (ftl.browser.BrowserRandom.nextBits(31) % 360)).toFloat()
+    /** A GL_Texture a script assigned to imageId (a LuaTexture); null draws asteroids/asteroid<imageId>.png. */
+    var imageTexture: Any? = null
+    // The Asteroid constructor never calls Projectile::Initialize.
+    override val hsInitializesInConstructor: Boolean get() = false
+    // Never Initialized: flight_animation keeps the default stopped tracker.
+    override val flightStartsRunning: Boolean get() = false
 
-    // I'm not certain it uses all the hitHull/hitShield sounds,
-    // but this should be good enough.
-    // Note that we can't put these in the blueprint, as they requires
-    // post-loading which we can't do for our blueprint (since it must
-    // remain independent of any one game instance, as it's a static
-    // field).
-    private val hitHullSound: FTLSound = listOf(
-        ship.sys.sounds.getSample("hitHull1"),
-        ship.sys.sounds.getSample("hitHull2"),
-        ship.sys.sounds.getSample("hitHull3")
-    ).random(ftl.browser.BrowserRandom)
-    private val hitShieldSound: FTLSound = listOf(
-        ship.sys.sounds.getSample("hitShield1"),
-        ship.sys.sounds.getSample("hitShield2"),
-        ship.sys.sounds.getSample("hitShield3")
-    ).random(ftl.browser.BrowserRandom)
+    /**
+     * HS SpaceManager::CreateAsteroid picks the sounds after construction: hitSolidSound "hitHull" + (random32() % 3
+     * + 1), then hitShieldSound "hitShield" + (random32() % 3 + 1); missSound "miss". (The native generator's
+     * GetAsteroid draws the shield sound first, see AsteroidEnvironment.fireAsteroid.)
+     */
+    fun pickSounds() {
+        nativeFields.hitSolidSound = "hitHull" + (xyz.znix.xftl.hs.weapons.HsWeapons.r32() % 3 + 1)
+        nativeFields.hitShieldSound = "hitShield" + (xyz.znix.xftl.hs.weapons.HsWeapons.r32() % 3 + 1)
+        nativeFields.missSound = "miss"
+    }
+
+    private fun sound(name: String, fallback: String): FTLSound? =
+        ship.sys.sounds.getSampleOrWarn(name.ifEmpty { fallback })
 
     init {
+        // The constructor's own speed (35); Initialize never runs for an asteroid.
+        hsExt?.let { it.speedMagnitude = 35f; it.initialized = true }
+        targetableType = 2
         drawUnderShip = false
     }
 
-    override fun renderPreTranslated(g: Graphics) {
+    override fun nativeAfterMotion(dt: Float) {
+        if (deathAnimationRunning) { angle = 0f; return }
+        angle += 160f * dt
+        if (angle > 360f) angle = 0f
+    }
+
+    /** OnRenderSpecific: translated to the position and turned by the angle only (not by the heading). */
+    override fun render(g: Graphics, currentSpace: Ship) {
+        if (deathAnimationRunning) return super.render(g, currentSpace)
         g.pushTransform()
-
-        // This applies our spinning rotation on top of the existing
-        // rotation from our direction, but that's fine - it's all
-        // randomised anyway.
-        g.rotateRadians(0f, 0f, angle)
-
-        val img = ship.sys.getImg("img/asteroids/asteroid$imageId.png")
+        g.translate(position.xf, position.yf)
+        g.rotate(0f, 0f, angle)
+        val img = (imageTexture as? xyz.znix.xftl.hs.lua.LuaTexture)?.image ?: ship.sys.getImg("img/asteroids/asteroid$imageId.png")
         img.draw(-img.width / 2f, -img.height / 2f)
-
         g.popTransform()
     }
 
-    override fun update(dt: Float, currentSpace: Ship) {
-        super.update(dt, currentSpace)
-
-        // Asteroids spin at 160°/sec in vanilla
-        angle += (160f / 360f * TWO_PI) * dt
-    }
+    override fun renderPreTranslated(g: Graphics) {}
 
     override fun hitHull() {
         super.hitHull()
-        hitHullSound.play()
+        sound(nativeFields.hitSolidSound, "hitHull1")?.play()
     }
 
     override fun hitShields() {
         super.hitShields()
-        hitShieldSound.play()
+        sound(nativeFields.hitShieldSound, "hitShield1")?.play()
     }
 
     override fun saveToXML(elem: Element, refs: ObjectRefs) {
@@ -323,12 +363,15 @@ class AsteroidProjectile(target: Room) : AbstractWeaponProjectile(TYPE, target) 
         SaveUtil.addRoomRef(elem, "target", refs, target)
         SaveUtil.addAttrInt(elem, "asteroidType", imageId)
         SaveUtil.addAttrFloat(elem, "asteroidAngle", angle)
+        SaveUtil.addAttrInt(elem, "asteroidAngleDegrees", 1)
     }
 
     override fun loadPropertiesFromXML(elem: Element, refs: RefLoader) {
         super.loadPropertiesFromXML(elem, refs)
         imageId = SaveUtil.getAttrInt(elem, "asteroidType")
-        angle = SaveUtil.getAttrFloat(elem, "asteroidAngle")
+        val saved = SaveUtil.getAttrFloat(elem, "asteroidAngle")
+        // Older saves stored the angle in radians.
+        angle = if (elem.getAttributeValue("asteroidAngleDegrees") != null) saved else Math.toDegrees(saved.toDouble()).toFloat()
     }
 
     companion object {

@@ -62,7 +62,73 @@ class IonPulseClock {
         armed = false
         charge = 0f
         glow = 0f
-        timer = TIMER_LENGTH
+        if (!hsMode) timer = TIMER_LENGTH
+    }
+
+    // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Gameplay/Balance.cpp
+    // (controllableIonDroneFix: IonDrone constructor, BoarderPodDrone::OnLoop, CrewDrone::OnLoop and
+    // IonDroneAnimation::UpdateShooting hooks).
+    /** HS's controllableIonDroneFix clock is in use (a player ion intruder); [timer] is then unused. */
+    var hsMode: Boolean = false
+        private set
+    /** CrewAnimation_Extend::ionTimer.currTime, counting up to [hsDelay] (a looping TimerHelper). */
+    var hsTime: Float = 0f
+        private set
+    var hsDelay: Float = 0f
+        private set
+
+    /**
+     * IonDrone constructor (a looping ionDelay timer) plus BoarderPodDrone::OnLoop, which holds it at
+     * `max(0, ionDelay - ionDelayInitial)` until the pod has delivered the drone, so the first charge starts
+     * ionDelayInitial seconds after landing.
+     */
+    fun hsInit(delay: Float, delayInitial: Float) {
+        hsMode = true
+        hsDelay = delay
+        hsTime = maxOf(0f, delay - delayInitial)
+        armed = false
+        charge = 0f
+        glow = 0f
+    }
+
+    /**
+     * One frame of the HS clock. UpdateShooting: unless the drone is shooting a door, a done timer (looping, so
+     * it restarts at zero) starts the charge animation and plays the sound; the vanilla shot timer is switched
+     * off; out of sabotage (or on a door) the vanilla code's restart of the charge animation and glow reset is
+     * undone, so the charge restarts from its first frame but stays armed and the glow is kept.
+     * CrewDrone::OnLoop: the timer counts only while the charge animation isn't running (between a pulse and the
+     * next charge), an order to move resets the glow, and an unpowered drone resets everything.
+     *
+     * @return True on the update where the charge starts, when the charge sound plays.
+     */
+    fun hsTick(dt: Float, sabotaging: Boolean, doorTarget: Boolean, moving: Boolean, functional: Boolean): Boolean {
+        var started = false
+        if (!doorTarget && hsTime > hsDelay) {
+            hsTime = 0f
+            armed = true
+            charge = 0f
+            glow = 0f
+            started = true
+        }
+        if (sabotaging && !doorTarget) {
+            if (armed) {
+                if (charge >= CHARGE_TIME) glow += dt else charge += dt
+            }
+        } else if (armed) {
+            charge = 0f
+        }
+        if (!armed) hsTime += dt
+        if (moving) glow = 0f
+        if (!functional) hsReset()
+        return started
+    }
+
+    /** CrewDrone::OnLoop when the drone is not Functional(): timer, charge animation and glow all reset. */
+    fun hsReset() {
+        hsTime = 0f
+        armed = false
+        charge = 0f
+        glow = 0f
     }
 
     fun save(elem: Element) {
@@ -70,6 +136,10 @@ class IonPulseClock {
         elem.setAttribute("browserIonArmed", armed.toString())
         elem.setAttribute("browserIonCharge", charge.toString())
         elem.setAttribute("browserIonGlow", glow.toString())
+        if (hsMode) {
+            elem.setAttribute("hsIonTime", hsTime.toString())
+            elem.setAttribute("hsIonDelay", hsDelay.toString())
+        }
     }
 
     fun load(elem: Element) {
@@ -78,6 +148,12 @@ class IonPulseClock {
         armed = elem.getAttributeValue("browserIonArmed")?.toBoolean() ?: false
         charge = elem.getAttributeValue("browserIonCharge")?.toFloat() ?: 0f
         glow = elem.getAttributeValue("browserIonGlow")?.toFloat() ?: 0f
+        val hsT = elem.getAttributeValue("hsIonTime")?.toFloat()
+        if (hsT != null) {
+            hsMode = true
+            hsTime = hsT
+            hsDelay = elem.getAttributeValue("hsIonDelay")?.toFloat() ?: hsDelay
+        }
     }
 
     companion object {

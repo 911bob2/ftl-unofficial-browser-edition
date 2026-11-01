@@ -38,7 +38,7 @@ object ShipProgression {
 
     fun victory(profile: SaveProfile, families: ShipFamily.FamilyTable, ship: String, difficulty: Difficulty) {
         val family = families.byShipId[ship] ?: return
-        profile.recordLayoutVictory(ship, difficulty)
+        if (profile.recordLayoutVictory(ship, difficulty)) profile.notifyShipVictory(family)
         victoryChain[family.ships.first()]?.let { profile.unlockLayout(it, difficulty) }
         val crystalFamilies = families.families.filter { it.ships.first() !in listOf(CRYSTAL, LANIUS) }
         if (crystalFamilies.all { f -> f.ships.take(2).all { profile.getLayoutVictory(it) != null } })

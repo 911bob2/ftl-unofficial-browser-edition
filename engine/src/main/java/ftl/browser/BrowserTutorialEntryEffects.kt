@@ -35,7 +35,7 @@ class BrowserTutorialEntryEffects(private val adapter: BrowserTutorialAdapter) {
                 game.player.damage(room, Damage.regular(2))
             }
             "DAMAGE_SYSTEM_2" -> addCrew(game)
-            "FIRE_PC_1" -> {
+            "FIRE_PC_1", "FIRE_IPAD_1" -> {
                 val room = game.player.rooms.singleOrNull { it.id == 9 } ?: error("Tutorial room 9 is missing")
                 // 0x004a1ef0 calls 0x0076cc20(room, 2): random cells are sampled
                 // with replacement, so two attempts can light the same cell.
@@ -51,7 +51,7 @@ class BrowserTutorialEntryEffects(private val adapter: BrowserTutorialAdapter) {
         val human = game.blueprintManager["human"] as? CrewBlueprint ?: error("Human blueprint is missing")
         val room = game.player.rooms.singleOrNull { it.id == 1 } ?: error("Tutorial crew room 1 is missing")
         val names = listOf("tutorial_extra_crew_1", "tutorial_extra_crew_2").map { key ->
-            game.translator[key].also { check(!it.startsWith("could not find:")) { "Missing tutorial crew name: $key" } }
+            game.translator[key].also { check(!it.startsWith("Could not find:")) { "Missing tutorial crew name: $key" } }
         }
         // Preflight the two spawns before consuming RNG or recruiting anyone.
         check((0 until room.cellCount).count { room.isSlotFree(room.slotToPoint(it), AbstractCrew.SlotType.CREW) } >= 2) {
@@ -69,6 +69,6 @@ class BrowserTutorialEntryEffects(private val adapter: BrowserTutorialAdapter) {
     }
 
     companion object {
-        val SUPPORTED_STEPS = setOf("POWER_SYSTEM_1", "DAMAGE_SYSTEM_1", "DAMAGE_SYSTEM_2", "FIRE_PC_1")
+        val SUPPORTED_STEPS = setOf("POWER_SYSTEM_1", "DAMAGE_SYSTEM_1", "DAMAGE_SYSTEM_2", "FIRE_PC_1", "FIRE_IPAD_1")
     }
 }

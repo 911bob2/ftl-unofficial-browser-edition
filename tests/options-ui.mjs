@@ -112,9 +112,8 @@ export async function optionsUiChecks(page,{snapshot,state,windowIs,click,pass,n
 
  await configure({autoPause:false,beaconPaths:false,dialogKeys:2});
  const persisted={autoPause:false,beaconPaths:false,dialogKeys:2};
- const sync=page.waitForResponse(r=>r.url().endsWith('/api/saves/current')&&r.request().method()==='PUT');await page.locator('#save').click();assert.ok((await sync).ok());
- await page.reload();await page.locator('#launch').click();await page.waitForFunction(()=>!!window.ftlEngine||!document.getElementById('takeover').hidden,{},{timeout:90000});
- if(!await page.evaluate(()=>!!window.ftlEngine))await page.locator('#takeover').click();await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});
+ await page.locator('#save').click();await page.waitForFunction(()=>/^Saved · synced/.test(document.getElementById('save-status').textContent));
+ await page.reload();await page.locator('#launch').click();await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});
  for(const [key,value] of Object.entries(persisted))assert.equal((await snapshot())[key],value,key+' after cloud/reload');
  await setup();await configure(originalSettings);
  pass('All gameplay options survive cloud save/reload and fixture settings are restored');

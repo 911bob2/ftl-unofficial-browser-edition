@@ -35,7 +35,8 @@ const suites=[
  ['encounters','Encounters','137 enemy specifications, combat and save restoration'],
  ['campaign','Campaign traversal','12 accelerated fixtures through flagship phases; not played victories'],
  ['server','Server & browser integration','Security, saves, logs, storage failures, HTTPS, menus and real-time tutorial input'],
- ['performance','Flagship benchmark','FPS and frame/update/render timing across three phases']
+ ['performance','Flagship benchmark','FPS and frame/update/render timing across three phases'],
+ ['hs-lua','Hyperspace Lua runtime','Bridge cost against real objects, in-situ frames and script API semantics']
 ].map(([id,label,description])=>({id,label,description})).filter(s=>s.id!=='server'||admin);
 const quick=suites.filter(s=>['mechanics','progress','combat','interaction','warnings','gameplay-options','gameplay-parity','ae-mode','drones','unlocks','achievements','audio','units'].includes(s.id)).map(s=>s.id);
 let engine,audioContext,manifest,assets,csrf,busy=false,cancelled=false,serverId,preset='quick',runnerAvailable=false,ready=false,report,timingController,selectedItem,runController,localAssetsReady=!external;
@@ -159,8 +160,9 @@ async function run(ids,resumeId=null){
     else if(probes[id])await record(label,()=>window[probes[id]]());
     else if(id==='audio')await record(label,checkAudio);
     else if(id==='performance')await benchmark();
+    else if(id==='hs-lua'){await (await import('./hs-lua.mjs'+version)).loadHsLua(version);await record(label,()=>window.hsLuaProbe(0));}
     else if(id==='campaign'){for(const ae of [true,false]){if(!ae)await boot(false);for(let difficulty=0;difficulty<3;difficulty++)for(const seed of [71,537])await record(`${ae?'AE':'Vanilla'} campaign · difficulty ${difficulty} · seed ${seed}`,()=>window.campaignProbe(difficulty,seed));}}
-    else if(id==='encounters'){for(const name of window.encounterList().split('\n'))await record('Encounter '+name,()=>window.encounterProbe(name,6));}
+    else if(id==='encounters'){const [from,count]=(new URLSearchParams(location.search).get('encounters')??'').split(',').map(Number),all=window.encounterList().split('\n');for(const name of count?all.slice(from,from+count):all)if(await record('Encounter '+name,()=>window.encounterProbe(name,6))===undefined)await boot(true);/* an engine that threw is not fit for the next case */}
     else{const ships=window.shipList().split('\n');for(const ship of ships)for(let difficulty=0;difficulty<3;difficulty++)await record(ship+' · difficulty '+difficulty,()=>window.probe(ship,difficulty));}
    }
    const items=report.results.slice(initial),failed=items.filter(i=>i.status==='failed').length;

@@ -23,7 +23,12 @@ interface SoundManager {
     fun getSampleOrWarn(name: String): FTLSound?
     fun getLoop(name: String): LoopHandle
     fun getTrack(name: String): MusicSpec
+    fun getLoopOrNull(name: String): LoopHandle?
+    fun getTrackOrNull(name: String): MusicSpec?
     fun switchMusicList(tracks: List<MusicSpec>)
+
+    /** Slide the music to silence and drop the playlist; the next list starts at once. */
+    fun stopPlaylist(fadeOut: Float) {}
 }
 
 class RealSoundManager(private val df: Datafile, context: ResourceContext) : SoundManager, INativeResource {
@@ -142,7 +147,7 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
                 continue
             }
 
-            val spec = SoundSpec(elem)
+            val spec = xyz.znix.xftl.hs.HsLoad.item(path, { "sound ${elem.name}" }) { SoundSpec(elem) } ?: continue
             if (spec.loop) {
                 if (loops.containsKey(spec.name)) {
                     println("[WARN] Duplicate sound loop '${spec.name}' in sounds.xml")
@@ -159,7 +164,7 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
 
     private fun loadMusic(elem: Element) {
         for (child in elem.getChildren("track")) {
-            val track = MusicSpec(child)
+            val track = xyz.znix.xftl.hs.HsLoad.item("sounds", { "track" }) { MusicSpec(child) } ?: continue
             musicTracks[track.name] = track
         }
     }
@@ -196,6 +201,10 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
     override fun getTrack(name: String): MusicSpec {
         return musicTracks[name] ?: error("No music track listed in sounds.xml for '$name'")
     }
+
+    override fun getLoopOrNull(name: String): LoopHandle? = loops[name]?.let { LoopHandle(it, this) }
+
+    override fun getTrackOrNull(name: String): MusicSpec? = musicTracks[name]
 
     // Should only be called by SoundInstance!
     fun registerPlayingLoop(loop: LoopHandle) {
@@ -354,6 +363,14 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
             player.fadeVolume(0f, PLAYLIST_FADE_OUT)
         currentMusic = null
         playlistDelay = PLAYLIST_GAP
+    }
+
+    override fun stopPlaylist(fadeOut: Float) {
+        for (player in musicPlayers)
+            player.fadeVolume(0f, fadeOut)
+        trackList.clear()
+        currentMusic = null
+        playlistDelay = null
     }
 
     /** Time left before the first track of a new playlist starts, or null. */

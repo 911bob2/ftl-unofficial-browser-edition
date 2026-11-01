@@ -33,7 +33,9 @@ class Medbay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             healthPerSec = -2f * 0.4f * 16f
         }
 
-        val healing = healthPerSec * dt
+        // Hyperspace: CrewMember::UpdateHealth (the medbay healing) runs at the room's temporal dilation.
+        val healing = healthPerSec * dt *
+                (if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.factor(room) else 1f)
 
         for (crew in room!!.crew) {
             // Don't heal drones
@@ -47,6 +49,8 @@ class Medbay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             // Don't revive dying crewmembers
             if (crew.currentAction == AbstractCrew.Action.DYING)
                 continue
+            // Hyperspace: no UpdateHealth (fMedbay) in the teleport animation state (AbstractCrew.update)
+            if (xyz.znix.xftl.hs.HS.active && crew.hsAnimTeleport) continue
 
             crew.dealDamage(MedbayHealing(-healing))
 
@@ -85,6 +89,12 @@ private object MedbayInfo : SystemInfo("medbay") {
     override fun create(blueprint: SystemBlueprint) = Medbay(blueprint)
 
     override fun getLevelName(level: Int, translator: Translator): String {
+        // Hyperspace 1.23.2 SystemDescriptionFixes: the multiplier is 1 at the first level, else level * 1.5
+        // (also for the extra levels mods add), printed with three decimals and the trailing zeros removed.
+        if (xyz.znix.xftl.hs.HS.active) {
+            val multiplier = if (level > 0) level * 1.5f else 1f
+            return translator["medbay_healing"].replaceArg(xyz.znix.xftl.hs.systems.Temporal.format3(multiplier))
+        }
         val fixedPoint = (Medbay.speedForLevel(level) * 100).roundToInt()
         val speedStr = UIUtils.formatStringFTL(fixedPoint)
         return translator["medbay_healing"].replaceArg(speedStr)

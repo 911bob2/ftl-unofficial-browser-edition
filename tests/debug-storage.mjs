@@ -11,7 +11,10 @@ if(me.mustChangePassword){assert.equal((await request('/api/auth/password','POST
 assert.equal((await(await request('/api/debug/sessions')).json()).available,false);
 assert.equal((await request('/api/debug/sessions','POST',{build:'failure-test'})).status,503);
 assert.equal((await request('/api/assets/manifest')).status,200);
-const state=await(await request('/api/saves/current')).json(),held=await(await request('/api/play-lease/acquire','POST',{takeOver:true})).json();
-r=await fetch(origin+'/api/saves/current',{method:'PUT',headers:{Origin:origin,Cookie:[...cookies].map(([k,v])=>k+'='+v).join('; '),'Content-Type':'application/json','X-CSRF-TOKEN':csrf,'If-Match':'"'+state.revision+'"'},body:JSON.stringify({lease:held.lease,state})});assert.equal(r.status,200,await r.text());
-await writeFile('.build/debug-storage-results.json',JSON.stringify({at:new Date().toISOString(),checks:['Application starts when the diagnostic directory is unavailable','Logs reports unavailable storage','Authentication, private assets, leases and gameplay saves remain functional']},null,2));
-console.log('PASS diagnostic storage failure leaves authentication, private assets, leases and saves functional');
+const device={'X-FTL-Instance':'debug-storage','X-FTL-Device':'browser;debug-storage;Fixture'},saveId=crypto.randomUUID();
+const send=(path,method,body,headers)=>fetch(origin+path,{method,headers:{Origin:origin,Cookie:[...cookies].map(([k,v])=>k+'='+v).join('; '),'Content-Type':'application/json','X-CSRF-TOKEN':csrf,...device,...headers},body:JSON.stringify(body)});
+r=await send('/api/saves/'+saveId+'/lock','POST',{override:false});assert.equal(r.status,404,await r.text());
+r=await send('/api/saves/'+saveId,'PUT',{name:'Storage test',setup:{key:'vanilla',mods:[]},meta:{},run:'<xftlSaveGame/>'},{'If-Match':'"0"'});assert.equal(r.status,200,await r.text());
+r=await send('/api/saves/'+saveId+'/lock','POST',{override:false});assert.equal(r.status,200,await r.text());
+await writeFile('.build/debug-storage-results.json',JSON.stringify({at:new Date().toISOString(),checks:['Application starts when the diagnostic directory is unavailable','Logs reports unavailable storage','Authentication, private assets, save locks and gameplay saves remain functional']},null,2));
+console.log('PASS diagnostic storage failure leaves authentication, private assets, save locks and saves functional');

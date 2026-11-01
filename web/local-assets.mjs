@@ -1,3 +1,4 @@
+import {createRate,progressBar} from './progress.mjs';
 const sessions=new Map();
 let db;
 function database(){return db??=new Promise((resolve,reject)=>{const r=indexedDB.open('ftl-local-assets',1);r.onupgradeneeded=()=>r.result.createObjectStore('files');r.onsuccess=()=>{r.result.onversionchange=()=>{r.result.close();db=null;};resolve(r.result);};r.onerror=()=>{db=null;reject(Error('Browser storage is unavailable.'));};r.onblocked=()=>reject(Error('Close other FTL tabs to update browser storage.'));});}
@@ -13,7 +14,8 @@ export function workerTask(action,payload,onProgress=()=>{},signal){
   const abort=()=>{finish();reject(new DOMException('Cancelled','AbortError'));};
   const finish=()=>{signal?.removeEventListener('abort',abort);worker.terminate();};
   signal?.addEventListener('abort',abort,{once:true});
-  worker.onmessage=({data})=>{if(data.id!==id)return;if(data.progress){onProgress(data.progress);return;}finish();if(data.error)reject(Error(data.error));else resolve(data.result);};
+  // Progress is a text plus optional {done, total} bytes (onProgress(text, detail)).
+  worker.onmessage=({data})=>{if(data.id!==id)return;if(data.progress){onProgress(data.progress,data.detail??null);return;}finish();if(data.error)reject(Error(data.error));else resolve(data.result);};
   worker.onerror=()=>{finish();reject(Error('Local file preparation failed. Please retry.'));};
   worker.postMessage({id,action,...payload});
  });
@@ -33,7 +35,9 @@ export function mountLocalAssets({account,config,onChanged=()=>{},message=()=>{}
  const choose=async file=>{
   if(!file||controller)return;controller=new AbortController();pending=null;fallback.hidden=true;busy(true);
   try{
-   pending=await validateLocalAsset(file,config,text=>status.textContent=text,controller.signal);
+   // A bar with bytes, speed and time left while the file is read and checked.
+   const rate=createRate(file.size);let bar=null;
+   pending=await validateLocalAsset(file,config,(text,detail)=>{status.textContent=text;if(!detail?.total){bar?.remove();bar=null;return;}const p=detail.total===file.size?rate(detail.done):{done:detail.done,total:detail.total};if(!bar){bar=progressBar(p,{label:text});status.after(bar);}else bar.update(p);},controller.signal).finally(()=>bar?.remove());
    status.textContent='Caching in your browser…';
    try{await persistLocalAsset(account,pending,controller.signal);cancel.hidden=true;pending=null;await changed();navigator.storage?.persist?.().catch(()=>{});}
    catch(e){if(e.name==='AbortError')throw e;status.textContent='Your file is verified, but browser caching failed. Use it on this page until it is closed or reloaded.';fallback.hidden=false;}

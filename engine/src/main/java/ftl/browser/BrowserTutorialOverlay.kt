@@ -4,6 +4,7 @@ import xyz.znix.xftl.Constants
 import xyz.znix.xftl.game.Buttons
 import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.game.MainGame
+import xyz.znix.xftl.game.TouchMode
 import xyz.znix.xftl.rendering.Colour
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.rendering.NativeFonts
@@ -43,6 +44,7 @@ class BrowserTutorialOverlay(private val main: MainGame) {
      */
     fun isSuppressed(game: InGameState): Boolean {
         if (!main.isTutorialRunning) return true
+        if (xyz.znix.xftl.hs.tutorial.HsTutorial.disabled) return true // Hyperspace <disableDefaultTutorial>: no lesson UI
         val adapter = main.tutorialAdapter ?: return true
         if (adapter.controller.completed) return true
         return game.isDebugConsoleVisible || game.shipUI.tutorialOverlayOpen || game.shipUI.tutorialDialogueOpen
@@ -52,8 +54,9 @@ class BrowserTutorialOverlay(private val main: MainGame) {
      * Hit-test for root wiring. Returns true if (x, y) falls inside the instruction box
      * or the continue button (if active).
      */
-    fun hitTest(game: InGameState, x: Int, y: Int): Boolean {
+    fun hitTest(game: InGameState, canvasX: Int, y: Int): Boolean {
         if (isSuppressed(game)) return false
+        val x = canvasX - hudOffset
         val adapter = main.tutorialAdapter ?: return false
         val controller = adapter.controller
         if (controller.completed) return false
@@ -64,7 +67,7 @@ class BrowserTutorialOverlay(private val main: MainGame) {
         val (_, boxHeight) = getWrappedLinesAndHeight(game, step)
 
         // Panel bounds
-        if (x in boxX until (boxX + boxWidth) && y in boxY until (boxY + boxHeight)) {
+        if (!TouchMode.enabled && x in boxX until (boxX + boxWidth) && y in boxY until (boxY + boxHeight)) {
             return true
         }
 
@@ -90,8 +93,9 @@ class BrowserTutorialOverlay(private val main: MainGame) {
      * Consumes all clicks inside the instruction panel and continue button so clicks
      * cannot target weapons, rooms, or crew beneath. Dispatches the continue action.
      */
-    fun click(game: InGameState, button: Int, x: Int, y: Int): Boolean {
+    fun click(game: InGameState, button: Int, canvasX: Int, y: Int): Boolean {
         if (isSuppressed(game)) return false
+        val x = canvasX - hudOffset
         val adapter = main.tutorialAdapter ?: return false
         val controller = adapter.controller
         if (controller.completed) return false
@@ -101,7 +105,8 @@ class BrowserTutorialOverlay(private val main: MainGame) {
         val boxWidth = BOX_WIDTH
         val (_, boxHeight) = getWrappedLinesAndHeight(game, step)
 
-        val insidePanel = x in boxX until (boxX + boxWidth) && y in boxY until (boxY + boxHeight)
+        // On touch the panel takes no finger: only its Continue does.
+        val insidePanel = !TouchMode.enabled && x in boxX until (boxX + boxWidth) && y in boxY until (boxY + boxHeight)
 
         val continueX = boxX + CONTINUE_OFFSET_X
         val continueY = boxY + boxHeight + CONTINUE_OFFSET_Y
@@ -138,6 +143,8 @@ class BrowserTutorialOverlay(private val main: MainGame) {
         val controller = adapter.controller
         if (controller.completed) return
 
+        g.pushTransform()
+        g.translate(hudOffset.toFloat(), 0f)
         val step = controller.step
         val (boxX, boxY) = getBoxPosition(step.id)
         val boxWidth = BOX_WIDTH
@@ -161,9 +168,9 @@ class BrowserTutorialOverlay(private val main: MainGame) {
         }
 
         // Mouse hover queries
-        val mouseX = game.input?.mouseX ?: -1
+        val mouseX = (game.input?.mouseX ?: -1) - hudOffset
         val mouseY = game.input?.mouseY ?: -1
-        if (hitTest(game, mouseX, mouseY)) g.tooltip = null
+        if (hitTest(game, mouseX + hudOffset, mouseY)) g.tooltip = null
 
         // 3. Render Continue button if enabled by native gate latch
         if (controller.canContinue) {
@@ -183,10 +190,10 @@ class BrowserTutorialOverlay(private val main: MainGame) {
             var continueFont = NativeFonts.font({ game.content.getFont(it) }, 63)
             if (continueFont.measure(continueText) > CONTINUE_WIDTH)
                 continueFont = NativeFonts.font({ game.content.getFont(it) }, 62)
-            g.colour = if (continueHovered) Constants.TEXT_BUTTON_HOVER else Constants.TEXT_BUTTON_NORMAL
+            g.colour = if (continueHovered) xyz.znix.xftl.hs.render.HsColors.tbSelected() else xyz.znix.xftl.hs.render.HsColors.tbActive()
             Buttons.drawChamfer(g, continueX, continueY, CONTINUE_WIDTH, CONTINUE_HEIGHT, 4)
             continueFont.printButtonLabel(continueX, continueY, CONTINUE_WIDTH, CONTINUE_HEIGHT, continueText,
-                Constants.TEXT_BUTTON_TEXT)
+                xyz.znix.xftl.hs.render.HsColors.tbText())
         }
 
         // 4. Render arrows relative to screen or upgrades window. In INVENTORY_2 the original drops its arrows once
@@ -203,11 +210,19 @@ class BrowserTutorialOverlay(private val main: MainGame) {
             val overlayAlpha = adapter.visuals.arrowAlpha
 
             for (arrow in step.arrows) {
-                val upgradeOffset = if (arrow.anchor == BrowserTutorialDefinition.Anchor.UPGRADES) {
-                    val win = game.shipUI.tutorialShipWindow
-                    if (win != null) win.position.x to win.position.y else 0 to 0
-                } else {
-                    0 to 0
+                val hud = game.shipUI.touch
+                // The enemy's arrow points into the box, so it waits for the box at full size.
+                if (arrow.anchor == BrowserTutorialDefinition.Anchor.ENEMY && hud != null && hud.focusAmount > 0f) continue
+                val upgradeOffset = when (arrow.anchor) {
+                    BrowserTutorialDefinition.Anchor.UPGRADES -> {
+                        val win = game.shipUI.tutorialShipWindow
+                        if (win != null) win.position.x - hudOffset to win.position.y else 0 to 0
+                    }
+                    BrowserTutorialDefinition.Anchor.TARGET_BOX, BrowserTutorialDefinition.Anchor.ENEMY -> {
+                        val box = if (game.enemy != null) hud?.targetBox(game.enemy.isUsingBossUI) else null
+                        if (box != null) box[0] to box[1] else 0 to 0
+                    }
+                    else -> 0 to 0
                 }
 
                 val ax = arrow.x + upgradeOffset.first
@@ -224,6 +239,49 @@ class BrowserTutorialOverlay(private val main: MainGame) {
                 g.popTransform()
             }
         }
+        if (TouchMode.enabled) drawHand(game, step.id)
+        g.popTransform()
+    }
+
+    private val hudOffset get() = if (TouchMode.enabled) TouchMode.hudX else 0
+
+    // The hand that shows a drag: it slides, rests half a second, hides half a second and starts over.
+    private var handStep: String? = null
+    private var handX = 0f
+    private var handY = 0f
+    private var handTimer = -1f
+
+    private fun drawHand(game: InGameState, stepId: String) {
+        val path = HAND_PATHS[stepId] ?: return
+        if (handStep != stepId) {
+            handStep = stepId
+            handX = path[0]
+            handY = path[1]
+            handTimer = -1f
+        }
+        val dt = game.renderingDeltaTime
+        if (handTimer <= 0f) {
+            val dx = path[2] - handX
+            val dy = path[3] - handY
+            val d = kotlin.math.sqrt(dx * dx + dy * dy)
+            val speed = if (d < 30f) max(0.05f, d / 30f * 0.25f) * 5f else 1.25f
+            val move = speed * dt * 16f
+            if (d <= move) {
+                handX = path[2]
+                handY = path[3]
+                if (handTimer < 0f) handTimer = 1f
+            } else {
+                handX += dx / d * move
+                handY += dy / d * move
+            }
+        } else {
+            handTimer -= dt
+            if (handTimer < 0f) {
+                handX = path[0]
+                handY = path[1]
+            }
+        }
+        if (handTimer <= 0f || handTimer >= 0.5f) game.content.getImg("img/ipad/hand.png").draw(handX, handY)
     }
 
     /**
@@ -234,12 +292,21 @@ class BrowserTutorialOverlay(private val main: MainGame) {
      * - COMBAT_*: (520, 3)
      * - Default: (900, 50)
      */
-    fun getBoxPosition(stepId: String): Pair<Int, Int> = when {
+    fun getBoxPosition(stepId: String): Pair<Int, Int> = if (TouchMode.enabled) touchBoxPosition(stepId) else when {
         stepId == "STAR_MAP_1" -> 50 to 200
         stepId == "UPGRADES_1" || stepId == "UPGRADES_1_2" -> 0 to 230
         stepId == "INVENTORY_2" -> 0 to 185
         stepId.startsWith("COMBAT_") && stepId != "COMBAT_5" -> 520 to 3
         else -> 900 to 50
+    }
+
+    /** The iPad's places: top right by default, below the ship and the equipment on the steps that use those screens. */
+    private fun touchBoxPosition(stepId: String): Pair<Int, Int> = when {
+        stepId == "UPGRADES_1" -> 643 to 504
+        stepId == "UPGRADES_1_2" || stepId == "INVENTORY_2" -> 643 to 552
+        stepId == "INVENTORY_1" || stepId == "COMBAT_5" -> 665 to 50
+        stepId.startsWith("COMBAT_") -> 352 to 504
+        else -> 644 to 50
     }
 
     private fun getWrappedLinesAndHeight(game: InGameState, step: BrowserTutorialDefinition.Step): Pair<List<String>, Int> {
@@ -251,7 +318,7 @@ class BrowserTutorialOverlay(private val main: MainGame) {
         val lines = font.wrapString(rawText, TEXT_WRAP_WIDTH)
         val textHeight = lines.size * TEXT_LINE_SPACING
         // TutorialManager::UpdateDescBox (0x00410930): text height + 22, at least 212.
-        val height = max(MIN_BOX_HEIGHT, textHeight + 22)
+        val height = if (TouchMode.enabled) textHeight + 22 else max(MIN_BOX_HEIGHT, textHeight + 22)
 
         cachedStepId = step.id
         cachedLines = lines
@@ -260,6 +327,12 @@ class BrowserTutorialOverlay(private val main: MainGame) {
     }
 
     companion object {
+        private val HAND_PATHS = mapOf(
+            "POWER_SYSTEM_2" to floatArrayOf(215f, 700f, 215f, 630f),
+            "IPAD_TOOLTIPS" to floatArrayOf(235f, 671f, 300f, 671f),
+            "FIRE_IPAD_1" to floatArrayOf(635f, 320f, 712f, 320f),
+        )
+
         const val BOX_WIDTH = 323
         const val FRAME_OFFSET_X = 7
         const val TEXT_WRAP_WIDTH = 308

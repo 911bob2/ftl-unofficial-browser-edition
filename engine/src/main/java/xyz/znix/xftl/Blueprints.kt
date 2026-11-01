@@ -32,6 +32,8 @@ class BlueprintManager {
         blueprints = HashMap()
         itemBlueprints = HashMap()
 
+        // A content load owns the HS shield-drone definition registry; parse duplicate nodes in file order.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsShieldDrones.reset()
         // Load all the blueprints
         loader(this)
 
@@ -76,7 +78,16 @@ class BlueprintManager {
             if (bp !is BlueprintList) continue
             bp.cleanup()
         }
+
+        // Hyperspace: ParseVanillaShipNode for every ship blueprint (FTL's file order), then <ships> of hyperspace.xml.
+        hsShipElements?.let { files ->
+            xyz.znix.xftl.hs.ship.HsShips.build(HS_BLUEPRINT_ORDER.flatMap { files[it] ?: emptyList() })
+            hsShipElements = null
+        }
     }
+
+    /** Hyperspace only: the `<shipBlueprint>` elements of each loaded file, for [xyz.znix.xftl.hs.ship.HsShips.build]. */
+    private var hsShipElements: HashMap<String, MutableList<Element>>? = null
 
     constructor(df: Datafile, enableAE: Boolean) : this(enableAE, {
         it.loadFile(df, "blueprints.xml")
@@ -122,13 +133,25 @@ class BlueprintManager {
             if (bp !is Blueprint)
                 continue
 
-            bp.finishSetup(content)
+            xyz.znix.xftl.hs.HsLoad.item("blueprints", { "finishSetup ${bp.name}" }) { bp.finishSetup(content) }
         }
     }
 
     operator fun get(name: String): IBlueprint = getOrNull(name) ?: error("Unknown blueprint $name")
 
     fun getOrNull(name: String): IBlueprint? = blueprints[name] ?: aeOnly[name]
+
+    /** The weapon of an artillery that names none that exists: it is there and never charges. */
+    val inertWeapon: xyz.znix.xftl.weapons.AbstractWeaponBlueprint by lazy {
+        val elem = Element("weaponBlueprint").setAttribute("name", "")
+        for ((name, value) in listOf("type" to "LASER", "damage" to "0", "shots" to "1", "cooldown" to "100000", "power" to "1", "weaponArt" to "", "image" to ""))
+            elem.addContent(Element(name).setText(value))
+        LaserBlueprint(elem)
+    }
+
+    /** The crew race a ship or event names: an unknown one is a human, as the original's GetCrewBlueprint gives. */
+    fun crewOrHuman(name: String): xyz.znix.xftl.crew.CrewBlueprint =
+        getOrNull(name) as? xyz.znix.xftl.crew.CrewBlueprint ?: this["human"] as xyz.znix.xftl.crew.CrewBlueprint
 
     fun getShip(name: String): ShipBlueprint {
         val blueprint = this[name] as LazyShipBlueprint
@@ -142,8 +165,15 @@ class BlueprintManager {
         if (name == "dlcPirateBlueprints.xml" && !ftl.browser.BrowserFiles.enableAE) {
             for (elem in parseXML.rootElement.children.toList()) if (!elem.getAttributeValue("name").endsWith("_P")) parseXML.rootElement.removeContent(elem)
         }
+        if (xyz.znix.xftl.hs.HS.active) {
+            val files = hsShipElements ?: HashMap<String, MutableList<Element>>().also { hsShipElements = it }
+            files[name] = parseXML.rootElement.getChildren("shipBlueprint").toMutableList()
+        }
         loadDocument(df, parseXML.rootElement)
     }
+
+    /** Diagnostics: the blueprints of one more document (an oracle probe's authored append). */
+    fun diagnosticAppend(df: Datafile, rootElement: Element) = loadDocument(df, rootElement)
 
     private fun loadDocument(df: Datafile, rootElement: Element) {
         val mutableBlueprints = blueprints as HashMap<String, IBlueprint>
@@ -151,12 +181,12 @@ class BlueprintManager {
             // The name 'drones' conflicts with the drones system, and it's the only such name
             // conflict. Since we only need them for stores, put them in a separate list.
             if (elem.name == "itemBlueprint") {
-                val item = ItemBlueprint(elem)
+                val item = xyz.znix.xftl.hs.HsLoad.item("blueprints", { "itemBlueprint" }) { ItemBlueprint(elem) } ?: continue
                 (itemBlueprints as HashMap)[item.name] = item
                 continue
             }
 
-            val bp = when (elem.name) {
+            val bp = xyz.znix.xftl.hs.HsLoad.item("blueprints", { "${elem.name} ${elem.getAttributeValue("name")}" }) { when (elem.name) {
                 "blueprintList" -> buildList(elem)
                 "weaponBlueprint" -> buildWeaponBlueprint(elem)
                 "droneBlueprint" -> buildDroneBlueprint(elem)
@@ -170,7 +200,7 @@ class BlueprintManager {
 
                 // Ignore unknown blueprints
                 else -> null
-            } ?: continue
+            } } ?: continue
 
             val bpName = elem.requireAttributeValue("name")
             if (mutableBlueprints.containsKey(bpName)) {
@@ -205,7 +235,13 @@ class BlueprintManager {
     }
 
     private fun buildDroneBlueprint(elem: Element): IBlueprint {
-        return DroneBlueprint(elem)
+        val blueprint = DroneBlueprint(elem)
+        // CustomDrones.cpp ProcessDroneBlueprint catches extension parse errors after native construction.
+        // Keep the valid base blueprint (and the previous custom definition) on a malformed extension.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.HsLoad.item("shield-drone", { blueprint.name }) {
+            xyz.znix.xftl.hs.weapons.HsShieldDrones.parse(elem)
+        }
+        return blueprint
     }
 
     private fun buildAugmentBlueprint(elem: Element): IBlueprint {
@@ -277,6 +313,10 @@ class BlueprintManager {
          * Create a version of [BlueprintManager] for use in automated tests,
          * loading a custom set of blueprint XML files.
          */
+        /** CApp::OnInit's LoadBlueprints order (0x403b08..0x403ea4), which ParseVanillaShipNode sees. */
+        private val HS_BLUEPRINT_ORDER = listOf("blueprints.xml", "autoBlueprints.xml", "dlcPirateBlueprints.xml",
+            "dlcBlueprints.xml", "dlcBlueprintsOverwrite.xml", "bosses.xml")
+
         fun createForTests(df: Datafile, files: List<Document>): BlueprintManager {
             return BlueprintManager(true) {
                 for (doc in files) {
@@ -297,7 +337,7 @@ class BlueprintList(private val blueprints: ArrayList<String>, private val manag
     val names: List<String> get() = blueprints
 
     override fun resolve(random: Random): Blueprint = manager[blueprints.random(random)].resolve(random)
-    override fun list(): List<Blueprint> = blueprints.flatMap { manager[it].list() }
+    override fun list(): List<Blueprint> = blueprints.flatMap { manager.getOrNull(it)?.list().orEmpty() }
 
     fun cleanup() {
         val toRemove = blueprints.filter { manager.getOrNull(it) == null }
@@ -311,14 +351,24 @@ class BlueprintList(private val blueprints: ArrayList<String>, private val manag
 
 open class Blueprint(elem: Element) : IBlueprint {
     val name = elem.requireAttributeValue("name")
-    val rarity: Int? = elem.getChild("rarity")?.textTrim?.toInt()
+    /** Description::rarity; var: Hyperspace scripts write it (Lua `desc.rarity`), [xmlRarity] is the file's. */
+    val xmlRarity: Int? = elem.getChild("rarity")?.textTrim?.let { xyz.znix.xftl.weapons.NativeNumbers.atoi(it) }
+    var rarity: Int? = xmlRarity
 
-    val title = elem.getGameTextChild("title")
-    val short = elem.getGameTextChild("short")
-    val desc = elem.getGameTextChild("desc")
+    /** Description::cost written by a Hyperspace script (the store price and the rest of the game read through [cost]). */
+    @JvmField var hsCost: Int? = null
+
+    // var: Hyperspace scripts rewrite Blueprint::desc's TextStrings (MV's custom gatling name)
+    var title = elem.getGameTextChild("title")
+    var short = elem.getGameTextChild("short")
+    var desc = elem.getGameTextChild("desc")
 
     // Note the tip is always localised
     val tip = elem.getChildTextTrim("tip")?.let { GameText.localised(it) }
+
+    // Description::bp (`<bp>`) and Description::tooltip (`<tooltip>`, a literal text), read by Hyperspace scripts
+    val hsBp: Int = elem.getChildTextTrim("bp")?.toIntOrNull() ?: 0
+    val hsTooltip: String = elem.getChildTextTrim("tooltip") ?: ""
 
     /**
      * Get this item's purchase price (the price you can buy it at, not the
@@ -345,7 +395,8 @@ open class Blueprint(elem: Element) : IBlueprint {
  * This is for fuel/drones/missiles, and serves to make their descriptions available.
  */
 class ItemBlueprint(elem: Element) : Blueprint(elem) {
-    override val cost: Int = elem.getChildTextTrim("cost")!!.toInt()
+    private val xmlCost: Int = elem.getChildTextTrim("cost")!!.toInt()
+    override val cost: Int get() = hsCost ?: xmlCost
 }
 
 /**
@@ -359,6 +410,9 @@ class LazyShipBlueprint(
 ) : Blueprint(elem) {
 
     val real: ShipBlueprint by lazy { ShipBlueprint(elem, df) }
+
+    /** Whether the game files hold this ship's layout. */
+    val hasLayout: Boolean get() = df.getOrNull("data/$layout.xml") != null && df.getOrNull("data/$layout.txt") != null
 
     // Load a few bits and pieces that are used in places where
     // we don't need to load the full ship.

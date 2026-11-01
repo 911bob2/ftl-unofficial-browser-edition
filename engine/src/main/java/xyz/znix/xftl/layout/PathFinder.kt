@@ -54,6 +54,12 @@ class PathFinder(val ship: Ship) {
             if (n1 == null || n2 == null)
                 continue
 
+            // A door with the same room on both sides (Multiverse layouts mu_ghost_mantis_bomber `DOOR 1 3 2 2 1` and
+            // mu_ghost_engi_bomber_a `DOOR 0 4 10 10 0`) would make a node its own neighbour; such an edge never
+            // shortens a path, so leave it out (Node.recalculate asserts there is none).
+            if (n1 === n2)
+                continue
+
             // Prefer to avoid doors
             val weight = 1.2f
             n1.neighbours[n2] = weight

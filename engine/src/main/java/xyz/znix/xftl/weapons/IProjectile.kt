@@ -14,6 +14,11 @@ import xyz.znix.xftl.sq
 import xyz.znix.xftl.systems.Hacking
 
 interface IProjectile {
+    /** Hyperspace's Projectile_Extend; null outside Hyperspace sessions and for projectiles HS does not extend. */
+    val hsExt: xyz.znix.xftl.hs.weapons.HsProjectileExt? get() = null
+    /** Flying pods are native SpaceDrones, with their own receiver and collision lifecycle. */
+    val hsDroneCollisionBody: xyz.znix.xftl.hs.weapons.HsDroneCollisionBody? get() = null
+
     /**
      * The position of this projectile on the screen, relative
      * to the ship in whose projectiles list it's in.
@@ -119,6 +124,13 @@ interface IProjectile {
     fun saveToXML(elem: Element, refs: ObjectRefs)
 
     companion object {
+        /** Native Projectile/SpaceDrone::CollisionMoving: only finish-to-target distance, strictly below ten pixels.
+         * Verified with real 1.6.14 calls: crossing the target with a distant endpoint misses; exact ten misses. */
+        fun endpointContact(finish: FPoint, target: FPoint): Boolean {
+            val x = finish.xf - target.xf; val y = finish.yf - target.yf
+            return x * x + y * y < 100f
+        }
+
         fun loadFromXML(
             game: InGameState,
             elem: Element, refs: RefLoader,
@@ -131,6 +143,8 @@ interface IProjectile {
                 )
 
                 BombBlueprint.SERIALISATION_TYPE -> BombBlueprint.loadProjectileFromXML(game, elem, refs, callback)
+                BeamProjectile.SERIALISATION_TYPE -> BeamProjectile.load(game, elem, refs, callback)
+                BombProjectile.SERIALISATION_TYPE -> BombProjectile.load(game, elem, refs, callback)
 
                 Hacking.PROBE_SERIALISATION_TYPE -> Hacking.loadProjectileFromXML(game, elem, refs, callback)
 

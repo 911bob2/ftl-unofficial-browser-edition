@@ -11,7 +11,7 @@ import xyz.znix.xftl.sys.Input
 object BrowserTutorialOverlayDiagnostics {
     fun run(main: MainGame, container: GameContainer, graphics: Graphics) {
         val profile = main.profile
-        val profileXml = BrowserXml.write(profile.save())
+        val profileXml = BrowserXml.write(profile.snapshot())
         val run = BrowserFiles.getRun()
         val storedProfile = BrowserFiles.getProfile()
         val rng = BrowserRandom.snapshot()
@@ -193,7 +193,7 @@ object BrowserTutorialOverlayDiagnostics {
             }
             check(rendered == steps.size) { "BrowserTutorialOverlayDiagnostics.kt:194" }
             check(!main.isTutorialRunning && main.currentState is MainMenuState) { "BrowserTutorialOverlayDiagnostics.kt:195" }
-            check(main.profile === profile && BrowserXml.write(profile.save()) == profileXml) { "BrowserTutorialOverlayDiagnostics.kt:196" }
+            check(main.profile === profile && BrowserXml.write(profile.snapshot()) == profileXml) { "BrowserTutorialOverlayDiagnostics.kt:196" }
             check(BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialOverlayDiagnostics.kt:197" }
             check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == storedProfile) { "Tutorial completion published ordinary progress" }
 
@@ -224,7 +224,7 @@ object BrowserTutorialOverlayDiagnostics {
             check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == storedProfile) { "Tutorial exit published ordinary progress" }
             if (profile.dirty) {
                 main.update(container, 0f)
-                check(!profile.dirty && BrowserFiles.getProfile() == profileXml) { "Pending ordinary profile changes were lost after exit" }
+                check(!profile.dirty && BrowserFiles.getProfile() == BrowserXml.write(profile.save())) { "Pending ordinary profile changes were lost after exit" }
             }
         } finally {
             main.endTutorialSession()

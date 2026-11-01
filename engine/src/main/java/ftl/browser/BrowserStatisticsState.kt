@@ -29,7 +29,14 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
     private val muted = Colour(.58f, .60f, .57f)
     // The scorekeeper's highlight colour (Victory, Advanced, New! and records set this run).
     private val highlightText = Colour(255, 255, 50)
-    private val families = content.shipFamilies.families.filter { family -> family.ships.any { profile.isShipUnlocked(it) } }
+    // Hyperspace (CustomScoreKeeper.cpp): the ship best panel walks the HS hangar entries (vanilla first unless the
+    // first page is hidden); a layout counts when its variant exists and is unlocked.
+    private val hs = xyz.znix.xftl.hs.HS.active
+    private fun available(id: String) = profile.isShipUnlocked(id) &&
+        (!hs || (xyz.znix.xftl.hs.ship.HsHangar.variantExists(id) && blueprints.getOrNull(id) != null))
+    private val families = (if (hs) xyz.znix.xftl.hs.ship.HsHangar.familyTable(content.shipFamilies,
+        xyz.znix.xftl.hangar.SelectShipState.NATIVE_ORDER) else content.shipFamilies).families
+        .filter { family -> family.ships.any { available(it) } }
     private val currentFamily get() = families[familyIndex]
     private val ship get() = currentFamily.ships[layoutIndex]
     val diagnosticTab get() = if (achievements) "ACHIEVEMENTS" else "STATISTICS"
@@ -38,6 +45,13 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
     val diagnosticShipList get() = shipList
     private data class HitAchievement(val achievement: Achievement, val x: Int, val y: Int, val size: Int)
     private val achievementHits = ArrayList<HitAchievement>()
+
+    // Hyperspace custom achievement pages (CustomScoreKeeper::currentAchievementPage; 0 = the vanilla page).
+    private val hsAch = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsAchievements.pages.isNotEmpty()
+    private var hsPage = 0
+    val diagnosticAchievementPage get() = hsPage
+    private data class HitCustom(val ach: xyz.znix.xftl.hs.ship.HsAchievements.CustomAchievement, val x: Int, val y: Int)
+    private val customHits = ArrayList<HitCustom>()
 
     override fun shutdown() { resources.freeAll(); listHost?.shutdown() }
     override fun update(container: GameContainer, delta: Float) {
@@ -58,27 +72,138 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
             gameOver?.hiddenBehindScores = false
             g.tooltip = null
         } else {
-            img("main_menus/main_base2.png").draw(0, 0)
+            img(if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsTitleScreen.imagePath("img/main_menus/main_base2.png").removePrefix("img/") else "main_menus/main_base2.png").draw(0, 0)
             g.colour = Colour(0f, 0f, 0f, .85f); g.fillRect(0, 0, 1280, 720)
         }
         img("scoreUI/score_main_left_${if (shipBest) 2 else 1}.png").draw(0, 0)
-        img("scoreUI/score_main_right_${if (achievements) 2 else 1}.png").draw(645, 0)
+        if (!(achievements && hsPage > 0 && drawHsPageBackground(645, 0)))
+            img("scoreUI/score_main_right_${if (achievements) 2 else 1}.png").draw(645, 0)
         tab("topscores", 43, 302, !shipBest)
         tab("shipbest", 338, 291, shipBest)
         tab("stats", 651, 193, !achievements)
         tab("achieve", 838, 387, achievements)
         drawTabLabels()
-        achievementHits.clear(); drawScores(g)
-        if (achievements) drawAchievements(g) else drawStatistics()
+        achievementHits.clear(); customHits.clear(); drawScores(g)
+        if (achievements && hsPage > 0) drawHsPage(g) else if (achievements) drawAchievements(g) else drawStatistics()
+        if (achievements && hsAch) drawHsPageButtons()
         // ScoreKeeper::OnInit (0x0044eb10): CLOSE is a TextButton at (1086, 627), 138 x 46, corners 8, font 64,
         // in score_close_box 15 px up and left.
         img("scoreUI/score_close_box.png").draw(1071, 612)
         val closeHovered = !shipList && mouseX in 1086 until 1086 + 138 && mouseY in 627 until 627 + 46
-        g.colour = if (closeHovered) Constants.TEXT_BUTTON_HOVER else Constants.TEXT_BUTTON_NORMAL
+        g.colour = if (closeHovered) xyz.znix.xftl.hs.render.HsColors.tbSelected() else xyz.znix.xftl.hs.render.HsColors.tbActive()
         Buttons.drawChamfer(g, 1086, 627, 138, 46, 8)
-        nf(64).printButtonLabel(1086, 627, 138, 46, label("button_close"), Constants.TEXT_BUTTON_TEXT)
+        nf(64).printButtonLabel(1086, 627, 138, 46, label("button_close"), xyz.znix.xftl.hs.render.HsColors.tbText())
         if (shipList) nativeList?.draw(container, g)
         drawAchievementTooltip(g)
+        drawHsTooltip(g)
+    }
+
+    // ---- Hyperspace: CustomAchievementPage / Section rendering and the page buttons (CustomScoreKeeper OnRender) ----
+    // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Gameplay/CustomAchievements.cpp and CustomScoreKeeper.cpp.
+
+    private fun hsImg(path: String): Image? = if (content.datafile.getOrNull("img/$path") != null) img(path) else null
+
+    /** CustomAchievementPage::RenderBackground: score_main_right_2a with 2b behind each visible section's box. */
+    private fun drawHsPageBackground(x: Int, y: Int): Boolean {
+        val tex1 = hsImg("scoreUI/score_main_right_2a.png") ?: return false
+        val tex2 = hsImg("scoreUI/score_main_right_2b.png")
+        if (tex2 == null) { tex1.draw(x, y); return true }
+        val w = tex1.width.toFloat(); val h = tex1.height.toFloat()
+        fun part(t: Image, px: Float, py: Float, pw: Float, ph: Float, u0: Float, u1: Float, v0: Float, v1: Float) =
+            t.draw(px, py, px + pw, py + ph, u0 * t.width, v0 * t.height, u1 * t.width, v1 * t.height)
+        part(tex1, x.toFloat(), y.toFloat(), 36f, h, 0f, 36f / w, 0f, 1f)
+        part(tex1, x + 564f, y.toFloat(), w - 564f, h, 564f / w, 1f, 0f, 1f)
+        var yy = 100f; var y0 = 0f
+        val page = xyz.znix.xftl.hs.ship.HsAchievements.pages[hsPage - 1]
+        for (section in page.sections) {
+            if (!section.visible()) continue
+            var y1 = yy + 53f
+            part(tex1, x + 36f, y0, 528f, y1 - y0, 36f / w, 564f / w, y0 / h, y1 / h)
+            y0 = y1
+            yy += section.height()
+            y1 = yy - 23f
+            part(tex2, x + 36f, y0, 528f, y1 - y0, 36f / w, 564f / w, y0 / h, y1 / h)
+            y0 = y1
+        }
+        part(tex1, x + 36f, y0, 528f, h - y0, 36f / w, 564f / w, y0 / h, 1f)
+        return true
+    }
+
+    /** CustomAchievementPage::OnRender at (645, 0): sections from y 100 down, each its heading, box and rows of seven. */
+    private fun drawHsPage(g: Graphics) {
+        val tracker = xyz.znix.xftl.hs.ship.HsAchievements
+        val page = tracker.pages.getOrNull(hsPage - 1) ?: return
+        var y = 100
+        val x = 645
+        for (section in page.sections) {
+            if (!section.visible()) continue
+            val heading = if (section.unlockedCount() < 1 && section.secretHeading != null) section.secretHeading!! else section.heading
+            nf(24).print(x + 60f, y.toFloat(), heading.get(content.translator), tracker.textColour)
+            val height = section.height()
+            val border = hsImg("scoreUI/score_main_right_border.png")
+            if (border != null) {
+                val w2 = border.width / 2; val h2 = border.height / 2
+                val x0 = x + 300 - w2; val y0 = y + 95 - h2; val y1 = y + height - 65 + h2
+                val half = h2.toFloat()
+                border.draw(x0.toFloat(), y0.toFloat(), (x0 + border.width).toFloat(), (y0 + h2).toFloat(), 0f, 0f, border.width.toFloat(), half)
+                border.draw(x0.toFloat(), (y0 + h2).toFloat(), (x0 + border.width).toFloat(), (y0 + h2 + height - 160).toFloat(), 0f, half, border.width.toFloat(), border.height - half)
+                border.draw(x0.toFloat(), (y1 - h2).toFloat(), (x0 + border.width).toFloat(), y1.toFloat(), 0f, border.height - half, border.width.toFloat(), border.height.toFloat())
+            } else {
+                g.colour = tracker.outlineColour
+                for (t in 0 until 4) g.drawRect(x + 36 + t, y + 53 + t, 528 - 1 - 2 * t, height - 76 - 1 - 2 * t)
+            }
+            var i = -1; var j = 0
+            for (ach in section.achievements) {
+                if (ach.hidden && !ach.unlocked) continue
+                i++
+                if (i >= 7) { i = 0; j++ }
+                drawCustomAchievement(g, ach, x + 59 + 70 * i, y + 63 + 70 * j)
+            }
+            y += height
+        }
+    }
+
+    /** CAchievement::OnRender for a custom achievement: its icon, and while locked the overlay and lock image. */
+    private fun drawCustomAchievement(g: Graphics, ach: xyz.znix.xftl.hs.ship.HsAchievements.CustomAchievement, x: Int, y: Int) {
+        if (ach.icon.isNotEmpty()) hsImg(ach.icon)?.draw(x, y)
+        if (!ach.unlocked) {
+            g.colour = Colour(0f, 0f, 0f, 0.75f); g.fillRect(x, y, 64, 64)
+            (if (ach.lockImage.isNotEmpty()) hsImg(ach.lockImage) else null)?.draw(x, y) ?: img("customizeUI/box_lock_on.png").draw(x + 24, y + 21)
+        }
+        val over = !shipList && mouseX > x && mouseX < x + 64 && mouseY > y && mouseY < y + 64
+        g.colour = if (over) Constants.ACHIEVEMENT_OUTLINE_HIGHLIGHT else Constants.ACHIEVEMENT_OUTLINE
+        g.drawRect(x, y, 63, 63); g.drawRect(x + 1, y + 1, 61, 61)
+        customHits += HitCustom(ach, x, y)
+    }
+
+    /** The page buttons (customizeUI/button_arrow at (1152,95) and, mirrored, (1192,95)) and "page/pages" right-aligned at (1150,84). */
+    private fun drawHsPageButtons() {
+        val tracker = xyz.znix.xftl.hs.ship.HsAchievements
+        for ((bx, mirror) in listOf(1152 to false, 1192 to true)) {
+            val base = img("customizeUI/button_arrow_on.png")
+            val hovered = !shipList && mouseX in bx until bx + base.width && mouseY in 95 until 95 + base.height
+            val im = if (hovered) img("customizeUI/button_arrow_select2.png") else base
+            if (mirror) im.draw((bx + im.width).toFloat(), 95f, bx.toFloat(), 95f + im.height, 0f, 0f, im.width.toFloat(), im.height.toFloat())
+            else im.draw(bx, 95)
+        }
+        nf(24).printRight(1150f, 84f, "${hsPage + 1}/${tracker.pages.size + 1}", tracker.textColour)
+    }
+
+    private fun hsPageButtonAt(x: Int, y: Int): Int? {
+        if (!hsAch || !achievements) return null
+        val base = img("customizeUI/button_arrow_on.png")
+        if (y !in 95 until 95 + base.height) return null
+        return when (x) { in 1152 until 1152 + base.width -> -1; in 1192 until 1192 + base.width -> 1; else -> null }
+    }
+
+    private fun drawHsTooltip(g: Graphics) {
+        if (shipList) return
+        val hit = customHits.firstOrNull { mouseX > it.x && mouseX < it.x + 64 && mouseY > it.y && mouseY < it.y + 64 } ?: return
+        val a = hit.ach
+        val difficulty = if (a.unlocked && a.multiDifficulty) "\n\n" + content.translator["ach_" + listOf("easy", "normal", "hard").getOrElse(a.difficulty) { "easy" }] else ""
+        val progress = if (!a.unlocked && a.progressMax > 0) "\n\n${a.progress}/${a.progressMax}" else ""
+        NativeTooltip.draw(g, tooltipTitleFont, tooltipFont, mouseX, mouseY, a.shownName?.get(content.translator) ?: a.nameId,
+            (a.shownDescription?.get(content.translator) ?: "") + progress + difficulty)
     }
     /**
      * The selected tab is part of score_main_left/right; the other one is a button: its _on art, _select2 while
@@ -168,6 +293,12 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
             nf(24).printCenter(217f, 91f, title, white)
             drawShipBestControls(g)
             // ScoreKeeper's ship achievements (0x004497a0): 64 px boxes from (410, 118), 70 apart.
+            val custom = if (hs) xyz.znix.xftl.hs.ship.HsHangar.variantOf(ship) else null
+            if (custom != null) {
+                // SetupTopShip hook: up to three of the entry's ship achievements, centred on 515.
+                val list = xyz.znix.xftl.hs.ship.HsAchievements.shipAchievements(custom.first.name, custom.second, false).take(3)
+                for ((i, ach) in list.withIndex()) drawCustomAchievement(g, ach, 515 - 35 * list.size + 70 * i, 118)
+            } else
             for ((i, id) in currentFamily.achievements.withIndex()) drawShipAchievement(g, content.achievements[id], 410 + i * 70, 118)
         }
         val scores = profile.browserHighScores(if (shipBest) ship else null)
@@ -200,7 +331,8 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
     // left of it and 5 px right of it, at y 157.
     private val listWidth get() = nf(62).measure(listLabel) + 6
     private val listX get() = 141 - listWidth / 2
-    private val canCycle get() = families.size > 1
+    // HS CheckTypes: the arrows work while more than one entry has the current layout unlocked.
+    private val canCycle get() = if (hs) families.count { f -> f.ships.getOrNull(layoutIndex)?.let(::available) == true } > 1 else families.size > 1
     private enum class ShipBestControl { PREVIOUS, LIST, NEXT, A, B, C }
     private fun shipBestControlAt(x: Int, y: Int): ShipBestControl? {
         if (y in 157 until 185) {
@@ -223,19 +355,19 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
         }
         arrow(listX - 37, false, ShipBestControl.PREVIOUS)
         arrow(listX + listWidth + 5, true, ShipBestControl.NEXT)
-        g.colour = if (hovered == ShipBestControl.LIST) Constants.TEXT_BUTTON_HOVER else Constants.TEXT_BUTTON_NORMAL
+        g.colour = if (hovered == ShipBestControl.LIST) xyz.znix.xftl.hs.render.HsColors.tbSelected() else xyz.znix.xftl.hs.render.HsColors.tbActive()
         Buttons.drawChamfer(g, listX, 157, listWidth, 28, 3)
-        nf(62).printButtonLabel(listX, 157, listWidth, 28, listLabel, Constants.TEXT_BUTTON_TEXT)
+        nf(62).printButtonLabel(listX, 157, listWidth, 28, listLabel, xyz.znix.xftl.hs.render.HsColors.tbText())
         for ((i, id) in currentFamily.ships.withIndex()) {
-            val unlocked = profile.isShipUnlocked(id)
+            val unlocked = available(id)
             g.colour = when {
-                !unlocked -> Constants.TEXT_BUTTON_DISABLED
-                i == layoutIndex -> Constants.TEXT_BUTTON_SELECTED
-                hovered == ShipBestControl.entries[3 + i] -> Constants.TEXT_BUTTON_HOVER
-                else -> Constants.TEXT_BUTTON_NORMAL
+                !unlocked -> xyz.znix.xftl.hs.render.HsColors.tbInactive()
+                i == layoutIndex -> xyz.znix.xftl.hs.render.HsColors.tbSelected()
+                hovered == ShipBestControl.entries[3 + i] -> xyz.znix.xftl.hs.render.HsColors.tbSelected()
+                else -> xyz.znix.xftl.hs.render.HsColors.tbActive()
             }
             Buttons.drawChamfer(g, 250 + i * 45, 155, 36, 34, 7)
-            nf(63).printButtonLabel(250 + i * 45, 155, 36, 34, label("typebutton_${'a' + i}"), Constants.TEXT_BUTTON_TEXT)
+            nf(63).printButtonLabel(250 + i * 45, 155, 36, 34, label("typebutton_${'a' + i}"), xyz.znix.xftl.hs.render.HsColors.tbText())
         }
     }
     /** CAchievement::OnRender (0x0042b7d0) as the hangar draws it: locked ones under a 0.75 black lock overlay. */
@@ -294,6 +426,16 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
         list.open()
     }
     private fun selectFamily(index: Int) {
+        if (hs) {
+            // CycleShipNext / CycleShipPrevious: the next entry with the current layout unlocked; the layout stays.
+            val step = if (index < familyIndex) -1 else 1
+            var i = familyIndex
+            for (n in families.indices) {
+                i = (i + step + families.size) % families.size
+                if (families[i].ships.getOrNull(layoutIndex)?.let(::available) == true) { familyIndex = i; return }
+            }
+            return
+        }
         familyIndex = (index + families.size) % families.size
         layoutIndex = currentFamily.ships.indexOfFirst { profile.isShipUnlocked(it) }.coerceAtLeast(0)
     }
@@ -301,8 +443,9 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
     override fun keyPressed(key: Int, c: Char) {
         when (key) {
             Input.KEY_ESCAPE -> if (shipList) shipList = false else close()
-            Input.KEY_LEFT -> if (shipBest && !shipList) selectFamily(familyIndex - 1)
-            Input.KEY_RIGHT -> if (shipBest && !shipList) selectFamily(familyIndex + 1)
+            // HS ScoreKeeper::KeyDown swallows the arrow keys.
+            Input.KEY_LEFT -> if (shipBest && !shipList && !hs) selectFamily(familyIndex - 1)
+            Input.KEY_RIGHT -> if (shipBest && !shipList && !hs) selectFamily(familyIndex + 1)
         }
         if (shipList && key != Input.KEY_ESCAPE) nativeList?.keyPressed(c)
         when (key) {
@@ -320,6 +463,10 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
                 in 651 until 838 -> achievements = false; in 838 until 1225 -> achievements = true }
         }
         if (y in 627 until 673 && x in 1086 until 1224) close()
+        hsPageButtonAt(x, y)?.let { d ->
+            val t = xyz.znix.xftl.hs.ship.HsAchievements
+            hsPage = if (d < 0) t.prevPage(hsPage) else t.nextPage(hsPage)
+        }
         if (shipBest) when (val control = shipBestControlAt(x, y)) {
             ShipBestControl.PREVIOUS -> if (canCycle) selectFamily(familyIndex - 1)
             ShipBestControl.NEXT -> if (canCycle) selectFamily(familyIndex + 1)
@@ -327,7 +474,7 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
             null -> {}
             else -> {
                 val layout = control.ordinal - 3
-                if (profile.isShipUnlocked(currentFamily.ships[layout])) layoutIndex = layout
+                if (available(currentFamily.ships[layout])) layoutIndex = layout
             }
         }
     }

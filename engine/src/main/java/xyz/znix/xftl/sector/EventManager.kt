@@ -5,6 +5,9 @@ import org.jdom2.Element
 import xyz.znix.xftl.BlueprintManager
 import xyz.znix.xftl.Datafile
 import xyz.znix.xftl.Translator
+import xyz.znix.xftl.hs.HS
+import xyz.znix.xftl.hs.events.HsEventFiles
+import xyz.znix.xftl.hs.events.HsEventParser
 import xyz.znix.xftl.requireAttributeValue
 import xyz.znix.xftl.shipgen.EnemyShipSpec
 
@@ -30,7 +33,7 @@ class EventManager(
      * ignore-unique mode) and nothing moves it back, so it can't be produced
      * again until the game restarts.
      */
-    private val consumedUniques = HashSet<Event>()
+    private val consumedUniques = LinkedHashSet<Event>() // ordered: saves are byte-stable (WP6 save)
     val uniqueEvents: UniqueEventRegistry = object : UniqueEventRegistry {
         override fun isConsumed(event: Event): Boolean = consumedUniques.contains(event)
         override fun consume(event: Event) {
@@ -40,6 +43,11 @@ class EventManager(
         override fun restoreAll() {
             consumedUniques.clear()
         }
+    }
+
+    /** HS: EventGenerator::ClearUsedEvent, a created unique event that was not used is available again. */
+    fun hsReturnUnique(event: Event) {
+        consumedUniques.remove(event)
     }
 
     /**
@@ -69,7 +77,7 @@ class EventManager(
     /**
      * WorldManager +0x12a0: the seed an event's crew kill is picked with. It is drawn from the global stream the
      * first time it is needed (`random32()`), shared by every preview and the application of the event, and
-     * cleared when the next event starts. Saved with the game (0x61a3a0).
+     * cleared where a new event sequence starts (see DialogueWindow). Saved with the game (0x61a3a0).
      */
     private var crewKillSeed: Int? = null
 
@@ -79,6 +87,9 @@ class EventManager(
         crewKillSeed = seed
         return seed
     }
+
+    /** Diagnostics: whether the current event drew its crew-kill seed already. */
+    val hasCrewKillSeed: Boolean get() = crewKillSeed != null
 
     fun resetCrewKillSeed() {
         crewKillSeed = null
@@ -112,15 +123,37 @@ class EventManager(
     // For the debug console
     val eventNames: Collection<String> get() = events.keys + eventLists.keys
 
+    /**
+     * Hyperspace's CustomEventsParser for this content, null in vanilla (HS.active is false, nothing below runs).
+     * Every event made here also gets its HS name ([Event.hsName], EventsParser::ProcessEvent's naming).
+     */
+    val hs: HsEventParser? = if (HS.active) HsEventParser(::hsProcessEvent, ::hsText) else null
+
+    /** HS: every event under its native name, generated ones ("PARENT 12") included, as GetBaseEvent finds them. */
+    private val hsEventsByName = HashMap<String, Event>()
+    private var hsEventCounter = 0
+    /** [keepsEarlierFile]: names defined by the files loaded so far, and by the one loading now. */
+    private val definedInEarlierFile = HashSet<String>()
+    private val definedInThisFile = HashSet<String>()
+    private val shipsInEarlierFile = HashSet<String>()
+    private val shipsInThisFile = HashSet<String>()
+    private var hsCurrentFile = ""
+
     init {
         imageLists[ImageList.NONE.name] = ImageList.NONE
 
-        for (event in eventFileNames) {
+        val hyperspaceRoot = if (hs != null) df.getOrNull("data/hyperspace.xml")?.let { df.parseXML(it).rootElement } else null
+        val files = if (hs != null) HsEventFiles.beforeVanilla(hs, hyperspaceRoot, df) + eventFileNames else eventFileNames
+
+        for (event in files) {
             loadEvents(df.parseXML(df[event]), true)
         }
-        for (event in eventFileNames) {
+        hs?.processPendingLoadLists()
+        for (event in files) {
+            hsCurrentFile = event
             loadEvents(df.parseXML(df[event]), false)
         }
+        if (hs != null) HsEventFiles.afterEvents(hs, hyperspaceRoot, bp)
 
         // With the DLC enabled CreateEvent tries "OVERRIDE_<name>" in the list
         // map before "<name>"; every override in the DAT is a list.
@@ -129,16 +162,52 @@ class EventManager(
         }
 
         // Make sure all the referenced ships do exist
-        for (ev in events.values) {
+        if (hs != null) {
+            // HS content: GetShipEvent gives an empty ship for an unknown name; report instead of failing.
+            for (ev in hsEventsByName.values)
+                if (ev.loadShipName != null && !ships.containsKey(ev.loadShipName))
+                    HsEventFiles.missing("ship", ev.hsName ?: "", ev.loadShipName)
+        } else for (ev in events.values) {
             if (ev is Event) {
-                check(ev.loadShipName == null || ships.containsKey(ev.loadShipName))
+                xyz.znix.xftl.hs.HsLoad.item("events", { "ship reference ${ev.loadShipName}" }) { check(ev.loadShipName == null || ships.containsKey(ev.loadShipName)) }
             }
         }
-        for (list in eventLists.values) {
+        if (hs == null) for (list in eventLists.values) {
             // Load the lazy-loadable events list, to make sure we're not going
             // to crash at runtime because one an event doesn't exist.
-            list.events.toString()
+            xyz.znix.xftl.hs.HsLoad.item("events", { "eventList contents" }) { list.events.toString() }
         }
+    }
+
+    /**
+     * Modded sessions: the event of a beacon that a sector entry left without one. FTL's StarMap::GenerateEvents keeps
+     * that location's LocationEvent nullptr when CreateEvent finds only consumed unique events (MV's
+     * DROPPOINT_SUPPLY_DEPOT); Hyperspace guards it everywhere (WorldManager::CreateLocation returns early, the map
+     * draws the beacon shadowed, RenderLabels skips it). An event without text, choices or rewards is our nullptr: made
+     * without random draws, its dialogue closes at once. Registered for saves; not an HS event name.
+     */
+    // Ported from FTL-Hyperspace 1b05a07 src/game/Gameplay/World/CustomEvents.cpp (the nullptr guards)
+    val hsNoEvent: Event? = if (HS.modded)
+        Event(null, emptyList(), Element("event"), "hsNoEvent", "hsNoEvent", ::getImageListOrNull, ::loadText, uniqueEvents)
+            .also { byDeserialisationId[it.deserialisationId] = it }
+    else null
+
+    /** An event with nothing in it, for what a save names that these game files no longer have. */
+    private val emptyEvent: Event by lazy {
+        hsNoEvent ?: Event(null, emptyList(), Element("event"), "hsNoEvent", "hsNoEvent", ::getImageListOrNull, ::loadText, uniqueEvents)
+            .also { byDeserialisationId[it.deserialisationId] = it }
+    }
+
+    /** The event a save names: if its mod left the save's list the run goes on with an empty event there, and the page says so. */
+    fun getSavedEvent(id: String): Event = byDeserialisationId[id] ?: run {
+        if (id != "hsNoEvent") xyz.znix.xftl.savegame.MissingContent.note(id)
+        emptyEvent
+    }
+
+    /** The choice a save names, or nothing if it is gone. */
+    fun getSavedChoice(id: String): Choice? = byChoiceId[id] ?: run {
+        xyz.znix.xftl.savegame.MissingContent.note(id)
+        null
     }
 
     /**
@@ -149,8 +218,8 @@ class EventManager(
 
     operator fun get(name: String): IEvent = getOrNull(name) ?: error("Missing event $name")
 
-    /** A list shadows an event of the same name, as in CreateEvent. */
-    fun getOrNull(name: String): IEvent? = eventLists[name] ?: events[name]
+    /** A list shadows an event of the same name, as in CreateEvent. HS also finds the generated names. */
+    fun getOrNull(name: String): IEvent? = eventLists[name] ?: events[name] ?: if (hs != null) hsEventsByName[name] else null
 
     /** The text list with this name (for tools that name one). */
     fun getTextList(name: String): TextList? = textLists[name]
@@ -170,24 +239,70 @@ class EventManager(
 
     fun getShip(name: String): EnemyShipSpec = ships[name] ?: error("Missing enemy ship spec '$name'")
     fun getImageList(name: String): ImageList = imageLists[name] ?: error("Missing image list '$name'")
+    fun getImageListOrNull(name: String): ImageList? = imageLists[name]
+
+    fun hasImageList(name: String): Boolean = imageLists.containsKey(name)
 
     fun hasShip(name: String): Boolean = ships.containsKey(name)
     fun getShips(): Collection<EnemyShipSpec> = ships.values
 
+    /**
+     * EventsParser::AddEvents (0x5e9760): a file's events and ship events go to the parser's own maps (a repeated name
+     * in the same file replaces the earlier one, 0x5e52c0), which are then range-inserted into the generator's
+     * (0x84b820, 0x849e20): a name an earlier file defined keeps that file's definition. Lists, text lists and sector
+     * descriptions are assigned directly (the last one wins). Vanilla's files define no name twice across files;
+     * the rule is applied for Hyperspace sessions (MV redefines vanilla events in its own files, which load first).
+     */
+    // (the name sets are declared before init, which loads the files)
+
+    /** Whether a definition of [name] from the file being loaded may replace the one in [map]. */
+    private fun keepsEarlierFile(name: String, earlier: Set<String>, thisFile: MutableSet<String>): Boolean {
+        if (hs == null) return false
+        if (name in earlier && name !in thisFile) return true
+        thisFile += name
+        return false
+    }
+
+    /** Diagnostics: the nodes of one more events document (an oracle probe's authored append), both passes. */
+    fun diagnosticAppend(doc: Document) { loadEvents(doc, true); loadEvents(doc, false) }
+
     private fun loadEvents(doc: Document, resourcePass: Boolean) {
         val root = doc.rootElement
         check(root.name == "FTL")
+        if (!resourcePass) {
+            definedInEarlierFile += definedInThisFile; definedInThisFile.clear()
+            shipsInEarlierFile += shipsInThisFile; shipsInThisFile.clear()
+        }
 
         for (elem in root.children) {
+            if (hs != null) {
+                // HS content: the original's parser never stops on a bad node; one that our loader can't read is
+                // recorded (capability report) and skipped instead of failing the whole file.
+                try {
+                    loadRootNode(elem, resourcePass)
+                } catch (e: RuntimeException) {
+                    HsEventFiles.badNode(hsCurrentFile, elem, e)
+                }
+                continue
+            }
+            loadRootNode(elem, resourcePass)
+        }
+    }
+
+    private fun loadRootNode(elem: Element, resourcePass: Boolean) {
+        run {
             // Everything is loaded in two passes: once for the textlists/images (later is not yet implemented), and
             // a second time to load the events (which reference the resources).
             if (resourcePass) {
-                when (elem.name) {
+                xyz.znix.xftl.hs.HsLoad.item("events", { "${elem.name} ${elem.getAttributeValue("name")}" }) { when (elem.name) {
                     "textList" -> loadTextList(elem)
                     "imageList" -> loadImageList(elem)
-                }
+                } }
             } else {
-                when (elem.name) {
+                // EventsParser::ProcessBaseNode (0x5e8510): a root node without a name is called "Base Event: <n>"
+                // from the event counter before its type is looked at (newEvents.xml's <eventCounts> take four).
+                if (hs != null && elem.getAttributeValue("name") == null) ++hsEventCounter
+                xyz.znix.xftl.hs.HsLoad.item("events", { "${elem.name} ${elem.getAttributeValue("name")}" }) { when (elem.name) {
                     "textList", "imageList" -> Unit // Handled in the resource pass
                     "eventList" -> loadEventList(elem)
                     "ship" -> loadShip(elem)
@@ -196,11 +311,15 @@ class EventManager(
                         val name = elem.requireAttributeValue("name")
                         val serialId = "rootEvent::$name"
                         eventCheck(name, events)
-                        events[name] = loadEvent(elem, name, serialId).value
+                        val keep = keepsEarlierFile(name, definedInEarlierFile, definedInThisFile)
+                        val loaded = loadEvent(elem, name, serialId, hsParent = name).value
+                        if (!keep) events[name] = loaded
                     }
 
-                    else -> error("Unknown eventfile item ${elem.name}")
-                }
+                    // EventsParser::ProcessBaseNode skips nodes it doesn't know; HS files carry some.
+                    else -> if (hs != null) HsEventFiles.unknownRootNode(hsCurrentFile, elem)
+                        else if (!xyz.znix.xftl.hs.HsLoad.skipUnknown("events", elem.name)) error("Unknown eventfile item ${elem.name}")
+                } }
             }
         }
     }
@@ -212,9 +331,11 @@ class EventManager(
 
         val events = elem.children.withIndex().map {
             val serialId = "$name::eventList${it.index}"
-            loadEvent(it.value, "$name.${it.index}", serialId, nested = true)
+            loadEvent(it.value, "$name.${it.index}", serialId, nested = true, hsParent = name)
         }
         eventLists[name] = EventList(name, events)
+        // EventsParser::ProcessEventList hook: the list node's own HS tags, under the list's name.
+        hs?.parseVanillaEventNode(elem, name, name)
     }
 
     private fun eventCheck(name: String, map: Map<String, IEvent>) {
@@ -260,20 +381,42 @@ class EventManager(
         check(elem.name == "ship")
 
         val ship = EnemyShipSpec(elem, bp, this)
-        ships[ship.name] = ship
+        if (!keepsEarlierFile(ship.name, shipsInEarlierFile, shipsInThisFile)) ships[ship.name] = ship
+        // EventsParser::ProcessShipEvent hook: named ship events keep their HS tags.
+        hs?.parseVanillaShipEventNode(elem, ship.name)
     }
 
     fun loadEmbeddedEvent(elem: Element, uniqueId: String): Lazy<IEvent> {
         val deserialisationId = "embeddedEvent::$uniqueId::${elem.name}"
-        return loadEvent(elem, "$uniqueId.${elem.name}", deserialisationId, true)
+        // EventsParser::ProcessShipEvent (0x5e3c10) names a ship's unnamed events "SHIP surrender  n" etc.: the
+        // ship's name, the event's label between spaces, then ProcessEvent's own space and counter.
+        val label = when (elem.name) { "deadCrew" -> "dead crew"; "gotaway" -> "got away"; else -> elem.name }
+        return loadEvent(elem, "$uniqueId.${elem.name}", deserialisationId, true, hsParent = "$uniqueId $label ")
     }
 
-    private fun loadEvent(elem: Element, debugId: String, serialId: String, embed: Boolean = false, nested: Boolean = false): Lazy<IEvent> {
+    /** HS EventsParser::ProcessEvent for an inline event (a load list entry): its HS name, findable by it. */
+    private fun hsProcessEvent(elem: Element, parent: String): String {
+        val load = elem.getAttributeValue("load")
+        if (load != null) return load
+        val event = loadEvent(elem, "hsInline.$parent", "hsInline::$parent", nested = true, hsParent = parent).value
+        return (event as? Event)?.hsName ?: parent
+    }
+
+    /** TextLibrary::GetText, null for a missing id (HS keeps the attribute text itself then). */
+    private fun hsText(id: String): String? = translator.translations[id]
+
+    private fun loadEvent(
+        elem: Element, debugId: String, serialId: String, embed: Boolean = false, nested: Boolean = false,
+        hsParent: String? = null
+    ): Lazy<IEvent> {
         if (!embed)
             check(elem.name == "event")
 
         elem.getAttributeValue("load")?.let {
-            return lazy { getOrNull(it) ?: error("Missing event '$it', referenced from '$debugId'") }
+            return lazy {
+                // Vanilla data has no such thing. A mod's goes on with nothing there.
+                getOrNull(it) ?: if (HS.modded) emptyEvent else error("Missing event '$it', referenced from '$debugId'")
+            }
         }
 
         // The event parser 0x5e52c0 registers every event under its name
@@ -294,22 +437,64 @@ class EventManager(
             suffix++
         }
 
+        // EventsParser::ProcessEvent names the event before its children: its `name`, or the parent's name, a
+        // space and the next value of the global counter (0x919c64), so a choice's event is "PARENT 12".
+        val hsName = if (hs != null) elem.getAttributeValue("name") ?: "${hsParent ?: ""} ${++hsEventCounter}" else null
+
         val text = elem.getChild("text")?.let(::loadText)
-        val choices = elem.getChildren("choice").withIndex().mapNotNull { loadChoice(it.value, it.index, uniqueId) }
-        val event = Event(text, choices, elem, debugId, uniqueId, ::getImageList, ::loadText, uniqueEvents)
+        val choices = if (hs == null) elem.getChildren("choice").withIndex().mapNotNull { loadChoice(it.value, it.index, uniqueId, hsName) }
+        else hsChoices(elem, uniqueId, hsName)
+        val event = Event(text, choices, elem, debugId, uniqueId, ::getImageListOrNull, ::loadText, uniqueEvents)
 
         byDeserialisationId[uniqueId] = event
+        if (hsName != null) {
+            event.hsName = hsName
+            // GetBaseEvent's view: a name an earlier file defined keeps that event ([keepsEarlierFile]), and its
+            // Hyperspace tags with it (oracle hg-fed: MV's BOSS_TEXT_1 keeps its custom fleet over events_boss.xml's).
+            if (hsName !in definedInEarlierFile || hsName in definedInThisFile) {
+                hsEventsByName[hsName] = event
+                hs!!.parseVanillaEventNode(elem, hsName, HsEventParser.baseEventName(hsName))
+            }
+        }
 
         if (nestedName != null) {
             eventCheck(nestedName, events)
-            events[nestedName] = event
+            if (!keepsEarlierFile(nestedName, definedInEarlierFile, definedInThisFile)) events[nestedName] = event
             return lazy { getOrNull(nestedName) ?: event }
         }
 
         return lazyOf(event)
     }
 
-    private fun loadChoice(elem: Element, choiceIndex: Int, parentDeserialisationId: String): Choice? {
+    /**
+     * HS sessions: the choices in document order with ProcessEvent's other numbered child, an inline `<ship>` without
+     * `load` ([hsInlineShip]), at its place among them.
+     */
+    private fun hsChoices(elem: Element, uniqueId: String, hsName: String?): List<Choice> {
+        val out = ArrayList<Choice>()
+        var index = 0
+        for (child in elem.children) when (child.name) {
+            "choice" -> loadChoice(child, index++, uniqueId, hsName)?.let { out += it }
+            "ship" -> if (child.getAttribute("load") == null) hsInlineShip(child, uniqueId)
+        }
+        return out
+    }
+
+    /**
+     * EventsParser::ProcessShipEvent (0x5e3c10) for an inline `<ship>` without `load`: its name (or the next counter
+     * value), then its surrender, escape, deadCrew, destroyed and gotaway events through ProcessEvent with the parent
+     * "SHIP label " - their counter values and HS names. The engine does not use inline ship definitions otherwise.
+     */
+    private fun hsInlineShip(ship: Element, uniqueId: String) {
+        val name = ship.getAttributeValue("name") ?: (++hsEventCounter).toString()
+        for (tag in listOf("surrender", "escape", "deadCrew", "destroyed", "gotaway")) {
+            val elem = ship.getChild(tag) ?: continue
+            val label = when (tag) { "deadCrew" -> "dead crew"; "gotaway" -> "got away"; else -> tag }
+            loadEvent(elem, "$uniqueId.inlineShip.$tag", "inlineShip::$uniqueId::$tag", true, hsParent = "$name $label ")
+        }
+    }
+
+    private fun loadChoice(elem: Element, choiceIndex: Int, parentDeserialisationId: String, hsParent: String?): Choice? {
         check(elem.name == "choice")
 
         // Apparently if the event element is missing it crashes in vanilla,
@@ -324,7 +509,7 @@ class EventManager(
 
         val text = elem.getChild("text").let(::loadText)
         val deserialisationId = "$parentDeserialisationId::choice$choiceIndex"
-        val event = loadEvent(eventElem, "choice.ukn", deserialisationId, nested = true)
+        val event = loadEvent(eventElem, "choice.ukn", deserialisationId, nested = true, hsParent = hsParent)
 
         // We could use the same deserialisation ID for a choice and it's event,
         // but it's probably a bit nicer not to - if you're not that familiar
@@ -355,7 +540,21 @@ class EventManager(
         }
         // The CRYSTAL_HELP_DIG event has an empty string for
         // the crew clone message (since that is never triggered).
-        return EventText(elem.textTrim, null, planet, back)
+        return EventText(keepSpaces(elem), null, planet, back)
+    }
+
+    /**
+     * The text as the game reads it: a run of spaces at either end stays (FTL does not trim an event's text), while
+     * indentation that sits on its own line around the text (a line break in it) is not part of the text.
+     */
+    private fun keepSpaces(elem: Element): String {
+        val raw = elem.text
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return trimmed
+        val start = raw.indexOf(trimmed)
+        val lead = raw.substring(0, start)
+        val trail = raw.substring(start + trimmed.length)
+        return (if (lead.all { it == ' ' }) lead else "") + trimmed + (if (trail.all { it == ' ' }) trail else "")
     }
 
     private fun loadImageList(elem: Element) {
@@ -370,7 +569,9 @@ class EventManager(
                 println("[WARN] Non-existent image '$path' specified in image list '$name'")
                 continue
             }
-            images += EnvironmentImage(path, child.getAttributeValue("w")?.toIntOrNull(), child.getAttributeValue("h")?.toIntOrNull())
+            // The w and h attributes are not read: the original keeps only the path of each img (EventsParser::ProcessImageList,
+            // 0x5e2b00) and a planet or backdrop is as large as its image (SpaceManager::SwitchPlanet, 0x418280).
+            images += EnvironmentImage(path)
         }
         imageLists[name] = ImageList(name, images)
     }

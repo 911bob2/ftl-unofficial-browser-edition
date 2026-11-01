@@ -129,6 +129,8 @@ class VanillaSaveData {
 
     class VanillaBeacon {
         var visitCount: Int = 0
+        /** Location::spaceImage: the background image list (Hyperspace's changeBackground keeps it here). */
+        var spaceImage: String = ""
         var seen: Boolean = false
         var enemyPresent: Boolean = false
         var shipEventId: String = ""
@@ -237,7 +239,7 @@ object VanillaSaveParser {
             val beacon = VanillaSaveData.VanillaBeacon()
             beacon.visitCount = r.int()
             if (beacon.visitCount > 0) {
-                r.string() // bg starscape
+                beacon.spaceImage = r.string() // bg starscape
                 r.string() // bg sprite
                 r.int(); r.int(); r.int() // sprite pos + rotation
             }

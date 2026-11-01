@@ -27,6 +27,11 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
 
     override val useCustomStunRotation: Boolean get() = true
 
+    /** Hyperspace Lua: DefenseDrone::drone_image, gun_image_off, charging, on, engine_image written by a script (0 to 4). */
+    fun hsSetImage(slot: Int, image: Image) {
+        when (slot) { 0 -> { offImage = image; onImage = image }; 1 -> gunOffImage = image; 2 -> gunChargedImage = image; 3 -> gunOnImage = image; 4 -> engine = image }
+    }
+
     private lateinit var offImage: Image
     private lateinit var onImage: Image
     private lateinit var engine: Image
@@ -35,28 +40,30 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
     private lateinit var gunOnImage: Image
     private lateinit var gunChargedImage: Image
 
-    private val typeCooldown = type.cooldown!! / 1000f
+    internal val typeCooldown = type.cooldown!! / 1000f
 
-    private lateinit var weapon: LaserBlueprint
+    // A laser in vanilla. Hyperspace content also gives defence drones missile and flak weapons
+    // (SpaceDrone::GetNextProjectile builds the shot from the blueprint's type).
+    private lateinit var weapon: AbstractWeaponBlueprint
     private var weaponSpeed: Int = 0
 
     // The gun angle (in the drone images' frame, 0 is straight up) and the
     // angle it is turning to (negative for none), SpaceDrone+0x170/+0x178.
-    private var aimAngle: Float = 0f
-    private var goalAngle: Float = -1f
+    internal var aimAngle: Float = 0f
+    internal var goalAngle: Float = -1f
 
-    private var cooldown: Float = 0f
-    private var fireReady: Boolean = false
+    internal var cooldown: Float = 0f
+    internal var fireReady: Boolean = false
     private var justDeployed: Boolean = false
 
     // The point we're aiming at (null when there is none, the original's
     // -FLT_MAX), and the velocity of what it was taken from.
-    private var aimPoint: MutFPoint? = null
-    private var aimVelocity: FPoint = ConstFPoint.ZERO
+    internal var aimPoint: MutFPoint? = null
+    internal var aimVelocity: FPoint = ConstFPoint.ZERO
 
     // The projectile or drone the aim point came from, and the last one we
     // locked onto. Neither is saved, as in the original.
-    private var currentTarget: Any? = null
+    internal var currentTarget: Any? = null
     private var lockedTarget: Any? = null
     private var restoredFromSave = false
 
@@ -70,7 +77,8 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
         gunChargedImage = game.getImg("img/ship/drones/${type.droneImage}_gun_charged.png")
 
         // Just assume we're using a laser, it could get a bit silly otherwise.
-        weapon = type.weaponBlueprint!! as LaserBlueprint
+        // (Hyperspace sessions accept the other projectile weapons MV gives defence drones.)
+        weapon = type.weaponBlueprint ?: ownerShip.sys.blueprintManager.inertWeapon
 
         weaponSpeed = speedFor(weapon)
 
@@ -134,6 +142,7 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
      */
     override fun update(dt: Float) {
         super.update(dt)
+        updateLastFrameFlags(dt)
 
         // An exploding drone stops here (0x428010 returns before the cooldown).
         if (isBlowingUp)
@@ -177,8 +186,33 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
         if (aimPoint != null)
             aim(dt)
 
-        if (fireReady && aimPoint != null)
-            fire()
+        // The shot itself comes from GetNextProjectile (0x429ee0), which SpaceManager runs for every drone after the
+        // projectile loop ([nativeNextProjectile]; native 1.6.14 drone-order probe 3: defence lasers are made there).
+        if (fireReady && aimPoint != null) {
+            val b = body
+            if (b != null && DroneRuntime.loopsInSpace(b)) firePending = true else fire()
+        }
+    }
+
+    private var firePending = false
+
+    /**
+     * SpaceDrone::GetNextProjectile (0x429ee0) for a ready defence drone: no shot while unpowered or hacked; a target
+     * that is cloaked, dying or jumping (Targetable vtable +0x2c/+0x34/+0x38; a projectile keeps the defaults, a drone
+     * dies while it explodes) drops the aim point and restarts the cooldown without a shot; otherwise the laser.
+     */
+    internal fun nativeNextProjectile() {
+        if (!firePending) return
+        firePending = false
+        if (!isRunning || !fireReady || aimPoint == null) return
+        val target = currentTarget
+        if (target is AbstractExternalDrone && target.isBlowingUp) {
+            fireReady = false
+            aimPoint = null
+            cooldown = typeCooldown
+            return
+        }
+        fire()
     }
 
     /**
@@ -202,6 +236,11 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
             // Ignore departing shots, or those shooting
             // at something other than the ship.
             if (projectile.targetShip != ownerShip)
+                continue
+
+            // DefenseDrone::ValidTargetObject (0x421020): a shot whose owner is the drone's own ship is never a target
+            // (a script's drone firing at its own ship). Only Hyperspace scripts can make one; vanilla has none.
+            if (xyz.znix.xftl.hs.HS.active && projectile.hsOwnerId == xyz.znix.xftl.hs.weapons.HsWeapons.shipId(ownerShip))
                 continue
 
             val candidateClass = classOf(projectile) ?: continue
@@ -329,6 +368,15 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
         goalAngle = angleTo(dronePos.xf, dronePos.yf, point.xf, point.yf)
         val aligned = turnGun(goalAngle, dt)
 
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.cfg().defenseDroneFix) {
+            if (!aligned || !xyz.znix.xftl.hs.weapons.HsDrones.defenceInRange(if (ownerShip.isPlayerShip) 0 else 1, targetShip, currentTarget, point)) {
+                aimPoint = null
+                return
+            }
+            lockedTarget = currentTarget
+            return
+        }
+
         val outOfRange = point.xf <= RANGE_MIN || point.yf <= RANGE_MIN ||
                 point.xf >= RANGE_MAX || point.yf >= RANGE_MAX
         if (outOfRange || !aligned) {
@@ -376,20 +424,59 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
      */
     private fun fire() {
         val point = aimPoint ?: return
+        // GetNextProjectile 0x429ee0 starts the shot at Point((int) currentLocation.x, (int) currentLocation.y): the
+        // drone's position cut to whole pixels (toward zero), aimed at the aim point rounded to whole pixels.
+        val start = ConstFPoint(flightController.position.xf.toInt().toFloat(), flightController.position.yf.toInt().toFloat())
+        val aim = ConstPoint(point.xf.roundToInt(), point.yf.roundToInt())
 
-        val shot = InterceptorLaser(ownerShip, weapon)
-        targetShip.projectiles += shot
+        val flak = weapon as? FlakBlueprint
+        if (flak != null && xyz.znix.xftl.hs.HS.active) {
+            // Hyperspace SpaceDrone::GetNextProjectile (CustomDrones.cpp): a flak weapon sends one LaserBlast per
+            // mini projectile to points spread around the aim point, r = sqrt(rand/2^31) * radius (angularRadius
+            // when given: angularRadius degrees at the target's distance), theta = rand % 360 degrees. The centre and
+            // the distance are those of the shot super() made (ret->target, ret->position: [aim], [start]); the pieces
+            // start at the drone's unrounded currentLocation.
+            val angular = flak.hs?.angularRadius ?: -1f
+            val dist = kotlin.math.sqrt((aim.x - start.xf).pow(2) + (aim.y - start.yf).pow(2))
+            val radius = if (angular == -1f) flak.radius.toFloat() else angular * dist * 0.01745329f
+            for ((image, fake) in flak.miniProjectiles) {
+                val r = kotlin.math.sqrt(xyz.znix.xftl.hs.weapons.HsWeapons.r32() / 2147483648f) * radius
+                val theta = (xyz.znix.xftl.hs.weapons.HsWeapons.r32() % 360) * 0.01745329f
+                val shot = construct(point) { InterceptorLaser(ownerShip, weapon, image, fake) }
+                shot.setInitialPath(flightController.position,
+                    ConstPoint((aim.x + r * cos(theta)).roundToInt(), (aim.y + r * sin(theta)).roundToInt()))
+                // HS queues the pieces and hands out one per GetNextProjectile, each through DRONE_FIRE.
+                if (xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.weapons.HsWeaponsLua.droneFire(shot, this)) continue
+                targetShip.projectiles += shot
+            }
+        } else {
+            val shot = construct(point) { InterceptorLaser(ownerShip, weapon) }
 
-        shot.setInitialPath(
-            flightController.position,
-            ConstPoint(point.xf.roundToInt(), point.yf.roundToInt())
-        )
+            shot.setInitialPath(start, aim)
+            // Hyperspace SpaceDrone::GetNextProjectile (InternalEvents.cpp, priority -100): DRONE_FIRE, pre-empt
+            // deletes the shot.
+            if (!(xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.weapons.HsWeaponsLua.droneFire(shot, this)))
+                targetShip.projectiles += shot
+        }
 
         weapon.launchSounds?.get()?.play()
 
         fireReady = false
         aimPoint = null
         cooldown = typeCooldown
+    }
+
+    /**
+     * SpaceDrone::GetNextProjectile (1.6.14 0x429ee0): new LaserBlast(Point(currentLocation), currentSpace,
+     * currentSpace, target), so CONSTRUCT_PROJECTILE sees the drone's space twice and the owner is the drone's ship.
+     */
+    private inline fun <T> construct(target: xyz.znix.xftl.math.FPoint, create: () -> T): T {
+        val at = flightController.position
+        val space = xyz.znix.xftl.hs.weapons.HsWeapons.shipId(targetShip)
+        val context = xyz.znix.xftl.hs.weapons.HsProjectileConstruction.Context(
+            ConstFPoint(at.xf.toInt().toFloat(), at.yf.toInt().toFloat()), ConstFPoint(target.xf, target.yf), targetShip,
+            xyz.znix.xftl.hs.weapons.HsWeapons.shipId(ownerShip), space, space)
+        return xyz.znix.xftl.hs.weapons.HsProjectileConstruction.with(context, create)
     }
 
     override fun saveToXML(elem: Element, refs: ObjectRefs) {
@@ -434,12 +521,27 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
 
     private class InterceptorLaser(
         val ownerShip: Ship,
-        val weapon: LaserBlueprint
+        val weapon: AbstractWeaponBlueprint,
+        /** The flight image: the weapon's own, or a flak mini projectile's (Hyperspace). */
+        val image: String = weapon.projectile ?: "",
+        /** A fake flak piece (Hyperspace): drawn only, it hits nothing. */
+        val fake: Boolean = false
     ) : AbstractProjectile(null) {
 
-        private val sprite = ownerShip.sys.animations[weapon.projectile!!].spriteAt(ownerShip.sys, 0)
+        private val sprite = ownerShip.sys.animations.getOrNull(image)?.spriteAt(ownerShip.sys, 0)
 
-        private val hitAnimation = ownerShip.sys.animations[weapon.explosion]
+        private val hitAnimation = ownerShip.sys.animations.orEmpty(weapon.explosion ?: "explosion_missile1")
+
+        override val collisionsEnabled: Boolean get() = !fake
+
+        // A LaserBlast: SpaceManager's projectile loop moves it, so the laser GetNextProjectile hands over after that
+        // loop first moves in the next frame's loop (native 1.6.14 drone-order probe 5), not in this frame's ship update.
+        override val updatesInProjectileLoop: Boolean get() = true
+
+        init {
+            // Hyperspace Projectile::Initialize(*weaponBlueprint) for drone shots.
+            if (xyz.znix.xftl.hs.HS.active) hsInitialize(weapon, speedFor(weapon) / 16)
+        }
 
         override val speed: Int = speedFor(weapon)
 
@@ -449,7 +551,7 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
         override val serialisationType: String get() = LASER_SERIALISATION_TYPE
 
         override fun renderPreTranslated(g: Graphics) {
-            sprite.draw(-sprite.width / 2f, -sprite.height / 2f)
+            sprite?.draw(-sprite.width / 2f, -sprite.height / 2f)
         }
 
         override fun reachedTarget() {
@@ -467,6 +569,8 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
 
             SaveUtil.addAttrRef(elem, "ownerShip", refs, ownerShip)
             SaveUtil.addAttr(elem, "weapon", weapon.name)
+            if (image != weapon.projectile) SaveUtil.addAttr(elem, "image", image)
+            if (fake) SaveUtil.addAttrBool(elem, "fake", true)
         }
     }
 
@@ -508,16 +612,22 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
 
         fun loadProjectileFromXML(game: InGameState, elem: Element, refs: RefLoader, callback: (IProjectile) -> Unit) {
             val weaponName = SaveUtil.getAttr(elem, "weapon")
-            val weapon = game.blueprintManager[weaponName] as LaserBlueprint
+            val weapon = game.blueprintManager.getOrNull(weaponName) as? AbstractWeaponBlueprint ?: game.blueprintManager.inertWeapon
+            val image = elem.getAttributeValue("image") ?: weapon.projectile ?: ""
+            val fake = elem.getAttributeValue("fake")?.toBoolean() ?: false
 
             SaveUtil.getAttrRef(elem, "ownerShip", refs, Ship::class.java) { owner ->
-                val laser = InterceptorLaser(owner!!, weapon)
+                val laser = InterceptorLaser(owner!!, weapon, image, fake)
                 laser.loadPropertiesFromXML(elem, refs)
                 callback(laser)
             }
         }
 
-        private fun speedFor(type: LaserBlueprint): Int {
+        private fun speedFor(type: AbstractWeaponBlueprint): Int {
+            // Hyperspace missile defence drones: the missile default speed (35).
+            if (type is MissileBlueprint) return (type.speed ?: 35) * 16
+            // Hyperspace <defenseDroneFix> leads with 60 when the blueprint speed is not positive.
+            if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.cfg().defenseDroneFix && (type.speed ?: 60) <= 0) return 60 * 16
             // Lasers default to a speed of 60, DAT 0x87724c (x16 converts the
             // speed into pixels-per-second).
             return (type.speed ?: 60) * 16

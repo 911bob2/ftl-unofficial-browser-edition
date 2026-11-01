@@ -48,6 +48,27 @@ class BrowserAchievementProgress(private val game: InGameState) {
     var beaconCrewKills: Int? = 0
         private set
 
+    /**
+     * The achievement flag "killed_crew" (AchievementTracker::GetFlagValue): the crew the player's side killed in this
+     * run. WorldManager::CreateLocation copies it, the player's hull and crew count into WorldManager at each arrival
+     * (killedCrew, playerHull, playerCrewCount: Hyperspace Lua), see [arrivalHull].
+     */
+    var killedCrew = 0
+        private set
+
+    /** Counts the arrivals ([beaconArrived]); a script's write to the WorldManager snapshot lasts until the next one. */
+    var arrivalSerial = 0
+        private set
+
+    /** WorldManager::playerHull as CreateLocation took it (null before the first arrival of this load). */
+    val arrivalHull: Int? get() = beaconStartingHull
+
+    /** WorldManager::playerCrewCount as CreateLocation took it (null before the first arrival of this load). */
+    val arrivalCrew: Int? get() = beaconStartingCrew
+
+    /** WorldManager::killedCrew as CreateLocation took it: the flag's value at the beacon's start. */
+    val arrivalKilled: Int get() = killedCrew - (beaconCrewKills ?: 0)
+
     private fun owner(crew: AbstractCrew): Ship? = when (crew) {
         is LivingCrew -> crew.ownerShip
         is AbstractIndoorsDrone.Pawn -> crew.drone.ownerShip
@@ -69,11 +90,13 @@ class BrowserAchievementProgress(private val game: InGameState) {
         beaconStartingHull = game.player.health
         beaconStartingCrew = playerCrewCount()
         beaconCrewKills = 0
+        arrivalSerial++
     }
 
     fun crewStartedDying(crew: AbstractCrew) {
         if (game.isCurrentlyLoadingSave || crew !is LivingCrew || crew.ownerShip === game.player) return
         beaconCrewKills = beaconCrewKills?.plus(1)
+        killedCrew++
         beaconCrewKills?.let { recordCounter("beaconCrewKills", it) }
     }
 
@@ -199,7 +222,7 @@ class BrowserAchievementProgress(private val game: InGameState) {
             it?.instance?.isPowered == true && it.type.type in listOf(DroneBlueprint.DroneType.COMBAT, DroneBlueprint.DroneType.BOARDER)
         } == true
         if (normal.all { it.browserEncounterVolleys!! <= 1 } && volleys(enemyNormal) == 0 && artilleryCount <= 1 &&
-            game.player.getAugmentValue("WEAPON_PREIGNITE") > 0f) earn("ACH_ONE_VOLLEY")
+            game.player.hasAugment("WEAPON_PREIGNITE")) earn("ACH_ONE_VOLLEY")
         if (normalCount == 0 && artilleryCount == 0) earn("ACH_ONLY_DRONES")
         // The native 1.6.14 destruction branch checks normal/artillery volleys
         // and powered offensive drones, but has no hull-damage test here.
@@ -365,6 +388,7 @@ class BrowserAchievementProgress(private val game: InGameState) {
             beaconStartingHull?.let { elem.setAttribute("beaconStartingHull", it.toString()) }
             beaconStartingCrew?.let { elem.setAttribute("beaconStartingCrew", it.toString()) }
             beaconCrewKills?.let { elem.setAttribute("beaconCrewKills", it.toString()) }
+            elem.setAttribute("killedCrew", killedCrew.toString())
             for ((room, age) in beamRoomAges.toSortedMap()) elem.addContent(Element("beamRoom")
                 .setAttribute("id", room.toString()).setAttribute("age", age.toString()))
             minimumBeaconHull?.let { elem.setAttribute("minimumBeaconHull", it.toString()) }
@@ -392,6 +416,7 @@ class BrowserAchievementProgress(private val game: InGameState) {
         beaconStartingHull = elem?.getAttributeValue("beaconStartingHull")?.toIntOrNull()
         beaconStartingCrew = elem?.getAttributeValue("beaconStartingCrew")?.toIntOrNull()
         beaconCrewKills = elem?.getAttributeValue("beaconCrewKills")?.toIntOrNull()?.coerceAtLeast(0)
+        killedCrew = elem?.getAttributeValue("killedCrew")?.toIntOrNull()?.coerceAtLeast(0) ?: (beaconCrewKills ?: 0)
         beamRoomAges.clear()
         for (entry in elem?.getChildren("beamRoom") ?: emptyList()) {
             val id = entry.getAttributeValue("id")?.toIntOrNull() ?: continue

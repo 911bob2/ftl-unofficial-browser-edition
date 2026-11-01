@@ -72,7 +72,11 @@ class FireInstance(val room: Room, val slot: Int) {
                 adjacentFires++
             } else {
                 val slot = otherRoom.pointToSlot(checkPos - otherRoom.position)
-                otherRoom.spreadFire(dt, slot, door)
+                // Hyperspace: Fire::UpdateStartTimer runs at the dilation of the room the new fire starts in.
+                val spreadDt = if (xyz.znix.xftl.hs.HS.active)
+                    dt / xyz.znix.xftl.hs.systems.HsTemporal.factor(room) * xyz.znix.xftl.hs.systems.HsTemporal.factor(otherRoom)
+                else dt
+                otherRoom.spreadFire(spreadDt, slot, door)
             }
         }
 
@@ -97,6 +101,15 @@ class FireInstance(val room: Room, val slot: Int) {
         val screenX = pos.offsetX
         val screenY = pos.offsetY
 
+        val strip = room.hsFireStrips?.get(slot)
+        if (strip != null) {
+            xyz.znix.xftl.hs.lua.LuaGraphics.resolve(strip)
+            val image = strip.image
+            if (image != null) {
+                animation.spec.sheet.getSprite(image, animation.spec.x + animation.frame, animation.spec.y).draw(screenX.f, screenY.f)
+                return
+            }
+        }
         animation.draw(screenX.f, screenY.f)
     }
 

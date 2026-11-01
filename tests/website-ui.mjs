@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+const skipPerformance=process.env.FTL_SKIP_PERFORMANCE==='1';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -10,8 +11,8 @@ await mkdir(root+'/screenshots',{recursive:true});
 for(let attempt=0;;attempt++){try{if((await fetch(origin+'/health/ready')).ok)break;}catch{}if(attempt===30)throw Error('Website fixture did not become ready.');await new Promise(r=>setTimeout(r,1000));}
 async function api(page,path,method='GET',data){const token=method==='GET'?null:(await(await page.request.get(origin+'/api/auth/csrf')).json()).token;return page.request.fetch(origin+'/api'+path,{method,data,headers:{Origin:origin,...(token?{'X-CSRF-TOKEN':token}:{})}});}
 async function login(page,name,initial){let used;for(const password of (name==='admin'?['website-fixture-password-'+name,'account-fixture-password-'+name,initial]:[initial]).filter(Boolean)){let r=await api(page,'/auth/login','POST',{username:name,password});if(r.status()===409)r=await api(page,'/auth/login','POST',{username:name,password});if(r.ok()){used=password;break;}}assert.ok(used,'Fixture login failed');if((await(await api(page,'/auth/me')).json()).mustChangePassword){assert.ok((await api(page,'/auth/password','POST',{currentPassword:used,newPassword:'website-fixture-password-'+name})).ok());const relogin=await api(page,'/auth/login','POST',{username:name,password:'website-fixture-password-'+name});assert.ok(relogin.ok(),'Fixture relogin HTTP '+relogin.status());}await page.goto(origin);await page.waitForFunction(()=>document.body.dataset.authState==='authenticated');}
-const selected=(process.env.MENU_BROWSERS??'Chrome,Edge,Firefox').split(',');
-for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge',chromium,{channel:'msedge'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))){
+const selected=(process.env.MENU_BROWSERS??'Chromium,Firefox').split(',');
+for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))){
  const browser=withOnboarding(await type.launch({headless:true,...options}),origin),context=await browser.newContext({viewport:{width:1440,height:1000}}),page=await context.newPage(),errors=[];
  page.setDefaultTimeout(30000);page.on('pageerror',e=>errors.push(e.message));
  let lastPage=page;const pass=t=>{checks.push(name+': '+t);console.log('PASS '+name+': '+t);};
@@ -27,7 +28,7 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
   await storagePage.goto(origin);await storagePage.waitForFunction(()=>document.body.dataset.sessionReady==='true');assert.equal(await storagePage.locator('html').getAttribute('data-theme'),'ftl');assert.ok(await storagePage.locator('#login-form').isVisible());await storageContext.close();
   pass('Legacy preferences, OS color scheme and unavailable storage retain the fixed FTL design');
 
-  // First-visit screens, local-only mode and the move dialog, at every width.
+  // First-visit screens, local-only mode and the move into an account, at every width.
   {
    const widths=[320,390,768,1280,1920],fresh=await browser.newContextWithoutOnboarding({viewport:{width:1440,height:1000}}),shot=await fresh.newPage();shot.on('pageerror',e=>errors.push(e.message));shot.setDefaultTimeout(30000);
    const capture=async label=>{for(const width of widths){await shot.setViewportSize({width,height:1000});await shot.evaluate(()=>document.fonts.ready);assert.ok(await shot.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Horizontal overflow '+width+' '+label);await shot.screenshot({path:root+'/screenshots/'+name+'-'+label+'-'+width+'.png',fullPage:true});}await shot.setViewportSize({width:1440,height:1000});};
@@ -38,31 +39,32 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
    await shot.locator('#register-signin').click();await shot.locator('#login-panel').waitFor();await capture('signin-with-local');
    await shot.locator('#play-local').click();await shot.waitForSelector('body[data-auth-state="local"][data-session-ready="true"]');await capture('local-play');
    for(const view of ['saves','logs','about']){await shot.goto(origin+'/?view='+view);await ready();await capture('local-'+view);}
-   // A local save, then Enable cloud saves: register, and the move dialog appears.
-   await shot.goto(origin);await ready();
-   await shot.evaluate(async()=>{const {saves,gameConfig}=await import('/web/local-api.mjs'),c=await gameConfig();await saves.save({schema:1,engineBuild:c.engineBuild,assetVersion:c.assetVersion,run:'<xftlSaveGame/>',profile:'<xftl-profile/>'},0);});
+   // A local save, then Enable cloud saves: register, and the save moves into the account.
+   await shot.goto(origin+'/?view=saves');await ready();
+   await shot.locator('#new-save').click();await shot.locator('#new-save-dialog[open]').waitFor();await capture('local-new-save');
+   await shot.locator('#new-save-create').click();await shot.locator('#saves-list li.save-row').waitFor();await capture('local-saves-list');
    await shot.locator('#enable-cloud').click();await shot.locator('#register-panel').waitFor();await capture('register-from-local');
    const mover='site-mover-'+name.toLowerCase()+'-'+Date.now().toString(36);
    await shot.locator('#register-form [name=username]').fill(mover);await shot.locator('#register-form [name=password]').fill('website-mover-password-2026');await shot.locator('#register-form [name=confirm]').fill('website-mover-password-2026');await shot.locator('#register-form button[type=submit]').click();
-   await shot.locator('#migrate-dialog[open]').waitFor();await capture('migrate-dialog');
-   await shot.locator('#migrate-confirm').click();await shot.waitForFunction(()=>!document.getElementById('migrate-dialog').open);
+   await shot.waitForFunction(()=>/now in your account/.test(document.getElementById('message').textContent),null,{timeout:30000});
    await shot.goto(origin+'/?view=saves');await ready();await capture('cloud-saves');
    await shot.goto(origin+'/?view=account');await ready();await shot.locator('#account-panel').waitFor();await capture('account-external');
    await fresh.close();
-   pass('First-visit, choice, register, local launcher, local saves and logs, move dialog and the external-user account panel fit at 320, 390, 768, 1280 and 1920 px');
+   pass('First-visit, choice, register, local launcher, local saves and logs, New save, the moved save and the external-user account panel fit at 320, 390, 768, 1280 and 1920 px');
    // Local-only mode with a real game file: launch, save durably, leave, come back.
    const local=await browser.newContextWithoutOnboarding({viewport:{width:1440,height:1000}}),lp=await local.newPage(),traffic=[];lp.setDefaultTimeout(60000);lp.on('pageerror',e=>errors.push(e.message));
    lp.on('request',r=>{const u=new URL(r.url());if(u.origin===origin&&u.pathname.startsWith('/api/'))traffic.push(r.method()+' '+u.pathname);});
    await lp.goto(origin);await lp.locator('#consent-agree').click();await lp.locator('#mode-local').click();await lp.waitForSelector('body[data-auth-state="local"][data-session-ready="true"]');
    await lp.locator('#local-assets input').setInputFiles(process.env.FTL_DAT_PATH??'game-files/ftl.dat');await lp.waitForFunction(()=>document.querySelector('[data-local-status]').textContent.startsWith('Ready'),{},{timeout:120000});
    await lp.locator('#launch').click();await lp.waitForFunction(()=>!!window.ftlEngine,{},{timeout:120000});await lp.locator('#game-loading').waitFor({state:'hidden'});
-   const durable=await lp.evaluate(()=>window.ftlSaveDurably());assert.equal(durable.saved,true);assert.equal(durable.backend,'local');assert.ok(durable.revision>=1);
-   const stored=await lp.evaluate(async()=>(await (await import('/web/local-saves.mjs')).load()).record);assert.equal(stored.revision,durable.revision);assert.ok(stored.profile&&stored.profile.length>50);
-   const again=await lp.evaluate(()=>window.ftlSaveDurably());assert.equal(again.revision,durable.revision+1,'every durable save is a new revision');
+   const durable=await lp.evaluate(()=>window.ftlSaveDurably());assert.equal(durable.saved,true);assert.equal(durable.backend,'device');assert.equal(durable.synced,false);
+   const stored=()=>lp.evaluate(async id=>{const {deviceStore,LOCAL_ACCOUNT}=await import('/web/device-store.mjs'),s=deviceStore(LOCAL_ACCOUNT);const save=await s.get(id);return {save,profile:save?.profile,settings:localStorage.getItem('ftl-settings')};},durable.id);
+   assert.ok((await stored()).save);assert.ok((await stored()).profile?.length>30);assert.match((await stored()).settings??'',/^(<\?xml[^>]*>\s*)?<xftl-settings[\s>]/,'the settings stay in this browser, apart from the save');
+   const again=await lp.evaluate(()=>window.ftlSaveDurably());assert.equal(again.id,durable.id,'the same save');
    assert.match(await lp.locator('#save-status').textContent(),/^Saved/);
    await lp.locator('#save').click();await lp.waitForFunction(()=>document.getElementById('save-status').textContent.startsWith('Saved'));
    await Promise.all([lp.waitForEvent('load'),lp.evaluate(()=>window.ftlExit()).catch(()=>{})]);await lp.waitForSelector('body[data-session-ready="true"]');
-   assert.equal((await lp.evaluate(async()=>(await (await import('/web/local-saves.mjs')).load()).record)).revision>=again.revision,true,'leaving the game keeps the save');
+   assert.ok((await stored()).save,'leaving the game keeps the save');
    await lp.waitForFunction(()=>document.querySelector('[data-local-status]').textContent.startsWith('Ready'));
    await lp.locator('#launch').click();await lp.waitForFunction(()=>!!window.ftlEngine,{},{timeout:120000});await lp.locator('#game-loading').waitFor({state:'hidden'});
    assert.ok((await lp.evaluate(()=>window.ftlEngine.diagnosticProfile())).length>50,'the second launch starts from the stored profile');
@@ -90,7 +92,7 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
   await external.goto(origin+'/Diagnostics');await external.waitForFunction(()=>!document.getElementById('measure-browser').disabled);assert.ok(await external.locator('#run-tests').isDisabled());assert.match(await external.locator('#preview-empty').textContent(),/Upload ftl\.dat/);assert.equal(await external.locator('#suite-server').count(),0);assert.equal(await external.locator('#runner-note').count(),0);assert.ok(!traffic.some(r=>r.path.startsWith('/api/tests')));await external.locator('#measure-browser').click();await external.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing measured');pass('External users see file guidance and can measure callbacks without a DAT');
   await external.goto(origin);await external.locator('#local-assets').waitFor();await external.locator('#local-assets input').setInputFiles(process.env.FTL_DAT_PATH??'game-files/ftl.dat');await external.waitForFunction(()=>document.querySelector('[data-local-status]').textContent.startsWith('Ready'),{},{timeout:120000});
   await external.reload();await external.waitForFunction(()=>document.querySelector('[data-local-status]').textContent.startsWith('Ready'));assert.equal(await external.locator('#launch').isEnabled(),true);
-  if(name==='Chrome'){
+  if(name==='Chromium'){
    // A matching cached file is final (it is checked against this deployment's hash): no picker, only Remove.
    assert.ok(await external.locator('[data-local-drop]').isHidden());assert.ok(await external.locator('[data-local-remove]').isVisible());
    await external.locator('[data-local-remove]').click();await external.locator('[data-local-drop]').waitFor();assert.equal(await external.evaluate(async()=>{const {getLocalAsset}=await import('/web/local-assets.mjs');return (await getLocalAsset(document.body.dataset.account))?.importedUtc??null;}),null);
@@ -106,14 +108,14 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
    await external.reload();await external.waitForFunction(()=>document.querySelector('[data-local-status]').textContent.startsWith('Ready'));pass('A cached matching ftl.dat hides the picker and offers Remove; invalid and cancelled files cache nothing; quota rejection has a working explicit session fallback');
   }
 
-  if(name==='Chrome'){
+  if(name==='Chromium'){
    const actual=await external.evaluate(async()=>{const {createAssetProvider}=await import('/web/asset-provider.mjs'),api=async path=>{const r=await fetch('/api'+path,{cache:'no-store'});if(!r.ok)throw Error('Fixture provider HTTP '+r.status);return r.json();},provider=await createAssetProvider({api,accountId:document.body.dataset.account,fetchBytes:async url=>(await fetch(url)).arrayBuffer()});const packed=await provider.fetchBoot();const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',packed))].map(b=>b.toString(16).padStart(2,'0')).join('');provider.dispose();return hash;});
    const expected=createHash('sha256').update(await readFile(root+'/assets/boot.pack')).digest('hex');assert.equal(actual,expected);pass('Browser preparation matches the Java boot bundle byte for byte');
   }
   await external.locator('#logs-button').click();await external.locator('#debug-enabled').check();await external.waitForFunction(()=>document.getElementById('debug-status').textContent.includes('Recording'));await external.locator('#play-button').click();await external.locator('#launch').click();await external.waitForFunction(()=>!!window.ftlEngine,{},{timeout:120000});await external.locator('#game-loading').waitFor({state:'hidden'});await external.evaluate(()=>window.websiteEngine=window.ftlEngine);
   await external.locator('#account-button').click();await external.locator('#play-button').click();assert.equal(await external.locator('.ftl-banner').isVisible(),false);assert.equal(await external.evaluate(()=>window.websiteEngine===window.ftlEngine),true);await external.locator('#save').click();await external.waitForFunction(()=>document.getElementById('save-status').textContent.startsWith('Saved'));await external.screenshot({path:root+'/screenshots/'+name+'-external-play.png',fullPage:true});
   assert.ok(!traffic.some(r=>r.path.startsWith('/api/assets/')||r.path.startsWith('/api/tests')));assert.ok(traffic.every(r=>r.bytes<2*1024*1024&&!r.type.includes('multipart')));pass('Local DAT persists, launches and saves with diagnostics; no private asset fetches or file uploads');
-  await external.locator('#tests-button').click();await external.waitForURL('**/Diagnostics');await external.locator('#individual-tests').evaluate(e=>e.parentElement.open=true);await external.locator('#test-mechanics').click();await external.waitForFunction(()=>['Completed','Completed with failures'].includes(document.getElementById('test-status').textContent),{},{timeout:120000});assert.equal(await external.locator('#test-status').textContent(),'Completed');pass('External users run engine checks through their own cached file');if(name==='Chrome'){await external.locator('#test-audio').click();await external.waitForFunction(()=>document.getElementById('test-status').textContent==='Completed');await external.locator('.preset[data-preset="benchmark"]').click();await external.locator('#benchmark-duration').selectOption('5000');await external.locator('#benchmark-limit').selectOption('60');await external.locator('#run-tests').click();await external.waitForFunction(()=>['Completed','Completed with failures'].includes(document.getElementById('test-status').textContent),{},{timeout:120000});assert.equal(await external.locator('#test-status').textContent(),'Completed');pass('External audio checks and three-phase benchmark use local resources');}
+  await external.locator('#tests-button').click();await external.waitForURL('**/Diagnostics');await external.locator('#individual-tests').evaluate(e=>e.parentElement.open=true);await external.locator('#test-mechanics').click();await external.waitForFunction(()=>['Completed','Completed with failures'].includes(document.getElementById('test-status').textContent),{},{timeout:120000});assert.equal(await external.locator('#test-status').textContent(),'Completed');pass('External users run engine checks through their own cached file');if(name==='Chromium'){await external.locator('#test-audio').click();await external.waitForFunction(()=>document.getElementById('test-status').textContent==='Completed');if(skipPerformance)console.log('SKIP Chrome: external flagship benchmark (FTL_SKIP_PERFORMANCE=1)');else{await external.locator('.preset[data-preset="benchmark"]').click();await external.locator('#benchmark-duration').selectOption('5000');await external.locator('#benchmark-limit').selectOption('60');await external.locator('#run-tests').click();await external.waitForFunction(()=>['Completed','Completed with failures'].includes(document.getElementById('test-status').textContent),{},{timeout:120000});assert.equal(await external.locator('#test-status').textContent(),'Completed');pass('External audio checks and three-phase benchmark use local resources');}}
   await externalContext.close();assert.deepEqual(errors,[]);
  }catch(e){console.error('Website fixture failure:',e.message,'Local storage status:',await lastPage.locator('[data-local-status]').textContent().catch(()=>''));await lastPage.screenshot({path:root+'/screenshots/'+name+'-failure.png',fullPage:true}).catch(()=>{});throw e;}
  finally{await browser.close();}

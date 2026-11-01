@@ -20,9 +20,23 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
         }
 
         val levelText: String = when {
-            power <= 0 -> game.translator[system.codename + "_off"]
+            power <= 0 -> when (system.codename) {
+                // Two ids do not follow the system's name; the systems without an off text have none.
+                "engines" -> game.translator["engine_off"]
+                "clonebay" -> game.translator["clone_off"]
+                "shields", "oxygen", "weapons", "drones", "medbay", "pilot", "sensors", "doors", "artillery" -> game.translator[system.codename + "_off"]
+                else -> ""
+            }
             else -> {
-                val name = system.info.getLevelName(power - 1, game.translator)
+                // ShipSystem::GetLevelDescription (0x63fbf0) with the tooltip flag: the clone bay reads "clone" (the
+                // clone time only; capture wp5c-lanius "Level 1: 12 sec clone"), not the upgrade screen's clone_full.
+                val name = if (system is Clonebay) xyz.znix.xftl.hs.lua.LuaShipEvents.levelDescription(
+                    xyz.znix.xftl.hs.systems.HsSystems.nameToId(system.blueprint.name), power - 1, true
+                ) {
+                    val time = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystems.cloneLevel(power).cloneSpeed.toInt()
+                    else Clonebay.durationForLevel(power).toInt()
+                    game.translator["clone"].replaceArg(time)
+                } else xyz.znix.xftl.hs.lua.LuaShipEvents.levelName(system.blueprint, power - 1, true, game.translator)
 
                 game.translator["level"]
                     .replaceArg(power)
@@ -31,7 +45,12 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
         }
 
         val lines = ArrayList<String>()
-        lines += game.translator["tooltip_" + system.codename]
+        val touchText = TouchMode.enabled && (system is Doors || system is Weapons)
+        lines += game.translator["tooltip_" + system.codename + if (touchText) "_touch" else ""]
+        if (system is Clonebay) {
+            lines += ""
+            lines += cloneHealthText(system)
+        }
         // The system tooltip (0x004df760) has no level line for weapons and drones.
         if (system !is Weapons && system !is Drones) {
             lines += ""
@@ -68,7 +87,7 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
 
         // TODO hacking
 
-        if (system is MainSystem) {
+        if (system is MainSystem && !TouchMode.enabled) {
             lines += ""
             // The power key of the system; with no separate remove key bound
             // the original names Shift + that key (remove_power_alt).
@@ -81,5 +100,29 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
         }
 
         return lines.joinToString("\n")
+    }
+
+    /**
+     * The system tooltip (0x004df760) for the clone bay: clonebay_health with CloneSystem::GetJumpHealth of the
+     * system's undamaged level (0x0063c0c0), plus clonebay_damaged while some bars are broken (healthState first !=
+     * second). Native capture wp5c-lanius (Lanius A, level 1): "Heals all crew 8 hp every jump." between the
+     * description and the level line. Hyperspace: GetJumpHealth is the clone level's jumpHP, and TextLibrary::GetText
+     * writes "\1 + P%" (or "P%") for the \1 of a level with jumpHPPercent.
+     */
+    private fun cloneHealthText(system: Clonebay): String {
+        val level = system.energyLevels - system.damagedEnergyLevels
+        val hs = xyz.znix.xftl.hs.HS.active
+        val hsLevel = if (hs) xyz.znix.xftl.hs.systems.HsSystems.cloneLevel(level) else null
+        fun text(key: String): String {
+            val t = game.translator[key]
+            if (hsLevel == null || hsLevel.jumpHPPercent <= 0) return t
+            val pct = hsLevel.jumpHPPercent.toString() + "%"
+            return t.replaceFirst("\\1", if (hsLevel.jumpHP > 0) "\\1 + $pct" else pct)
+        }
+        val hp = hsLevel?.jumpHP ?: if (level <= 0) 0 else Clonebay.PASSIVE_HEALING.getOrElse(level - 1) { Clonebay.PASSIVE_HEALING.last() }
+        var line = text("clonebay_health").replaceArg(hp)
+        // The native text starts with a space (" (If repaired, it will heal more)"); the engine's text library trims it.
+        if (system.damagedEnergyLevels > 0) line += text("clonebay_damaged").let { if (it.startsWith(" ")) it else " $it" }
+        return line
     }
 }

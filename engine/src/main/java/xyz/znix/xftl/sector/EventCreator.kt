@@ -30,16 +30,22 @@ class EventCreator(private val game: InGameState) {
 
     fun eventFor(name: String): IEvent = game.eventManager[name]
 
+    fun eventOrNull(name: String): IEvent? = game.eventManager.getOrNull(name)
+
     /**
      * CreateEvent with the global stream (seed -1): the event is created
      * again from the top while a pick fails, as the original's loop does -
      * a consumed unique event, or a choice that leads to one, yields nothing.
      */
-    fun create(root: IEvent, level: Int): CreatedEvent? {
+    @JvmOverloads
+    fun create(root: IEvent, level: Int, ignoreUnique: Boolean = false): CreatedEvent? {
         if (root is Event && root.isConsumedUnique)
             return null
-        for (attempt in 0 until (if (root is EventList) MAX_ATTEMPTS else 1)) {
-            val created = getEvent(root, level)
+        // CreateEvent (0x5df690) repeats GetEvent while it yields nothing, for an event as for a list (a choice can
+        // lead to a list whose picks are used-up unique events). Vanilla data only needs the list case; Hyperspace
+        // content (MV) needs both, so the event case is kept to HS to leave vanilla generation untouched.
+        for (attempt in 0 until (if (root is EventList || xyz.znix.xftl.hs.HS.active) MAX_ATTEMPTS else 1)) {
+            val created = getEvent(root, level, ignoreUnique)
             if (created != null)
                 return created
         }
@@ -53,6 +59,9 @@ class EventCreator(private val game: InGameState) {
      * is reset every frame, see [refreshUsedNames]).
      */
     fun createFrom(event: Event, level: Int): CreatedEvent? = create(event, level)
+
+    /** Modded sessions: a beacon's event when generation left it nullptr (no random draws; see [EventManager.hsNoEvent]). */
+    fun hsNoEvent(level: Int): CreatedEvent = CreatedEvent(game.eventManager.hsNoEvent!!, level)
 
     /**
      * A ship's ending event (destroyed, deadCrew, gotaway, surrender, escape):
@@ -92,7 +101,14 @@ class EventCreator(private val game: InGameState) {
      */
     fun appendStartTip(event: CreatedEvent) {
         val nl = "\n"
-        val list = game.eventManager.getTextList("TIPS_LIST_PC") ?: return
+        // The touch layout's first game on a new profile has its hint instead of a tip.
+        if (xyz.znix.xftl.game.TouchMode.enabled && game.mainGame?.consumeFirstRunTip() == true) {
+            val first = event.text ?: return
+            event.text = EventText(first.localised + " " + nl + " " + nl + game.translator["first_run_tip_ipad"], null, first.planet, first.back)
+            return
+        }
+        val touchList = if (xyz.znix.xftl.game.TouchMode.enabled) game.eventManager.getTextList("TIPS_LIST_IPAD") else null
+        val list = touchList ?: game.eventManager.getTextList("TIPS_LIST_PC") ?: return
         val tip = list.pick(NativeRandom, false) as? EventText ?: return
         val text = event.text ?: return
         event.text = EventText(text.localised + " " + nl + " " + nl + tip.localised, null, text.planet, text.back)
@@ -111,7 +127,17 @@ class EventCreator(private val game: InGameState) {
         game.setLootPool(LootPool(game.blueprintManager, type))
     }
 
-    private fun getEvent(root: IEvent, level: Int): CreatedEvent? {
+    /**
+     * Hyperspace's GetBaseEvent(name, level, ignoreUnique, seed): CreateEvent (0x5df690) reseeds the stream first when
+     * a seed is given (not -1).
+     */
+    fun createSeeded(root: IEvent, level: Int, ignoreUnique: Boolean, seed: Int): CreatedEvent? {
+        if (seed != -1) NativeRandom.seed(seed)
+        return create(root, level, ignoreUnique)
+    }
+
+    /** GetEvent (0x5dce90); with [ignoreUnique] (its third argument) a unique event is not used up. */
+    private fun getEvent(root: IEvent, level: Int, ignoreUnique: Boolean = false): CreatedEvent? {
         val rand = NativeRandom
 
         var current = root
@@ -122,6 +148,7 @@ class EventCreator(private val game: InGameState) {
             return null
 
         val created = CreatedEvent(base, level)
+        stageTrace?.let { t -> t(base.hsName ?: base.debugId, "start", NativeRandom.trace?.size ?: -1) }
 
         base.text?.let { created.text = pickText(it, true) }
 
@@ -147,14 +174,21 @@ class EventCreator(private val game: InGameState) {
         if (limit > 0)
             created.scrap = roll(base.resourceRanges.getValue(Resource.SCRAP))
 
+        stageTrace?.let { t -> t(base.hsName ?: base.debugId, "resources", NativeRandom.trace?.size ?: -1) }
         base.addedCrew.firstOrNull()?.let { created.crew = createCrew(it, level) }
+        stageTrace?.let { t -> t(base.hsName ?: base.debugId, "crew", NativeRandom.trace?.size ?: -1) }
 
         created.weapon = pickItem(base.weaponName, 0)
         created.drone = pickItem(base.droneName, 1)
         created.augment = pickItem(base.augmentName, 2)
 
-        base.autoRewards?.let { (type, tier) -> applyAutoReward(created, type, tier, level) }
+        // Hyperspace GenerateReward hook: a reward named in <rewards> is generated by HsRewards.
+        val hsReward = if (xyz.znix.xftl.hs.HS.active) base.hsAutoReward?.takeIf { xyz.znix.xftl.hs.events.HsRewards.has(it.first) } else null
+        if (hsReward != null) xyz.znix.xftl.hs.events.HsRewards.generate(game, created, hsReward.first, hsReward.second, level)
+        else if (base.hsAutoReward != null && base.autoRewards == null) xyz.znix.xftl.hs.HS.unsupported("event", base.hsName ?: "", "autoReward ${base.hsAutoReward!!.first}")
+        else base.autoRewards?.let { (type, tier) -> applyAutoReward(created, type, tier, level) }
 
+        stageTrace?.let { t -> t(base.hsName ?: base.debugId, "rewards", NativeRandom.trace?.size ?: -1) }
         // A ship seed whenever the event has a ship; load-less ships are
         // defined inline and always exist.
         if (base.hasShip) {
@@ -163,16 +197,20 @@ class EventCreator(private val game: InGameState) {
                 created.shipSeed = rand.next31()
         }
 
+        stageTrace?.let { t -> t(base.hsName ?: base.debugId, "ship", NativeRandom.trace?.size ?: -1) }
         for (choice in base.choices) {
-            val child = getEvent(choice.event, level) ?: return null
+            val child = getEvent(choice.event, level, ignoreUnique) ?: return null
             created.choices.add(CreatedChoice(choice, pickText(choice.text, false), child))
         }
 
-        // The boarders are always rolled: a count between min and max.
+        // The boarders are rolled (a count between min and max) unless the event set an amount (0x5dce90); vanilla
+        // data never does, so there it is always rolled.
         val boarders = base.boarderCount
-        created.boarders = rand.next31() % (boarders.last + 1 - boarders.first) + boarders.first
+        created.boarders = if (base.boarderAmount == -1) rand.next31() % (boarders.last + 1 - boarders.first) + boarders.first
+        else base.boarderAmount
 
-        base.consumeUnique()
+        stageTrace?.let { t -> t(base.hsName ?: base.debugId, "end", NativeRandom.trace?.size ?: -1) }
+        if (!ignoreUnique) base.consumeUnique()
         return created
     }
 
@@ -198,8 +236,16 @@ class EventCreator(private val game: InGameState) {
         val race: CrewBlueprint = when (spec.race) {
             null, "random" -> pool.getRandom(NativeRandom) { it is CrewBlueprint } as? CrewBlueprint ?: error("No available crew!")
             else -> {
+                var raceName: String = spec.race
+                // Hyperspace's GetCrewBlueprint hook (CustomCrew.cpp): a blueprint list first draws one of its entries,
+                // then the original GetCrewBlueprint runs on that name (and draws its thrown-away name).
+                if (xyz.znix.xftl.hs.HS.active) {
+                    val list = game.blueprintManager.getOrNull(raceName) as? BlueprintList
+                    if (list != null && list.names.isNotEmpty())
+                        raceName = list.names[NativeRandom.next31() % list.names.size]
+                }
                 factory.newName()
-                game.blueprintManager.getOrNull(spec.race) as? CrewBlueprint ?: game.blueprintManager["human"] as CrewBlueprint
+                game.blueprintManager.getOrNull(raceName) as? CrewBlueprint ?: game.blueprintManager["human"] as CrewBlueprint
             }
         }
         val colours = factory.drawColours(race)
@@ -231,10 +277,13 @@ class EventCreator(private val game: InGameState) {
             }
         }
 
-        val blueprint = game.blueprintManager[name]
+        // A name that is not there gives nothing, and so does a list without entries.
+        val blueprint = game.blueprintManager.getOrNull(name) ?: return null
         if (blueprint is BlueprintList) {
             val names = blueprint.names
-            return game.blueprintManager[names[NativeRandom.next31() % names.size]].resolve(NativeRandom)
+            if (names.isEmpty()) return null
+            val entry = game.blueprintManager.getOrNull(names[NativeRandom.next31() % names.size]) ?: return null
+            return if (entry is BlueprintList && entry.names.isEmpty()) null else entry.resolve(NativeRandom)
         }
         return blueprint.resolve(NativeRandom)
     }
@@ -257,6 +306,8 @@ class EventCreator(private val game: InGameState) {
     }
 
     companion object {
+        /** Diagnostics: (event, stage, draws so far in [NativeRandom.trace]) at each step of [getEvent]. */
+        @JvmField var stageTrace: ((String, String, Int) -> Unit)? = null
         private const val MAX_ATTEMPTS = 1000
 
         /**

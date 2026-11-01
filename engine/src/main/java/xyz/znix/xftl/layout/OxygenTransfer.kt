@@ -14,6 +14,14 @@ import kotlin.math.pow
  */
 object OxygenTransfer {
     fun update(ship: Ship, dt: Float) {
+        // Hyperspace: OxygenSystem::OnLoop balances the rooms first, then ShipManager::UpdateEnvironment drains
+        // them without clamping (HsOxygen).
+        if (xyz.znix.xftl.hs.HS.active) {
+            spreadOxygen(ship, dt)
+            xyz.znix.xftl.hs.systems.HsOxygen.update(ship, dt, ::findDistances)
+            return
+        }
+
         // Drain oxygen from open doors and breaches
         for (room in ship.rooms) {
             var drainRate = 0f
@@ -33,6 +41,10 @@ object OxygenTransfer {
 
             if (drainRate == 0f)
                 continue
+
+            // Hyperspace: OxygenSystem::ComputeAirLoss scales the loss by the dilation of the room it starts in.
+            if (xyz.znix.xftl.hs.HS.active)
+                drainRate *= xyz.znix.xftl.hs.systems.HsTemporal.factor(room)
 
             var hasAirLoss = false
 

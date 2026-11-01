@@ -98,6 +98,24 @@ class FixedStandardTooltip(private val game: InGameState, val textKey: String) :
 }
 
 /**
+ * Touch: a translated string centred above [centreX], with its bottom on [bottomY], kept on the canvas. The hand comes
+ * from below, so a box under the finger could not be read.
+ */
+class AboveFingerTooltip(private val game: InGameState, private val textKey: String) : ITooltipProvider {
+    var centreX = 0
+    var bottomY = 0
+
+    override fun drawTooltip(g: Graphics, mouseX: Int, mouseY: Int, firstFrame: Boolean, screenWidth: Int, screenHeight: Int) {
+        val font = game.getFont("JustinFont11Bold")
+        val text = game.translator[textKey]
+        val (w, h) = NativeTooltip.measure(null, font, null, text)
+        val x = (centreX - w / 2).coerceIn(0, maxOf(0, screenWidth - w))
+        val y = (bottomY - h).coerceAtLeast(0)
+        NativeTooltip.draw(g, null, font, mouseX, mouseY, null, text, null, x, y, true)
+    }
+}
+
+/**
  * Similar to [FixedDelayedTooltip], this shows a translated string but with
  * the key bound to [hotkeyId] inserted in place of the '\1' template.
  */
@@ -118,13 +136,28 @@ object NativeTooltip {
     /** MouseControl shows a tooltip once the hover has lasted this long. */
     const val DELAY = 0.15f
 
+    /** MouseControl::MeasureTooltip: the (width, height) of the box [draw] makes for the texts (a custom width wraps them). */
+    /** The body's font: 10 in Japanese, else 12 (the same glyphs there, two pixels less leading). */
+    private fun bodyFontId() = if (xyz.znix.xftl.Languages.current == "ja") 10 else 12
+
+    fun measure(titleFont: SILFontLoader?, bodyFont: SILFontLoader, title: String?, body: String, customWidth: Int? = null): Pair<Int, Int> {
+        val wrap = customWidth?.takeIf { it > 0 } ?: if (title != null) 350 else 275
+        val titleLines = if (title != null && titleFont != null) titleFont.wrapString(title, wrap) else emptyList()
+        val bodyLines = bodyFont.wrapString(body, wrap)
+        val textWidth = maxOf(titleLines.maxOfOrNull { titleFont!!.getWidth(it) } ?: 0, bodyLines.maxOfOrNull(bodyFont::getWidth) ?: 0)
+        val height = titleLines.size * NativeFonts.spec(13).lineHeight + bodyLines.size * NativeFonts.spec(bodyFontId()).lineHeight + 18 + if (titleLines.isEmpty()) 0 else 5
+        return Pair(textWidth + 27, height)
+    }
+
     fun draw(
         g: Graphics, titleFont: SILFontLoader?, bodyFont: SILFontLoader,
         mouseX: Int, mouseY: Int, title: String?, body: String, customWidth: Int? = null,
-        anchorX: Int = mouseX, anchorY: Int = mouseY + 22
+        anchorX: Int = mouseX, anchorY: Int = mouseY + 22,
+        /** RenderTooltip's staticPos: the box stays at the anchor, not moved on screen against the mouse. */
+        staticPos: Boolean = false
     ) {
         val titleSpec = NativeFonts.spec(13)
-        val bodySpec = NativeFonts.spec(12)
+        val bodySpec = NativeFonts.spec(bodyFontId())
         val wrap = customWidth?.takeIf { it > 0 } ?: if (title != null) 350 else 275
         val titleLines = if (title != null && titleFont != null) titleFont.wrapString(title, wrap) else emptyList()
         val bodyLines = bodyFont.wrapString(body, wrap)
@@ -134,33 +167,83 @@ object NativeTooltip {
         val height = titleHeight + bodyLines.size * bodySpec.lineHeight + 18 + if (titleLines.isEmpty()) 0 else 5
 
         // Edges are tested against the mouse, then the box is moved.
+        val hs = xyz.znix.xftl.hs.HS.active
         var x = anchorX
         var y = anchorY
-        if (mouseY + height > 670) {
+        if (!staticPos && mouseY + height > 670) {
             x += 16
             y -= mouseY + height - 670
-            if (mouseY < y + height) y -= y + height - mouseY + 10
+            // Hyperspace's rewrite (RedesignedTooltips.cpp) keeps the top on screen: no higher than y 50
+            if (mouseY < y + height) y = if (hs) maxOf(50, mouseY - height - 10) else y - (y + height - mouseY + 10)
         }
-        if (mouseX + width > 1260) x -= mouseX + width - 1240
+        if (!staticPos && mouseX + width > 1260) {
+            // Hyperspace: a box beside the cursor's row goes to the cursor's left instead of over it
+            if (hs && y <= mouseY && mouseY <= y + height) x -= width + 31
+            else x -= mouseX + width - 1240
+        }
 
+        // Hyperspace: a box taller than 620 is cut at y 670 and scrolls (ScrollingTooltip)
+        val scrolling = hs && height > 620
+        val visualHeight = if (scrolling) 670 - y else height
         g.colour = Colour(0f, 0f, 0f, 0.95f)
-        g.fillRect(x, y, width, height)
+        g.fillRect(x, y, width, visualHeight)
         g.colour = Colour.white
         g.fillRect(x, y, width, 2)
-        g.fillRect(x, y + height - 2, width, 2)
-        g.fillRect(x, y + 2, 2, height - 4)
-        g.fillRect(x + width - 2, y + 2, 2, height - 4)
+        g.fillRect(x, y + visualHeight - 2, width, 2)
+        g.fillRect(x, y + 2, 2, visualHeight - 4)
+        g.fillRect(x + width - 2, y + 2, 2, visualHeight - 4)
 
-        var top = y + 13
-        for (line in titleLines) {
-            titleFont!!.drawString(x + 15f, (top + titleSpec.baseline).f, line, Colour.white)
-            top += titleSpec.lineHeight
+        var scroll = 0f
+        if (scrolling) {
+            val key = (title ?: "") + "\u0000" + body
+            if (key == HsScroll.tooltip) scroll = HsScroll.amount
+            else { HsScroll.tooltip = key; HsScroll.amount = 0f; HsScroll.max = height - 580f }
+            HsScroll.shown = key
+            y += 20
         }
-        top = y + 11 + if (titleLines.isEmpty()) 0 else titleHeight + 5
-        for (line in bodyLines) {
-            bodyFont.drawString(x + 15f, (top + bodySpec.baseline).f, line, Colour.white)
-            top += bodySpec.lineHeight
+        val text = {
+            var top = y + 13
+            for (line in titleLines) {
+                titleFont!!.drawString(x + 15f, (top + titleSpec.baseline).f - scroll, line, Colour.white)
+                top += titleSpec.lineHeight
+            }
+            top = y + 11 + if (titleLines.isEmpty()) 0 else titleHeight + 5
+            for (line in bodyLines) {
+                bodyFont.drawString(x + 15f, (top + bodySpec.baseline).f - scroll, line, Colour.white)
+                top += bodySpec.lineHeight
+            }
         }
+        if (!scrolling) { text(); return }
+        xyz.znix.xftl.Utils.drawStenciled(xyz.znix.xftl.Utils.StencilMode.MASKING, {
+            g.fillRect(x.toFloat(), y.toFloat(), width.toFloat(), (visualHeight - 40).toFloat())
+        }, text)
+        // the crew list's arrows, centred on the box at y 54 and 652
+        val ax = x + width / 2f - 6f
+        if (scroll != 0f) HsScroll.image("img/statusUI/button_crew_up_on.png")?.draw(ax, 54f)
+        if (scroll != HsScroll.max) HsScroll.image("img/statusUI/button_crew_down_on.png")?.draw(ax, 652f)
+    }
+
+    /** Hyperspace's ScrollingTooltip: the tooltip that scrolls, its offset and the most it scrolls. */
+    object HsScroll {
+        @JvmField var tooltip = ""
+        @JvmField var amount = 0f
+        @JvmField var max = 0f
+        /** The scrolling tooltip drawn last frame (MouseControl::lastTooltipText), "" for none. */
+        @JvmField var shown = ""
+        @JvmField var images: ((String) -> xyz.znix.xftl.rendering.Image?)? = null
+        fun image(path: String) = images?.invoke(path)
+
+        /** ScrollingTooltip::OnScrollWheel: true when the shown tooltip scrolls (the wheel is taken). */
+        @JvmStatic
+        fun wheel(change: Int): Boolean {
+            if (shown.isEmpty() || shown != tooltip || change == 0) return false
+            amount = (amount + if (change > 0) -50f else 50f).coerceIn(0f, maxOf(0f, max))
+            return true
+        }
+
+        /** Each frame starts with no scrolling tooltip shown. */
+        @JvmStatic
+        fun frame() { shown = "" }
     }
 }
 

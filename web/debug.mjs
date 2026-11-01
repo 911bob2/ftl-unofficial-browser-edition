@@ -1,5 +1,6 @@
 // Diagnostic persistence is independent of the game's save/recovery database.
 import {diagnosticArchive,diagnosticCheckpointFiles} from './diagnostic-export.mjs';
+import {confirmAction} from './dialogs.mjs';
 const LIMIT=64*1024*1024,MAX_RECORD=256*1024,$=id=>document.getElementById(id);
 let dbPromise;
 function database(){return dbPromise??=new Promise((resolve,reject)=>{const r=indexedDB.open('ftl-diagnostics',1);r.onupgradeneeded=()=>{r.result.createObjectStore('records',{keyPath:'key',autoIncrement:true});r.result.createObjectStore('meta');};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
@@ -101,8 +102,8 @@ export function createDiagnostics({api,account,message,getEngine,build='loading'
   for(const id of ['debug-enabled','game-debug'])$(id).onchange=e=>setEnabled(e.target.checked);
   $('debug-stop').onclick=()=>setEnabled(false);for(const id of ['debug-mark','logs-mark'])$(id).onclick=mark;
   $('logs-refresh').onclick=refresh;
-  $('logs-delete').onclick=async()=>{const ids=[...document.querySelectorAll('[data-session]:checked')].map(e=>e.dataset.session);if(!ids.length)return;if(!confirm('Delete selected diagnostic sessions?'))return;if(ids.includes(session))await setEnabled(false);await flush();for(const id of ids)await api('/debug/sessions/'+id,{method:'DELETE',diagnostic:false});await refresh();};
-  $('logs-delete-all').onclick=async()=>{if(!confirm('Delete all diagnostic logs for your account?'))return;await setEnabled(false);await transaction(['records','meta'],'readwrite',tx=>{const r=tx.objectStore('records').openCursor();r.onsuccess=()=>{const c=r.result;if(c){if(c.value.account===account)c.delete();c.continue();}};tx.objectStore('meta').delete(account);});await api('/debug/sessions',{method:'DELETE',diagnostic:false});await refresh();};
+  $('logs-delete').onclick=async()=>{const ids=[...document.querySelectorAll('[data-session]:checked')].map(e=>e.dataset.session);if(!ids.length)return;if(!await confirmAction({id:'logs-delete-dialog',title:'Delete the selected logs?',text:'The selected diagnostic sessions are deleted.',yes:'Delete',danger:true}))return;if(ids.includes(session))await setEnabled(false);await flush();for(const id of ids)await api('/debug/sessions/'+id,{method:'DELETE',diagnostic:false});await refresh();};
+  $('logs-delete-all').onclick=async()=>{if(!await confirmAction({id:'logs-delete-all-dialog',title:'Delete all logs?',text:'Every diagnostic log of your account is deleted.',yes:'Delete all',danger:true}))return;await setEnabled(false);await transaction(['records','meta'],'readwrite',tx=>{const r=tx.objectStore('records').openCursor();r.onsuccess=()=>{const c=r.result;if(c){if(c.value.account===account)c.delete();c.continue();}};tx.objectStore('meta').delete(account);});await api('/debug/sessions',{method:'DELETE',diagnostic:false});await refresh();};
   $('log-filter').onsubmit=e=>{e.preventDefault();if(activeDetail)detail(activeDetail,true).catch(e=>message(e.message));};$('log-more').onclick=()=>detail(activeDetail).catch(e=>message(e.message));
   window.ftlDebugEvent=(category,event,payload,severity)=>{let parsed=payload;try{if(typeof payload==='string')parsed=JSON.parse(payload);}catch{parsed={message:payload};}
     if(category==='simulation'&&event==='state'){tick=parsed.state.tick;const changes={};for(const [key,value] of Object.entries(parsed.state))if(JSON.stringify(previousState?.[key])!==JSON.stringify(value))changes[key]=value;previousState=parsed.state;parsed={dt:parsed.dt,changes};}

@@ -1,14 +1,16 @@
 // Account panel: who is signed in, and permanent account deletion.
+import {confirmAction} from './dialogs.mjs';
 const $=id=>document.getElementById(id);
 const labels={admin:'Administrator',user:'Normal user','external-user':'External user'};
-export function mountAccount({api,getMe,message,download,beforeDeletion}){
+export function mountAccount({api,getMe,message,download,backup:allSaves,beforeDeletion}){
  let deleting=false;
- async function backup(){try{download(await api('/saves/current'),'ftl-cloud-backup.json');}catch(e){message(e.message);}}
+ // Every save of the account (from this browser and the account) in one file.
+ async function backup(){try{download(await allSaves(),'ftl-saves-backup.json');}catch(e){message(e.message);}}
  $('delete-backup').onclick=backup;
  $('delete-account-form').addEventListener('submit',async e=>{
   e.preventDefault();if(deleting)return;
   const password=$('delete-password').value,button=$('delete-account');
-  if(!confirm('Delete this account permanently? This cannot be undone. Your cloud save, snapshots and logs on the server will be erased.'))return;
+  if(!await confirmAction({id:'delete-account-dialog',title:'Delete this account permanently?',text:'This cannot be undone. Your saves, recovery snapshots and logs on the server will be erased, and the saves of this account in this browser.',yes:'Delete account',danger:true}))return;
   deleting=true;button.disabled=true;
   try{
    await api('/auth/delete-account',{method:'POST',body:{password}});

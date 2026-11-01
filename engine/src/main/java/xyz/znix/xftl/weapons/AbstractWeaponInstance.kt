@@ -22,9 +22,27 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.random.Random
 
-abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val ship: Ship) {
+/** WeaponBlueprint::GetDescription ends each line of a weapon tooltip with a space and a newline. */
+private const val LINE_END = " \n"
+
+abstract class AbstractWeaponInstance(type: AbstractWeaponBlueprint, val ship: Ship) {
+    var type: AbstractWeaponBlueprint = type
+        private set
+    /** ProjectileFactory::numShots and iRequiredPower: copied from the blueprint when the weapon is built. */
+    @JvmField var hsNumShots: Int = type.shots
+    @JvmField var hsRequiredPower: Int = type.power
+    /** ProjectileFactory::blueprint written with a blueprint of another weapon family: the goal follows it, the projectile kind stays. */
+    @JvmField var hsForeignBlueprint: AbstractWeaponBlueprint? = null
+
+    fun hsSetBlueprint(b: AbstractWeaponBlueprint) {
+        if (b.javaClass == type.javaClass) { type = b; hsForeignBlueprint = null } else hsForeignBlueprint = b
+    }
+
     // The time spent charging thus far
     var timeCharged: Float = 0f
+
+    /** WeaponSystem::userPowered: the player powered this weapon (WeaponSystem::PowerWeapon with userDriven). */
+    @JvmField var hsUserPowered = false
 
     // For charger weapons, this is how many shots are stored up, in
     // addition to the one represented by timeCharged.
@@ -46,7 +64,53 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
     // different ship (a bomb fired at our own ship) still accumulates here.
     fun browserResetEncounterVolleys() {
         browserEncounterVolleys = 0
+        hsShotsFired = 0
     }
+
+    /**
+     * Hyperspace: ProjectileFactory::shotsFiredAtTarget as HS counts it (ProjectileFactory::Update rewrite: one per
+     * volley, at the moment it starts), for `<shotLimit>`; cleared with [browserEncounterVolleys]. Saved only while
+     * Hyperspace is active (HS adds it to ProjectileFactory::SaveState).
+     */
+    @JvmField var hsShotsFired: Int = 0
+    /** ProjectileFactory::iSpendMissile: the missiles the volley just fired will spend (0 once spent). */
+    @JvmField var hsSpendMissile: Int = 0
+
+    /** A Lua write of ProjectileFactory::iAmmo, read back until the next ship loop copies the missile count again. */
+    @JvmField var hsLuaAmmo: Int? = null
+
+    /** ProjectileFactory::SpendMissiles as Hyperspace changes it (free missiles, replicator roll). */
+    fun hsSpendMissiles() {
+        val n = hsSpendMissile
+        hsSpendMissile = 0
+        if (!ship.sys.debugFlags.infiniteMissiles.set && n > 0 && xyz.znix.xftl.hs.weapons.HsWeapons.spendsMissiles(type)) {
+            val spent = xyz.znix.xftl.hs.weapons.HsWeapons.spendMissiles(this, n)
+            ship.missilesCount = max(0, ship.missilesCount - spent)
+        }
+    }
+
+    /** ProjectileFactory::SetHacked from Lua: iHackLevel until WeaponSystem::OnLoop sets it again (next frame). */
+    @JvmField var hsLuaHackLevel: Int? = null
+
+    /** Hyperspace: the cooldown modifier last set through WEAPON_COOLDOWN_MOD (ProjectileFactory::cooldownModifier). */
+    @JvmField var hsCooldownMod = 1f
+    /** ProjectileFactory::currentFiringAngle as a script wrote it. */
+    @JvmField var hsFiringAngle: Double? = null
+
+    /**
+     * ProjectileFactory::radius: the blueprint's radius when the weapon is made. A weapon targeted at a room with a
+     * radius shows a red disc of that radius around its crosshairs; Hyperspace scripts may change it.
+     */
+    @JvmField var aimRadius: Int = type.blueprintRadius
+
+    /**
+     * Hyperspace Lua `ProjectileFactory.lastTargets`: the aim ProjectileFactory::Fire last copied into lastTargets,
+     * dropped when the weapon is untargeted (its shot, ClearAiming, power loss).
+     */
+    @JvmField var hsLastAim: Any? = null
+
+    /** Hyperspace Lua: a value a script wrote into `ProjectileFactory.autoFiring` (null: none). */
+    @JvmField var hsAutoFiringWritten: Boolean? = null
 
     protected fun browserRecordVolley(target: Ship) {
         if (ship.sys.isCurrentlyLoadingSave) return
@@ -62,6 +126,9 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
     // To set this, use forceSetPowered and read it's JavaDoc.
     var isPowered: Boolean = false
         private set
+
+    /** ProjectileFactory::powered written by a script: the flag alone. */
+    fun hsWritePowered(v: Boolean) { isPowered = v }
 
     /**
      * Per-weapon autofire override: null follows the ship's global autofire
@@ -90,7 +157,19 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
      * to [isCharged] for charge weapons, as this is only true when the currently
      * charging charge is done.
      */
-    val isCurrentCharged: Boolean get() = timeCharged >= chargeTime
+    val isCurrentCharged: Boolean get() = timeCharged >= chargeTime && !hsFullByScript
+
+    /**
+     * A script set the cooldown to full: the bar is full but the charge level only rises when Update reaches the goal,
+     * so the weapon doesn't count as charged (oracle hw-fr).
+     */
+    @JvmField var hsFullByScript = false
+
+    fun hsWriteCharge(v: Float) {
+        val value = v.coerceIn(0f, chargeTime)
+        if (value >= chargeTime) { if (timeCharged < chargeTime) hsFullByScript = true } else hsFullByScript = false
+        timeCharged = value
+    }
     val chargeProgress: Float get() = timeCharged / chargeTime
 
     val maxTotalCharges get() = type.chargeLevels ?: 1
@@ -107,10 +186,12 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
 
     val chargeTime: Float
         get() {
-            if (type.boost?.type != AbstractWeaponBlueprint.BoostType.COOLDOWN)
+            val type = hsForeignBlueprint ?: type
+            val boost = type.boost
+            if (boost?.type != AbstractWeaponBlueprint.BoostType.COOLDOWN)
                 return type.chargeTime
 
-            return type.chargeTime - chainCount * type.boost.perShot
+            return type.chargeTime - chainCount * boost.perShot
         }
 
     /**
@@ -118,8 +199,26 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
      */
     val weaponBarTooltip: ITooltipProvider? by lazy { createWeaponBarTooltip() }
 
+    init {
+        // Hyperspace ProjectileFactory constructor (after super): CONSTRUCT_PROJECTILE_FACTORY.
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.weapons.HsWeaponsLua.constructFactory(this)
+    }
+
+
+    /** WeaponAnimation::mountPoint moved by a script: the weapon draws around the written point. */
+    /** Hyperspace Lua: WeaponAnimation::fireLocation moved by a script. */
+    @JvmField var hsFireShiftX = 0
+    @JvmField var hsFireShiftY = 0
+    @JvmField var hsMountShiftX = 0
+    @JvmField var hsMountShiftY = 0
+
+    /** ProjectileFactory::subCooldown: (0, 0) unless a script writes it. */
+    @JvmField var hsSubCooldownFirst = 0f
+    @JvmField var hsSubCooldownSecond = 0f
 
     open fun update(dt: Float, chargeTime: Float, canCharge: Boolean) {
+        // ProjectileFactory::SpendMissiles runs every loop: a script's iSpendMissile is spent like a shot's.
+        if (hsSpendMissile > 0 && xyz.znix.xftl.hs.HS.active) hsSpendMissiles()
         val speedMult = (1f + ship.getAugmentValue(AugmentBlueprint.AUTOMATED_RELOADERS))
 
         // ProjectileFactory::Update (0x40dc80): charging runs at
@@ -127,7 +226,10 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
         // [chargeTime]) drains one per second and an unpowered weapon six,
         // neither sped up by reloaders.
         if (isPowered) {
-            if (chargeTime < 0f)
+            // ProjectileFactory::subCooldown (HS CustomWeapons.cpp): while first is under second neither a charge nor a hack's drain runs.
+            if (hsSubCooldownFirst < hsSubCooldownSecond) {
+                // A script set it; only scripts move it.
+            } else if (chargeTime < 0f)
                 timeCharged += chargeTime
             else if (canCharge)
                 timeCharged += chargeTime * speedMult
@@ -144,6 +246,8 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
             timeCharged = this.chargeTime
         if (timeCharged < 0f)
             timeCharged = 0f
+        if (timeCharged < this.chargeTime)
+            hsFullByScript = false
 
         if (isCurrentCharged && extraCharges < maxExtraCharges) {
             timeCharged = 0f
@@ -176,16 +280,24 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
         }
         timeCharged = 0f
         extraCharges = 0
+        hsFiringAngle = null
+
+        if (xyz.znix.xftl.hs.HS.active) hsShotsFired++
 
         // Count up
         if (type.boost != null) {
-            chainCount = (chainCount + 1).coerceIn(0..type.boost.maxCount)
+            chainCount = (chainCount + 1).coerceIn(0..type.boost!!.maxCount)
         }
 
         // Deduct a missile (or multiple), if this weapon uses them
         // This really shouldn't be going negative here, but guard
         // it just in case.
-        if (!ship.sys.debugFlags.infiniteMissiles.set && type.missilesUsed > 0) {
+        if (xyz.znix.xftl.hs.HS.active) {
+            // ProjectileFactory::Update sets iSpendMissile; a queued launcher spends it after building its volley
+            // (WeaponSystem::OnLoop's SpendMissiles), so CONSTRUCT_PROJECTILE sees and may change it.
+            hsSpendMissile = if (type.missilesUsed > 0) type.missilesUsed else 0
+            if (this !is xyz.znix.xftl.weapons.HsProjectileQueue) hsSpendMissiles()
+        } else if (!ship.sys.debugFlags.infiniteMissiles.set && type.missilesUsed > 0) {
             // Explosive Replicator: each volley has a chance to consume
             // no ammo (vanilla: "50 percent chance of not using a missile",
             // rolled once per volley - multi-shot weapons pay once too).
@@ -200,8 +312,18 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
         }
     }
 
+    /**
+     * Hyperspace WeaponAnimation::fDelayChargeTime (+0x250): the part of the charge before the launcher starts to
+     * move. WeaponAnimation::SetChargedLevel (0x4608b0) shows frame (int)(max(0, (charge - delay) / (1 - delay)) *
+     * iChargedFrame) below a full charge. Natively 0 unless a script writes it.
+     */
+    @JvmField var hsDelayChargeTime: Float = 0f
+
     open fun render(g: Graphics) {
-        val launcher = animation.spriteAt(ship.sys, (animation.chargedFrame * chargeProgress).toInt())
+        val delay = hsDelayChargeTime
+        val level = if (delay == 0f) chargeProgress else ((chargeProgress - delay) / (1f - delay)).coerceAtLeast(0f)
+        val frame = if (chargeProgress < 1f) (animation.chargedFrame * level).toInt() else animation.chargedFrame
+        val launcher = animation.spriteAt(ship.sys, frame)
         launcher.draw(0f, 0f)
 
         renderChainChargeLights()
@@ -245,9 +367,18 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
 
     protected open fun createWeaponBarTooltip(): ITooltipProvider {
         val tr = ship.sys.translator
+        // Hyperspace WeaponBox::GenerateTooltip (RedesignedTooltips.cpp): <tooltipOverride> replaces the tooltip.
+        // With redesignedWeaponTooltips the stat list replaces it (HsTooltips.weaponBoxTooltip).
+        // The hotkey and rearrange lines stay below it after a blank line (oracle r2-beacon 07/07b; the stat list
+        // ends trimmed, also after MV's WEAPON_STATBOX additions), so they come after WeaponBox::GenerateTooltip.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsTooltips.weaponBoxTooltip(type, tr)?.let { text ->
+            return slotTooltip(text + "\n\n" + tr["hotkey"] + "\n" + tr["rearrange"])
+        }
         val sb = StringBuilder()
 
-        // Thus function is very heavily based off vanilla's WeaponBlueprint::GetDescription
+        // Thus function is very heavily based off vanilla's WeaponBlueprint::GetDescription, whose tooltip
+        // form ends every line, the type effects included, with " \n": the space widens a line's measure, so the
+        // tooltip box is as wide as the original's where such a line is the widest (English "Possible Effect: ...").
 
         // The "Type: Laser" line
         var typeKey = when (type) {
@@ -280,11 +411,11 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
             effectLines.add(GameText.localised("type_chain_effect"))
         }
 
-        val typeEffectsString = effectLines.joinToString { tr[it] + "\n" }
+        val typeEffectsString = effectLines.joinToString("") { tr[it] + LINE_END }
         sb.append(tr["type_desc"].replaceArg(tr[typeText]).replaceArg(typeEffectsString, 2) + "\n")
 
         if (type.boost?.type == AbstractWeaponBlueprint.BoostType.COOLDOWN) {
-            sb.append(tr["boost_power_speed"] + "\n")
+            sb.append(tr["boost_power_speed"] + LINE_END)
             // Max boost speed isn't shown in the tooltip
         }
         if (type.boost?.type == AbstractWeaponBlueprint.BoostType.DAMAGE) {
@@ -292,24 +423,24 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
             // How does vanilla FTL do this?
             // TODO deduplicate this calculation with the one in InfoPanel
             val baseDamage = max(type.damage, type.ionDamage)
-            val maxDamage = type.boost.maxCount * type.boost.perShot + baseDamage
-            sb.append(tr["boost_power_damage"] + "\n")
-            sb.append(tr["damage_cap"].replaceArg(maxDamage) + "\n")
+            val maxDamage = type.boost!!.maxCount * type.boost!!.perShot + baseDamage
+            sb.append(tr["boost_power_damage"] + LINE_END)
+            sb.append(tr["damage_cap"].replaceArg(maxDamage) + LINE_END)
         }
 
         if (type is LaserBlueprint || type is FlakBlueprint || (type is MissileBlueprint && type.shots != 1)) {
-            sb.append(tr["shots"].replaceArg(type.shots) + "\n")
+            sb.append(tr["shots"].replaceArg(type.shots) + LINE_END)
         }
 
         if (type.chargeLevels != null) {
-            sb.append(tr["charge"].replaceArg(type.chargeLevels) + "\n")
+            sb.append(tr["charge"].replaceArg(type.chargeLevels!!) + LINE_END)
         }
 
         val damageKey = if (type is BeamBlueprint) "damage_room" else "damage_shot"
-        sb.append(tr[damageKey].replaceArg(type.damage) + "\n")
+        sb.append(tr[damageKey].replaceArg(type.damage) + LINE_END)
 
         if (type.shieldPiercing != 0 && type.shieldPiercing != 5) {
-            sb.append(tr["shield_piercing"].replaceArg(type.shieldPiercing) + "\n")
+            sb.append(tr["shield_piercing"].replaceArg(type.shieldPiercing) + LINE_END)
         }
 
         val effects = ArrayList<GameText>()
@@ -323,38 +454,38 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
             effects.add(GameText.localised("chance_of_stun"))
         }
         if (effects.isNotEmpty()) {
-            // The separator XML tag includes a space (in the English locale),
-            // but we're stripping it out while loading the translations.
-            // It seems unlikely that it won't contain a space, so it's a bit
-            // ugly but we can just put it back in here.
-            val separator = tr["chance_of_separator"] + " "
+            // chance_of_separator as the text file has it: ", " in English, "、" in Japanese and Chinese.
+            val separator = tr["chance_of_separator"]
 
             val specialEffectsString = effects.joinToString(separator) { tr[it] }
-            sb.append(tr["chance_of"].replaceArg(specialEffectsString) + "\n")
+            sb.append(tr["chance_of"].replaceArg(specialEffectsString) + LINE_END)
         }
 
         if (type.ionDamage != 0) {
-            sb.append(tr["ion_damage"].replaceArg(type.ionDamage) + "\n")
+            sb.append(tr["ion_damage"].replaceArg(type.ionDamage) + LINE_END)
         }
         if (type.stun != 0) {
-            sb.append(tr["stun_damage"].replaceArg(type.stun) + "\n")
+            sb.append(tr["stun_damage"].replaceArg(type.stun) + LINE_END)
         }
         if (type.personnelDamage != 0) {
-            sb.append(tr["personnel_damage"].replaceArg(type.personnelDamage) + "\n")
+            sb.append(tr["personnel_damage"].replaceArg(type.personnelDamage) + LINE_END)
         }
         if (type.sysDamage != 0) {
-            sb.append(tr["system_damage"].replaceArg(type.sysDamage) + "\n")
+            sb.append(tr["system_damage"].replaceArg(type.sysDamage) + LINE_END)
         }
         if (type.hullBust != 0) {
-            sb.append(tr["double_damage"] + "\n")
+            sb.append(tr["double_damage"] + LINE_END)
         }
 
         sb.append("\n")
         sb.append(tr["hotkey"] + "\n")
         sb.append(tr["rearrange"])
 
-        // The slot key is filled in when shown, as the weapon can be dragged to another slot.
-        val text = sb.toString()
+        return slotTooltip(sb.toString())
+    }
+
+    /** The slot key is filled in when shown, as the weapon can be dragged to another slot. */
+    private fun slotTooltip(text: String): ITooltipProvider {
         return object : WeaponButtonTooltip(ship.sys, text) {
             override fun getText(): String {
                 val slot = ship.hardpoints.indexOfFirst { it.weapon === this@AbstractWeaponInstance }
@@ -376,6 +507,7 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
         SaveUtil.addTagInt(elem, "extraCharges", extraCharges, 0)
         SaveUtil.addTagInt(elem, "chainCount", chainCount, 0)
         browserEncounterVolleys?.let { elem.setAttribute("browserEncounterVolleys", it.toString()) }
+        if (xyz.znix.xftl.hs.HS.active && hsShotsFired != 0) elem.setAttribute("hsShotsFired", hsShotsFired.toString())
 
         val expectedSlide = if (isPowered) 1f else 0f
         SaveUtil.addTagFloat(elem, "slideAnimation", slide, expectedSlide)
@@ -389,6 +521,7 @@ abstract class AbstractWeaponInstance(val type: AbstractWeaponBlueprint, val shi
         extraCharges = SaveUtil.getOptionalTagInt(elem, "extraCharges") ?: 0
         chainCount = SaveUtil.getOptionalTagInt(elem, "chainCount") ?: 0
         browserEncounterVolleys = elem.getAttributeValue("browserEncounterVolleys")?.toIntOrNull()?.coerceAtLeast(0)
+        hsShotsFired = elem.getAttributeValue("hsShotsFired")?.toIntOrNull() ?: 0
 
         val expectedSlide = if (isPowered) 1f else 0f
         slide = SaveUtil.getOptionalTagFloat(elem, "slideAnimation") ?: expectedSlide

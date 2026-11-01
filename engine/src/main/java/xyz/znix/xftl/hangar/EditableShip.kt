@@ -17,6 +17,9 @@ import xyz.znix.xftl.systems.SystemBlueprint
 import xyz.znix.xftl.systems.Weapons
 import xyz.znix.xftl.weapons.AbstractWeaponBlueprint
 
+private val HS_UNINSTALLED_BORDER = xyz.znix.xftl.rendering.Colour(182, 79, 77)
+private val HS_UNINSTALLED_FLOOR = xyz.znix.xftl.rendering.Colour(161, 159, 154)
+
 /**
  * A ship that can be rendered in the hangar.
  *
@@ -31,6 +34,9 @@ class EditableShip(
     val baseBlueprint: String // ShipBlueprint name
 ) {
     val rooms = ArrayList<EditableRoom>()
+
+    /** Hyperspace preview only: the systems that do not start installed, kept to draw their grayed rooms. */
+    val uninstalled = HashMap<EditableRoom, EditableSystem>()
     val doors = ArrayList<EditableDoor>()
 
     val weapons = ArrayList<String>() // AbstractWeaponBlueprint names
@@ -79,10 +85,10 @@ class EditableShip(
 
     private fun drawWeapons(g: Graphics, state: SelectShipState, shipBlueprint: ShipBlueprint) {
         for ((index, weapon) in weapons.withIndex()) {
-            val weaponBp = state.blueprints[weapon] as AbstractWeaponBlueprint
-            val hp = shipBlueprint.hardpoints[index]
+            val weaponBp = state.blueprints.getOrNull(weapon) as? AbstractWeaponBlueprint ?: continue
+            val hp = shipBlueprint.hardpoints.getOrNull(index) ?: continue
 
-            val anim = state.animations.weaponAnimations.getValue(weaponBp.launcher)
+            val anim = state.animations.weaponAnimations[weaponBp.launcher] ?: continue
             val spriteSheet = state.getImg(anim.sheet.sheetPath)
             val launcher = anim.spriteAt(spriteSheet, anim.chargedFrame) ?: state.missingImage
 
@@ -101,6 +107,20 @@ class EditableShip(
     ) {
         val x = room.pixelX
         val y = room.pixelY
+
+        // Hyperspace oracle (HS 1.23.2 + MV 5.5.1 hangar): the room of a system that does not start installed is drawn as a
+        // flat gray floor with a red inner border and the system's icon (the ship preview only, not the editor).
+        val sys0 = uninstalled[room]
+        if (visible && drawSystems && sys0 != null && room.system == null && xyz.znix.xftl.hs.HS.active) {
+            // The room's walls stay (2 px around): the border and the floor lie inside them, the icon is light.
+            g.colour = HS_UNINSTALLED_BORDER
+            g.fillRect(x + 2f, y + 2f, room.pixelWidth - 4f, room.pixelHeight - 4f)
+            g.colour = HS_UNINSTALLED_FLOOR
+            g.fillRect(x + 4f, y + 4f, room.pixelWidth - 8f, room.pixelHeight - 8f)
+            val icon = state.getImgOrNull(sys0.getBP(state).roomIconPath)
+            icon?.draw(x + (room.pixelWidth - icon.width) / 2, y + (room.pixelHeight - icon.height) / 2, xyz.znix.xftl.rendering.Colour(0.85f, 0.85f, 0.85f, 1f))
+            return
+        }
 
         if (visible) {
             EditableRoom.drawFloor(g, x, y, room.w, room.h, airless)

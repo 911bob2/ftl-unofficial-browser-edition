@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+const skipPerformance=process.env.FTL_SKIP_PERFORMANCE==='1';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {chromium,firefox} from 'playwright';
@@ -15,9 +16,9 @@ while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)) {
  await new Promise(resolve=>setTimeout(resolve,250));
 }
 const initial=new Map((await readFile((process.env.DEBUG_FIXTURE_DIR??'.build/debug-data')+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
-const selected=(process.env.MENU_BROWSERS??'Chrome,Edge,Firefox').split(',');
-assert.ok(selected.length&&selected.every(name=>['Chrome','Edge','Firefox'].includes(name)),'Unknown menu browser');
-for(const [name,type,options,user] of [['Chrome',chromium,{channel:'chrome'},'user03'],['Edge',chromium,{channel:'msedge'},'user04'],['Firefox',firefox,{},'user07']].filter(([name])=>selected.includes(name))) {
+const selected=(process.env.MENU_BROWSERS??'Chromium,Firefox').split(',');
+assert.ok(selected.length&&selected.every(name=>['Chromium','Firefox'].includes(name)),'Unknown menu browser');
+for(const [name,type,options,user] of [['Chromium',chromium,{channel:'chromium'},'user03'],['Firefox',firefox,{},'user07']].filter(([name])=>selected.includes(name))) {
  const browser=withOnboarding(await type.launch({headless:!(name==='Firefox'&&process.env.RUNNER_FIREFOX_WINDOWED==='1'),...options}),origin),page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
  page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));
  const pass=label=>{checks.push({browser:name,label});console.log('PASS '+name+': '+label);};
@@ -31,8 +32,7 @@ for(const [name,type,options,user] of [['Chrome',chromium,{channel:'chrome'},'us
    csrf=(await (await fetch('/api/auth/csrf')).json()).token;
    if((await (await fetch('/api/auth/me')).json()).mustChangePassword){r=await post('password',{currentPassword:initial,newPassword:password});if(!r.ok)throw Error('Fixture rotation');csrf=(await (await fetch('/api/auth/csrf')).json()).token;await post('login',{username,password});}
   },{username:user,initial:initial.get(user)});
-  await page.goto(origin);await page.locator('#launch').click();await page.waitForFunction(()=>!!window.ftlEngine||!document.getElementById('takeover').hidden,{},{timeout:90000});
-  if(!await page.evaluate(()=>!!window.ftlEngine))await page.locator('#takeover').click();await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});
+  await page.goto(origin);await page.locator('#launch').click();await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});
   const snapshot=()=>page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()));
   const state=label=>page.waitForFunction(s=>JSON.parse(window.ftlEngine.debugSnapshot()).state===s,label);
   const windowIs=label=>page.waitForFunction(s=>JSON.parse(window.ftlEngine.debugSnapshot()).window===s,label);
@@ -65,8 +65,8 @@ for(const [name,type,options,user] of [['Chrome',chromium,{channel:'chrome'},'us
   await click(1180,527);await state('SettingsMenuState');await windowIs('OptionsWindow');
   await colorblindNoticeUiCheck(page,{snapshot,windowIs,click,pass,name,context:'title'});
   await click(712,370);await windowIs('HotkeysWindow');await click(1140,635);await windowIs('OptionsWindow');
-  const popups=()=>page.evaluate(()=>/achPopups="true"/.test(window.ftlEngine.diagnosticProfile()));
-  const waitPopups=expected=>page.waitForFunction(value=>/achPopups="true"/.test(window.ftlEngine.diagnosticProfile())===value,expected);
+  const popups=()=>page.evaluate(()=>/achPopups="true"/.test(window.ftlEngine.diagnosticSettings()));
+  const waitPopups=expected=>page.waitForFunction(value=>/achPopups="true"/.test(window.ftlEngine.diagnosticSettings())===value,expected);
   const popupsBefore=await popups();await click(702,302);await waitPopups(!popupsBefore);
   await click(600,491);await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).soundVolume<.9);
   const volume=(await snapshot()).soundVolume;assert.ok(volume>=0&&volume<.9);await click(967,457);await state('MainMenuState');
@@ -147,38 +147,38 @@ for(const [name,type,options,user] of [['Chrome',chromium,{channel:'chrome'},'us
   await frameLimitTo(videoRect,30);
   await page.locator('#game').press('ArrowRight');await fps(60);
   await page.locator('#game').press('ArrowLeft');await fps(30);
+  let capped,unlimited;
+  if(!skipPerformance){
   const beforeTick=(await snapshot()).tick;
-  const capped=await page.evaluate(()=>window.ftlEngine.benchmark(1000));
+  capped=await page.evaluate(()=>window.ftlEngine.benchmark(1000));
   const simulationTicks=(await snapshot()).tick-beforeTick;
   assert.ok(capped.fps>=25&&capped.fps<=34,JSON.stringify(capped));
   assert.ok(simulationTicks>capped.frames*3,'Render cap throttled simulation updates');
+  }
   for(const value of [60,90,120,240,360,0]){await cycleFrameLimit(videoRect);await fps(value);}
-  const unlimited=await page.evaluate(async()=>{
+  if(!skipPerformance){
+  unlimited=await page.evaluate(async()=>{
    let browserFrames=0,id;const count=()=>{browserFrames++;id=requestAnimationFrame(count);};id=requestAnimationFrame(count);
    try{return {...await window.ftlEngine.benchmark(1000,0),browserFrames};}finally{cancelAnimationFrame(id);}
   });
   // Display refresh and competing work bound actual FPS. Unlimited must draw
   // each available animation frame, rather than promise a hardware throughput.
   assert.ok(Math.abs(unlimited.frames-unlimited.browserFrames)<=2,JSON.stringify({capped,unlimited}));
+  }else console.log('SKIP '+name+': measured FPS and simulation throughput (FTL_SKIP_PERFORMANCE=1)');
   await cycleFrameLimit(videoRect);await fps(30);
   await page.locator('#game').press('ArrowLeft');await fps(0);await page.locator('#game').press('ArrowLeft');await fps(360);
   await page.screenshot({path:'.build/options-'+name.toLowerCase()+'.png'});
-  const sync=page.waitForResponse(r=>r.url().endsWith('/api/saves/current')&&r.request().method()==='PUT');
-  await page.locator('#save').click();assert.ok((await sync).ok());
+  // Save: into this browser at once, then to the account; the next launch (after a reload) has the setting.
+  await page.locator('#save').click();await page.waitForFunction(()=>/^Saved · synced/.test(document.getElementById('save-status').textContent));
   await page.reload();await page.locator('#launch').click();
-  await page.waitForFunction(()=>!!window.ftlEngine||!document.getElementById('takeover').hidden,{},{timeout:90000});
-  if(!await page.evaluate(()=>!!window.ftlEngine))await page.locator('#takeover').click();
   await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});await fps(360);
   await click(1180,527);await state('SettingsMenuState');
   const restoredRect=(await snapshot()).windowRect;
   await cycleFrameLimit(restoredRect);await fps(0);
-  const syncUnlimited=page.waitForResponse(r=>r.url().endsWith('/api/saves/current')&&r.request().method()==='PUT');
-  await page.locator('#save').click();assert.ok((await syncUnlimited).ok());
+  await page.locator('#save').click();await page.waitForFunction(()=>/^Saved · synced/.test(document.getElementById('save-status').textContent));
   await page.reload();await page.locator('#launch').click();
-  await page.waitForFunction(()=>!!window.ftlEngine||!document.getElementById('takeover').hidden,{},{timeout:90000});
-  if(!await page.evaluate(()=>!!window.ftlEngine))await page.locator('#takeover').click();
   await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});await fps(0);
-  pass(`Frame Limit cycles 30/60/90/120/240/360/Unlimited by click and arrows, with cloud/reload persistence and independent simulation (${capped.fps.toFixed(1)} / ${unlimited.fps.toFixed(1)} FPS)`);
+  pass(`Frame Limit cycles 30/60/90/120/240/360/Unlimited by click and arrows, with cloud/reload persistence${skipPerformance?'; performance deferred':` and independent simulation (${capped.fps.toFixed(1)} / ${unlimited.fps.toFixed(1)} FPS)`}`);
   const progressBefore=await page.evaluate(()=>window.ftlEngine.diagnosticProfile());
   await click(1180,585);await state('CreditsState');
   const credits=await snapshot();assert.ok(credits.backers>1000&&credits.creditLines>credits.backers);assert.ok(credits.scroll<=-70);
@@ -208,11 +208,15 @@ for(const [name,type,options,user] of [['Chrome',chromium,{channel:'chrome'},'us
   await back(page);await windowIs('PauseWindow');
   // Pause menu's visible Controls button: menu geometry is reported by the engine.
   const rect=await page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()).windowRect);
-  assert.ok(rect,'Missing menu geometry');await click(rect.x+70,rect.y+220);await windowIs('HotkeysWindow');
-  await back(page);await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).window!=='HotkeysWindow');
-  assert.equal(await page.evaluate(()=>document.fullscreenElement?.id),'game-container');pass('Pause Controls and semantic Back preserve fullscreen');
-  // Controls returns to Options through the shared settings flow.
-  await windowIs('OptionsWindow');
+  // CONTROLS shows the controls help in place of the menu (native 1.6.14 vy-controls / vz-help); a click keeps it, a key
+  // or Back closes it back to the menu.
+  assert.ok(rect,'Missing menu geometry');await click(rect.x+70,rect.y+220);await windowIs('ControlsHelp');
+  await click(640,360);await windowIs('ControlsHelp');
+  await back(page);await windowIs('PauseWindow');
+  await click(rect.x+70,rect.y+220);await windowIs('ControlsHelp');await page.locator('#game').press('Space');await windowIs('PauseWindow');
+  assert.equal(await page.evaluate(()=>document.fullscreenElement?.id),'game-container');pass('Pause Controls help, its key/Back close and fullscreen');
+  // Options from the pause menu (the hotkey setup stays under Options, as natively).
+  await click(rect.x+70,rect.y+183);await windowIs('OptionsWindow');
   await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).windowRect?.x>0);
   const runVideo=(await snapshot()).windowRect;
   const aimingBefore=(await snapshot()).autofire;

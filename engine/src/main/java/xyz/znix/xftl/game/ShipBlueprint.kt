@@ -9,39 +9,51 @@ import xyz.znix.xftl.math.IPoint
 import xyz.znix.xftl.math.Rectangle
 import java.util.*
 
-class ShipBlueprint(private val elem: Element, df: Datafile) : Blueprint(elem) {
-    val layout: String = elem.getAttributeValue("layout")
-    val img: String = elem.getAttributeValue("img")
+class ShipBlueprint @JvmOverloads constructor(
+    private val elem: Element, private val df: Datafile,
+    /** Hyperspace: the player's ship built from any blueprint (console SWITCH; the original decides by iShipId 0). */
+    private val hsForcePlayer: Boolean = false
+) : Blueprint(elem) {
+    /** The blueprint's XML (Hyperspace Lua ShipBlueprint members read the raw tags). */
+    val sourceElement: Element get() = elem
+
+    var layout: String = elem.getAttributeValue("layout")
+        private set
+    var img: String = elem.getAttributeValue("img")
+        private set
 
     // TODO do this properly, to avoid potentially breaking mods
     val isFlagship: Boolean = name.startsWith("BOSS_")
 
-    val isPlayerShip: Boolean = name.startsWith("PLAYER_SHIP_")
+    // Hyperspace: every hangar layout is a player ship (the original decides by iShipId 0; the engine by blueprint),
+    // so MV's ELITE_SHIP_* layouts get the player's start power, shields and weapon list rules.
+    val isPlayerShip: Boolean = hsForcePlayer || name.startsWith("PLAYER_SHIP_") ||
+        (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsHangar.variantOf(name) != null)
 
     /**
      * The localisation key of this type of ship, shown on the right-hand
      * side of the target panel for enemies.
      */
-    val shipClass: GameText? = elem.getGameTextChild("class")
+    var shipClass: GameText? = elem.getGameTextChild("class")
 
     /**
      * The localisation key of the ship, defining the in-hangar title
      * for player ships (eg 'The Kestrel').
      */
-    val shipTitle: GameText? = elem.getGameTextChild("name")
+    var shipTitle: GameText? = elem.getGameTextChild("name")
 
-    val unlockHint: GameText? = elem.getGameTextChild("unlock")
+    var unlockHint: GameText? = elem.getGameTextChild("unlock")
 
-    val weaponSlots: Int? = elem.getChildTextTrim("weaponSlots")?.toInt()
-    val droneSlots: Int? = elem.getChildTextTrim("droneSlots")?.toInt()
+    var weaponSlots: Int? = elem.getChildTextTrim("weaponSlots")?.toInt()
+    var droneSlots: Int? = elem.getChildTextTrim("droneSlots")?.toInt()
 
     val isAutoScout = elem.getChild("crewCount")?.getAttributeValue("amount")?.trim() == "0"
 
-    val maxHealth = elem.getChild("health").getAttributeValue("amount").toInt()
+    var maxHealth = elem.getChild("health").getAttributeValue("amount").toInt()
 
-    val startingReactorPower: Int = elem.getChild("maxPower").getAttributeValue("amount").toInt()
+    var startingReactorPower: Int = elem.getChild("maxPower").getAttributeValue("amount").toInt()
 
-    val boardingStrategy: FriendlyCrewAI.BoardingStrategy =
+    var boardingStrategy: FriendlyCrewAI.BoardingStrategy =
         when (val name = elem.getChildTextTrim("boardingAI")) {
             "invasion" -> FriendlyCrewAI.BoardingStrategy.INVASION
             "sabotage" -> FriendlyCrewAI.BoardingStrategy.SABOTAGE
@@ -52,41 +64,68 @@ class ShipBlueprint(private val elem: Element, df: Datafile) : Blueprint(elem) {
     // These are the paths to the relevant images, to keep this class lightweight.
     // For hullImage, there's multiple possible image paths - try them
     // and use the first one that exists.
-    val hullImage: List<String>
-    val floorImage: String?
-    val cloakImage: String?
+    var hullImage: List<String>
+        private set
+    var floorImage: String?
+        private set
+    var cloakImage: String?
+        private set
 
-    val shieldImage: String
+    var shieldImage: String
+        private set
 
     // Note that hullOffset doesn't match up with Ship.hullOffset, since it's one
     // has the room offset (times ROOM_SIZE) added to it.
-    val hullOffset: ConstPoint
-    val floorOffset: ConstPoint
-    val cloakOffset: ConstPoint
+    var hullOffset: ConstPoint
+        private set
+    var floorOffset: ConstPoint
+        private set
+    var cloakOffset: ConstPoint
+        private set
 
-    val gibs: List<ShipGib>
-    val hardpoints: List<ParsedHardpoint>
-    val systems: List<ParsedSystem>
+    var gibs: List<ShipGib>
+        private set
+    var hardpoints: List<ParsedHardpoint>
+        private set
 
-    val initialWeapons: List<String>
-    val initialDrones: List<String>
-    val initialAugments: List<String>
+    /** The mount of an artillery past the end of the layout's mounts: empty, at the layout's origin. */
+    var emptyHardpoint: ParsedHardpoint
+        private set
+    var systems: List<ParsedSystem>
+        internal set
+
+    var initialWeapons: List<String>
+    var initialDrones: List<String>
+    var initialAugments: List<String>
 
     /** ShipInfo::augList is a std::map, so the hangar lists augments by id. */
-    val hangarAugments: List<String>
+    var hangarAugments: List<String>
 
     /**
      * A list of crew specifications, which can each spawn
      * a variable number of crew.
      */
-    val initialCrew: List<InitialCrewSpec>
+    var initialCrew: List<InitialCrewSpec>
 
-    val initialMissiles: Int
-    val initialDroneParts: Int
+    var initialMissiles: Int
+    var initialDroneParts: Int
+
+    /** `<droneList count>` (ShipBlueprint +0x724 in OnInit's drone loop); null when absent. */
+    /** ShipBlueprint::originalCrewCount written by a script: the crew a ship built later starts with. */
+    var hsCrewCount: Int? = null
+    /** ShipBlueprint::maxCrew written by a script. */
+    var hsMaxCrew: Int? = null
+
+    /** `<weaponList count>`: a script-written count; null keeps the list as the constructor took it. */
+    var weaponListCount: Int? = null
+
+    var droneListCount: Int? = elem.getChild("droneList")?.getAttributeValue("count")?.toIntOrNull()
 
     // Layout-related stuff
-    val rooms: List<ParsedRoom> = ArrayList()
-    val doors: List<ParsedDoor> = ArrayList()
+    var rooms: List<ParsedRoom> = ArrayList()
+        private set
+    var doors: List<ParsedDoor> = ArrayList()
+        private set
     lateinit var shieldEllipse: Rectangle
         private set
     lateinit var roomOffset: ConstPoint
@@ -99,9 +138,25 @@ class ShipBlueprint(private val elem: Element, df: Datafile) : Blueprint(elem) {
     var layoutShift: ConstPoint = ConstPoint.ZERO
         private set
 
+    /**
+     * Hyperspace's Ship::OnInit hook (CustomShips.cpp): every `<thruster>` of the layout's `<thrusters>` nodes is
+     * started with Animation::RandomStart (one draw each) unless `sync` is true (Start, no draw). Used only under HS.
+     */
+    var hsThrusterDraws: Int = 0
+        private set
+
     init {
         val layoutName = elem.getAttributeValue("layout")
         val layoutElem = df.parseXML(df["data/$layoutName.xml"]).rootElement
+        run {
+            var sync = false
+            var count = 0
+            for (node in layoutElem.getChildren("thrusters")) {
+                node.getAttributeValue("sync")?.let { sync = it.trim().equals("true", ignoreCase = true) }
+                count += node.getChildren("thruster").size
+            }
+            hsThrusterDraws = if (sync) 0 else count
+        }
 
         hullImage = listOf(
             "img/ship/${img}_base.png",
@@ -135,6 +190,7 @@ class ShipBlueprint(private val elem: Element, df: Datafile) : Blueprint(elem) {
         gibs = layoutElem.getChild("explosion").children.map { ShipGib(this, it) }
 
         // Load the hardpoints
+        emptyHardpoint = ParsedHardpoint(hullOffset + roomOffset * Constants.ROOM_SIZE, false, false, -1, null)
         hardpoints = ArrayList()
 
         for (node in layoutElem.getChild("weaponMounts").children) {
@@ -200,7 +256,7 @@ class ShipBlueprint(private val elem: Element, df: Datafile) : Blueprint(elem) {
         // Load any augments
         initialAugments = elem.getChildren("aug").map { it.getAttributeValue("name") }
         hangarAugments = initialAugments.sorted()
-        require(initialAugments.size <= Ship.MAX_AUGMENTS) { "Ship $name has too many augments: $initialAugments" }
+        require(xyz.znix.xftl.hs.HS.active || initialAugments.size <= Ship.MAX_AUGMENTS) { "Ship $name has too many augments: $initialAugments" }
 
         // Load the initial crew
         initialCrew = elem.getChildren("crewCount").map {
@@ -211,10 +267,36 @@ class ShipBlueprint(private val elem: Element, df: Datafile) : Blueprint(elem) {
         }
     }
 
+    /**
+     * Hyperspace: a script wrote the blueprint's file names. A ship built later loads them, so the parsed layout and image paths
+     * are rebuilt from the names; everything else a script may have written to this blueprint stays.
+     */
+    fun hsSetFiles(layout: String? = null, img: String? = null, cloak: String? = null, shield: String? = null, floor: String? = null) {
+        val e = elem.clone()
+        fun child(tag: String, v: String) { (e.getChild(tag) ?: Element(tag).also { e.addContent(it) }).setText(v) }
+        layout?.let { hsFileLayout = it }; img?.let { hsFileImg = it }; cloak?.let { hsFileCloak = it }; shield?.let { hsFileShield = it }; floor?.let { hsFileFloor = it }
+        hsFileLayout?.let { e.setAttribute("layout", it) }
+        hsFileImg?.let { e.setAttribute("img", it) }
+        hsFileCloak?.let { child("cloakImage", it) }
+        hsFileShield?.let { child("shieldImage", it) }
+        hsFileFloor?.let { child("floorImage", it) }
+        val o = ShipBlueprint(e, df, hsForcePlayer)
+        this.layout = o.layout; this.img = o.img
+        hullImage = o.hullImage; floorImage = o.floorImage; cloakImage = o.cloakImage; shieldImage = o.shieldImage
+        hullOffset = o.hullOffset; floorOffset = o.floorOffset; cloakOffset = o.cloakOffset
+        gibs = o.gibs; hardpoints = o.hardpoints; emptyHardpoint = o.emptyHardpoint; systems = o.systems; rooms = o.rooms; doors = o.doors
+        shieldEllipse = o.shieldEllipse; roomOffset = o.roomOffset; layoutShift = o.layoutShift; hsThrusterDraws = o.hsThrusterDraws
+    }
+    private var hsFileLayout: String? = null
+    private var hsFileImg: String? = null
+    private var hsFileCloak: String? = null
+    private var hsFileShield: String? = null
+    private var hsFileFloor: String? = null
+
     private fun parseLayoutTxt(layout: String) {
         // Use this trick so we can mutate the arrays here, but nowhere else (without a cast).
-        require(rooms is ArrayList)
-        require(doors is ArrayList)
+        val rooms = this.rooms as ArrayList
+        val doors = this.doors as ArrayList
 
         val l = layout.replace("\r\n", "\n").split('\n')
         var i = 0
@@ -312,13 +394,13 @@ class ShipBlueprint(private val elem: Element, df: Datafile) : Blueprint(elem) {
         // The system name comes from the name of the element declaring it
         override val systemName: String = elem.name
 
-        override val startingPower = powerElem.getAttributeValue("power").toInt()
+        override var startingPower = powerElem.getAttributeValue("power").toInt()
 
         // Note that if not specified, the system is included by default. This
         // is commonly found with enemy ships.
         override val availableByDefault = elem.getAttributeValue("start")?.toBoolean() != false
 
-        override val aiMaxPower: Int? = powerElem.getAttributeValue("max")?.toInt()
+        override var aiMaxPower: Int? = powerElem.getAttributeValue("max")?.toInt()
 
         override val interiorImage: String?
 

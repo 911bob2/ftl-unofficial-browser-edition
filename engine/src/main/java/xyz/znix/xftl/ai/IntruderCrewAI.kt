@@ -26,7 +26,7 @@ class IntruderCrewAI(private val ship: Ship) {
             if (crew.mode != AbstractCrew.SlotType.INTRUDER)
                 continue
 
-            if (crew.playerControllable)
+            if (crew.skippedByCrewAI)
                 continue
 
             aiCrew += crew
@@ -59,7 +59,7 @@ class IntruderCrewAI(private val ship: Ship) {
             var failedAt = -1
             while (next < aiCrew.size) {
                 val crew = aiCrew[next]
-                if (currentTarget(crew) != target && !crew.setTargetRoom(target)) {
+                if (currentTarget(crew) != target && !xyz.znix.xftl.hs.crew.HsCustomTeleport.aiMove(crew, target)) {
                     failedAt = next
                     break
                 }

@@ -91,6 +91,8 @@ interface Input {
         const val KEY_SEMICOLON: Int = GLFW.GLFW_KEY_SEMICOLON
         const val KEY_APOSTROPHE: Int = GLFW.GLFW_KEY_APOSTROPHE
         const val KEY_COMMA: Int = GLFW.GLFW_KEY_COMMA
+        const val KEY_MINUS: Int = GLFW.GLFW_KEY_MINUS
+        const val KEY_EQUALS: Int = GLFW.GLFW_KEY_EQUAL
         const val KEY_FULL_STOP: Int = GLFW.GLFW_KEY_PERIOD
         const val KEY_STROKE: Int = GLFW.GLFW_KEY_SLASH
 

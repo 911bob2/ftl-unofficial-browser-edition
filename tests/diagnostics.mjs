@@ -56,8 +56,6 @@ await page.goto(origin);await page.locator('#login-form [name=username]').fill('
 await page.locator('#logs-button').click();await page.locator('#debug-enabled').check();await page.waitForFunction(()=>document.getElementById('debug-status').textContent.includes('Recording'));
 console.log('UI launch');
 await page.locator('#play-button').click();await page.locator('#launch').click();
-await page.waitForFunction(()=>!!window.ftlEngine||!document.getElementById('takeover').hidden,{},{timeout:90000});
-if(!await page.evaluate(()=>!!window.ftlEngine))await page.locator('#takeover').click();
 await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});
 await page.evaluate(()=>window.ftlEngine.newRun('PLAYER_SHIP_HARD',1));await page.locator('#console').click();await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).console===true);
 console.log('UI console typing');

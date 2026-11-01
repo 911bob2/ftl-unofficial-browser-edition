@@ -39,7 +39,7 @@ internal object GameplayParityAi2Checks {
         try {
             val targeting = targeting(main, container)
             val idle = idle(main, container)
-            val stalemate = flagshipLeaves(main, container)
+            val stalemate = BrowserGameplayParityDiagnostics.vanillaOnly("stalemate") { flagshipLeaves(main, container) }
             val doors = doorControl(main, container)
             val save = badFighterSave(main, container)
             val helpers = aimHackAndMind(main, container)
@@ -47,12 +47,38 @@ internal object GameplayParityAi2Checks {
             val gate = hostileGate(main, container)
             val latch = sabotageLatch(main, container)
             val breachOrder = breachOrderSave(main, container)
+            val boarding = boardersFromStations(main, container)
             return "ai2 ok: $targeting, $idle, $stalemate, $doors, $save, $helpers, $problems, $gate, $latch, " +
-                    breachOrder
+                    "$breachOrder, $boarding"
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
         }
+    }
+
+    /**
+     * The first frame of a fight: CrewAI::OnLoop runs before ShipAI::OnLoop asks for boarders, so nobody is sent yet and
+     * crew take on their room's system (CrewAI::UpdateCrewMember). The next frame the boarders come from whoever has
+     * the least important station (oracle hw-bro, hw-vb).
+     */
+    private fun boardersFromStations(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        for (seed in 100..400) {
+            val enemy = spawn(state, seed)
+            val pad = enemy.teleporter ?: continue
+            if (enemy.crew.size < 2 || enemy.crew.any { it.room === pad.room }) continue
+            if (enemy.boardingStrategy == xyz.znix.xftl.ai.FriendlyCrewAI.BoardingStrategy.NONE) continue
+            enemy.crewAI.update()
+            check(enemy.crewAI.lastTasks.none { it is xyz.znix.xftl.ai.TeleportingTask }) { "Boarders were wanted on the first frame" }
+            for (crew in enemy.crew) {
+                if (crew.room.system == null || crew.room.crew.first() !== crew) continue
+                check(crew.pathingTarget == null || crew.pathingTarget?.room === crew.room) { "A crewmember left ${crew.room.system?.codename} on the first frame" }
+            }
+            enemy.crewAI.update()
+            check(enemy.crewAI.lastTasks.any { it is xyz.znix.xftl.ai.TeleportingTask }) { "No boarders wanted on the second frame" }
+            return "boarders from stations"
+        }
+        error("No enemy with a teleporter in the fixture seeds")
     }
 
     private fun spawn(state: InGameState, seed: Int): Ship {

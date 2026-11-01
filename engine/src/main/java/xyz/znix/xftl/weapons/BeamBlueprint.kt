@@ -19,125 +19,123 @@ import kotlin.random.Random
 import kotlin.random.nextInt
 
 class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
-    val length: Int = xml.getChildTextTrim("length").toInt()
-
-    /**
-     * Makes ion beams hit shield like zoltan shield. This is a Hyperspace tag.
-     *
-     * Without it, the ion damage is applied every frame.
-     */
-    val ionBeamFix: Boolean = xml.getChildTextTrim("ionBeamFix")?.toBoolean() ?: false
+    val length: Int = xml.nativeInt("length") ?: 0
 
     // See the note on SPEED_MULTIPLIER.
     val speedPixelsPerSecond = (speed ?: DEFAULT_SPEED) * SPEED_MULTIPLIER
 
     val fireDuration: Float = 1f * length / speedPixelsPerSecond
 
-    val beamColour: Colour? = xml.getChild("color")?.let {
-        Colour(
-            it.getChildTextTrim("r").toInt(),
-            it.getChildTextTrim("g").toInt(),
-            it.getChildTextTrim("b").toInt()
-        )
-    }
-
-    private val transparentColour = Colour(beamColour ?: DEFAULT_COLOUR).also {
-        it.a = 220f / 255f // This is largely guessed
-    }
-
     override fun buildInstance(ship: Ship): AbstractWeaponInstance {
         return BeamInstance(ship)
     }
 
-    inner class BeamInstance(ship: Ship) : AbstractWeaponInstance(this, ship) {
+    /**
+     * The weapon: native ProjectileFactory plus its WeaponAnimation for a beam. Firing builds the real
+     * [BeamProjectile] (ProjectileFactory::Update: constructed, Initialize, SetWeaponAnimation, queued), and the
+     * pre-fire frames (charged -> fire frame, 2 s / frame count each) release it into the world
+     * (GetProjectile). The beam then moves, collides, damages and draws itself, and drives the launcher's frame
+     * through WeaponAnimation::SetFireLevel; once it is gone the animation runs its remaining frames and the
+     * weapon stops firing. Drone beams are released at once, without a weapon animation.
+     */
+    inner class BeamInstance(ship: Ship) : AbstractWeaponInstance(this, ship), BeamProjectile.WeaponAnimationLink {
         override val isFiring: Boolean get() = target != null && isPowered
-        private val firingTime: Float get() = max(0f, attackTimer - preFireDuration)
 
-        /**
-         * True if the beam is currently swiping across the enemy ship.
-         *
-         * This is distinct from [isFiring] because that's true during
-         * the animation that runs before the beam switches on.
-         */
-        val isBeamOn: Boolean get() = isFiring && attackTimer >= preFireDuration
+        /** True while the released beam is in the world. */
+        val isBeamOn: Boolean get() = isFiring && liveBody() != null
+
+        // The pre-fire time, then (once the beam is gone) the time into the remaining fire frames.
         private var attackTimer: Float = 0f
         private var browserVolleyCounted = false
-        private var browserCrewKills: Int? = 0
-
         private var target: SelectedTarget.BeamAim? = null
-        private val originPos = Point(0, 0)
 
-        // This is effectively a RoomPoint, but split up to make serialisation easier.
-        private var lastPos = Point(INVALID_CELL_POS)
-        private var lastRoomId: Int? = null
-
-        private val contact: FTLAnimation
+        /** The queued (not yet released) or released beam. */
+        private var body: BeamProjectile? = null
+        private var released = false
+        /** ProjectileFactory::lastProjectileId of a released beam whose object is resolved after a load. */
+        private var pendingLaunchId: Int? = null
+        /** The progress of a swipe saved before the beam body existed, rebuilt once the save has loaded. */
+        private var legacyResume: Float? = null
+        /** The launcher frame last set by the beam (SetFireLevel), -1 before. */
+        private var fireFrameIndex = -1
+        private var tailFrom = -1
 
         // The duration and number of frames in the pre-firing animation
         private val preFireFrames: Int
         private val preFireDuration: Float
+        private val frameDuration: Float
 
-        // Copy this in as a mutable variable so it can be changed for drones.
-        private var fireDuration: Float = this@BeamBlueprint.fireDuration
-
-        // True if this beam is ready to pierce Zoltan shields. This has
-        // to be kept, so a beam can instantly pierce a shield deployed
-        // by a shield over-charger drone.
-        private var superShieldReady: Boolean = false
-
-        // This is the chain count at the moment the weapon started firing.
-        // This is used for damage-chaining beams, which mods add.
+        // This is the chain count at the moment the weapon started firing (damage-chaining beams, which mods add).
         private var firingChainCount: Int = 0
-
-        // This is used to show the damage number against super shields.
-        // It's a bit horrible, but figuring out where the beam is coming
-        // from when we deal super shield damage would be even worse.
-        private var shieldHitPos: IPoint? = null
 
         var isOnDrone: Boolean = false
 
-        init {
-            // Turns out this is a one-frame animation, leave it looping in case
-            // a mod replaces it or something.
-            contact = ship.sys.animations[projectile!!].startLooping(ship.sys)
+        /**
+         * A beam fired by [fireFromDrone]: SpaceDrone::GetNextProjectile (0x429ee0) sets the drone's additionalPause
+         * to 0.5 s and moves its own beamCurrentTarget towards beamFinalTarget at the shot's speed_magnitude
+         * (CombatDrone loop 0x4285b0), independently of the BeamWeapon, which has no link back to the drone. The
+         * drone holds for exactly that pause; the beam lives on its own (a beam aimed at its owner's ship never
+         * passes BeamWeapon::CollisionCheck's ownerId guard, so it never moves or dies).
+         */
+        private var droneFired = false
+        private var droneHold = 0f
+        private val droneBeamCurrent = MutFPoint(0f, 0f)
+        private val droneBeamFinal = MutFPoint(0f, 0f)
+        private var droneBeamSpeed = 0f
 
+        init {
             // Beams set a per-frame time of 2/frameCount for frames between
             // the charged and fire frames.
-            val frameDuration = 2f / animation.length
+            frameDuration = 2f / animation.length
             preFireFrames = animation.fireFrame - animation.chargedFrame
             preFireDuration = preFireFrames * frameDuration
         }
 
+        /** WeaponAnimation::SetFireLevel: frame = fireFrame + (int)((frames - 1 - fireFrame) * level). */
+        override fun setFireLevel(level: Float) {
+            fireFrameIndex = ((animation.length - 1 - animation.fireFrame).toFloat() * level + animation.fireFrame).toInt()
+        }
+
+        override val weaponPowered: Boolean get() = isPowered
+
+        /** ProjectileFactory::lastProjectileId: the launch id of the beam this weapon fired last, -1 before. */
+        val lastProjectileId: Int get() = body?.launchId ?: pendingLaunchId ?: -1
+
+        /** The beam this weapon has in the world (released and alive), if any. */
+        val liveBeam: BeamProjectile? get() = liveBody()
+
+        private fun liveBody(): BeamProjectile? {
+            reconnect()
+            val b = body ?: return null
+            if (!released || b.motion.dead(b.hsDead)) return null
+            val game = ship.sys
+            return b.takeIf { it in game.player.projectiles || it in (game.enemy?.projectiles ?: emptyList()) }
+        }
+
+        /** ProjectileFactory::ReconnectProjectile: relink the saved beam with lastProjectileId. */
+        private fun reconnect() {
+            legacyResume?.let { progress ->
+                legacyResume = null
+                resumeLegacy(progress)
+            }
+            val id = pendingLaunchId ?: return
+            val found = BeamProjectile.find(ship.sys, id) ?: return
+            pendingLaunchId = null
+            body = found
+            released = true
+            if (!isOnDrone) found.weaponAnimation = this
+        }
+
         override fun render(g: Graphics) {
-            if (isBeamOn) {
-                // Draw the beam line
-                // Note that since we're in image space, forwards is up so forwards
-                // is negative Y. Use some 'long enough' arbitrary length.
-                // Note we have to do this first, as we shift the beam inwards a little
-                // to fix the flagship beam.
-                val offset = animation.firePoint
-                val damage = computeDamage().hullDamage
-                val visibleStrength = max(1, damage)
-                drawBeam(
-                    g, ship.sys, visibleStrength,
-                    offset + ConstPoint(0, 10),
-                    offset + ConstPoint(0, -5000),
-                    1.5f // Close enough to pi/2 since we won't see it
-                )
-
-                // Manually compute the frames rather than using an animation, since
-                // we're controlling the laser progress on the same timer.
-                val progress = firingTime / fireDuration
-                val firingFrames = animation.length - animation.fireFrame
-                val frameNum = animation.fireFrame + (firingFrames * progress).toInt()
-
-                // Use coerceIn to ensure we don't access an invalid frame if the progress
-                // is somehow exactly fireDuration.
-                animation.spriteAt(ship.sys, frameNum.coerceIn(0 until animation.length)).draw()
+            if (released) {
+                // The beam draws itself; the launcher shows the frame it set, then the remaining fire frames.
+                val frame = if (tailFrom < 0) fireFrameIndex.coerceAtLeast(animation.fireFrame)
+                    else tailFrom + (attackTimer / frameDuration).toInt()
+                animation.spriteAt(ship.sys, frame.coerceIn(0 until animation.length)).draw()
             } else if (isFiring) {
                 // Render the pre-beam-on animation
                 // This is used by mods, for example Multiverse's LANCE_1 beam.
-                val progress = (attackTimer / preFireDuration).coerceIn(0f, 1f)
+                val progress = if (preFireDuration <= 0f) 1f else (attackTimer / preFireDuration).coerceIn(0f, 1f)
                 val frameNum = animation.chargedFrame + (preFireFrames * progress).toInt()
                 animation.spriteAt(ship.sys, frameNum).draw()
             } else {
@@ -145,313 +143,116 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
             }
         }
 
-        fun renderInbound(g: Graphics) {
-            renderInbound(g, originPos)
-        }
-
-        fun drawDroneBeam(g: Graphics, drone: CombatDrone) {
-            if (!isFiring)
-                return
-
-            val fc = drone.flightController
-            val droneCentre = Point(fc.position)
-
-            // For some stupid reason, the beam doesn't come clean
-            // out of the centre of the drone - it has to be offset
-            // slightly.
-            // For example, the Beam 2 drone is shifted one pixel
-            // to the right, so we need to shift the beam origin
-            // by that amount too.
-            droneCentre.x += cos(fc.rotation).roundToInt()
-            droneCentre.y += sin(fc.rotation).roundToInt()
-
-            renderInbound(g, droneCentre)
-        }
-
-        private fun renderInbound(g: Graphics, from: IPoint) {
-            // Draw the beam on the enemy ship, including the little contact burning animation
-
-            // This runs during the pre-firing animation, so check if
-            // the beam is actually turned on yet or not.
-            if (!isBeamOn)
-                return
-
-            // This means we don't have to put !! on every usage of target
-            val target = target!!
-
-            // Figure out where the beam touches the ship
-            val targetPos = pointAtTime(firingTime)
-
-            // Calculate the point where the beam and the shield bubble intersect
-            // (Note that if the shields are off, we still do this - but the beams
-            //  on each side will appear the same, so it doesn't matter)
-
-            val targetShip = target.targetShip
-            val shieldSize = targetShip.shieldHalfSize
-            val shieldOrigin = targetShip.shieldOrigin
-
-            val intersections = findIntersections(from, targetPos, shieldSize, shieldOrigin)
-
-            // If we only cross the shield layer once, pick the first solution.
-            // Note it's valid to never cross the shield line, or cross it twice,
-            // if the beam leaves the shield layer.
-            val iFirst = intersections.first
-            val iSecond = intersections.second
-            shieldHitPos = intersections.first
-            val shieldPoint: IPoint = when {
-                iFirst == null -> targetPos // No attenuation
-                iSecond == null -> iFirst // Crosses the bubble once, normal.
-
-                // The beam is going into one side of the shield bubble
-                // and out the other.
-                // Check which is nearest, so the attenuation happens when
-                // the line first crosses the shield bubble.
-                iFirst.distToSq(from) < iSecond.distToSq(from) -> iFirst
-                else -> iSecond
-            }
-
-            // Beams that do no damage (eg the fire beam) still have a line
-            // drawn, which is the same as a one-power beam.
-            val visualPower = computeDamage().hullDamage.coerceAtLeast(1)
-            val piercing = computeDamageWithShields(targetShip)?.hullDamage?.coerceAtLeast(1)
-
-            // Find the shield bubble's tangent, and use that to set the angle
-            // of the end of the beam, so it cleanly lines up with the shield.
-            // This can be tested on long but thin Zoltan ships, where if this
-            // is wrong the angle of the end of the beam and the shields
-            // will be easily visible.
-            // Tangent equation from https://math.stackexchange.com/a/990013.
-            val shieldNormal = atan2(
-                (shieldPoint.y - shieldOrigin.y) * shieldSize.x.f.pow(2),
-                (shieldPoint.x.f - shieldOrigin.x) * shieldSize.y.f.pow(2)
-            )
-            drawBeam(g, ship.sys, visualPower, from, shieldPoint, shieldNormal)
-
-            // Shields::Collision (0x00632b80): a beam on a raised bubble keeps one flash there, following it.
-            if (iFirst != null)
-                targetShip.addShieldHit(shieldPoint, this)
-
-            // Draw the inside-the-shield-bubble part
-            if (piercing == null)
-                return
-
-            // Draw the beam from the target pos to the shield, so we can re-use
-            // the line end angle stuff.
-            drawBeam(g, ship.sys, piercing, targetPos, shieldPoint, shieldNormal)
-
-            // Draw the contact animation
-            // FIXME hardcode the offset of the contact point relative
-            //  to the image - I can't see this specified anywhere.
-            contact.draw(targetPos.x - 24f, targetPos.y - 32f, beamColour ?: DEFAULT_COLOUR)
-        }
+        /** A drone's beam is a one-space body that draws itself. */
+        fun drawDroneBeam(g: Graphics, drone: CombatDrone) = Unit
 
         override fun update(dt: Float, chargeTime: Float, canCharge: Boolean) {
             super.update(dt, chargeTime, canCharge)
-
-            if (isBeamOn) {
-                val targetShip = target!!.targetShip
-                if (!browserVolleyCounted) {
-                    browserRecordVolley(targetShip)
-                    browserVolleyCounted = true
-                }
-
-                // Don't block charging while firing - it does appear
-                // to charge up even while firing!
-
-                // Step across all the points the beam has moved
-                // across in this frame. This is done to ensure
-                // the beam can't skip rooms when running with
-                // high delta-times.
-                val onePixelTime = fireDuration / target!!.length
-                val newFiringTime = min(firingTime + dt, fireDuration)
-                var t = firingTime
-                val tmp = Point(0, 0)
-                while (t < newFiringTime) {
-                    // Check if we've potentially crossed into a new room
-                    tmp.set(pointAtTime(t))
-                    t += onePixelTime
-                    targetShip.screenPosToShipPos(tmp)
-
-                    if (tmp != lastPos) {
-                        lastPos.set(tmp)
-                        val room = targetShip.shipToRoomPos(tmp)?.room
-
-                        // Is this point outside the ship?
-                        if (room == null) {
-                            lastRoomId = null
-                            continue
-                        }
-
-                        val damage = computeDamageWithShields(targetShip)
-
-                        // ShipManager::DamageBeam (0x4a9d40) rolls Rock Plating once for this step; that one roll
-                        // decides both the room's hull damage and whether the cell's breach is stopped.
-                        val rockProc = if (damage != null) targetShip.rollRockArmour() else false
-
-                        // Couldn't pierce the shields?
-                        // If so, update the last room - that way, if the shields
-                        // break while the beam is inside a room, it won't damage
-                        // that room (which matches vanilla). This can be used to
-                        // deal crew damage without doing any hull damage.
-                        if (damage == null) {
-                            lastRoomId = room.id
-                            continue
-                        }
-
-                        // If we hit a new room, damage it
-                        if (lastRoomId != room.id) {
-                            lastRoomId = room.id
-
-                            val roomDamage = damage.copy()
-
-                            // Don't do any crew damage, we do that per-cell
-                            roomDamage.pureCrewDamage = 0
-                            roomDamage.noCrewDamage = true
-
-                            // Same for fire/breach/stun
-                            roomDamage.fireChance = 0
-                            roomDamage.breachChance = 0
-                            roomDamage.stunChance = 0
-                            roomDamage.stunDuration = 0f
-
-                            // The damage number pops up right above where the beam is
-                            targetShip.damage(room, roomDamage, pointAtTime(t), rockProc)
-                            targetShip.sys.browserAchievements.beamRoomHit(room)
-                        }
-
-                        // Deal crew damage - this is done on entry to a new cell, not only to a new room.
-                        val crewDamage = damage.effectiveCrewDamage.f
-                        val crew = room.crew.filter { it.findNearestRoomPos().shipPoint posEq tmp }
-
-                        for (crewmember in crew) {
-                            // DamageBeam hands every crew member in the cell to ShipManager::DamageCrew (0x49cf80),
-                            // which also stuns and skips the owner's own crew.
-                            val killed = targetShip.damageCrewMember(crewmember, crewDamage, damage)
-                            if (killed && browserCrewKills != null) {
-                                browserCrewKills = browserCrewKills!! + 1
-                                if (damage.hullDamage == 0 && damage.pureCrewDamage > 0)
-                                    targetShip.sys.browserAchievements.beamCrewKilled(browserCrewKills!!)
-                            }
-                        }
-
-                        // Fires and breaches (the latter is unused in vanilla) also
-                        // only spawn on entry to a new cell.
-                        val roomSlot = room.pointToSlot(tmp - room.position)
-                        if (ftl.browser.BrowserRandom.rollChance(damage.fireChance)) {
-                            room.spawnFireAt(roomSlot)
-                        }
-                        // Rock Plating stops the breach unless it is certain (breachChance == 10 of 10).
-                        if (ftl.browser.BrowserRandom.rollChance(damage.breachChance) &&
-                            (!rockProc || damage.breachChance >= 100)
-                        ) {
-                            room.spawnBreachAt(roomSlot)
-                        }
-                    }
-                }
-
-                // Damage the super-shield, if applicable.
-                updateSuperShield(firingTime, newFiringTime)
-
-                // Save our updated progress.
-                attackTimer = preFireDuration + newFiringTime
-
-                // Check if we've hit the end of our travel.
-                if (firingTime >= fireDuration) {
-                    stopFiring()
-                }
-
-                contact.update(dt)
-            } else if (isFiring) {
-                // Play the pre-firing animation
-                attackTimer += dt
-            } else if (target != null) {
-                // If we aren't shooting then we reset the weapon.
-                // This handles the weapon being depowered while firing.
-                stopFiring()
+            reconnect()
+            // A saved beam that is not in the world by the first update after loading has already ended.
+            pendingLaunchId = null
+            val aim = target ?: return
+            if (droneFired) {
+                // The drone's additionalPause and beamCurrentTarget, whatever the beam itself does.
+                droneHold -= dt
+                val dx = droneBeamFinal.xf - droneBeamCurrent.xf; val dy = droneBeamFinal.yf - droneBeamCurrent.yf
+                val remaining = sqrt(dx * dx + dy * dy)
+                val step = droneBeamSpeed * (dt * 16f)
+                if (remaining <= step || remaining == 0f) droneBeamCurrent.set(droneBeamFinal)
+                else droneBeamCurrent.set(droneBeamCurrent.xf + dx / remaining * step, droneBeamCurrent.yf + dy / remaining * step)
+                if (droneHold < 0f || !isPowered) stopFiring()
+                return
             }
+            if (!isPowered) {
+                // ProjectileFactory::Update drops queued projectiles of an unpowered weapon; a released beam kills
+                // itself on its next update (WeaponAnimation::bPowered).
+                stopFiring()
+                return
+            }
+            if (!released) {
+                attackTimer += dt
+                if (attackTimer >= preFireDuration) release(aim)
+                return
+            }
+            if (liveBody() != null) return
+            // The beam is gone: the animation plays its remaining frames from the one the beam set last.
+            if (tailFrom < 0) {
+                tailFrom = fireFrameIndex.coerceAtLeast(animation.fireFrame)
+                attackTimer = 0f
+            } else attackTimer += dt
+            if (isOnDrone || tailFrom + (attackTimer / frameDuration).toInt() >= animation.length - 1) stopFiring()
+        }
+
+        /** ProjectileFactory::GetProjectile: the queued beam enters the world (PROJECTILE_FIRE). */
+        private fun release(aim: SelectedTarget.BeamAim) {
+            val b = body ?: buildBody(aim).also { body = it }
+            released = true
+            attackTimer = preFireDuration
+            if (!browserVolleyCounted) {
+                browserRecordVolley(aim.targetShip)
+                browserVolleyCounted = true
+            }
+            ProjectileRuntime.added(b, b.hsCurrentSpace ?: ship)
+            if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.weapons.HsWeaponsLua.projectileFire(b, this)
+        }
+
+        /** The launcher's fire location in ship space (the weapon mount), else the ship's centre (artillery/boss). */
+        private fun origin(): ConstFPoint {
+            val weapons = ship.weapons
+            if (weapons != null && ship.hardpoints.any { it.weapon === this }) {
+                val p = weapons.getProjectileSpawnPos(this, animation.firePoint)
+                return ConstFPoint(p.x.toFloat(), p.y.toFloat())
+            }
+            val minX = ship.rooms.minOf { it.offsetX }; val minY = ship.rooms.minOf { it.offsetY }
+            val maxX = ship.rooms.maxOf { it.offsetX + it.pixelWidth }; val maxY = ship.rooms.maxOf { it.offsetY + it.pixelHeight }
+            return ConstFPoint((minX + maxX) / 2f, (minY + maxY) / 2f)
+        }
+
+        /**
+         * ProjectileFactory::Update's BEAM case: BeamWeapon(fire location, iShipId, targetId, target1, target2,
+         * blueprint length, currentShipTarget, currentFiringAngle), then Initialize, heading = currentFiringAngle,
+         * the damage boost and SetWeaponAnimation. [position] and [space] are a drone's (one-space, no animation).
+         */
+        private fun buildBody(aim: SelectedTarget.BeamAim, position: ConstFPoint = origin(), space: Ship = ship,
+                              target2: IPoint? = null): BeamProjectile {
+            val targetShip = aim.targetShip
+            val start = ConstFPoint(aim.startShipPoint.x.toFloat(), aim.startShipPoint.y.toFloat())
+            val end = target2?.let { ConstFPoint(it.x.toFloat(), it.y.toFloat()) }
+                ?: ConstFPoint(start.xf + aim.length * cos(aim.angle), start.yf + aim.length * sin(aim.angle))
+            val heading = if (ship.weaponFireDirection == Direction.RIGHT) 0f else 270f
+            val ownerId = xyz.znix.xftl.hs.weapons.HsWeapons.shipId(ship)
+            val context = xyz.znix.xftl.hs.weapons.HsProjectileConstruction.Context(position, start, space, ownerId,
+                xyz.znix.xftl.hs.weapons.HsWeapons.shipId(space), xyz.znix.xftl.hs.weapons.HsWeapons.shipId(targetShip))
+            val b = xyz.znix.xftl.hs.weapons.HsProjectileConstruction.with(context) {
+                BeamProjectile(ship.sys, targetShip, end, length, heading)
+            }
+            b.hsOwnerId = ownerId
+            b.initialize(this@BeamBlueprint)
+            if (!b.motion.oneSpace) b.setBeamHeading(heading)
+            if (type.boost?.type == BoostType.DAMAGE) b.damage.applyWeaponChaining((type.boost!!.perShot * firingChainCount).toInt())
+            b.flightAnimation = projectile
+            if (!isOnDrone) b.weaponAnimation = this
+            return b
         }
 
         private fun stopFiring() {
-            target?.targetShip?.inboundBeams?.remove(this)
-
+            // A drone's beam is independent of the drone (no weapon animation): it is left to end by itself.
+            if (!droneFired) liveBody()?.hsKill()
+            droneFired = false
             attackTimer = 0f
-            superShieldReady = false
             target = null
-
-            // Reset these to make the savegame more compact
-            fireDuration = this@BeamBlueprint.fireDuration
+            body = null
+            released = false
+            pendingLaunchId = null
+            legacyResume = null
+            fireFrameIndex = -1
+            tailFrom = -1
             firingChainCount = 0
-
-            // Without this, if the first room hit was the same room as the
-            // last one hit on the previous shot, no damage would be dealt.
-            lastPos.set(INVALID_CELL_POS)
-            lastRoomId = null
-
-            originPos.set(ConstPoint.ZERO)
-        }
-
-        private fun updateSuperShield(oldFiringTime: Float, newFiringTime: Float) {
-            // Guard against zero-time updates to avoid doing damage
-            // more than once.
-            if (oldFiringTime == newFiringTime) {
-                return
-            }
-
-            val targetShip = target!!.targetShip
-
-            // Check if we crossed the two points that let us arm our
-            // super-shield piercing. Note that this stays armed, so that
-            // if a super-shield drone creates a shield we'll remove it
-            // instantly.
-            val oldProgress = firingTime / fireDuration
-            val newProgress = newFiringTime / fireDuration
-            if (SUPER_SHIELD_HIT_1 in oldProgress..newProgress) {
-                superShieldReady = true
-            }
-            if (SUPER_SHIELD_HIT_2 in oldProgress..newProgress && target!!.length > 20) {
-                superShieldReady = true
-            }
-
-            // Apply damage when applicable.
-            if (targetShip.superShield > 0 && superShieldReady) {
-                superShieldReady = false
-
-                // Reverse Ion Field protects the super-shield too (this
-                // replaces upstream's TODO): on a proc only the ion
-                // component of the zap is negated.
-                val ionNegated = ionDamage > 0 && targetShip.ionArmourNegates()
-                val ionArmourIon = if (ionNegated) 0 else max(ionDamage, 0)
-
-                // All beams do at least one damage against super-shields.
-                // Clamp here to avoid repairing them if the weapon does negative damage.
-                val damage = max(damage, 1) + ionArmourIon * 2
-
-                if (shieldHitPos != null && ionNegated) {
-                    targetShip.showDamageTextAt(shieldHitPos!!, "text_resist", Constants.DAMAGE_COLOUR_ION)
-                }
-                if (shieldHitPos != null && damage > 0) {
-                    targetShip.showDamageTextAt(shieldHitPos!!, damage, Constants.DAMAGE_COLOUR_ZOLTAN)
-                }
-
-                targetShip.superShield -= damage
-            }
-
-            // Apply the ion damage against the shields system.
-            // Without the ionBeamFix, this re-creates a vanilla bug where
-            // this damage is applied every frame, instantly zapping
-            // the shields system.
-            val activeShields = targetShip.shields?.activeShields ?: 0
-            if (targetShip.superShield == 0 && activeShields > 0 && (superShieldReady || !ionBeamFix)) {
-                superShieldReady = false
-                targetShip.attackShieldsIon(Damage(type).copyIon())
-            }
         }
 
         fun fire(target: SelectedTarget.BeamAim) {
             browserVolleyCounted = false
-            browserCrewKills = 0
             this.target = target
-            target.targetShip.inboundBeams.add(this)
 
             type.launchSounds?.get()?.play()
 
@@ -463,21 +264,34 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
             // damageCloak excludes beams fired by combat drones.
             damageCloak()
 
-            // Find the point the beam comes from, once per shot so it doesn't bounce around. ProjectileFactory::Fire
-            // (0x0040d9a0) rolls each volley's entry angle as rand % 360 degrees and the shot carries it
-            // (Projectile +0x26c); the beam enters the target's space as Projectile::EnterDestinationSpace
-            // (0x00456650) places shots, 800 * 0.75 from (200, 200) at that angle, so it can come from any side.
-            val angle = Math.toRadians(ftl.browser.BrowserRandom.nextInt(360).toDouble())
-            originPos.set(
-                (200 + kotlin.math.cos(angle) * 800 * 0.75).toInt(),
-                (200 + kotlin.math.sin(angle) * 800 * 0.75).toInt()
-            )
+            // Constructed and initialised now (CONSTRUCT_PROJECTILE, PROJECTILE_INITIALIZE), released at the fire frame.
+            body = buildBody(target)
+            if (preFireDuration <= 0f) release(target)
         }
 
-        fun fireFromDrone(drone: CombatDrone, target: SelectedTarget.BeamAim, duration: Float) {
+        /**
+         * SpaceDrone::GetNextProjectile's BEAM case: a one-space beam from the drone's (integer) location in its
+         * space, from target1 to target2 at the blueprint's speed, without a weapon animation. [duration] is the
+         * drone's additionalPause (0.5 s): the weapon stops firing after it, the beam's own length and speed end it.
+         */
+        /**
+         * [target2]: SpaceDrone::GetNextProjectile (0x429ee0, beam case) gives the BeamWeapon constructor (0x4383b0)
+         * target1 = the drone's target point and target2 = a second random targeting point itself (not a point
+         * along the swipe); null keeps the aim's own end point.
+         */
+        fun fireFromDrone(drone: CombatDrone, target: SelectedTarget.BeamAim, duration: Float,
+                          target2: IPoint? = null) {
             browserVolleyCounted = false
             this.target = target
-            fireDuration = duration
+            val p = drone.flightController.position
+            val b = buildBody(target, ConstFPoint(p.xf.toInt().toFloat(), p.yf.toInt().toFloat()), target.targetShip, target2)
+            body = b
+            droneFired = true
+            droneHold = duration
+            droneBeamCurrent.set(b.motion.target1)
+            droneBeamFinal.set(b.motion.target2)
+            droneBeamSpeed = b.speedMagnitude
+            release(target)
         }
 
         override fun onJump() {
@@ -490,19 +304,10 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
 
         // For use by drones, so they can angle themselves correctly.
         fun getCurrentTargetPoint(): IPoint {
-            if (!isFiring)
-                return ConstPoint.ZERO
-
-            return pointAtTime(firingTime)
-        }
-
-        private fun pointAtTime(time: Float): IPoint {
-            val distanceAcross = (target!!.length * time / fireDuration).toInt()
-
-            return target!!.startShipPoint + ConstPoint(
-                (distanceAcross * cos(target!!.angle)).toInt(),
-                (distanceAcross * sin(target!!.angle)).toInt()
-            )
+            if (!isFiring) return ConstPoint.ZERO
+            if (droneFired) return ConstPoint(droneBeamCurrent.xf.toInt(), droneBeamCurrent.yf.toInt())
+            val b = liveBody() ?: return ConstPoint.ZERO
+            return ConstPoint(b.motion.tip.xf.toInt(), b.motion.tip.yf.toInt())
         }
 
         /**
@@ -533,73 +338,24 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
             return aim
         }
 
-        private fun computeDamage(): Damage {
-            val damage = Damage(type)
-            damage.ownerShip = ship
-            if (type.boost?.type == BoostType.DAMAGE) {
-                damage.applyWeaponChaining((type.boost.perShot * firingChainCount).toInt())
-            }
-            return damage
-        }
-
-        /**
-         * Calculate the damage we'll deal after passing through the
-         * given ship's shields layer.
-         *
-         * This returns null if we can't penetrate their shields.
-         */
-        private fun computeDamageWithShields(targetShip: Ship): Damage? {
-            if (targetShip.superShield > 0)
-                return null
-
-            val damage = computeDamage()
-
-            val shieldLayers = targetShip.shields?.activeShields ?: 0
-
-            // Check if we can get past the enemy shields.
-            // This is a bit weird, here's a few notable cases:
-            //    2 dmg + 2 sp, after 2 shields damage drops by 1 each
-            //    0 dmg + 2 sp, after 1 shields "damage" is done, after two no longer
-            //   -2 dmg + 4 sp, after 1 shield beam penetrates, afterwards no longer
-            val piercesShields = damage.hullDamage + type.shieldPiercing > shieldLayers || shieldLayers == 0
-            if (!piercesShields)
-                return null
-
-            // If we're doing negative damage (hull repair beams), then
-            // we'll do the full repair amount if we penetrate the shields.
-            // Otherwise, reduce the damage based on the number of shields.
-            if (damage.hullDamage > 0) {
-                val effectiveShields = (shieldLayers - type.shieldPiercing).coerceAtLeast(0)
-                damage.hullDamage = (damage.hullDamage - effectiveShields).coerceAtLeast(0)
-            }
-
-            return damage
-        }
-
         override fun saveToXML(elem: Element, refs: ObjectRefs) {
             super.saveToXML(elem, refs)
 
             SaveUtil.addTagFloat(elem, "attackTimer", attackTimer, 0f)
             SaveUtil.addTagBoolIfTrue(elem, "browserVolleyCounted", browserVolleyCounted)
-            browserCrewKills?.let { SaveUtil.addTagInt(elem, "browserCrewKills", it, null) }
             SaveUtil.addTagInt(elem, "firingChainCount", firingChainCount, 0)
-            SaveUtil.addTagFloat(elem, "fireDuration", fireDuration, this@BeamBlueprint.fireDuration)
-            SaveUtil.addTagBoolIfTrue(elem, "superShieldReady", superShieldReady)
 
             if (target != null) {
                 val targetElem = Element("target")
                 target!!.saveToXML(targetElem, refs)
                 elem.addContent(targetElem)
             }
-
-            if (!(originPos posEq ConstPoint.ZERO)) {
-                SaveUtil.addPoint(elem, "originPos", originPos)
-            }
-
-            if (!(lastPos posEq INVALID_CELL_POS)) {
-                SaveUtil.addPoint(elem, "lastPos", lastPos)
-            }
-            SaveUtil.addTagInt(elem, "lastRoomId", lastRoomId, null)
+            // The released beam is saved with the ship's projectiles; the launcher keeps its id.
+            SaveUtil.addTagBool(elem, "beamReleased", released)
+            val launched = if (released) liveBody() else null
+            if (launched != null) SaveUtil.addTagInt(elem, "beamLaunchId", launched.launchId, null)
+            SaveUtil.addTagInt(elem, "beamFireFrame", fireFrameIndex, -1)
+            SaveUtil.addTagInt(elem, "beamTailFrom", tailFrom, -1)
         }
 
         override fun loadFromXML(elem: Element, refs: RefLoader) {
@@ -607,38 +363,46 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
 
             attackTimer = SaveUtil.getOptionalTagFloat(elem, "attackTimer") ?: 0f
             browserVolleyCounted = SaveUtil.getOptionalTagBool(elem, "browserVolleyCounted") ?: false
-            browserCrewKills = SaveUtil.getOptionalTagInt(elem, "browserCrewKills")
             firingChainCount = SaveUtil.getOptionalTagInt(elem, "firingChainCount") ?: 0
-            fireDuration = SaveUtil.getOptionalTagFloat(elem, "fireDuration") ?: this@BeamBlueprint.fireDuration
+            val releasedTag = SaveUtil.getOptionalTagBool(elem, "beamReleased")
+            released = releasedTag ?: false
+            pendingLaunchId = SaveUtil.getOptionalTagInt(elem, "beamLaunchId")
+            fireFrameIndex = SaveUtil.getOptionalTagInt(elem, "beamFireFrame") ?: -1
+            tailFrom = SaveUtil.getOptionalTagInt(elem, "beamTailFrom") ?: -1
+            val legacyFireDuration = SaveUtil.getOptionalTagFloat(elem, "fireDuration")
 
             val targetElem = elem.getChild("target")
             if (targetElem != null) {
-                SelectedTarget.loadFromXML(targetElem, refs, { this }) { target ->
-                    this.target = target as SelectedTarget.BeamAim
-
-                    // Without this, the beam graphic won't render on the target ship.
-                    // Note this only runs if the target is non-null.
-                    if (!isOnDrone) {
-                        target.targetShip.inboundBeams.add(this)
+                SelectedTarget.loadFromXML(targetElem, refs, { this }) { loaded ->
+                    val aim = loaded as SelectedTarget.BeamAim
+                    target = aim
+                    // A save from before the beam body: rebuild the swipe in flight at its saved progress.
+                    if (releasedTag == null && attackTimer >= preFireDuration) {
+                        val duration = legacyFireDuration ?: (this@BeamBlueprint.length / ((speed ?: DEFAULT_SPEED) * SPEED_MULTIPLIER))
+                        legacyResume = if (duration <= 0f) 0f else ((attackTimer - preFireDuration) / duration).coerceIn(0f, 1f)
                     }
                 }
             }
+        }
 
-            if (elem.getChild("originPos") != null) {
-                originPos.set(SaveUtil.getPoint(elem, "originPos"))
-            }
-
-            if (elem.getChild("lastPos") != null) {
-                lastPos.set(SaveUtil.getPoint(elem, "lastPos"))
-            }
-            lastRoomId = SaveUtil.getOptionalTagInt(elem, "lastRoomId")
+        private fun resumeLegacy(progress: Float) {
+            val aim = target ?: return
+            val b = buildBody(aim)
+            body = b
+            val distance = aim.length * progress
+            val start = b.motion.target1
+            val at = ConstFPoint(start.xf + distance * cos(aim.angle), start.yf + distance * sin(aim.angle))
+            b.motion.tip.set(at); b.motion.finalEnd.set(at); b.motion.lastCollision.point.set(at)
+            browserVolleyCounted = true
+            release(aim)
         }
     }
 
-    private fun drawBeam(g: Graphics, game: InGameState, power: Int, src: IPoint, dst: IPoint, dstAngle: Float) {
+    internal fun drawBeam(g: Graphics, game: InGameState, power: Int, src: FPoint, dst: FPoint, dstAngle: Float,
+                          colour: Colour) {
         // The beam is drawn as a transparent-red-transparent gradient line
         // Find the tangent line of src-dst, and use that to find the edges of the beam
-        val tangent = MutFPoint(-(src.y - dst.y).f, (src.x - dst.x).f)
+        val tangent = MutFPoint(-(src.yf - dst.yf), (src.xf - dst.xf))
         val length = sqrt(tangent.xf * tangent.xf + tangent.yf * tangent.yf)
         tangent.xf /= length
         tangent.yf /= length
@@ -648,8 +412,8 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         tangent.xf *= width
         tangent.yf *= width
 
-        val srcA = src.fConst + tangent
-        val srcB = src.fConst - tangent
+        val srcA = ConstFPoint(src.xf + tangent.xf, src.yf + tangent.yf)
+        val srcB = ConstFPoint(src.xf - tangent.xf, src.yf - tangent.yf)
 
         // The destination point has an angle, which determines the angle the
         // end of the beam is 'cut' at - this is so that it aligns cleanly with
@@ -659,23 +423,23 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         // Thus dstAngle gives us the angle between the beam's tangent and
         // the shield's tangent, which we can then use to build a second tangent
         // line along the shield.
-        val beamAngle = atan2(dst.y.f - src.y, dst.x.f - src.x)
+        val beamAngle = atan2(dst.yf - src.yf, dst.xf - src.xf)
         val angleDifference = dstAngle - beamAngle
         val dstWidth = width / cos(angleDifference)
         val dstTangentAngle = beamAngle - PIf / 2 + angleDifference
         val dstTangentX = cos(dstTangentAngle) * dstWidth
         val dstTangentY = sin(dstTangentAngle) * dstWidth
 
-        val dstA = ConstFPoint(dst.x + dstTangentX, dst.y + dstTangentY)
-        val dstB = ConstFPoint(dst.x - dstTangentX, dst.y - dstTangentY)
+        val dstA = ConstFPoint(dst.xf + dstTangentX, dst.yf + dstTangentY)
+        val dstB = ConstFPoint(dst.xf - dstTangentX, dst.yf - dstTangentY)
 
         g.drawCustomQuads { quads ->
-            drawGradient(quads, srcA, srcB, dstA, dstB, transparentColour)
+            drawGradient(quads, srcA, srcB, dstA, dstB, colour)
         }
 
         if (game.debugFlags.showBeamVectors.set) {
             // This lets us check if our normal calculation is correct
-            drawDebugVectorAngle(g, dst, dstAngle, 20f, Colour.yellow)
+            drawDebugVectorAngle(g, ConstPoint(dst.xf.toInt(), dst.yf.toInt()), dstAngle, 20f, Colour.yellow)
         }
     }
 
@@ -724,112 +488,6 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         )
     }
 
-    private fun findIntersections(src: IPoint, dst: IPoint, ellipse: IPoint, centre: IPoint): Pair<IPoint?, IPoint?> {
-        // Solve the line-ellipse intersection - find the point that satisfies
-        // both the ellipse and line equation, where w and h are the half-width
-        // and half-height:
-        //
-        // x^2/w^2 + y^2/h^2 = 1   (ellipse equation)
-        // y=mx+L                  (line equation, using L not c to free it up later)
-        //
-        // x^2/w^2 + (mx+L)^2/h^2 = 1
-        // x^2/w^2 + ((mx)^2 + 2mxL + L^2)/h^2 = 1
-        // x^2/w^2 + (mx)^2/h^2 + 2mxL/h^2 + L^2/h^2 - 1 = 0
-        // x^2(1/w^2 + m^2/h^2) + 2mxL/h^2 + (L^2/h^2 - 1) = 0
-        //
-        // ax^2 + bx + c = 0 where:
-        //   a = 1/w^2 + m^2/h^2
-        //   b = 2mL/h^2
-        //   c = L^2/h^2 - 1
-        //
-        // This is now a quadratic equation, solve it using the quadratic formula.
-
-        // Find the line equation
-        val deltaX = dst.x.f - src.x
-        val deltaY = dst.y.f - src.y
-
-        // Handle the special-case for vertical lines, since we otherwise
-        // divide through by zero. This doesn't result in a crash, instead
-        // the beam appears to pass through the shields as everything becomes
-        // either NaN or infinity.
-        // This can occur with beam drones, and became very quickly obvious
-        // once they were first implemented, as it occurred surprisingly often!
-        if (abs(deltaX) < 0.001f) {
-            // Move the ellipse to the centre
-            val x = src.x - centre.x
-
-            // Outside the ellipse's area?
-            if (x !in -ellipse.x..ellipse.x)
-                return Pair(null, null)
-
-            // Find the y coordinate of the shield at the given x point.
-            // (there's another point on the shield line by negating this y)
-
-            val shieldY = (ellipse.y * sqrt(1 - x.f.pow(2) / ellipse.x.f.pow(2))).toInt()
-
-            fun yToPoint(y: Int): IPoint? {
-                // Check this point sits inside the line segment.
-                val minY = min(src.y, dst.y)
-                val maxY = max(src.y, dst.y)
-                if (y !in minY..maxY)
-                    return null
-
-                return ConstPoint(src.x, y)
-            }
-
-            val p1 = yToPoint(centre.y + shieldY)
-            val p2 = yToPoint(centre.y - shieldY)
-
-            if (p1 == null) {
-                return Pair(p2, null)
-            }
-            return Pair(p1, p2)
-        }
-
-        val m = deltaY / deltaX // Rise over run
-
-        // This is where we subtract out the centre so this is valid when the ellipse
-        // is centred at the origin.
-        @Suppress("LocalVariableName")
-        val L = (src.y - centre.y) - (src.x - centre.x) * m
-
-        val wSq = ellipse.x.f.pow(2)
-        val hSq = ellipse.y.f.pow(2)
-        val a = 1 / wSq + m.pow(2) / hSq
-        val b = 2 * m * L / hSq
-        val c = L.pow(2) / hSq - 1
-
-        // Check if the determinant is negative, which implies complex answers
-        // (AKA the beam missed the shield)
-        val determinant = b.pow(2) - 4 * a * c
-        if (determinant < 0)
-            return Pair(null, null)
-
-        fun xToPoint(x: Float): IPoint? {
-            // Check this point sits inside the line segment.
-            val minX = min(src.x, dst.x)
-            val maxX = max(src.x, dst.x)
-            if (x.toInt() + centre.x !in minX..maxX)
-                return null
-
-            val y = m * x + L
-            return ConstPoint(x.toInt() + centre.x, y.toInt() + centre.y)
-        }
-
-        // Check if there's only one solution (the line is a tangent line to
-        // a point on the shield)
-        if (determinant == 0f)
-            return Pair(xToPoint(-b / (2 * a)), null)
-
-        val plusMinus = sqrt(determinant)
-
-        val p1 = xToPoint((-b + plusMinus) / (2 * a))
-        val p2 = xToPoint((-b - plusMinus) / (2 * a))
-
-        // If we have a non-null solution, always return it as the first argument
-        return if (p1 == null) Pair(p2, null) else Pair(p1, p2)
-    }
-
     companion object {
         // BeamWeapon::OnUpdate (0x438880): the beam tip moves by the blueprint
         // speed times the native speed factor of 16 per second.
@@ -838,13 +496,6 @@ class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         // The default speed, in the same units as the XML.
         private const val DEFAULT_SPEED = 5
 
-        // A bright red beam? This is largely guessed.
-        private val DEFAULT_COLOUR = Colour(255, 30, 30)
 
-        private val INVALID_CELL_POS = ConstPoint(-999, -999)
-
-        private const val SUPER_SHIELD_HIT_1: Float = 0.33f
-        private const val SUPER_SHIELD_HIT_2: Float = 0.80f
-        private const val SUPER_SHIELD_MIN_LENGTH: Int = 21
     }
 }

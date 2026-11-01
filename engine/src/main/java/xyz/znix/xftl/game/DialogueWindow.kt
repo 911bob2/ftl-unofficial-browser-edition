@@ -40,9 +40,57 @@ enum class EventChoiceHotkeyMode(val id: Int, val textKey: String) {
 }
 
 class DialogueWindow private constructor(val game: InGameState, val playerShip: Ship, val close: () -> Unit) :
-    Window() {
+    Window(), xyz.znix.xftl.hs.events.HsFlow.Host, xyz.znix.xftl.hs.events.HsEventsLua.ChoiceBoxText {
 
-    override val size: IPoint get() = ConstPoint(602, 377)
+    /** Hyperspace Lua: ChoiceBox.mainText, the box's text as shown. */
+    override var mainText: String
+        get() = luaMainText ?: ((currentEvent?.text ?: "") + extraText)
+        set(v) { luaMainText = v }
+
+    /** Hyperspace Lua: ChoiceBox.mainText as a script wrote it, replacing the text drawn; reset with each box. */
+    private var luaMainText: String? = null
+
+    /** Hyperspace Lua: ChoiceBox:GetChoices() / .choices, one entry per option as the box lists them. */
+    override val choiceEntries: List<xyz.znix.xftl.hs.events.HsEventsLua.ChoiceEntry>
+        get() = if (::options.isInitialized) options.indices.map { OptionEntry(it) } else emptyList()
+
+    override val potentialChoice: Int get() = hoveredOption ?: -1
+
+    private inner class OptionEntry(val index: Int) : xyz.znix.xftl.hs.events.HsEventsLua.ChoiceEntry {
+        override val created: xyz.znix.xftl.sector.CreatedEvent? get() = options.getOrNull(index)?.created
+        override val hidden: Boolean get() = options.getOrNull(index)?.choice?.hidden == true
+        override var type: Int
+            get() = hsTypes?.getOrNull(index) ?: 0
+            set(v) {
+                val types = hsTypes ?: IntArray(options.size).also { hsTypes = it }
+                if (index < types.size) types[index] = v
+            }
+        override var text: String
+            get() = options.getOrNull(index)?.choiceText ?: ""
+            set(v) { options.getOrNull(index)?.choiceTextOverride = v }
+    }
+
+    /** Hyperspace: the choice box type of each option (0 normal, 1 unavailable, 2 blue); null in vanilla. */
+    private var hsTypes: IntArray? = null
+
+    /** Hyperspace: while > 0 an event's HS steps are still running, and closing the window waits for them. */
+    private var hsDepth = 0
+
+    init {
+        // WorldManager +0x12a0 (the crew-kill seed) is cleared only where a new event sequence starts: CreateLocation's
+        // arrival event (1.6.14 0x6183a0, write at 0x61880d; 1.6.9 write at 0x5f30c6) and OnLoop's ship endings, CREW_STUCK and jump (1.6.14 0x61b930, 1.6.9 0x5f6a4a / 0x5f6eca / 0x5f7338), not
+        // for the events a choice leads to. Each of those opens a window; a choice's event stays in this one, so a chain
+        // of boxes keeps its seed and its draws.
+        game.eventManager.resetCrewKillSeed()
+    }
+
+    // The touch layout's rows are taller, and the frame grows to hold many of them.
+    override val size: IPoint
+        get() = ConstPoint(
+            602,
+            if (!TouchMode.enabled) 377
+            else max(377, 49 * (if (syntheticEvents.isNotEmpty() || !::options.isInitialized) 1 else options.size) + 88)
+        )
 
     // Touch ergonomics: bigger option text/targets. 1.3x (783x490) fits
     // the canvas; nudged left+up so it sits a little clearer of the touch
@@ -52,13 +100,39 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     // Desktop: ChoiceBox frames its text at (334,147) (NativeChoiceBox), 150px
     // further left while an enemy ship is present.
     override val windowCentreOffset: ConstPoint
-        get() = ConstPoint(
+        get() = if (TouchMode.enabled) ConstPoint(
+            // The frame's left edge in the HUD block is 206, 150 px further left while an enemy ship is present; its top is 191.
+            (if (game.enemy != null) 56 else 206) - (TouchMode.HUD_W - size.x) / 2,
+            191 - (TouchMode.HUD_H - size.y) / 2
+        ) else ConstPoint(
             if (PlatformSpecific.INSTANCE.isTouchUi) -40 else if (game.enemy != null) -155 else -5,
             if (PlatformSpecific.INSTANCE.isTouchUi) -60 else -24
         )
 
     private val resourceNumFont = game.getFont("JustinFont10")
     private val font = game.getFont("JustinFont11Bold")
+
+    /**
+     * ChoiceBox::OnRender prints the text and the choices in the box's font size ([EventFontSize]),
+     * placing lines by that font's line height in the current language; 12 is [font] itself.
+     */
+    private val textFonts = HashMap<Int, SILFontLoader>()
+    private var textSize = 12
+    private val textFont: SILFontLoader
+        get() = if (textSize == 12) font else textFonts.getOrPut(textSize) {
+            xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, textSize).font
+        }
+
+    /** The text font's English baseline (its language copy moves glyphs to its own) and its line height. */
+    private val textBaseline get() = xyz.znix.xftl.rendering.NativeFonts.baseSpec(textSize).baseline
+    private val textLineHeight get() = xyz.znix.xftl.rendering.NativeFonts.spec(textSize).lineHeight
+
+    // Layout offsets from the font (ChoiceBox::OnRender): a choice's baseline sits 10px plus the baseline below its
+    // top, the next choice 12px below its last line, the choices 30px (gap_size) below the text. With font 12
+    // these are the values the layout was measured with.
+    private val fontHeight get() = textBaseline - 1
+    private val optionTopOffset get() = textBaseline + 3
+    private val optionBottomMargin get() = textLineHeight - textBaseline + 9
 
     private val augmentStringWidth = font.getWidth(game.translator["augment"])
 
@@ -74,7 +148,11 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     private lateinit var options: List<EvaluatedEvent>
 
     private val optionBoundingBoxes = ArrayList<Rectangle>()
+    private var boxesBuiltAtX = Int.MIN_VALUE
     private var hoveredOption: Int? = null
+
+    /** Touch layout: a finger came down on this box and has not lifted. A row is only hovered then, and chosen by the lift. */
+    private var touchFingerDown = false
     // Native ChoiceBox SetChoices resets openTime only when reopening a closed
     // box. Choices in the same open event chain retain their elapsed time.
     var openTime = 0f
@@ -103,6 +181,12 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
      */
     private val syntheticEvents = ArrayList<SyntheticEvent>()
 
+    /**
+     * Hyperspace: the choice whose next event waits for the synthetic events its resources raised. The original
+     * shows AUGMENT_FULL as an event box before it builds the next one (the oracle's box and resource order).
+     */
+    private var hsPendingChoice: EvaluatedEvent? = null
+
     private val textX get() = position.x + 18
 
     private var extraText = ""
@@ -123,6 +207,28 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
      * (older saves) is created first.
      */
     constructor(game: InGameState, playerShip: Ship, startingEvent: CreatedEvent?, close: () -> Unit)
+            : this(game, playerShip, startingEvent, false, close)
+
+    /** Hyperspace: CreateLocation of a revisited beacon; the window closes at once unless a revisit event loads. */
+    constructor(game: InGameState, playerShip: Ship, revisited: xyz.znix.xftl.sector.Beacon, close: () -> Unit)
+            : this(game, playerShip, close) {
+        options = listOf(continueEvent)
+        hsDepth++
+        try {
+            xyz.znix.xftl.hs.events.HsEventsLua.gameEvent(revisited.createdEvent, false)
+            xyz.znix.xftl.hs.events.HsFlow.beforeCreateLocation(revisited.createdEvent)
+            xyz.znix.xftl.hs.events.HsFlow.afterCreateLocation(game, this, revisited, revisited.createdEvent, true)
+        } finally {
+            hsDepth--
+        }
+        checkClosed()
+    }
+
+    /**
+     * [hsArrival]: the beacon's own event shown on arrival (WorldManager::CreateLocation) rather than an event
+     * loaded later (UpdateLocation); only Hyperspace tells them apart.
+     */
+    constructor(game: InGameState, playerShip: Ship, startingEvent: CreatedEvent?, hsArrival: Boolean, close: () -> Unit)
             : this(game, playerShip, close) {
 
         // Starting event can be null to get the window open before adding
@@ -131,7 +237,8 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             val created = if (startingEvent.eager) startingEvent
             else game.eventCreator.createFrom(startingEvent.template, game.eventCreator.currentLevel())
             if (created != null) {
-                loadEvent(EvaluatedEvent(created, game, null, null))
+                if (game.eventManager.hs != null) hsShow(EvaluatedEvent(created, game, null, null), hsArrival)
+                else loadEvent(EvaluatedEvent(created, game, null, null))
             } else {
                 options = listOf(continueEvent)
                 close()
@@ -144,31 +251,83 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         }
     }
 
+    /**
+     * Hyperspace: show an event the way the original's WorldManager does, with HS's hooks around the original's
+     * part ([loadEvent]): CreateLocation for the beacon's event on arrival, UpdateLocation otherwise.
+     */
+    private fun hsShow(event: EvaluatedEvent, arrival: Boolean) {
+        val created = event.created ?: return loadEvent(event)
+        val flow = xyz.znix.xftl.hs.events.HsFlow
+        hsDepth++
+        try {
+            // LuaLibScript.cpp: script.on_game_event callbacks before CreateLocation / UpdateLocation.
+            xyz.znix.xftl.hs.events.HsEventsLua.gameEvent(created, false)
+            if (arrival) {
+                flow.beforeCreateLocation(created)
+                loadEvent(event)
+                flow.afterCreateLocation(game, this, game.currentBeacon, created, false)
+            } else {
+                flow.beforeUpdateLocation(game, created)
+                loadEvent(event)
+                flow.afterUpdateLocation(game, this, created)
+            }
+        } finally {
+            hsDepth--
+        }
+        if (hsDepth == 0) checkClosed()
+    }
+
+    /** HsFlow.Host: UpdateLocation of an event HS loads (loadEvent, loadEventList, queued, jump, death events). */
+    override fun hsUpdateLocation(event: CreatedEvent) {
+        hsShow(EvaluatedEvent(event, game, null, null), false)
+    }
+
     private fun loadEvent(event: EvaluatedEvent) {
+        // Hyperspace: WorldManager::CreateChoiceBox resets the scroll
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.reset()
         extraText = ""
+        luaMainText = null
 
-        // WorldManager +0x12a0 is cleared when an event starts (0x61b930): the next previews draw a new seed.
-        game.eventManager.resetCrewKillSeed()
-
-        // WorldManager::CreateStore (0x613010) is the first thing the original
-        // does when it applies an event: the store is drawn before the
-        // environment and the ship (whose generation reseeds the stream).
+        // Vanilla WorldManager::CreateStore (1.6.14 0x613010) precedes the ship's reseed.
+        // HS 1b05a07 CustomStore.cpp rewrites CreateLocation/UpdateLocation (priority 9999):
+        // CreateShip precedes CreateStore. Keep each version's order, including vanilla stores under HS.
         if (event.event.isStore) {
             game.currentBeacon.hasStore = true
-            game.currentBeacon.createStore(game)
+            if (!xyz.znix.xftl.hs.HS.active) game.currentBeacon.createStore(game, event.created)
         }
 
         game.loadEventShip(event.created!!)
+        if (xyz.znix.xftl.hs.HS.active && event.event.isStore)
+            game.currentBeacon.createStore(game, event.created)
         event.event.environment?.let { type ->
             val beacon = game.currentBeacon
             val env = if (type == xyz.znix.xftl.sector.Beacon.EnvironmentType.PDS) xyz.znix.xftl.environment.AsbEnvironment(game, beacon, event.event.browserPdsTarget) else type.create(game, beacon)
-            beacon.debugSetEnvironment(env)
+            // Hyperspace (WorldManager::ModifyEnvironment): a hazard of a later event is added to the ones already up.
+            if (xyz.znix.xftl.hs.HS.active && type != xyz.znix.xftl.sector.Beacon.EnvironmentType.NORMAL && event.event !== beacon.event) {
+                beacon.getEnvironment(game)
+                beacon.addEnvironment(env)
+            } else beacon.debugSetEnvironment(env)
         }
+        // WorldManager::ModifyEnvironment (CreateLocation 0x6183a0 / UpdateLocation, after the ship and the store):
+        // SetNebula makes the nebula's clouds now, ahead of the box's own draws (once per scene).
+        (game.currentBeacon.getEnvironment(game) as? xyz.znix.xftl.environment.NebulaEnvironment)?.ensureSet()
+        applyStatuses(event)
 
         if (event.event.isStore) {
             // This does a few things: show the store on the map, enable the store button
             // and cause the store window to open when this window is closed.
             game.currentBeacon.hasStore = true
+        }
+
+        // WorldManager::CreateLocation / UpdateLocation add the event's boarders ahead of CreateChoiceBox: they are on
+        // the ship while its box is open, and their draws precede the crew seed the box takes for a crew loss.
+        event.created?.let { created ->
+            val race = created.template.boarderRace
+            if (race != null && !created.boardersAboard) {
+                game.addBoarders(race, created.boarders, created.template.boarderBreach)
+                created.boardersAboard = true
+                if (event.resourcesEvaluated) event.resources.boardersAboard = true
+            }
         }
 
         // If this event triggers a quest, we have to evaluate it now to find out
@@ -181,7 +340,8 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
                 InGameState.QuestAddResult.NEXT_SECTOR -> "added_quest_sector"
                 InGameState.QuestAddResult.TOO_LATE -> "no_time"
             }
-            extraText += "\n\n" + game.translator[messageId]
+            // (the original's text holds a space before the break: Hyperspace Lua reads it so)
+            extraText += (if (xyz.znix.xftl.hs.HS.active) " \n\n" else "\n\n") + game.translator[messageId]
         }
 
         // When ships are first unlocked, they add on an extra line.
@@ -200,6 +360,17 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             }
         }
 
+        // Hyperspace Lua: CreateChoiceBox's PRE_CREATE_CHOICEBOX (CustomAugments.cpp), before the original's part.
+        if (game.eventManager.hs != null) {
+            // the quest / unlock lines are part of the event's text by now: a script reads them and may rewrite them
+            event.created!!.hsExtraText = extraText
+            xyz.znix.xftl.hs.events.HsEventsLua.preChoiceBox(event.created!!)
+            xyz.znix.xftl.hs.events.HsEventsLua.diagnosticPreBox?.invoke(event.created!!)
+            extraText = event.created!!.hsExtraText ?: extraText
+            event.created!!.hsExtraText = null
+            xyz.znix.xftl.hs.events.HsFlow.beforeChoiceBox(game, event.created!!)
+        }
+
         // Events that have no text are valid, usually they are the result of a choice
         // Eg, to give the player some items and close the menu
         if (event.text == null) {
@@ -208,6 +379,12 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             // when an option is selected. For these events that'll never happen,
             // so add the resources now.
             addResources(event)
+            // CreateChoiceBox's POST_CREATE_CHOICEBOX (after its ModifyResources), then the diagnostics listener.
+            if (game.eventManager.hs != null) {
+                xyz.znix.xftl.hs.events.HsFlow.afterChoiceBox(game, event.created!!)
+                xyz.znix.xftl.hs.events.HsEventsLua.postChoiceBox(this, event.created!!)
+                xyz.znix.xftl.hs.events.HsFlow.boxListener?.invoke(game, event.created!!, null)
+            }
 
             currentEvent = null
 
@@ -219,6 +396,39 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         }
 
         currentEvent = event
+
+        // CreateChoiceBox (1.6.14 0x616680, 1.6.9 0x5f0f70): an event that kills crew draws the crew seed (WorldManager
+        // +0x12a0, cleared above) and picks with it now, when its own box is made (the box shows "<name> is gone", and
+        // that one dies when the box closes), not when the box is first drawn or when a parent box previews it.
+        if (event.event.removedCrew.isNotEmpty()) event.resources
+
+        if (game.eventManager.hs != null) {
+            // Hyperspace: CreateChoiceBox with HS's requirement, max_group and colour rules (HsFlow.choiceBox).
+            val box = xyz.znix.xftl.hs.events.HsFlow.choiceBox(game, event.created!!)
+            options = box.map { EvaluatedEvent(it.choice.event, game, it.choice.template, it.choice.text) }
+            hsTypes = box.map { it.type }.toIntArray()
+            // An event without choices has FTL's implicit "continue" one first (LocationEvent::AddChoice appends after it);
+            // a script that removed it (RemoveChoice 0) leaves only what it added.
+            if (options.isNotEmpty() && event.created!!.template.choices.isEmpty() && !event.created!!.hsContinueRemoved) {
+                options = listOf(continueEvent) + options
+                hsTypes = intArrayOf(0) + box.map { it.type }.toIntArray()
+            }
+            // the box of an event without choices holds its "Continue..." choice by POST_CREATE_CHOICEBOX (oracle
+            // sweep-world-y1 y-scrap: one choice, scrap 0)
+            if (options.isEmpty()) {
+                options = listOf(continueEvent)
+                hsTypes = intArrayOf(0)
+            }
+            xyz.znix.xftl.hs.events.HsFlow.afterChoiceBox(game, event.created!!)
+            xyz.znix.xftl.hs.events.HsEventsLua.postChoiceBox(this, event.created!!)
+            xyz.znix.xftl.hs.events.HsFlow.boxListener?.invoke(game, event.created!!, box)
+            if (options.isEmpty()) {
+                options = listOf(continueEvent)
+                hsTypes = intArrayOf(0)
+            }
+            optionBoundingBoxes.clear()
+            return
+        }
 
         val newOptions = ArrayList<EvaluatedEvent>()
         for (choice in event.created!!.choices)
@@ -244,14 +454,13 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             // If multiple options with the same max_group are set,
             // only the last one (first one we see in this iteration
             // order) is kept.
-            if (choice.maxGroup == null)
-                continue
+            val maxGroup = choice.maxGroup ?: continue
 
-            if (maxGroupHit.contains(choice.maxGroup)) {
+            if (maxGroupHit.contains(maxGroup)) {
                 newOptions.removeAt(i)
                 continue
             }
-            maxGroupHit.add(choice.maxGroup)
+            maxGroupHit.add(maxGroup)
         }
 
         options = newOptions
@@ -264,9 +473,21 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     }
 
     override fun draw(g: Graphics) {
+        // Hyperspace CHOICE_BOX render event around ChoiceBox::OnRender (fire site only)
+        if (xyz.znix.xftl.hs.HS.luaActive) {
+            val ren = xyz.znix.xftl.hs.render.HsRenderEvents
+            val i = ren.preObj(xyz.znix.xftl.hs.lua.LuaApi.RE_CHOICE_BOX, this, xyz.znix.xftl.hs.lua.LuaApi.T_ChoiceBox)
+            if (i >= 0) drawBox(g)
+            ren.postObj(xyz.znix.xftl.hs.lua.LuaApi.RE_CHOICE_BOX, i)
+            return
+        }
+        drawBox(g)
+    }
+
+    private fun drawBox(g: Graphics) {
         // Draw the frame. ChoiceBox::OnRender (0x004fc0f0): an outcome box wider than the 602px
         // frame widens it to the box's width + 25, centred on the box.
-        val outcome = syntheticEvents.firstOrNull()?.resources ?: currentEvent?.resources
+        val outcome = (syntheticEvents.firstOrNull()?.resources ?: currentEvent?.resources)?.let { hsChoiceScrap(it, currentEvent?.created) }
         val outcomeWidth = outcome?.takeIf { it.hasAnything }?.let { layoutOutcome(g, it, 0, 0, null).width } ?: 0
         if (outcomeWidth > size.x) {
             game.windowRenderer.render(position.x - 3 - (outcomeWidth - 577) / 2, position.y, outcomeWidth + 25, size.y)
@@ -274,36 +495,65 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             game.windowRenderer.render(position.x, position.y, size.x, size.y)
         }
 
+        if (!xyz.znix.xftl.hs.HS.active) {
+            drawContent(g)
+            return
+        }
+        // Hyperspace ScrollingChoiceBox: the text and choices scroll inside the frame
+        xyz.znix.xftl.hs.render.HsScrollingChoiceBox.render(game, g, boxCentred, position.x, position.y, size.x, size.y) {
+            drawContent(g).toFloat()
+        }
+        // Hyperspace event tooltips (EventTooltip.cpp: ChoiceBox::OnRender, after the box)
+        if (syntheticEvents.isEmpty()) {
+            val hovered = hoveredOption?.let { options.getOrNull(it) }
+            val reward = hovered?.takeIf { !it.isContinue }?.let { o ->
+                xyz.znix.xftl.hs.render.HsEventTooltip.reward(o.choiceResources.items, o.choiceResources.crew, o.event.removedStuff.isNotEmpty())
+            }
+            xyz.znix.xftl.hs.render.HsEventTooltip.render(game, g, reward, boxCentred)
+        }
+    }
+
+    private val boxCentred: Boolean get() = if (TouchMode.enabled) game.enemy == null else position.x > 250
+
+    /** ChoiceBox::OnRender's text and choices; returns lastChoice.y (the y after the last choice). */
+    private fun drawContent(g: Graphics): Int {
+        val fontSize = EventFontSize.clamped()
+        if (fontSize != textSize) {
+            textSize = fontSize
+            optionBoundingBoxes.clear()
+        }
+        // The box moves when an enemy arrives or leaves under it; the choices must answer where they are drawn.
+        if (position.x != boxesBuiltAtX) {
+            boxesBuiltAtX = position.x
+            optionBoundingBoxes.clear()
+        }
         if (syntheticEvents.isNotEmpty()) {
             drawSyntheticEvent(g, syntheticEvents.first())
-            return
+            return 0
         }
 
         // If syntheticEvent is empty, then currentEvent must not be null.
         val event = currentEvent!!
 
-        var textY = drawEventOutcome(g, event.text!! + extraText, event.resources)
+        var textY = drawEventOutcome(g, luaMainText ?: (event.text!! + extraText), hsChoiceScrap(event.resources, event.created))
 
         val rebuildBBs = optionBoundingBoxes.isEmpty()
 
+        if (TouchMode.enabled) return drawTouchRows(g, textY - TOUCH_CHOICES_UP, rebuildBBs)
+
         // You can think of each option having a top and bottom Y. For text
         // events there's a spacing between the top of the space and the baseline
-        // of the text (TEXT_OPTION_TOP_OFFSET), and then another offset from
+        // of the text (optionTopOffset), and then another offset from
         // the baseline to the bottom of the option (which is the top of the next
-        // option) - TEXT_OPTION_BOTTOM_MARGIN.
+        // option) - optionBottomMargin.
         // When resources are involved, the top of the resource box sits exactly
         // at the option's Y top, and there's 10 pixels (RESOURCE_BOTTOM_MARGIN)
         // between the bottom of the box and the start of the next option.
         for ((i, option) in options.withIndex()) {
             val choice = option.choice
             val enabled = isConditionsSatisfied(option)
-            val colour = when {
-                !enabled -> Constants.TEXT_OPTION_DISABLED
-                hoveredOption == i -> Constants.TEXT_OPTION_HOVER
-                choice == null -> Colour.white
-                choice.blue -> Constants.TEXT_OPTION_BLUE
-                else -> Colour.white
-            }
+            val hsType = hsTypes?.getOrNull(i)
+            val colour = optionColour(i, choice, hsType, enabled)
 
             val prefix = "${i + 1}. "
             var text = prefix + option.choiceText
@@ -312,15 +562,17 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             // we try to read its resources.
             // ChoiceBox lays Continue out like any other text row.
             if (option.isContinue) {
-                textY += TEXT_OPTION_TOP_OFFSET
+                textY += optionTopOffset
                 textY = drawText(textY, text, colour, rebuildBBs)
-                textY += TEXT_OPTION_BOTTOM_MARGIN
+                textY += optionBottomMargin
                 continue
             }
 
-            // Warn the user if they'll have to fire a crewmember
-            if (option.resources.crew.isNotEmpty() && game.isPlayerCrewFull) {
-                text += " " + game.translator["event_crew_full"]
+            // Warn the user if they'll have to fire a crewmember: CreateChoiceBox (0x616680) checks the choice event's
+            // stuff.crew > 0 and that the choice's reward is not hidden, with a full crew.
+            if (option.created?.crew != null && choice?.hidden != true && game.isPlayerCrewFull) {
+                // event_crew_full brings its own leading space (none in Japanese and Chinese).
+                text += game.translator["event_crew_full"]
             }
 
             // Draw the resources for this event, if appropriate
@@ -348,16 +600,16 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
                 val maxTextX = maxBoxX - textResourceMargin
 
                 // Align the text with the middle of the box
-                val textTop = textY + (boxSize.y - FONT_HEIGHT) / 2
-                val lineY = textTop + FONT_HEIGHT
+                val textTop = textY + (boxSize.y - fontHeight) / 2
+                val lineY = textTop + fontHeight
                 val textEndY = drawText(lineY, text, colour, rebuildBBs, maxTextX)
 
                 if (textEndY == lineY) {
                     // The event is only one line long, draw the resource
                     // box after the text.
-                    val boxX = textX + font.getWidth(text) + textResourceMargin
+                    val boxX = textX + textFont.getWidth(text) + textResourceMargin
                     val boxPos = ConstPoint(boxX, textY)
-                    drawResourceBox(g, option.choiceResources, boxPos, boxSize, colour)
+                    drawResourceBox(g, option.choiceResources, boxPos, boxSize, if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.resourceBoxColour(colour) else colour)
                 } else {
                     // The text was multiple lines long, draw the resource box
                     // on the right-mode side and centred on the text.
@@ -366,38 +618,168 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
                     // vanilla FTL too (though slightly shorter - though it's
                     // close enough, and I've had enough of fiddling with
                     // layouts to care about this particular inconsistency).
-                    val firstLineTop = lineY - FONT_HEIGHT
+                    val firstLineTop = lineY - fontHeight
                     val textHeight = textEndY - firstLineTop
                     val centreY = firstLineTop + textHeight / 2 - boxSize.y / 2
                     val boxPos = ConstPoint(maxBoxX, centreY)
-                    drawResourceBox(g, option.choiceResources, boxPos, boxSize, colour)
+                    drawResourceBox(g, option.choiceResources, boxPos, boxSize, if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.resourceBoxColour(colour) else colour)
                 }
 
-                textY = max(textEndY + TEXT_OPTION_BOTTOM_MARGIN, boxSize.y + RESOURCE_BOTTOM_MARGIN)
+                // ChoiceBox::OnRender: the row is as tall as the box or the text and 12 px, 10 px below the last row,
+                // and the mouse answers on the box as well as on the text.
+                val rowTop = textY
+                val rowHeight = max(boxSize.y, textEndY - lineY + textLineHeight + 12)
+                textY = rowTop + RESOURCE_BOTTOM_MARGIN + rowHeight
+                if (rebuildBBs && optionBoundingBoxes.isNotEmpty()) {
+                    val rowWidth = if (textEndY == lineY) textFont.getWidth(text) + textResourceMargin + boxSize.x else maxBoxX + boxSize.x - textX
+                    optionBoundingBoxes[optionBoundingBoxes.lastIndex] = Rectangle(textX.f, rowTop + 3f, rowWidth.f, rowHeight.f)
+                }
             } else {
-                textY += TEXT_OPTION_TOP_OFFSET
+                textY += optionTopOffset
                 textY = drawText(textY, text, colour, rebuildBBs)
-                textY += TEXT_OPTION_BOTTOM_MARGIN
+                textY += optionBottomMargin
             }
         }
+        return textY
+    }
+
+    private fun optionColour(i: Int, choice: Choice?, hsType: Int?, enabled: Boolean): Colour {
+        val colour0 = when {
+            !enabled -> Constants.TEXT_OPTION_DISABLED
+            hoveredOption == i -> Constants.TEXT_OPTION_HOVER
+            hsType != null -> if (hsType == 2) Constants.TEXT_OPTION_BLUE else Colour.white
+            choice == null -> Colour.white
+            choice.blue -> Constants.TEXT_OPTION_BLUE
+            else -> Colour.white
+        }
+
+        // Hyperspace customChoiceColors: the choice's <text color> set replaces this colour (HsColors.choiceText)
+        return if (xyz.znix.xftl.hs.HS.active && choice?.hsTextColor != null) xyz.znix.xftl.hs.render.HsColors.choiceText(choice.hsTextColor, colour0) else colour0
+    }
+
+    /** The touch layout's choices, each in a box of its own; returns the y after the last one. */
+    private fun drawTouchRows(g: Graphics, top: Int, rebuildBBs: Boolean): Int {
+        var rowY = top
+        for ((i, option) in options.withIndex()) {
+            val choice = option.choice
+            val enabled = isConditionsSatisfied(option)
+            val colour = if (enabled) optionColour(i, choice, hsTypes?.getOrNull(i), true) else TOUCH_ROW_DISABLED
+
+            var text = "${i + 1}. " + option.choiceText
+            var rewards: ResourceSet? = null
+            if (!option.isContinue) {
+                if (option.created?.crew != null && choice?.hidden != true && game.isPlayerCrewFull)
+                    text += game.translator["event_crew_full"]
+                rewards = option.choiceResources.takeIf { it.hasAnything }
+            }
+            rowY = drawTouchRow(g, text, colour, enabled, rewards, rowY, rebuildBBs)
+        }
+        return rowY
+    }
+
+    /**
+     * One boxed choice: the text 10 px in from the body text and wrapped at 540, with any rewards right after it (or at
+     * the end of the shorter wrap). [rowY] is 10 px above the box, the next row starts 15 px below it.
+     */
+    private fun drawTouchRow(g: Graphics, text: String, colour: Colour, enabled: Boolean, rewards: ResourceSet?, rowY: Int, rebuildBBs: Boolean): Int {
+        val f = textFont
+        val x = textX + 10
+        val rewardSize = rewards?.let { findResourceBoxSize(it) }
+        val fullWidth = f.getWidth(text)
+        val wrap = when {
+            rewardSize == null -> TOUCH_ROW_WRAP
+            fullWidth + rewardSize.x <= TOUCH_ROW_WRAP -> fullWidth + 10
+            else -> TOUCH_ROW_WRAP - 20 - rewardSize.x
+        }
+        val lines = f.wrapString(text, wrap)
+        val textWidth = lines.maxOf { f.getWidth(it) }
+        val textHeight = lines.size * textLineHeight
+
+        // Font 13 sits lower in its lines, so its box starts higher.
+        val smallFix = if (textSize == 13) 1 else 0
+        val top = rowY + 10
+        // The frame stands clear of the text above and below it.
+        val boxTop = top - 2 * smallFix - TOUCH_ROW_PAD
+        val boxHeight = max(textHeight + 2 + smallFix + 2 * TOUCH_ROW_PAD, rewardSize?.y ?: 0)
+        val boxX = x - 7
+        val boxWidth = textWidth + 14
+
+        g.colour = if (enabled) TOUCH_ROW_FILL else TOUCH_ROW_FILL_DISABLED
+        g.fillRect(boxX.f, boxTop.f, boxWidth.f, boxHeight.f)
+        g.colour = colour
+        g.fillRect(boxX.f, boxTop.f, boxWidth.f, 2f)
+        g.fillRect(boxX.f, boxTop + boxHeight - 2f, boxWidth.f, 2f)
+        g.fillRect(boxX.f, boxTop.f, 2f, boxHeight.f)
+        g.fillRect(boxX + boxWidth - 2f, boxTop.f, 2f, boxHeight.f)
+
+        var lineY = boxTop + 2 * smallFix + max(0, boxHeight - textHeight - 2 - smallFix) / 2 + textBaseline
+        for (line in lines) {
+            f.drawString(x.f, lineY.f, line, colour)
+            lineY += textLineHeight
+        }
+
+        if (rewards != null && rewardSize != null) {
+            val boxColour = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.resourceBoxColour(colour) else colour
+            drawResourceBox(g, rewards, ConstPoint(x + wrap, boxTop + (boxHeight - rewardSize.y) / 2), rewardSize, boxColour)
+        }
+
+        if (rebuildBBs)
+            optionBoundingBoxes += Rectangle(boxX.f, boxTop.f, boxWidth.f, boxHeight.f)
+
+        return boxTop + boxHeight + 15
+    }
+
+    /**
+     * The touch layout's hit test: the rows' bands reach each other, half of the gap each way, with 10 px beyond the box
+     * at the sides and outside the first and last rows. Unavailable rows take no touches.
+     */
+    private fun touchRowAt(x: Int, y: Int): Int? {
+        var hit: Int? = null
+        val last = optionBoundingBoxes.lastIndex
+        for ((i, bb) in optionBoundingBoxes.withIndex()) {
+            if (syntheticEvents.isEmpty() && options.getOrNull(i)?.let { isConditionsSatisfied(it) } != true) continue
+            val above = if (i == 0) 10f else TOUCH_ROW_GAP / 2f
+            val below = if (i == last) 10f else TOUCH_ROW_GAP / 2f
+            if (x >= bb.x - 10f && x <= bb.x + bb.width + 10f && y >= bb.y - above && y <= bb.y + bb.height + below)
+                hit = i
+        }
+        return hit
+    }
+
+    /**
+     * Hyperspace WorldManager::CreateChoiceBox hook (CustomAugments.cpp): the scrap the box shows is raised by the
+     * scrap augment fraction (display only; the event's own application already did it), unless the event has
+     * disableScrapAugments.
+     */
+    private fun hsChoiceScrap(set: ResourceSet, created: CreatedEvent?): ResourceSet {
+        if (!xyz.znix.xftl.hs.HS.active || set.scrap <= 0) return set
+        if (created != null && xyz.znix.xftl.hs.events.HsFlow.customFor(game, created)?.disableScrapAugments == true) return set
+        val v = xyz.znix.xftl.hs.ship.HsAugments.choiceTextScrap(playerShip)
+        if (v == 0f) return set
+        val copy = ResourceSet()
+        copy += set
+        copy.scrap = (set.scrap.toFloat() + set.scrap.toFloat() * v).toInt()
+        return copy
     }
 
     private fun drawEventOutcome(g: Graphics, text: String, resourcesGained: ResourceSet): Int {
-        var textY = position.y + 35
+        // The text's top is fixed; the choices start gap_size (30) below its last line (ChoiceBox::OnRender).
+        var textY = position.y + 23 + textBaseline
         textY = drawText(textY, text)
+        val belowText = textLineHeight - textBaseline
 
         if (resourcesGained.hasAnything) {
             // The box is centred 43 pixels below the baseline of the last line of
-            // the event text.
-            val boxMiddleY = textY + 43
+            // the event text (with font 12; 5px below the choices' start).
+            val boxMiddleY = textY + belowText + 35
 
             drawOutcomeBox(g, resourcesGained, position.x + 295, boxMiddleY)
 
             // The spacing between the event text and the options is constant, regardless
             // of the size of the rewards.
-            textY += 95
+            textY += belowText + 87
         } else {
-            textY += 45
+            textY += belowText + 37
         }
 
         // At this point, textY is where the choices should go.
@@ -406,7 +788,7 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     }
 
     private fun drawSyntheticEvent(g: Graphics, event: SyntheticEvent) {
-        val textY = drawEventOutcome(g, event.text, event.resources)
+        val textY = drawEventOutcome(g, event.text, hsChoiceScrap(event.resources, null))
 
         val rebuildBBs = optionBoundingBoxes.isEmpty()
 
@@ -417,7 +799,8 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         }
 
         val text = "1. " + game.translator["continue"]
-        drawText(textY, text, colour, rebuildBBs)
+        if (TouchMode.enabled) drawTouchRow(g, text, colour, true, null, textY - TOUCH_CHOICES_UP, rebuildBBs)
+        else drawText(textY, text, colour, rebuildBBs)
     }
 
     /** The measured outcome box: its size and, when there is a message line, the first row's size. */
@@ -482,11 +865,15 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         for (bp in set.items.filterIsInstance<AbstractWeaponBlueprint>()) {
             // WeaponBlueprint::GetDimensions (0x00603c80): the launcher as mounted, so turned on its side.
             val image = bp.getLauncher(game).getChargedImage(game)
-            val w = image.height
-            val h = image.width
+            // Hyperspace <iconReplace>: GetDimensions is the replacement's frame size.
+            val replaced = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsWeapons.iconSize(bp, game) else null
+            val w = replaced?.x ?: image.height
+            val h = replaced?.y ?: image.width
             val name = game.translator[bp.title!!]
             if (draw) {
-                bp.drawLauncherUI(image, g!!, (x + cx + w / 2 - (w + 1) / 2).f, (y + 16 - h / 2).f)
+                if (replaced != null) xyz.znix.xftl.hs.weapons.HsWeapons.drawIcon(bp, bp.hs!!, game, image, g!!,
+                    (x + cx + w / 2 - (w + 1) / 2).f + w / 2f, (y + 16 - h / 2).f + h / 2f)
+                else bp.drawLauncherUI(image, g!!, (x + cx + w / 2 - (w + 1) / 2).f, (y + 16 - h / 2).f, game)
                 resourceNumFont.drawString(x + cx + 10f + w, y + 21f, name, Colour.white)
             }
             cx += 20 + w + advance(resourceNumFont, name)
@@ -838,17 +1225,19 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         var textY = y
         var longestLine = 0
 
-        for (line in font.wrapString(msg, maxWidth.toInt())) {
-            longestLine = longestLine.coerceAtLeast(font.getWidth(line))
-            font.drawString(textX.f, textY.f, line, colour)
-            textY += 20
+        val f = textFont
+        val lineHeight = textLineHeight
+        for (line in f.wrapString(msg, maxWidth.toInt())) {
+            longestLine = longestLine.coerceAtLeast(f.getWidth(line))
+            f.drawString(textX.f, textY.f, line, colour)
+            textY += lineHeight
         }
 
         // Remove the space used by the last line.
-        textY -= 20
+        textY -= lineHeight
 
         if (addOption) {
-            optionBoundingBoxes += Rectangle(textX.f, y.f - 11, longestLine.f, textY - y + 14f)
+            optionBoundingBoxes += Rectangle(textX.f, y.f - fontHeight, longestLine.f, textY - y + lineHeight - 6f)
         }
 
         return textY
@@ -924,7 +1313,13 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         if (event.isContinue)
             return true
 
-        val res = event.resources
+        // Hyperspace: the box decided when it was made (CheckRequirements with HS's hook).
+        hsTypes?.let { types ->
+            val i = options.indexOf(event)
+            if (i >= 0) return types[i] != 1
+        }
+
+        val res = event.previewResources
 
         // Check we have enough stuff, if any of the resources are negative
         if (playerShip.scrap < -res.scrap)
@@ -978,7 +1373,7 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             if (playerShip.augmentValues.any { it.key.name == name }) {
                 return true
             }
-            return playerShip.cargoBlueprints.any { it?.name == name }
+            return playerShip.allCargo().any { it.name == name }
         }
         if (hasBlueprint(req))
             return true
@@ -1062,16 +1457,43 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         val p = scaleWindowPoint(x, y)
 
         hoveredOption = null
+        // Hyperspace ScrollingChoiceBox::MouseMove: choices answer only inside the box, at the scrolled position
+        val py = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.mouseMove(game, p.x, p.y) ?: return else p.y
+        if (TouchMode.enabled) {
+            if (touchFingerDown) hoveredOption = touchRowAt(p.x, py)
+            return
+        }
         for ((i, bb) in optionBoundingBoxes.withIndex()) {
-            if (bb.contains(p.x.f, p.y.f)) {
+            if (bb.contains(p.x.f, py.f)) {
                 hoveredOption = i
             }
         }
     }
 
+    override fun mouseReleased(button: Int, x: Int, y: Int) {
+        super.mouseReleased(button, x, y)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.mouseUp()
+        if (TouchMode.enabled && button == Input.MOUSE_LEFT_BUTTON && touchFingerDown) {
+            // The row under the finger as it lifts: sliding off a row cancels.
+            updateUI(x, y)
+            touchFingerDown = false
+            val idx = hoveredOption ?: return
+            hoveredOption = null
+            if (!choiceInputReady) logChoice("touch", -1, "delay") else chooseInput("touch", idx)
+        }
+    }
+
+    override fun mouseScroll(change: Int) {
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.wheel(change)
+    }
+
     override fun mouseClick(button: Int, x: Int, y: Int) {
         if (button != Input.MOUSE_LEFT_BUTTON) return
+        if (TouchMode.enabled) touchFingerDown = true
         updateUI(x, y)
+        // Hyperspace ScrollingChoiceBox::MouseClick (after the original; a choice closes or replaces the box)
+        if (xyz.znix.xftl.hs.HS.active && hoveredOption == null) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.mouseClick(x, y)
+        if (TouchMode.enabled) return
         if (!choiceInputReady) { logChoice("mouse", -1, "delay"); return }
         val idx = hoveredOption ?: return
         chooseInput("mouse", idx)
@@ -1110,6 +1532,26 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         game.shipUI.showPauseWindow()
     }
 
+    /** Diagnostics: the HS name of the event whose box is open (a synthetic event's [SyntheticEvent.hsName] while one shows). */
+    /** Diagnostics: the resources choice [index] previews (as the box draws them). */
+    fun diagnosticChoiceResources(index: Int): ResourceSet? = options.getOrNull(index)?.takeIf { !it.isContinue }?.choiceResources
+
+    /** Diagnostics: the resources of the open event, as shown and applied (picks the crew it kills if not yet). */
+    val diagnosticResources: ResourceSet? get() = if (syntheticEvents.isEmpty()) currentEvent?.takeIf { !it.isContinue }?.resources else null
+
+    val hsOpenEvent: String? get() = if (syntheticEvents.isEmpty()) currentEvent?.created?.template?.let { it.hsName ?: it.debugId } else syntheticEvents.first().hsName
+
+    /** Diagnostics (hs-fullrun reload): the box's internal state. */
+    fun diagnosticState(): String = "event=${currentEvent?.created?.template?.debugId} cont=${currentEvent?.isContinue} synthetic=${syntheticEvents.size} " +
+        "pending=${hsPendingChoice != null} depth=$hsDepth types=${hsTypes?.toList()} options=" +
+        options.map { "${if (it.isContinue) "continue" else it.created?.template?.debugId}:${isConditionsSatisfied(it)}" }
+
+    /** Diagnostics: the options the player can pick (a synthetic box's Continue is option 0). */
+    val diagnosticEnabledOptions: List<Int> get() = if (syntheticEvents.isNotEmpty()) listOf(0) else options.indices.filter { isConditionsSatisfied(options[it]) }.ifEmpty { listOf(0) }
+
+    /** Diagnostics: the number of options the open box offers. */
+    val optionCount: Int get() = if (currentEvent != null) options.size else 0
+
     fun selectOption(idx: Int) {
         // Pressing continue on a synthetic event closes it
         val syntheticEvent = syntheticEvents.firstOrNull()
@@ -1121,6 +1563,13 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
 
                 // Re-calculate the bounding boxes now the event is visible again
                 optionBoundingBoxes.clear()
+
+                val pending = hsPendingChoice
+                if (pending != null && syntheticEvents.isEmpty()) {
+                    hsPendingChoice = null
+                    hsShow(pending, false)
+                    return
+                }
 
                 // Check if we're out of stuff to show and have to close
                 checkClosed()
@@ -1153,42 +1602,32 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             return
         }
 
-        loadEvent(choice)
+        if (game.eventManager.hs != null && syntheticEvents.isNotEmpty()) {
+            hsPendingChoice = choice
+            return
+        }
+        if (game.eventManager.hs != null) hsShow(choice, false) else loadEvent(choice)
     }
 
     fun addSyntheticEvent(syntheticEvent: SyntheticEvent) {
         syntheticEvents.add(syntheticEvent)
+        syntheticEvent.hsName?.let { name -> syntheticListener?.invoke(name, syntheticEvent.text) }
 
         // Re-calculate the bounding boxes to only show the continue option.
         optionBoundingBoxes.clear()
     }
 
-    private fun addResources(event: EvaluatedEvent) {
-        game.givePlayerResources(event.resources)
-
-        // Remove blueprints
-        removeStuff@ for (name in event.event.removedStuff) {
-            val blueprint = game.blueprintManager[name]
-            if (blueprint is BlueprintList) {
-                // Try and remove one item from the list.
-                // This isn't used in vanilla, but seems like a logical behaviour
-                // that mods will probably use.
-                for (item in blueprint.list().shuffled(ftl.browser.BrowserRandom)) {
-                    if (playerShip.removeBlueprint(item))
-                        continue@removeStuff
-                }
-            } else {
-                // Cast is safe, as IBlueprint is always either
-                // Blueprint or BlueprintList.
-                playerShip.removeBlueprint(blueprint as Blueprint)
-            }
-        }
-
-        // Apply the status effects: WorldManager 0x613a10 / 0x613760 apply each entry to the player's ship when its
+    /**
+     * The event's status effects, applied when the event is loaded (CreateLocation / UpdateLocation check them
+     * before the choice box), not when its box closes: the native last-stand capture shows the flagship's sensors
+     * limit with its arrival box open.
+     */
+    private fun applyStatuses(event: EvaluatedEvent) {
+        // WorldManager 0x613a10 / 0x613760 apply each entry to the player's ship when its
         // target is the player or both, then to every enemy ship when it is the enemy or both. The ship system keeps
         // three independent fields (ShipSystem 0x63d1a0..0x63d3e0): the limit (+0x11c), the loss (+0x120) and the
         // divisor (+0x124, which also sets the limit to half the level). Clear resets all three.
-        for (effect in event.event.statuses) {
+        for (effect in event.created?.statusOverride ?: event.event.statuses) {
             val beacon = game.currentBeacon
 
             for (applyToPlayer in booleanArrayOf(true, false)) {
@@ -1202,6 +1641,12 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
 
                 // With no enemy aboard the enemy half has nothing to apply to.
                 val ship = if (applyToPlayer) playerShip else game.enemy ?: continue
+
+                // Hyperspace: the reactor (system id 17) takes the status on its PowerManager (ShipManager 0x49e3f0).
+                if (xyz.znix.xftl.hs.HS.active && effect.system == "reactor") {
+                    xyz.znix.xftl.hs.systems.HsPower.status(ship, applyToPlayer, effect.op, effect.amount)
+                    continue
+                }
 
                 // Find the system this effect applies to; an unknown name (ShipSystem 0x63db50 gives -1) does nothing.
                 val system = ship.systems.firstOrNull { it.codename == effect.system } ?: continue
@@ -1235,6 +1680,42 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
                             system.scriptedPowerLimit = system.energyLevels / 2
                     }
                 }
+            }
+        }
+    }
+
+    private fun addResources(event: EvaluatedEvent) {
+        val hsCreated = if (game.eventManager.hs != null) event.created else null
+        if (hsCreated != null) xyz.znix.xftl.hs.events.HsFlow.beforeModifyResources(game, hsCreated)
+        addResourcesOriginal(event)
+        if (hsCreated != null) xyz.znix.xftl.hs.events.HsFlow.afterModifyResources(game, hsCreated)
+        resourcesListener?.invoke()
+    }
+
+    private fun addResourcesOriginal(event: EvaluatedEvent) {
+        // ModifyResources (1.6.14 0x615930) kills the crew CreateChoiceBox picked for the box (the event's crew
+        // blueprint, LocationEvent +0x4a0; no second pick, native vr-crew-close). An event without text is applied
+        // by CreateChoiceBox before it picks (0x616680 calls ModifyResources first): ModifyResources picks the crew it
+        // kills itself, and the box's pick follows on the shorter crew list.
+        val boxPickPending = event.event.removedCrew.isNotEmpty() && !event.resourcesEvaluated
+        game.givePlayerResources(event.resources)
+        if (boxPickPending) event.event.pickLostCrew(game, ResourceSet())
+
+        // Remove blueprints
+        removeStuff@ for (name in event.event.removedStuff) {
+            val blueprint = game.blueprintManager.getOrNull(name) ?: continue@removeStuff
+            if (blueprint is BlueprintList) {
+                // Try and remove one item from the list.
+                // This isn't used in vanilla, but seems like a logical behaviour
+                // that mods will probably use.
+                for (item in blueprint.list().shuffled(ftl.browser.BrowserRandom)) {
+                    if (playerShip.removeBlueprint(item))
+                        continue@removeStuff
+                }
+            } else {
+                // Cast is safe, as IBlueprint is always either
+                // Blueprint or BlueprintList.
+                playerShip.removeBlueprint(blueprint as Blueprint)
             }
         }
 
@@ -1279,7 +1760,7 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
 
         val isMaxed = when {
             isReactor -> playerShip.purchasedReactorPower >= playerShip.maxReactorPower
-            else -> system!!.energyLevels >= system.blueprint.maxPower
+            else -> system!!.energyLevels >= system.maxLevel
         }
 
         if (isMaxed) {
@@ -1319,6 +1800,9 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     private fun checkClosed() {
         if (syntheticEvents.isNotEmpty() || currentEvent != null)
             return
+        // Hyperspace: an event's HS steps may still load the next event into this window.
+        if (hsDepth > 0)
+            return
 
         close()
         if (secretSectorPending) {
@@ -1330,6 +1814,11 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     fun saveToXML(elem: Element, refs: ObjectRefs) {
         elem.setAttribute("secretSectorPending", secretSectorPending.toString())
         elem.setAttribute("openTime", openTime.toString())
+        // Hyperspace box state decided when the box was made (HsFlow.choiceBox types), the quest line loadEvent appended to
+        // the text, and the choice waiting behind synthetic events: a reload shows the same box and keeps its options usable.
+        hsTypes?.let { elem.setAttribute("hsTypes", it.joinToString(",")) }
+        if (extraText.isNotEmpty()) elem.addContent(Element("extraText").setText(extraText))
+        hsPendingChoice?.let { pending -> options.indexOf(pending).takeIf { it >= 0 }?.let { elem.setAttribute("hsPending", it.toString()) } }
         currentEvent?.let { event ->
             val currentEventElem = Element("currentEvent")
             saveEEToXML(event, currentEventElem, refs)
@@ -1381,6 +1870,10 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         for (optionElem in elem.getChildren("option")) {
             (options as ArrayList).add(loadEEFromXML(optionElem, refs, currentEvent))
         }
+
+        elem.getAttributeValue("hsTypes")?.let { v -> hsTypes = if (v.isEmpty()) IntArray(0) else v.split(',').map { it.toInt() }.toIntArray() }
+        elem.getChild("extraText")?.let { extraText = it.text }
+        elem.getAttributeValue("hsPending")?.toIntOrNull()?.let { hsPendingChoice = options.getOrNull(it) }
     }
 
     private fun saveEEToXML(event: EvaluatedEvent, elem: Element, refs: ObjectRefs, parent: EvaluatedEvent? = null) {
@@ -1411,7 +1904,7 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         }
 
         elem.getAttributeValue("choiceIndex")?.toIntOrNull()?.let { index ->
-            val choice = parent!!.created!!.choices[index]
+            val choice = parent!!.created!!.choices.getOrNull(index) ?: return continueEvent
             return EvaluatedEvent(choice.event, game, choice.template, choice.text)
         }
 
@@ -1419,16 +1912,16 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         if (createdElem != null) {
             val created = CreatedEvent.loadFromXML(createdElem, game)
             val choiceId = SaveUtil.getAttr(elem, "choiceId")
-            val choice = if (choiceId == "") null else game.eventManager.getChoiceByDeserialisationId(choiceId)
+            val choice = if (choiceId == "") null else game.eventManager.getSavedChoice(choiceId)
             return EvaluatedEvent(created, game, choice, null)
         }
 
         // The format before events were created eagerly: the event and
         // choice ids and a seed. The event is created now instead.
         val eventId = SaveUtil.getAttr(elem, "eventId")
-        val event = game.eventManager.getByDeserialisationId(eventId)
+        val event = game.eventManager.getSavedEvent(eventId)
         val choiceId = SaveUtil.getAttr(elem, "choiceId")
-        val choice = if (choiceId == "") null else game.eventManager.getChoiceByDeserialisationId(choiceId)
+        val choice = if (choiceId == "") null else game.eventManager.getSavedChoice(choiceId)
         val created = game.eventCreator.createFrom(event, game.eventCreator.currentLevel())
             ?: return continueEvent
         return EvaluatedEvent(created, game, choice, null)
@@ -1439,7 +1932,8 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
      * code when something happens. This includes breaking down duplicate
      * augments, and the crew clone success/failure messages.
      */
-    class SyntheticEvent(val text: String) {
+    /** [hsName]: the event the text came from (AUGMENT_FULL, EQUIP_FULL), for the diagnostics probe. */
+    class SyntheticEvent @JvmOverloads constructor(val text: String, val hsName: String? = null) {
         val resources = ResourceSet()
     }
 
@@ -1455,14 +1949,28 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     ) {
         val isContinue: Boolean = created == null
         val event: Event get() = created?.template ?: throw Exception("Continue does not have an event")
-        val resources by lazy { created!!.toResourceSet(game) }
-        val text: String? = created?.text?.localised
+        private val resourcesLazy = lazy { created!!.toResourceSet(game) }
+
+        /** The resources of this event once its box is made: the crew it kills are picked (see [previewResources]). */
+        val resources by resourcesLazy
+        val resourcesEvaluated: Boolean get() = resourcesLazy.isInitialized()
+
+        /**
+         * The resources a parent box shows for this choice, and checks its requirements with: the original never picks
+         * the crew a choice would kill for its preview, so neither the pick nor its seed draw happens here.
+         */
+        val previewResources by lazy { created!!.toResourceSet(game, false) }
+        val text: String? get() = created?.text?.localised
 
         /**
          * If this event is being displayed as a choice inside another event,
          * this is the text it's option uses.
          */
-        val choiceText: String = choiceTextDrawn?.localised ?: game.translator["continue"]
+        private val choiceTextBase: String = choiceTextDrawn?.localised ?: game.translator["continue"]
+
+        /** Hyperspace Lua: ChoiceText.text as a script wrote it. */
+        var choiceTextOverride: String? = null
+        val choiceText: String get() = choiceTextOverride ?: choiceTextBase
 
         /**
          * The resources that should be displayed in a choice. This filters out
@@ -1475,7 +1983,7 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             if (choice?.hidden == true)
                 return@lazy result
 
-            result += resources
+            result += previewResources
             result.lostCrew.clear()
             result.damage.clear()
             result.upgrades.clear()
@@ -1488,24 +1996,40 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
                 result.missiles = 0
             }
 
+            // Hyperspace CreateChoiceBox hook: the choice's scrap shows the scrap augment fraction (not for disableScrapAugments)
+            if (xyz.znix.xftl.hs.HS.active && result.scrap > 0 &&
+                xyz.znix.xftl.hs.events.HsFlow.customFor(game, created)?.disableScrapAugments != true
+            ) {
+                val v = xyz.znix.xftl.hs.ship.HsAugments.choiceTextScrap(game.player)
+                if (v != 0f) result.scrap = (result.scrap.toFloat() + result.scrap.toFloat() * v).toInt()
+            }
+
             return@lazy result
         }
     }
 
     companion object {
+        /** Diagnostics (hs-events probe): called with the event name and text when a named synthetic event is added. */
+        @JvmField var syntheticListener: ((String, String) -> Unit)? = null
+
+        /** Diagnostics: an event's resources (and HS's ModifyResources hooks) were applied. */
+        @JvmField var resourcesListener: (() -> Unit)? = null
+
         private const val FONT_HEIGHT = 11
-
-        // Text-only options (no resources) are spaced 32 pixels apart
-        private const val TEXT_OPTION_SPACING = 32
-
-        // The pixels between the top of an option and where it's text is placed
-        private const val TEXT_OPTION_TOP_OFFSET = 15
-        private const val TEXT_OPTION_BOTTOM_MARGIN = TEXT_OPTION_SPACING - TEXT_OPTION_TOP_OFFSET
 
         private const val RESOURCE_BOTTOM_MARGIN = 10
 
         private const val RESOURCE_LEFT_START = 5
         private const val RESOURCE_ICON_SPACING = 30
         private const val RESOURCE_RIGHT_SPACING = 9
+
+        // The touch layout's boxed rows. The choices start 7 px above where the desktop layout measures from.
+        private const val TOUCH_CHOICES_UP = 7
+        private const val TOUCH_ROW_WRAP = 540
+        private const val TOUCH_ROW_GAP = 30
+        private const val TOUCH_ROW_PAD = 6
+        private val TOUCH_ROW_FILL = Colour(0f, 0f, 0f, 0.5f)
+        private val TOUCH_ROW_FILL_DISABLED = Colour(0f, 0f, 0f, 0.25f)
+        private val TOUCH_ROW_DISABLED = Colour(243 * 3 / 4, 255 * 3 / 4, 80 * 3 / 4, 127)
     }
 }

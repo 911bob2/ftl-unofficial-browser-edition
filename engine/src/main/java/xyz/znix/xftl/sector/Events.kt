@@ -67,7 +67,7 @@ class Event(
      */
     val deserialisationId: String,
 
-    imageFinder: (String) -> ImageList, loadText: (Element) -> IEventText,
+    imageFinder: (String) -> ImageList?, loadText: (Element) -> IEventText,
 
     private val uniqueRegistry: UniqueEventRegistry? = null
 ) : IEvent {
@@ -81,6 +81,9 @@ class Event(
     val isConsumedUnique: Boolean get() = unique && uniqueRegistry?.isConsumed(this) == true
 
     val isDistressBeacon: Boolean = elem.getChild("distressBeacon") != null
+
+    /** `<beacon/>` (Hyperspace Lua LocationEvent.beacon). */
+    val hasBeaconTag: Boolean = elem.getChild("beacon") != null
     val isStore: Boolean = elem.getChild("store") != null
 
     val itemsModifySteal: Boolean
@@ -102,6 +105,10 @@ class Event(
     val addedCrew: List<AddCrew>
     val removedCrew: List<RemoveCrew>
     val autoRewards: Pair<RewardType, RewardTier>?
+
+    /** Hyperspace: an `<autoReward>` type the vanilla list doesn't have (a hyperspace.xml `<reward>` name). */
+    var hsAutoReward: Pair<String, RewardTier>? = null
+        private set
     val blueprintRewards: List<String>
     val hullDamage: List<EventHullDamage>
     val systemUpgrades: List<EventSystemUpgrade>
@@ -110,11 +117,22 @@ class Event(
     val unlockShip: String? = elem.getChild("unlockShip")?.getAttributeValue("id")
     val secretSector: Boolean = elem.getChild("secretSector") != null
 
+    /** `<crewMember amount class>` as written (Hyperspace reads stuff.crew / crewType). */
+    val crewMemberAmount: Int = elem.getChild("crewMember")?.getAttributeValue("amount")?.let(::atoiCompat) ?: 0
+    val crewMemberClass: String? = elem.getChild("crewMember")?.getAttributeValue("class")
+
     val boarderRace: String?
     val boarderCount: IntRange
 
     /** `<boarders breach="true">`: they cut in through the hull instead of teleporting. */
     val boarderBreach: Boolean
+
+    /**
+     * `<boarders amount="n">` (BoardingEvent +0x880, -1 when absent): GetEvent (0x5dce90) rolls the count from min/max
+     * only while this is -1. Vanilla data never sets it.
+     */
+    var boarderAmount: Int = -1
+        private set
 
     val statuses: List<EventStatus>
     val removedStuff: List<String>
@@ -224,9 +242,11 @@ class Event(
         if (boardersElem != null) {
             // TODO what's the default race?
             boarderRace = boardersElem.getAttributeValue("class") ?: "random"
-            val min = boardersElem.getAttributeValue("min").toInt()
-            val max = boardersElem.getAttributeValue("max").toInt()
+            // The parser (0x5e52c0) reads min, max and amount only when present (atoi).
+            val min = boardersElem.getAttributeValue("min")?.let(::atoiCompat) ?: 0
+            val max = boardersElem.getAttributeValue("max")?.let(::atoiCompat) ?: 0
             boarderCount = min..max
+            boardersElem.getAttributeValue("amount")?.let { boarderAmount = atoiCompat(it) }
             boarderBreach = boardersElem.getAttributeValue("breach")?.toBoolean() ?: false
         } else {
             boarderRace = null
@@ -236,9 +256,13 @@ class Event(
 
         val auto = elem.getChild("autoReward")
         autoRewards = if (auto != null) {
-            val type = if (auto.textTrim.equals("scrap", true)) RewardType.SCRAP_ONLY else RewardType.valueOf(auto.textTrim.toUpperCase())
             val tier = RewardTier.fromName(auto.getAttributeValue("level"))
-            Pair(type, tier)
+            val known = if (auto.textTrim.equals("scrap", true)) RewardType.SCRAP_ONLY
+            else if (xyz.znix.xftl.hs.HS.active) RewardType.values().firstOrNull { it.name == auto.textTrim.toUpperCase() }
+            else RewardType.valueOf(auto.textTrim.toUpperCase())
+            // Hyperspace custom rewards (CustomRewards.cpp): kept for HsRewards; reported until they are generated.
+            if (xyz.znix.xftl.hs.HS.active) hsAutoReward = Pair(auto.textTrim, tier)
+            known?.let { Pair(it, tier) }
         } else {
             null
         }
@@ -246,7 +270,7 @@ class Event(
         blueprintRewards = ArrayList()
         for (e in listOf("weapon", "drone", "augment").flatMap(elem::getChildren)) {
             val name = e.requireAttributeValue("name")
-            check(e.children.size == 0)
+            check(e.children.size == 0 || xyz.znix.xftl.hs.HS.modded)
             blueprintRewards += if (name == "RANDOM") "xftl_rand_${e.name.toLowerCase()}" else name
         }
         blueprintRewards.trimToSize()
@@ -357,6 +381,9 @@ class Event(
      */
     override fun resolve(): Event = this
 
+    /** Hyperspace only: EventsParser::ProcessEvent's name (its own, or "PARENT n"), the key of its CustomEvent. */
+    var hsName: String? = null
+
     internal fun consumeUnique() {
         if (unique)
             uniqueRegistry?.consume(this)
@@ -439,10 +466,10 @@ class Event(
     }
 
     /**
-     * ShipManager::KillRandomCrew (0x4ae0b0) -> 0x4a3000: the stream is reseeded with the event's crew-kill seed
-     * (WorldManager +0x12a0, drawn once per event and shared by every preview and the final application), then
-     * `random32() % count` picks among the player's crew that aren't drones, of the named class if any are (if
-     * none is, the class is dropped). Null when the ship has no crew.
+     * ShipManager::SelectRandomCrew (1.6.14 0x4a3000, 1.6.9 0x498520) as the event code calls it: the stream is
+     * reseeded with the event's crew-kill seed (WorldManager +0x12a0, drawn with `random32()` the first time an
+     * event needs it, then shared), then `random32() % count` picks among the player's crew that aren't drones, of
+     * the named class if any are (if none is, the class is dropped). Null when the ship has no crew.
      */
     internal fun pickCrewToKill(game: InGameState, info: RemoveCrew): LivingCrew? {
         val allCrew = game.player.crew
@@ -458,8 +485,26 @@ class Event(
         if (candidates.isEmpty())
             candidates = allCrew
 
-        ftl.browser.NativeRandom.seed(game.eventManager.crewKillSeed())
-        return candidates[ftl.browser.NativeRandom.nextInt(candidates.size)]
+        val before = ftl.browser.NativeRandom.snapshot()
+        val seed = game.eventManager.crewKillSeed()
+        ftl.browser.NativeRandom.seed(seed)
+        val picked = candidates[ftl.browser.NativeRandom.nextInt(candidates.size)]
+        // Hyperspace: SelectRandomCrew's HS hook replaces the pick (CustomEvents.cpp), under this event's settings.
+        val hs = game.eventManager.hs ?: return picked
+        val hsPicked = xyz.znix.xftl.hs.events.HsCrew.selectRandomCrew(game, picked, seed, info.race ?: "", hsName?.let { hs.getCustomEvent(it) })
+        xyz.znix.xftl.hs.events.HsCrew.pickTrace?.invoke(hsName ?: "", before, seed, hsPicked?.blueprint?.name ?: "")
+        return hsPicked
+    }
+
+    /**
+     * One SelectRandomCrew per crew loss of this event, the picks added to [into]. CreateChoiceBox (1.6.14 0x616680,
+     * 1.6.9 0x5f0f70) picks when the event's box is made and keeps the crew in the event (LocationEvent +0x4a0), which
+     * ModifyResources (0x615930 / 0x5f0290) kills when the event is applied. An event without text is applied first
+     * (ModifyResources picks itself), then CreateChoiceBox picks again. Each pick reseeds the stream with the seed.
+     */
+    internal fun pickLostCrew(game: InGameState, into: ResourceSet) {
+        for (info in removedCrew)
+            pickCrewToKill(game, info)?.let { into.lostCrew.add(RemoveCrewEval(it, info)) }
     }
 
     /**
@@ -468,10 +513,9 @@ class Event(
      * was rolled with the event; their race and names are drawn here), the
      * hull damage, the system upgrades and the pursuit change.
      */
-    internal fun applyRuntimeEffects(game: InGameState, resourcesGained: ResourceSet, boarderCountRolled: Int) {
-        // Select crewmembers to kill
-        for (info in removedCrew)
-            pickCrewToKill(game, info)?.let { resourcesGained.lostCrew.add(RemoveCrewEval(it, info)) }
+    internal fun applyRuntimeEffects(game: InGameState, resourcesGained: ResourceSet, boarderCountRolled: Int, pickCrew: Boolean = true) {
+        // Select crewmembers to kill ([pickCrew] false: a choice preview, which the original never picks for)
+        if (pickCrew) pickLostCrew(game, resourcesGained)
 
         // Spawn boarders: the race, names and room are drawn when they come aboard (0x408260)
         if (boarderRace != null) {
@@ -487,7 +531,8 @@ class Event(
 
     init {
         // Check for and print out warnings for unknown elements
-        for (child in elem.children) {
+        // Hyperspace content is checked by hs.events (HsEventFiles.checkEventNode), which knows HS's tags.
+        if (!xyz.znix.xftl.hs.HS.active) for (child in elem.children) {
             if (child.name in KNOWN_TAGS)
                 continue
 
@@ -644,6 +689,8 @@ class EventStatus(
 }
 
 class Choice(val text: IEventText, lazyEvent: Lazy<IEvent>, elem: Element, val deserialisationId: String) {
+    private val lazyEvent0 = lazyEvent
+
     /**
      * Event to be triggered when this choice is taken. This element is required. One of:
      * A complete event, as detailed above (which can again contain choices).
@@ -657,7 +704,7 @@ class Choice(val text: IEventText, lazyEvent: Lazy<IEvent>, elem: Element, val d
      * in the choice's event (specified by <item_modify> or <autoReward>) to appear next to the choice's text.
      * See req for behavior of hidden when used alongside req.
      */
-    val hidden: Boolean = elem.getAttributeValue("hidden")?.toBoolean() ?: false
+    var hidden: Boolean = elem.getAttributeValue("hidden")?.toBoolean() ?: false
 
     /**
      * The name of any race, weapon, drone, augmentation or system/subsystem.
@@ -668,19 +715,19 @@ class Choice(val text: IEventText, lazyEvent: Lazy<IEvent>, elem: Element, val d
      * When hidden is omitted or set to false and the player does not have the listed req, the player will be able
      *   to see the choice but will be unable to select it (it will be grayed out).
      */
-    val req: String? = elem.getAttributeValue("req")
+    var req: String? = elem.getAttributeValue("req")
 
     /**
      * The minimum level of a system required by [req].
      */
-    val minLevel: Int? = elem.getAttributeValue("lvl")?.toInt()
+    var minLevel: Int? = elem.getAttributeValue("lvl")?.toInt()
 
     /**
      * The maximum level of a system required by [req].
      *
      * Note this is usually used with (or replaced by) [maxGroup].
      */
-    val maxLevel: Int? = elem.getAttributeValue("max_lvl")?.toInt()
+    var maxLevel: Int? = elem.getAttributeValue("max_lvl")?.toInt()
 
     /**
      * This defines a group of choices, only one of which can be displayed.
@@ -691,13 +738,27 @@ class Choice(val text: IEventText, lazyEvent: Lazy<IEvent>, elem: Element, val d
      * This behaviour doesn't seem to be documented anywhere, and is largely
      * guessed from the XML.
      */
-    val maxGroup: Int? = elem.getAttributeValue("max_group")?.toInt()
+    var maxGroup: Int? = elem.getAttributeValue("max_group")?.toInt()
 
     /**
      * true/false, true if omitted. Determines whether the choice will appear as (literally) a blue choice.
      * Only has meaning when used alongside req, as only req can make the choice blue in the first place.
      */
-    val blue: Boolean = elem.getAttributeValue("blue")?.toBoolean() ?: (req != null)
+    var blue: Boolean = elem.getAttributeValue("blue")?.toBoolean() ?: (req != null)
+
+    /** Hyperspace customChoiceColors: the text colour name of this choice (HsColors.choiceText). */
+    var hsTextColor: String? = elem.getChild("text")?.getAttributeValue("color")
+
+    /**
+     * Hyperspace Lua (LocationEvent::Choice::hiddenReward): a per-instance copy of this choice, so a script changing a
+     * created event's choice leaves the template and every other event made from it alone.
+     */
+    fun copy(): Choice {
+        val c = Choice(text, lazyEvent0, org.jdom2.Element("choice"), deserialisationId)
+        c.hidden = hidden; c.req = req; c.minLevel = minLevel; c.maxLevel = maxLevel; c.maxGroup = maxGroup; c.blue = blue
+        c.hsTextColor = hsTextColor
+        return c
+    }
 }
 
 interface IEventText {
@@ -746,8 +807,8 @@ class TextList(val name: String, val items: List<IEventText>) : IEventText {
             return
         }
         val parts = state.split(';')
-        for (i in parts[0].split(',')) if (i.isNotEmpty()) remaining.add(items[i.toInt()])
-        for (i in parts.getOrElse(1) { "" }.split(',')) if (i.isNotEmpty()) used.add(items[i.toInt()])
+        for (i in parts[0].split(',')) if (i.isNotEmpty()) items.getOrNull(i.toInt())?.let { remaining.add(it) }
+        for (i in parts.getOrElse(1) { "" }.split(',')) if (i.isNotEmpty()) items.getOrNull(i.toInt())?.let { used.add(it) }
     }
 
     override fun resolve(rand: Random): String {
@@ -801,4 +862,16 @@ enum class FleetBackground(val xmlName: String) {
     REBEL("rebel"),
     FEDERATION("fed"),
     BOTH("battle")
+}
+
+/** C atoi: optional whitespace and sign, then the leading digits; 0 when there are none. */
+internal fun atoiCompat(s: String): Int {
+    var i = 0
+    while (i < s.length && s[i].isWhitespace()) i++
+    var neg = false
+    if (i < s.length && (s[i] == '-' || s[i] == '+')) { neg = s[i] == '-'; i++ }
+    var v = 0L
+    while (i < s.length && s[i] in '0'..'9') { v = v * 10 + (s[i] - '0'); if (v > Int.MAX_VALUE.toLong() + 1) break; i++ }
+    if (neg) v = -v
+    return v.coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
 }

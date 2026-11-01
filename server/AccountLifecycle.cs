@@ -19,7 +19,7 @@ public sealed class AccountLifecycle(IServiceScopeFactory scopes, DebugLogs logs
                     var db = scope.ServiceProvider.GetRequiredService<GameDatabase>();
                     var users = scope.ServiceProvider.GetRequiredService<UserManager<Player>>();
                     // Expired sign-in sessions are otherwise only deleted when their own cookie returns.
-                    if (DateTime.UtcNow >= nextPurge) { var purged = await DatabaseTicketStore.PurgeAsync(db, stoppingToken); nextPurge = DateTime.UtcNow + SessionPolicy.PurgeInterval; if (purged > 0) logger.LogInformation("Removed {Count} expired sign-in sessions", purged); }
+                    if (DateTime.UtcNow >= nextPurge) { var purged = await DatabaseTicketStore.PurgeAsync(db, stoppingToken); await CloudSaves.PurgeTombstones(db, stoppingToken); nextPurge = DateTime.UtcNow + SessionPolicy.PurgeInterval; if (purged > 0) logger.LogInformation("Removed {Count} expired sign-in sessions", purged); }
                     foreach (var intent in await db.Settings.Where(s => s.Key.StartsWith(DeletePrefix)).ToListAsync(stoppingToken)) {
                         var id = intent.Key[DeletePrefix.Length..];
                         if (!tests.RemoveOwner(id) || !await logs.DeleteAccount(id)) continue;
@@ -28,6 +28,12 @@ public sealed class AccountLifecycle(IServiceScopeFactory scopes, DebugLogs logs
                         await db.Leases.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
                         await db.Saves.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
                         await db.Snapshots.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
+                        await db.SaveSlots.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
+                        await db.CloudSaves.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
+                        await db.CloudSnapshots.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
+                        await db.SaveTombstones.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
+                        await db.LockOverrides.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
+                        await db.Profiles.Where(s => s.UserId == id).ExecuteDeleteAsync(stoppingToken);
                         var player = await users.FindByIdAsync(id);
                         if (player != null) Bootstrap.Check(await users.DeleteAsync(player));
                         db.Settings.Remove(intent); db.Audits.Add(new() { SubjectId = id, Action = "user-deleted" });

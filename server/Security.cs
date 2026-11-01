@@ -91,9 +91,29 @@ public static class Bootstrap {
         // builds still read the table and the schema version stays 1.
         if(await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM pragma_table_info('Snapshots') WHERE name='Kind'").SingleAsync()==0)
             await db.Database.ExecuteSqlRawAsync("ALTER TABLE Snapshots ADD COLUMN Kind TEXT NULL;");
+        // Save slots (2026-10-24): one optional table and two nullable columns; older builds ignore them.
+        if(await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM pragma_table_info('Snapshots') WHERE name='Slot'").SingleAsync()==0)
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE Snapshots ADD COLUMN Slot INTEGER NULL;");
+        if(await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM pragma_table_info('Saves') WHERE name='ActiveSlot'").SingleAsync()==0)
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE Saves ADD COLUMN ActiveSlot INTEGER NULL;");
+        await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS \"SaveSlots\" (\"Id\" INTEGER NOT NULL CONSTRAINT \"PK_SaveSlots\" PRIMARY KEY AUTOINCREMENT, \"UserId\" TEXT NOT NULL, \"Slot\" INTEGER NOT NULL, \"Name\" TEXT NOT NULL, \"Run\" TEXT NULL, \"EngineBuild\" TEXT NOT NULL, \"AssetVersion\" TEXT NOT NULL, \"CreatedUtc\" TEXT NOT NULL, \"PlayedUtc\" TEXT NOT NULL);");
+        await db.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX IF NOT EXISTS \"IX_SaveSlots_UserId_Slot\" ON \"SaveSlots\" (\"UserId\", \"Slot\");");
+        // Save model 2 (2026-10-29): new tables only; the save model 1 tables stay for the migration and older builds.
+        await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS \"CloudSaves\" (\"UserId\" TEXT NOT NULL, \"Id\" TEXT NOT NULL, \"Name\" TEXT NOT NULL, \"SetupKey\" TEXT NOT NULL, \"Setup\" TEXT NOT NULL, \"Meta\" TEXT NOT NULL, \"Run\" TEXT NULL, \"RunBytes\" INTEGER NOT NULL, \"Bytes\" INTEGER NOT NULL, \"Revision\" INTEGER NOT NULL, \"CreatedUtc\" TEXT NOT NULL, \"UpdatedUtc\" TEXT NOT NULL, \"ChangedUtc\" TEXT NOT NULL, \"LockInstance\" TEXT NULL, \"LockDeviceId\" TEXT NULL, \"LockDevice\" TEXT NULL, \"LockPlatform\" TEXT NULL, \"LockSinceUtc\" TEXT NULL, \"LockSeenUtc\" TEXT NULL, CONSTRAINT \"PK_CloudSaves\" PRIMARY KEY (\"UserId\", \"Id\"));");
+        await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS \"CloudSnapshots\" (\"Id\" INTEGER NOT NULL CONSTRAINT \"PK_CloudSnapshots\" PRIMARY KEY AUTOINCREMENT, \"UserId\" TEXT NOT NULL, \"SaveId\" TEXT NOT NULL, \"Revision\" INTEGER NOT NULL, \"Payload\" TEXT NOT NULL, \"Bytes\" INTEGER NOT NULL, \"Kind\" TEXT NULL, \"CreatedUtc\" TEXT NOT NULL);");
+        await db.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX IF NOT EXISTS \"IX_CloudSnapshots_UserId_SaveId_Revision\" ON \"CloudSnapshots\" (\"UserId\", \"SaveId\", \"Revision\");");
+        await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS \"SaveTombstones\" (\"UserId\" TEXT NOT NULL, \"Id\" TEXT NOT NULL, \"DeletedUtc\" TEXT NOT NULL, CONSTRAINT \"PK_SaveTombstones\" PRIMARY KEY (\"UserId\", \"Id\"));");
+        await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS \"LockOverrides\" (\"Id\" INTEGER NOT NULL CONSTRAINT \"PK_LockOverrides\" PRIMARY KEY AUTOINCREMENT, \"UserId\" TEXT NOT NULL, \"SaveId\" TEXT NOT NULL, \"Instance\" TEXT NOT NULL, \"ByInstance\" TEXT NOT NULL, \"ByDevice\" TEXT NOT NULL, \"ByPlatform\" TEXT NOT NULL, \"AtUtc\" TEXT NOT NULL, \"AckUtc\" TEXT NULL);");
+        await db.Database.ExecuteSqlRawAsync("DROP INDEX IF EXISTS \"IX_LockOverrides_UserId_SaveId\";");
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_LockOverrides_UserId_SaveId_Instance_AckUtc\" ON \"LockOverrides\" (\"UserId\", \"SaveId\", \"Instance\", \"AckUtc\");");
+        await db.Database.ExecuteSqlRawAsync("CREATE TABLE IF NOT EXISTS \"Profiles\" (\"UserId\" TEXT NOT NULL, \"SetupKey\" TEXT NOT NULL, \"Xml\" TEXT NOT NULL, \"Bytes\" INTEGER NOT NULL, \"Revision\" INTEGER NOT NULL, \"UpdatedUtc\" TEXT NOT NULL, CONSTRAINT \"PK_Profiles\" PRIMARY KEY (\"UserId\", \"SetupKey\"));");
+        // Save model 3 (2026-10-30): a save holds its profile; the Profiles table stays for the migration.
+        if(await db.Database.SqlQueryRaw<int>("SELECT COUNT(*) AS Value FROM pragma_table_info('CloudSaves') WHERE name='Profile'").SingleAsync()==0)
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE CloudSaves ADD COLUMN Profile TEXT NULL;ALTER TABLE CloudSaves ADD COLUMN ProfileBytes INTEGER NOT NULL DEFAULT 0;");
         var schema=await db.Settings.FindAsync("schema");if(schema!=null&&schema.Value!="1")throw new InvalidOperationException("Unsupported database schema; restore a compatible build.");
         if(schema==null){db.Settings.Add(new(){Key="schema",Value="1"});await db.SaveChangesAsync();}
         var roles=scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();foreach(var name in AccountRoles.Names)if(!await roles.RoleExistsAsync(name))Check(await roles.CreateAsync(new(name)));
+        await SavesMigration.Run(db,dataDir);await SavesMigration.MergeProfiles(db,dataDir);
         if(await db.Settings.FindAsync("bootstrapped")!=null)return;
         var manager=scope.ServiceProvider.GetRequiredService<UserManager<Player>>();var credentials=new List<string>{"FTL local bootstrap credentials. Change the password at first sign-in. Remove this file after retrieval.",""};
         await using var transaction=await db.Database.BeginTransactionAsync();

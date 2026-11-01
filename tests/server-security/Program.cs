@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -170,6 +171,24 @@ try {
         File.WriteAllText(Path.Combine(assetRoot,"manifest.json"),JsonSerializer.Serialize(new{assetVersion="test",engineBuild="test",audio=new[]{new{hash,extension=".ogg"}}}));
         await Throws<InvalidDataException>(()=>{_ = new AssetCatalog(assetRoot);return Task.CompletedTask;},"Audio manifest rejects unsafe path component");
     }
+    // Mod files: only catalogue files that match their SHA-256 are offered, and the role rules decide who may download.
+    var modsRoot=Path.Combine(scratch,"mods");Directory.CreateDirectory(modsRoot);
+    var hsBytes=Encoding.UTF8.GetBytes("hyperspace fixture");var mvBytes=Encoding.UTF8.GetBytes("multiverse fixture");
+    File.WriteAllBytes(Path.Combine(modsRoot,"hs.ftl"),hsBytes);File.WriteAllBytes(Path.Combine(modsRoot,"mv.zip"),mvBytes);File.WriteAllBytes(Path.Combine(modsRoot,"wrong.zip"),Encoding.UTF8.GetBytes("multiverse fixturX"));
+    string Sha(byte[] b)=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(b)).ToLowerInvariant();
+    var modCatalogue=Path.Combine(scratch,"catalogue.json");
+    File.WriteAllText(modCatalogue,JsonSerializer.Serialize(new{schema=1,files=new object[]{new{id="hs",file="hs.ftl",size=hsBytes.Length,sha256=Sha(hsBytes),policy="hyperspace"},new{id="mv",file="mv.zip",size=mvBytes.Length,sha256=Sha(mvBytes),policy="multiverse"},new{id="wrong",file="wrong.zip",size=mvBytes.Length,sha256=Sha(mvBytes),policy="multiverse"},new{id="gone",file="absent.zip",size=1,sha256=new string('0',64),policy="multiverse"}}}));
+    ModCatalog Catalog()=>new(new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>{["FTL_MODS_DIR"]=modsRoot,["FTL_MODS_CATALOGUE"]=modCatalogue}).Build(),new FixtureHost(scratch),NullLogger<ModCatalog>.Instance);
+    HttpContext As(string? role){var h=new DefaultHttpContext();h.User=new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier,"u")],"test"));h.Items["AccountRole"]=role;h.Items["Player"]=new Player{MustChangePassword=false};return h;}
+    var closedMods=Catalog();await closedMods.Verified;
+    Check(closedMods.StateOf(closedMods.Find("hs")!)==ModCatalog.State.Ready&&closedMods.StateOf(closedMods.Find("mv")!)==ModCatalog.State.Ready&&closedMods.StateOf(closedMods.Find("wrong")!)==ModCatalog.State.Mismatch&&closedMods.StateOf(closedMods.Find("gone")!)==ModCatalog.State.Absent,"Mod files are offered only when present with the catalogue size and SHA-256");
+    Check(closedMods.Permitted(As("external-user"),closedMods.Find("hs")!)&&!closedMods.Permitted(As("external-user"),closedMods.Find("mv")!)&&!closedMods.Permitted(As("user"),closedMods.Find("mv")!)&&!closedMods.Permitted(As("admin"),closedMods.Find("mv")!),"This server never hands out Multiverse files, whatever the role");
+    Check(!closedMods.Permitted(As(null),closedMods.Find("hs")!),"Accounts without a recognised role cannot download mod files");
+    var described=closedMods.Catalogue(As("external-user"))["files"]!.AsArray().ToDictionary(f=>(string)f!["id"]!,f=>(string)f!["server"]!["reason"]!);
+    Check(described["hs"]=="ready"&&described["mv"]=="not-permitted"&&described["wrong"]=="not-permitted"&&described["gone"]=="not-permitted"&&(string)closedMods.Catalogue(null)["files"]![0]!["server"]!["reason"]! == "sign-in","The catalogue tells each account which files this server gives it");
+    File.WriteAllText(modCatalogue,JsonSerializer.Serialize(new{schema=1,files=new object[]{new{id="bad",file="../escape.zip",size=1,sha256=new string('0',64),policy="hyperspace"}}}));
+    await Throws<InvalidDataException>(()=>{_=Catalog();return Task.CompletedTask;},"Mod catalogue rejects file names outside the mods directory");
+    await SavesV2Tests.Run(scratch,Check);
     Console.WriteLine($"{checks} server security checks passed");
 } finally {
     SqliteConnection.ClearAllPools();
@@ -190,4 +209,12 @@ sealed class PausingStream:MemoryStream {
     public TaskCompletionSource Started=new(TaskCreationOptions.RunContinuationsAsynchronously),Resume=new(TaskCreationOptions.RunContinuationsAsynchronously);
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,CancellationToken token=default){if(Interlocked.Increment(ref writes)==1){Started.TrySetResult();await Resume.Task.WaitAsync(token);}await base.WriteAsync(buffer,token);}
     public override Task WriteAsync(byte[] buffer,int offset,int count,CancellationToken token)=>WriteAsync(buffer.AsMemory(offset,count),token).AsTask();
+}
+sealed class FixtureHost(string root):Microsoft.AspNetCore.Hosting.IWebHostEnvironment {
+    public string WebRootPath {get;set;}=root;
+    public Microsoft.Extensions.FileProviders.IFileProvider WebRootFileProvider {get;set;}=new Microsoft.Extensions.FileProviders.NullFileProvider();
+    public string ApplicationName {get;set;}="fixture";
+    public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider {get;set;}=new Microsoft.Extensions.FileProviders.NullFileProvider();
+    public string ContentRootPath {get;set;}=root;
+    public string EnvironmentName {get;set;}="Development";
 }

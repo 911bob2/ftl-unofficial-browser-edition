@@ -17,7 +17,7 @@ object BrowserCrewAchievementDiagnostics {
         val profile = main.profile
         fun earned(id: String) = profile.getAchievement(main.gameContent.achievements[id]) != null
         fun reset(ship: String = "PLAYER_SHIP_MANTIS"): InGameState {
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             main.startDiagnosticGame(ship, Difficulty.NORMAL)
             repeat(90) {
                 main.update(container, .05f)

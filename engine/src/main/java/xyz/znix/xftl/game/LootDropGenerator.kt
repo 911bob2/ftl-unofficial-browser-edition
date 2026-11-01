@@ -38,17 +38,37 @@ object LootDropGenerator {
     fun generateRewards(
         game: InGameState, rand: Random, tierSpec: RewardTier, type: RewardType,
         sector: Int, difficulty: Difficulty, hasExplicitItem: Boolean
-    ): ResourceSet {
+    ): ResourceSet = generate(game, rand, tierSpec.resolve(rand), type, rewardLevel(sector, difficulty), hasExplicitItem)
+
+    /** Hyperspace: GenerateReward with the tier already resolved ([sector] is the 0-based sector). */
+    fun generateRewardsAtLevel(game: InGameState, rand: Random, tier: Int, type: RewardType, sector: Int, hasExplicitItem: Boolean): ResourceSet =
+        generate(game, rand, tier, type, rewardLevel(sector, game.difficulty), hasExplicitItem)
+
+    /** GetValue (0x5dfc90) without Hyperspace's hook: [worldLevel] is the reward level. */
+    fun originalValue(rand: Random, type: String, tier: Int, worldLevel: Int): Int = when (type) {
+        "scrap" -> generateScrap(rand, tier, worldLevel)
+        "fuel" -> FUEL_DROPS[tier].random(rand)
+        "missiles" -> MISSILE_DROPS[tier].random(rand)
+        "droneparts" -> DRONE_DROPS[tier].random(rand)
+        else -> 0
+    }
+
+    private fun generate(game: InGameState, rand: Random, tier: Int, type: RewardType, level: Int, hasExplicitItem: Boolean): ResourceSet {
         val resources = ResourceSet()
-        val level = rewardLevel(sector, difficulty)
-        val tier = tierSpec.resolve(rand)
         var remainingType = type
+        // Hyperspace's GetValue hook (CustomRewards.cpp): <rewards> ranges and scrap scaling replace the tables.
+        val hs = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.events.HsRewards.loaded
 
         fun scrap(t: Int) {
-            resources.scrap = generateScrap(rand, t, level)
+            resources.scrap = (if (hs) xyz.znix.xftl.hs.events.HsRewards.getValue(game, "scrap", t, level) else null)
+                ?: generateScrap(rand, t, level)
         }
 
         fun resource(res: Resource, t: Int) {
+            if (hs) {
+                val name = when (res) { Resource.FUEL -> "fuel"; Resource.MISSILES -> "missiles"; Resource.DRONES -> "droneparts"; Resource.SCRAP -> "scrap" }
+                xyz.znix.xftl.hs.events.HsRewards.getValue(game, name, t, level)?.let { resources[res] = it; return }
+            }
             resources[res] = when (res) {
                 Resource.FUEL -> FUEL_DROPS[t].random(rand)
                 Resource.MISSILES -> MISSILE_DROPS[t].random(rand)

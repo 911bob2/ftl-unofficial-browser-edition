@@ -9,7 +9,7 @@ import xyz.znix.xftl.rendering.Graphics
 object BrowserRunStatisticsDiagnostics {
     fun run(main: MainGame, container: GameContainer, graphics: Graphics) {
         val profile = main.profile
-        profile.load(SaveProfile.createBlank().save())
+        profile.restore(SaveProfile.createBlank().snapshot())
         fun start(ship: String = "PLAYER_SHIP_HARD"): InGameState {
             main.startDiagnosticGame(ship, Difficulty.NORMAL)
             repeat(90) {
@@ -64,8 +64,8 @@ object BrowserRunStatisticsDiagnostics {
         val wins = profile.browserVictories
         state.shipUI.showGameOverScreen(GameOverWindow.Outcome.WIN)
         check(profile.browserVictories == wins && profile.browserGamesPlayed == 2) { "BrowserRunStatisticsDiagnostics.kt:66" }
-        val xml = BrowserXml.write(profile.save())
-        val restored = SaveProfile.createBlank().also { it.load(BrowserXml.parse(xml)) }
+        val xml = BrowserXml.write(profile.snapshot())
+        val restored = SaveProfile.createBlank().also { it.restore(BrowserXml.parse(xml)) }
         check(restored.browserGamesPlayed == 2 && restored.browserLifetimeBeacons == 3L && restored.browserLifetimeCrew == 7L) { "BrowserRunStatisticsDiagnostics.kt:69" }
         check(restored.browserMostCrew == 3 && restored.browserMostScrap == completed.scrap && restored.browserMostShips == profile.browserMostShips) { "BrowserRunStatisticsDiagnostics.kt:70" }
         check(restored.browserLastRun?.sector == 1 && BrowserRunRecord.load(completed.save("score")) == completed) { "BrowserRunStatisticsDiagnostics.kt:71" }
@@ -86,18 +86,21 @@ object BrowserRunStatisticsDiagnostics {
         cloning.dealDamage(SuffocationDamage(1000f))
         repeat(90) { if (state.player.crew.contains(cloning)) cloning.update(.05f) }
         check(clonebay.queue.contains(cloning)) { "Crew did not enter actual clone queue" }
-        main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
+        val savedXml = BrowserXml.write(state.saveGameState())
+        val cloningName = cloning.info.name
+        main.loadSavedGame(BrowserXml.parse(savedXml))
         state = main.currentState as InGameState
         val savedClonebay = state.player.clonebay!!
-        val savedCrew = savedClonebay.queue.first()
+        // A mod's clone speed can have finished the clone by now: it is out of the queue, back in the crew.
+        val savedCrew = savedClonebay.queue.firstOrNull() ?: state.player.crew.first { (it as? LivingCrew)?.info?.name == cloningName }
         if (savedClonebay.powerSelected == 0) savedClonebay.increasePower()
         check(savedClonebay.powerSupplied > 0) { "BrowserRunStatisticsDiagnostics.kt:94" }
         repeat(300) { if (savedClonebay.queue.isNotEmpty()) savedClonebay.update(.05f) }
         check(savedClonebay.queue.isEmpty() && state.player.crew.contains(savedCrew)) { "Actual cloning did not finish" }
         check(state.browserProgress.crewRecruited == crewBefore && profile.browserLifetimeCrew == lifetimeBefore) { "Clone queue or restoration counted recruitment twice" }
-        val hangarBefore = BrowserXml.write(profile.save())
+        val hangarBefore = BrowserXml.write(profile.snapshot())
         main.switchToShipSelect()
-        check(BrowserXml.write(profile.save()) == hangarBefore) { "Hangar preview changed lifetime statistics" }
+        check(BrowserXml.write(profile.snapshot()) == hangarBefore) { "Hangar preview changed lifetime statistics" }
 
         BrowserEngine.diagnosticProgress("native statistics AE scores after choosing vanilla")
         profile.unlockLayout(ShipProgression.LANIUS, Difficulty.NORMAL)
@@ -105,19 +108,21 @@ object BrowserRunStatisticsDiagnostics {
         profile.recordBrowserRun(completed.copy(ship = ShipProgression.LANIUS, title = "The Kruos", scrap = 8000))
         profile.recordBrowserRun(completed.copy(ship = "PLAYER_SHIP_HARD_3", title = "The Swallow", scrap = 7000))
         main.changeHangarMode(false, ShipProgression.KESTREL, Difficulty.NORMAL)
-        val statsBefore = BrowserXml.write(profile.save())
+        val statsBefore = BrowserXml.write(profile.snapshot())
         val randomBefore = BrowserRandom.snapshot()
         val stats = BrowserStatisticsState(main, null)
         main.setCurrentState(stats)
         main.render(container, graphics)
         stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 480, 65, 1)
         stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 340, 170, 1)
-        check(stats.diagnosticShip == "PLAYER_SHIP_HARD_3") { "BrowserRunStatisticsDiagnostics.kt:115" }
+        // (A mod's ship list has other ships at these places.)
+        if (!xyz.znix.xftl.hs.HS.active) check(stats.diagnosticShip == "PLAYER_SHIP_HARD_3") { "BrowserRunStatisticsDiagnostics.kt:115" }
         main.render(container, graphics)
         stats.keyPressed(Input.KEY_RIGHT, '\u0000')
-        check(stats.diagnosticShip == ShipProgression.LANIUS) { "BrowserRunStatisticsDiagnostics.kt:118" }
+        // Hyperspace's ScoreKeeper::KeyDown swallows the arrow keys (BrowserStatisticsState.keyPressed).
+        if (!xyz.znix.xftl.hs.HS.active) check(stats.diagnosticShip == ShipProgression.LANIUS) { "BrowserRunStatisticsDiagnostics.kt:118" }
         main.render(container, graphics)
-        check(!main.gameContent.enableAdvancedEdition && BrowserXml.write(profile.save()) == statsBefore && BrowserRandom.snapshot() == randomBefore) { "Viewing AE scores changed next-run mode, progression or RNG" }
+        check(!main.gameContent.enableAdvancedEdition && BrowserXml.write(profile.snapshot()) == statsBefore && BrowserRandom.snapshot() == randomBefore) { "Viewing AE scores changed next-run mode, progression or RNG" }
         stats.close()
     }
 }

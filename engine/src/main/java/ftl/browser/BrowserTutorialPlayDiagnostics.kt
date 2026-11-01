@@ -16,7 +16,7 @@ import xyz.znix.xftl.weapons.BeamBlueprint
 object BrowserTutorialPlayDiagnostics {
     fun run(main: MainGame, container: GameContainer, graphics: Graphics) {
         val profile = main.profile
-        val profileXml = BrowserXml.write(profile.save())
+        val profileXml = BrowserXml.write(profile.snapshot())
         val profileWasDirty = profile.dirty
         val savedProfile = BrowserFiles.getProfile()
         val run = BrowserFiles.getRun()
@@ -212,8 +212,8 @@ object BrowserTutorialPlayDiagnostics {
                 check(controller.index == index + 1) { "Normal action failed at ${step.id}: ${controller.step.id}" }
             }
             check(controller.completed && !main.isTutorialRunning && main.currentState is MainMenuState) { "BrowserTutorialPlayDiagnostics.kt:214" }
-            check(main.profile === profile && BrowserXml.write(profile.save()) == profileXml) { "BrowserTutorialPlayDiagnostics.kt:215" }
-            check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == if (profileWasDirty) profileXml else savedProfile) {
+            check(main.profile === profile && BrowserXml.write(profile.snapshot()) == profileXml) { "BrowserTutorialPlayDiagnostics.kt:215" }
+            check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == if (profileWasDirty) BrowserXml.write(profile.save()) else savedProfile) {
                 "Tutorial changed ordinary saved progress"
             }
             check(BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialPlayDiagnostics.kt:219" }

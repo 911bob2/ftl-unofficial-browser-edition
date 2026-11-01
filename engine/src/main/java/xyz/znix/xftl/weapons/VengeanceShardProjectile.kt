@@ -22,7 +22,10 @@ class VengeanceShardProjectile(target: Room) : AbstractWeaponProjectile(blueprin
 
     // A neutral projectile: any defence drone, including a friendly one,
     // can shoot it down. Vanilla quirk, kept deliberately.
-    override val antiDroneExemption: Ship? get() = null
+    // Hyperspace's crystalShardFix (ShipManager::CheckCrystalAugment, CustomCrystalShard.cpp) gives the shard its
+    // owner's id, so that ship's own defence drones leave it alone.
+    override val antiDroneExemption: Ship?
+        get() = if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.cfg().crystalShardFix) ship.sys.getEnemyOf(ship) else null
 
     override val isMissileForDD: Boolean get() = true
 
@@ -30,6 +33,10 @@ class VengeanceShardProjectile(target: Room) : AbstractWeaponProjectile(blueprin
         val previousHull = ship.health
         super.hitHull()
         ship.sys.browserAchievements.crystalShardHit(ship, previousHull)
+    }
+
+    override fun hsHullHit(space: Ship, hullBefore: Int) {
+        space.sys.browserAchievements.crystalShardHit(space, hullBefore)
     }
 
     // We need a custom serialisation type, since our fake blueprint isn't

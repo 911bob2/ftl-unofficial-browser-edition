@@ -17,17 +17,27 @@ abstract class SubSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint)
      * (ShipSystem::CheckDlcEnabled, 0x63d530), so a manned piloting or
      * engine system gets nothing extra here.
      */
+    // Hyperspace: powerState.first written by a script holds until the system's next loop sets it again.
+    var hsPowerWrite = 0
+        private set
+    fun hsWritePower(v: Int) { hsPowerWrite = v - undamagedEnergy }
+
     open val effectivePower: Int
         get() {
             val manned = manningCrew != null || ((ship.isAutoScout || ship.isAutomated) && !damaged && info.canBeManned)
             if ((this is Sensors || this is Doors) && manned && !damaged && undamagedEnergy > 0) {
-                return undamagedEnergy + 1
+                return undamagedEnergy + hsPowerWrite + 1
             }
-            return undamagedEnergy
+            return undamagedEnergy + hsPowerWrite
         }
 
     init {
         check(blueprint.info!!.isSubSystem)
+    }
+
+    override fun update(dt: Float) {
+        hsPowerWrite = 0
+        super.update(dt)
     }
 
     override fun drawPowerBars(g: Graphics, x: Int, yOfBottom: Int, hoverGlow: Boolean): Int {
@@ -99,11 +109,25 @@ abstract class SubSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint)
         img.draw(x, y + 2 - img.height)
     }
 
+    override fun touchDrawManning(g: Graphics, x: Int, y: Int) {
+        if (!info.canBeManned)
+            return
+
+        val name = when {
+            isIonised -> "ion"
+            manningCrew != null -> "on"
+            else -> "off"
+        }
+        ship.sys.getImg("img/ipad/systemUI/manning_bar_$name.png").draw(x - 7, y - 14)
+    }
+
     // List of the default systems, for sorting purposes
     enum class SortingType {
         PILOTING,
         SENSORS,
         DOORS,
         BATTERY,
+        // Hyperspace's Lua-defined subsystems
+        CUSTOM,
     }
 }

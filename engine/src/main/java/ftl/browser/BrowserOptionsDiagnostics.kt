@@ -34,14 +34,21 @@ object BrowserOptionsDiagnostics {
         game.shipUI.openJumpMap()
         main.render(container, graphics)
         val map = checkNotNull(game.shipUI.tutorialJumpWindow)
-        val beacon = game.currentBeacon.neighbours.first { b -> b.neighbours.any { it !== game.currentBeacon } }
-        val other = beacon.neighbours.first { it !== game.currentBeacon }
+        // The longest connection from a neighbour of the current beacon to another beacon; that neighbour is hovered.
+        val (beacon, other) = game.currentBeacon.neighbours
+            .flatMap { b -> b.neighbours.filter { it !== game.currentBeacon }.map { b to it } }
+            .maxBy { (b, o) -> o.pos.distTo(b.pos) }
         fun point(x: Int, y: Int) = "{\"x\":${map.position.x + Sector.OFFSET.x + x},\"y\":${map.position.y + Sector.OFFSET.y + y}}"
-        return "{\"hover\":${point(beacon.pos.x, beacon.pos.y)},\"connection\":${point((beacon.pos.x + other.pos.x) / 2, (beacon.pos.y + other.pos.y) / 2)}}"
+        // A point 18 px along it: the line fades from the hovered beacon (alpha 1) to 0.3 at the far end, as
+        // StarMap::DrawConnection draws it, so the sample sits on its brightest part, past the beacon's icon.
+        val length = maxOf(1, other.pos.distTo(beacon.pos))
+        val cx = beacon.pos.x + (other.pos.x - beacon.pos.x) * 18 / length
+        val cy = beacon.pos.y + (other.pos.y - beacon.pos.y) * 18 / length
+        return "{\"hover\":${point(beacon.pos.x, beacon.pos.y)},\"connection\":${point(cx, cy)}}"
     }
 
     fun run(main: MainGame, container: GameContainer, graphics: Graphics): String {
-        val profile = BrowserXml.write(main.profile.save())
+        val profile = BrowserXml.write(main.profile.snapshot())
         val stored = BrowserFiles.getProfile()
         val run = BrowserFiles.getRun()
         val rng = BrowserRandom.snapshot()
@@ -50,9 +57,9 @@ object BrowserOptionsDiagnostics {
         fun xml(game: InGameState) = BrowserXml.write(game.saveGameState())
         try {
             println("TEST native gameplay option defaults and persistence")
-            val legacy = BrowserXml.parse(profile)
+            val legacy = main.profile.saveSettings()
             for (attr in listOf("autoPause", "beaconPaths", "dialogKeys")) legacy.rootElement.removeAttribute(attr)
-            main.profile.load(legacy)
+            main.profile.loadSettings(legacy)
             println("TEST legacy defaults loaded")
             check(main.profile.autoPauseOnFocusLoss && main.profile.showBeaconPaths && main.profile.eventChoiceHotkeys == EventChoiceHotkeyMode.ENABLED) { "Legacy defaults: ${main.profile.autoPauseOnFocusLoss}/${main.profile.showBeaconPaths}/${main.profile.eventChoiceHotkeys}" }
             main.profile.autoPauseOnFocusLoss = false
@@ -60,14 +67,14 @@ object BrowserOptionsDiagnostics {
             for (mode in EventChoiceHotkeyMode.entries) {
                 phase = "profile round trip $mode"
                 main.profile.eventChoiceHotkeys = mode
-                main.profile.load(BrowserXml.parse(BrowserXml.write(main.profile.save())))
+                main.profile.loadSettings(BrowserXml.parse(BrowserXml.write(main.profile.saveSettings())))
                 check(!main.profile.autoPauseOnFocusLoss && !main.profile.showBeaconPaths && main.profile.eventChoiceHotkeys == mode) { "Round trip $mode: ${main.profile.autoPauseOnFocusLoss}/${main.profile.showBeaconPaths}/${main.profile.eventChoiceHotkeys}" }
             }
             legacy.rootElement.setAttribute("dialogKeys", "-50")
             phase = "malformed defaults"
             legacy.rootElement.setAttribute("autoPause", "invalid")
             legacy.rootElement.setAttribute("beaconPaths", "invalid")
-            main.profile.load(legacy)
+            main.profile.loadSettings(legacy)
             check(main.profile.autoPauseOnFocusLoss && main.profile.showBeaconPaths && main.profile.eventChoiceHotkeys == EventChoiceHotkeyMode.ENABLED) { "Malformed defaults: ${main.profile.autoPauseOnFocusLoss}/${main.profile.showBeaconPaths}/${main.profile.eventChoiceHotkeys}" }
 
             println("TEST focus pause restoration and explicit/modal separation")
@@ -178,7 +185,7 @@ object BrowserOptionsDiagnostics {
         } catch (error: Throwable) {
             throw IllegalStateException("Gameplay options [$phase]: ${error.message}", error)
         } finally {
-            main.profile.load(BrowserXml.parse(profile))
+            main.profile.restore(BrowserXml.parse(profile))
             BrowserFiles.hydrate(run, stored)
             BrowserRandom.restore(rng)
             main.setBrowserFocus(focused)

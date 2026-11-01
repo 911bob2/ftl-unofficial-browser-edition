@@ -37,7 +37,7 @@ class NativeChoiceBox(
     private val originX get() = if (centered) 327 else 177
     val frameX get() = originX + 7
     val frameY get() = ORIGIN_Y + 22
-    val frameHeight get() = maxOf(377, 32 * choices.size + 88)
+    val frameHeight get() = maxOf(377, (if (TouchMode.enabled) 49 else 32) * choices.size + 88)
 
     fun draw(g: Graphics) {
         windowRenderer.render(frameX, frameY, WIDTH, frameHeight)
@@ -47,6 +47,10 @@ class NativeChoiceBox(
 
         var rowY = ORIGIN_Y + 45 + lines.size * font.lineHeight + GAP
         rows.clear()
+        if (TouchMode.enabled) {
+            drawTouchRows(g, x + 10, rowY)
+            return
+        }
         choices.forEachIndexed { i, choice ->
             val label = lines(choice, i)
             val colour = when {
@@ -63,6 +67,36 @@ class NativeChoiceBox(
         }
     }
 
+    /** The touch layout's boxed rows: the text wrapped at 540, a box around it, 15 px down to the next row's start. */
+    private fun drawTouchRows(g: Graphics, x: Int, firstRowY: Int) {
+        var rowY = firstRowY
+        choices.forEachIndexed { i, choice ->
+            val label = font.font.wrapString("${i + 1}. ${choice.text}", TOUCH_WRAP)
+            val colour = when {
+                choice.type == 1 -> TOUCH_DISABLED
+                hovered == i -> Constants.TEXT_OPTION_HOVER
+                choice.type == 2 -> Constants.TEXT_OPTION_BLUE
+                else -> Colour.white
+            }
+            val top = rowY + 10
+            val width = label.maxOf { font.width(it) } + 14
+            val height = label.size * font.lineHeight + 2
+            val boxX = x - 7
+
+            g.colour = if (choice.type == 1) Colour(0f, 0f, 0f, 0.25f) else Colour(0f, 0f, 0f, 0.5f)
+            g.fillRect(boxX.f, top.f, width.f, height.f)
+            g.colour = colour
+            g.fillRect(boxX.f, top.f, width.f, 2f)
+            g.fillRect(boxX.f, top + height - 2f, width.f, 2f)
+            g.fillRect(boxX.f, top.f, 2f, height.f)
+            g.fillRect(boxX + width - 2f, top.f, 2f, height.f)
+
+            printLines(label, x, top, colour)
+            rows += intArrayOf(boxX, top, width, height)
+            rowY = top + height + 15
+        }
+    }
+
     private fun lines(choice: Choice, index: Int) = font.font.wrapString("${index + 1}. ${choice.text}", WRAP)
 
     private fun printLines(lines: List<String>, x: Int, top: Int, colour: Colour) {
@@ -71,6 +105,17 @@ class NativeChoiceBox(
 
     /** ChoiceBox::MouseMove: the row under the pointer, or -1. */
     fun mouseMove(x: Int, y: Int) {
+        if (TouchMode.enabled) {
+            // Touch bands: half of the gap between rows each way, 10 px past the box at the sides and the ends.
+            hovered = -1
+            rows.forEachIndexed { i, r ->
+                val above = if (i == 0) 10 else GAP / 2
+                val below = if (i == rows.lastIndex) 10 else GAP / 2
+                if (choices.getOrNull(i)?.type != 1 && x >= r[0] - 10 && x <= r[0] + r[2] + 10 && y >= r[1] - above && y <= r[1] + r[3] + below)
+                    hovered = i
+            }
+            return
+        }
         hovered = rows.indexOfFirst { x >= it[0] && x < it[0] + it[2] && y >= it[1] && y < it[1] + it[3] }
     }
 
@@ -93,5 +138,7 @@ class NativeChoiceBox(
         const val WRAP = 565
         const val GAP = 30
         private val DISABLED = Colour(150, 150, 150)
+        private const val TOUCH_WRAP = 540
+        private val TOUCH_DISABLED = Colour(243 * 3 / 4, 255 * 3 / 4, 80 * 3 / 4, 127)
     }
 }

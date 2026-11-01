@@ -14,7 +14,7 @@ import xyz.znix.xftl.IBlueprint
 object BrowserTutorialDiagnostics {
     fun gates(main: MainGame) {
         BrowserEngine.diagnosticProgress("33 desktop tutorial controller states and native action gates")
-        val profile = BrowserXml.write(main.profile.save())
+        val profile = BrowserXml.write(main.profile.snapshot())
         val run = BrowserFiles.getRun()
         val rng = BrowserRandom.snapshot()
         val mode = main.gameContent.enableAdvancedEdition
@@ -96,12 +96,12 @@ object BrowserTutorialDiagnostics {
         check(controller.continueStep() == null && controller.observe(neutral) == null && !controller.canContinue) {
             "Tutorial completion was emitted twice"
         }
-        check(BrowserXml.write(main.profile.save()) == profile && BrowserFiles.getRun() == run && BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialDiagnostics.kt:99" }
+        check(BrowserXml.write(main.profile.snapshot()) == profile && BrowserFiles.getRun() == run && BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialDiagnostics.kt:99" }
     }
 
     fun isolation(main: MainGame, container: GameContainer, graphics: Graphics) {
         val originalProfile = main.profile
-        val originalDocument = originalProfile.save()
+        val originalDocument = originalProfile.snapshot()
         val originalRun = BrowserFiles.getRun()
         val originalStoredProfile = BrowserFiles.getProfile()
         val originalRng = BrowserRandom.snapshot()
@@ -116,7 +116,7 @@ object BrowserTutorialDiagnostics {
                 main.writeRunSave()
                 main.switchToMainMenu()
                 val savedRun = BrowserFiles.getRun()
-                val savedProfile = BrowserXml.write(main.profile.save())
+                val savedProfile = BrowserXml.write(main.profile.snapshot())
                 BrowserFiles.hydrate(savedRun, savedProfile)
                 val beforeProfile = main.profile
                 val beforeDirty = beforeProfile.dirty
@@ -149,7 +149,7 @@ object BrowserTutorialDiagnostics {
                 check(BrowserFiles.getRun() == savedRun && BrowserFiles.getProfile() == savedProfile) {
                     "Tutorial save, completion or deletion published temporary state"
                 }
-                check(BrowserXml.write(beforeProfile.save()) == savedProfile && beforeProfile.dirty == beforeDirty) { "BrowserTutorialDiagnostics.kt:150" }
+                check(BrowserXml.write(beforeProfile.snapshot()) == savedProfile && beforeProfile.dirty == beforeDirty) { "BrowserTutorialDiagnostics.kt:150" }
                 check(main.progressNotifications.active == beforeNotification) { "Tutorial exposed a progression notification" }
                 check(main.doSaveLoadGame()) { "Temporary tutorial combat checkpoint failed to restore" }
                 BrowserEngine.key(Input.KEY_LSHIFT, 0, true)
@@ -159,7 +159,7 @@ object BrowserTutorialDiagnostics {
                     "Tutorial exit retained held input"
                 }
                 check(!main.isTutorialRunning && !BrowserFiles.isTemporaryWrites() && main.currentState is MainMenuState) { "BrowserTutorialDiagnostics.kt:159" }
-                check(main.profile === beforeProfile && BrowserXml.write(main.profile.save()) == savedProfile) { "BrowserTutorialDiagnostics.kt:160" }
+                check(main.profile === beforeProfile && BrowserXml.write(main.profile.snapshot()) == savedProfile) { "BrowserTutorialDiagnostics.kt:160" }
                 check(main.gameContent.enableAdvancedEdition == mode && BrowserFiles.enableAE == mode) { "BrowserTutorialDiagnostics.kt:161" }
                 check(BrowserRandom.snapshot() == beforeRng) { "Tutorial consumed the ordinary simulation RNG" }
                 check(main.hasRunSave()) { "BrowserTutorialDiagnostics.kt:163" }
@@ -181,7 +181,7 @@ object BrowserTutorialDiagnostics {
             main.changeHangarMode(false, "PLAYER_SHIP_HARD", Difficulty.EASY)
             main.switchToMainMenu()
             val beforeProfile = main.profile
-            val beforeXml = BrowserXml.write(beforeProfile.save())
+            val beforeXml = BrowserXml.write(beforeProfile.snapshot())
             val beforeRng = BrowserRandom.snapshot()
             val blueprints = main.gameContent.blueprintManager.blueprints as MutableMap<String, IBlueprint>
             val tutorialBlueprint = blueprints.remove("PLAYER_SHIP_TUTORIAL") ?: error("Missing tutorial fixture blueprint")
@@ -190,7 +190,7 @@ object BrowserTutorialDiagnostics {
             finally { blueprints["PLAYER_SHIP_TUTORIAL"] = tutorialBlueprint }
             check(failed && !main.isTutorialRunning && !BrowserFiles.isTemporaryWrites()) { "BrowserTutorialDiagnostics.kt:189" }
             check(main.currentState is MainMenuState && main.profile === beforeProfile) { "BrowserTutorialDiagnostics.kt:190" }
-            check(BrowserXml.write(main.profile.save()) == beforeXml && BrowserRandom.snapshot() == beforeRng) { "BrowserTutorialDiagnostics.kt:191" }
+            check(BrowserXml.write(main.profile.snapshot()) == beforeXml && BrowserRandom.snapshot() == beforeRng) { "BrowserTutorialDiagnostics.kt:191" }
 
             BrowserEngine.diagnosticProgress("tutorial shutdown restores ordinary profile and write access")
             val disposable = MainGame(MainGame.CommandLineArgs())
@@ -209,7 +209,7 @@ object BrowserTutorialDiagnostics {
             main.switchToMainMenu()
             // The diagnostic engine is disposable. Do not hydrate a tutorial
             // checkpoint or its temporary profile into ordinary browser storage.
-            originalProfile.load(originalDocument)
+            originalProfile.restore(originalDocument)
             BrowserFiles.hydrate(originalRun, originalStoredProfile)
             BrowserFiles.enableAE = originalBrowserMode
             BrowserRandom.restore(originalRng)
@@ -218,7 +218,7 @@ object BrowserTutorialDiagnostics {
 
     fun definition(main: MainGame) {
         BrowserEngine.diagnosticProgress("official desktop tutorial script and arrow metadata")
-        val profileBefore = BrowserXml.write(main.profile.save())
+        val profileBefore = BrowserXml.write(main.profile.snapshot())
         val runBefore = BrowserFiles.getRun()
         val rngBefore = BrowserRandom.snapshot()
         val modeBefore = main.gameContent.enableAdvancedEdition
@@ -239,7 +239,7 @@ object BrowserTutorialDiagnostics {
         check(steps.getValue("INVENTORY_2").arrows.all { it.anchor == BrowserTutorialDefinition.Anchor.UPGRADES }) { "BrowserTutorialDiagnostics.kt:237" }
         check(steps.getValue("INVENTORY_2").arrows.any { it.x == -140 && it.angle == 0 }) { "BrowserTutorialDiagnostics.kt:238" }
         check(steps.getValue("COMBAT_4").arrows.all { it.anchor == BrowserTutorialDefinition.Anchor.SCREEN }) { "BrowserTutorialDiagnostics.kt:239" }
-        check(BrowserXml.write(main.profile.save()) == profileBefore && BrowserFiles.getRun() == runBefore && BrowserRandom.snapshot() == rngBefore && main.gameContent.enableAdvancedEdition == modeBefore) {
+        check(BrowserXml.write(main.profile.snapshot()) == profileBefore && BrowserFiles.getRun() == runBefore && BrowserRandom.snapshot() == rngBefore && main.gameContent.enableAdvancedEdition == modeBefore) {
             "Reading tutorial data changed ordinary state"
         }
     }

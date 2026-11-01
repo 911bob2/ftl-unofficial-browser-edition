@@ -30,6 +30,13 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
     private val descriptionFont = getFont("JustinFont10")
     private val tipFont = getFont("JustinFont8")
 
+    /**
+     * The touch layout's purchase box goes below whatever this panel drew: the lowest edge since the owner last set this
+     * to 0 (the owner does so each frame).
+     */
+    @JvmField
+    var touchBottom = 0
+
     var position: IPoint = ConstPoint.ZERO
     /** InfoBox::SetDescription's width argument; null keeps the default. */
     var customWidth: Int? = null
@@ -38,7 +45,28 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
     private val textWidth get() = panelWidth - 18
 
     fun drawAugment(blueprint: AugmentBlueprint) {
+        // Hyperspace InfoBox::SetBlueprint(augment) (RedesignedTooltips.cpp): the description (plus the scrap value
+        // with redesignedAugmentTooltips) in a box of its height: measured "\n" + text in font 10 at 305, + 58.
+        if (xyz.znix.xftl.hs.HS.active) {
+            val text = xyz.znix.xftl.hs.render.HsTooltips.augmentDescription(blueprint, translator)
+            // HS also sets InfoBox::warning (augment_no_effect and the augments this one makes useless) and measures
+            // the box over warning + "\n" + text.
+            val blueprints = game?.blueprintManager ?: hangar!!.blueprints
+            val warning = xyz.znix.xftl.hs.render.HsTooltips.augmentWarning(blueprint, translator, blueprints)
+            val h = hsLines(descriptionFont, 305, warning + "\n" + text) * 17 + 58
+            drawDescriptionBox(blueprint.title, GameText.literal(text), null, emptyList(), h, warning)
+            return
+        }
         drawDescriptionBox(blueprint.title, blueprint.desc, null, emptyList(), INFO_HEIGHT_AUGMENT)
+    }
+
+    /** freetype::easy_measurePrintLines' line count (the height is that times the line height). */
+    private fun hsLines(font: SILFontLoader, width: Int, text: String): Int = font.wrapString(text.trimEnd('\n'), width).size
+
+    /** Hyperspace's InfoBox::SetText(title, text, -1, -1, EXPAND_DOWN): the frame is as tall as its text needs. */
+    fun drawAutoBox(title: String, text: String) {
+        val h = hsLines(titleFont, textWidth, title) * 20 + hsLines(descriptionFont, textWidth, text) * 17 + 24
+        drawDescriptionBox(GameText.literal(title), GameText.literal(text), null, emptyList(), h)
     }
 
     fun drawItem(blueprint: ItemBlueprint) {
@@ -46,6 +74,14 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
     }
 
     fun drawDrone(blueprint: DroneBlueprint) {
+        // Hyperspace InfoBox::SetBlueprint(drone) with redesignedDroneTooltips: the stats in the description, the
+        // box max(title + text + 45, 162) high (title in font 16, text in font 10).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsTooltips.droneDescription(blueprint, translator)?.let { text ->
+            val title = blueprint.title?.get(translator) ?: ""
+            val h = max(hsLines(titleFont, textWidth, title) * 20 + hsLines(descriptionFont, textWidth, text) * 17 + 45, INFO_HEIGHT_DRONE)
+            drawDescriptionBox(blueprint.title, GameText.literal(text), if(hangar==null) blueprint.tip else null, emptyList(), h)
+            return
+        }
         val lines = ArrayList<String>()
         lines += translator["required_power"].replaceArg(blueprint.power)
         lines += translator["drone_required"]
@@ -53,6 +89,17 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
     }
 
     fun drawWeapon(blueprint: AbstractWeaponBlueprint) {
+        // Hyperspace WeaponBlueprint::GetDescription (RedesignedTooltips.cpp): <descriptionOverride> (or, with
+        // redesigned weapon tooltips, <advancedDescriptionOverride>) replaces the whole description.
+        // Under Hyperspace the whole text is HS's (HsTooltips.weaponDescription: overrides, redesigned or HS's list).
+        val hsOverride = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsTooltips.weaponDescription(blueprint, translator) else null
+        if (hsOverride != null) {
+            // The box grows with a long text, so the last lines don't run under the tip.
+            val title = blueprint.title?.get(translator) ?: ""
+            val h = max(hsLines(titleFont, textWidth, title) * 20 + hsLines(descriptionFont, textWidth, hsOverride) * 17 + 45, INFO_HEIGHT_WEAPON)
+            drawDescriptionBox(blueprint.title, xyz.znix.xftl.GameText.literal(hsOverride), if(hangar==null) blueprint.tip else null, emptyList(), h)
+            return
+        }
         val lines = ArrayList<String>()
 
         // Properly calculate the effective system and crew damage.
@@ -63,7 +110,7 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         lines += translator["required_power"].replaceArg(blueprint.power)
         lines += translator["charge_time"].replaceArg(UIUtils.formatFloat(blueprint.chargeTime))
         if (blueprint.boost?.type == AbstractWeaponBlueprint.BoostType.COOLDOWN) {
-            val maxBoost = blueprint.boost.maxCount * blueprint.boost.perShot
+            val maxBoost = blueprint.boost!!.maxCount * blueprint.boost!!.perShot
             lines += translator["boost_power_speed"]
             lines += translator["speed_cap"].replaceArg(maxBoost)
         }
@@ -71,7 +118,7 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
             // We have to include the initial damage in the max value shown.
             // How does vanilla FTL do this?
             val baseDamage = max(blueprint.damage, blueprint.ionDamage)
-            val maxDamage = blueprint.boost.maxCount * blueprint.boost.perShot + baseDamage
+            val maxDamage = blueprint.boost!!.maxCount * blueprint.boost!!.perShot + baseDamage
             lines += translator["boost_power_damage"]
             lines += translator["damage_cap"].replaceArg(maxDamage)
         }
@@ -84,7 +131,7 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
             lines += translator["shots"].replaceArg(blueprint.shots)
         }
         if (blueprint.chargeLevels != null) {
-            lines += translator["charge"].replaceArg(blueprint.chargeLevels)
+            lines += translator["charge"].replaceArg(blueprint.chargeLevels!!)
         }
         if (blueprint is BeamBlueprint) {
             lines += translator["damage_room"].replaceArg(blueprint.damage)
@@ -113,15 +160,24 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         drawDescriptionBox(blueprint.title, blueprint.desc, if(hangar==null) blueprint.tip else null, lines, INFO_HEIGHT_WEAPON)
     }
 
-    fun drawCrew(g: Graphics, info: LivingCrewInfo) {
+    fun drawCrew(g: Graphics, info: LivingCrewInfo, skills: Boolean = true) {
         val raceName = translator[info.race.title!!]
         val title = GameText.literal("${info.name} ($raceName)")
         val powers = info.race.powerStringIds.map { "-" + translator[it] }
-        drawDescriptionBox(title, info.race.desc, null, powers, INFO_HEIGHT_CREW)
+        // Hyperspace InfoBox::SetBlueprint(crew): the box is max(title + description + 28, 183) high
+        var height = INFO_HEIGHT_CREW
+        if (xyz.znix.xftl.hs.HS.active) {
+            val desc = (info.race.desc?.get(translator) ?: "") + if (powers.isEmpty()) "" else "\n\n" + powers.joinToString("\n")
+            height = max(hsLines(titleFont, textWidth, title.get(translator)) * 20 + hsLines(descriptionFont, textWidth, desc) * 17 + 28, 183)
+        }
+        drawDescriptionBox(title, info.race.desc, null, powers, height)
+
+        if (!skills) return
 
         // Draw the skills box
-        val skillsY = position.y + INFO_HEIGHT_CREW + 24
+        val skillsY = position.y + height + 24
         windowRenderer.render(position.x, skillsY, 323, 242)
+        touchBottom = max(touchBottom, skillsY + 242)
 
         val leftIconX = position.x + 9
         val rightIconX = position.x + 164
@@ -186,9 +242,11 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         description: GameText?,
         tip: GameText?,
         extraLines: List<String>,
-        height: Int
+        height: Int,
+        warning: String = ""
     ) {
         windowRenderer.render(position.x, position.y, panelWidth, height)
+        touchBottom = max(touchBottom, position.y + height)
 
         var y = position.y + 30
 
@@ -207,6 +265,16 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
 
         // InfoBox::OnRender: the description starts 15px below the title block.
         y += 3
+
+        // InfoBox::OnRender (0x564410): a warning (InfoBox::warning; only Hyperspace's augment boxes set one here)
+        // starts 10 px below the title in (255, 120, 120), and the description follows straight under it.
+        if (warning.isNotEmpty()) {
+            y -= 5
+            for (line in descriptionFont.wrapString(warning, textWidth)) {
+                descriptionFont.drawString(position.x + 11f, y.f, line, WARNING_COLOUR)
+                y += 17
+            }
+        }
 
         val descriptionStr = description?.get(translator)
         if (descriptionStr != null) {
@@ -235,6 +303,7 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
             val tipHeight = 31 + tipLines.size * 15
 
             windowRenderer.render(position.x, tipY, panelWidth, tipHeight)
+            touchBottom = max(touchBottom, tipY + tipHeight)
 
             var lineY = tipY + 27
             for (line in tipLines) {
@@ -244,27 +313,45 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         }
     }
 
-    fun drawSystemPowerBox(g: Graphics, system: SystemBlueprint, energyLevels: Int, undoablePower: Int) {
+    /**
+     * The levels box of a system. [maxPower]: InfoBox::maxPower, the ship system's maximum (SetSystem) or the blueprint's
+     * (a system for sale). Hyperspace (CustomUpgrades.cpp InfoBox::OnRender / RenderPowerBoxesPlain / GetLevelDescription
+     * hooks): over 8 levels the box shows eight of them, scrolled so the reached level sits four below the top (or the
+     * top eight), and writes the prices itself, where the original puts them (oracle sw4-up24 u-h0: HS's location + 105
+     * lands on this 98).
+     */
+    fun drawSystemPowerBox(g: Graphics, system: SystemBlueprint, energyLevels: Int, undoablePower: Int, maxPower: Int = system.maxPower) {
         val x = position.x
         val y = position.y + 133
         val totalWidth = panelWidth
+        touchBottom = max(touchBottom, y + 226)
 
         val scrapIcon = getImg("img/upgradeUI/details_scrap.png")
 
         val maxNonUndoable = energyLevels - undoablePower
 
+        val scroll = xyz.znix.xftl.hs.HS.active && maxPower > 8
+        var increment = 0
+        if (scroll) {
+            increment = energyLevels - 4
+            if (maxPower - energyLevels < 4) increment -= 4 - (maxPower - energyLevels)
+            if (increment < 0) increment = 0
+        }
+
         // Draw the level text
-        for (i in 0 until 8) {
-            val canHaveLevel = i < system.maxPower
+        for (row in 0 until 8) {
+            val i = row + increment
+            val canHaveLevel = i < maxPower
             val hasLevel = i < energyLevels
             val undoable = hasLevel && i >= maxNonUndoable
-            val boxY = y + 192 - i * 26
+            val boxY = y + 192 - row * 26
 
             // The details images are drawn on top, so we have to paint
             // the background that the text sits on here.
             g.colour = when (canHaveLevel) {
-                true -> Constants.UPGRADE_DETAILS_BG_ON
-                false -> Constants.UPGRADE_DETAILS_BG_OFF
+                // InfoBox::detailsBarOn / detailsBarOff (Hyperspace <colors><systemDetails>)
+                true -> xyz.znix.xftl.hs.render.HsColors.detailsBarOn()
+                false -> xyz.znix.xftl.hs.render.HsColors.detailsBarOff()
             }
             // Ends inside the right frame: 261px in the 333px ship window, 251px in the hangar.
             g.fillRect(x + 68f, boxY.f, (totalWidth - 72).f, 24f)
@@ -277,11 +364,13 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
             // and prices only for levels the player can buy or refund.
             scrapIcon.draw(x + 68, boxY)
             if (!hasLevel || undoable) {
-                val price = system.upgradeCost.getOrElse(i - 1) { -1 }
-                numberFont.drawString(x + 98f, boxY + 19f, price.toString(), Colour.white)
+                // a level past the blueprint's price list (HS: a ship `max` above it) reads past InfoBox's vector in the
+                // original; as the upgrade box, it cannot be bought (oracle sw4-up24 u-h0: "--" under MV's threshold)
+                val price = if (xyz.znix.xftl.hs.HS.active && i - 1 >= system.upgradeCost.size) Int.MAX_VALUE else system.upgradeCost.getOrElse(i - 1) { -1 }
+                numberFont.drawString(x + 98f, boxY + 19f, xyz.znix.xftl.hs.render.HsUpgrades.priceText(price), Colour.white)
             }
 
-            val description = system.info!!.getLevelName(i, translator)
+            val description = xyz.znix.xftl.hs.lua.LuaShipEvents.levelName(system, i, false, translator)
             systemLevelFont.drawString(x + 142f, boxY + 17f, description, Colour.white)
         }
 
@@ -304,7 +393,7 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         )
 
         // Finally, draw on the energy bars
-        for (i in 0 until system.maxPower) {
+        for (i in increment until minOf(maxPower, increment + 8)) {
             val hasLevel = i < energyLevels
             val undoable = hasLevel && i >= maxNonUndoable
 
@@ -313,7 +402,7 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
                 hasLevel -> Constants.SYS_ENERGY_ACTIVE
                 else -> Constants.UPGRADE_DETAILS_POWER_OFF
             }
-            g.fillRect(x + 20f, y.f + 195 - i * 26, 28f, 18f)
+            g.fillRect(x + 20f, y.f + 195 - (i - increment) * 26, 28f, 18f)
         }
     }
 
@@ -336,6 +425,8 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
     }
 
     companion object {
+        /** InfoBox::OnRender's warning colour (0x87e390: 1, 120/255, 120/255, 1). */
+        private val WARNING_COLOUR = Colour(255, 120, 120)
         const val INFO_HEIGHT_SYSTEM = 121
         const val INFO_HEIGHT_AUGMENT = 136
         const val INFO_HEIGHT_CREW = 168

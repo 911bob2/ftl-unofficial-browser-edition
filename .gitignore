@@ -16,3 +16,10 @@ game-files/
 .env
 bootstrap-credentials*
 BOXEDWINE_ATTEMPT.7z
+android/.gradle/
+android/.kotlin/
+android/build/
+android/*/build/
+android/*/.cxx/
+android/local.properties
+android/signing.properties

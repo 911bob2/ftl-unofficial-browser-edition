@@ -27,7 +27,9 @@ class BrowserProgressNotifications(private val main: MainGame) {
             // The native tracker constructor initializes a three-second popup.
             remaining = if (current != null) 3f else 0f
             current?.takeIf { !it.silent }?.let {
-                main.gameContent.sounds.getSampleOrWarn(if (it.ship != null) "unlock" else "achievement")?.play()
+                // Hyperspace: a custom achievement's <sound> replaces the popup sound (AchievementTracker::OnLoop hook).
+                val custom = it.hsAchievement?.let { n -> xyz.znix.xftl.hs.ship.HsAchievements.customAchievements[n]?.sound }?.takeIf { s -> s.isNotEmpty() }
+                main.gameContent.sounds.getSampleOrWarn(custom ?: if (it.ship != null) "unlock" else "achievement")?.play()
             }
         }
     }
@@ -49,14 +51,47 @@ class BrowserProgressNotifications(private val main: MainGame) {
         var framed = true
         val achievement = notice.achievement?.let { content.achievements[it] }
         val shipId = notice.ship ?: notice.questShip
-        if (achievement != null) {
+        val custom = notice.hsAchievement?.let { xyz.znix.xftl.hs.ship.HsAchievements.customAchievements[it] }
+        val translator = content.translator
+        val victory = notice.hsVictoryShip?.let { ship ->
+            xyz.znix.xftl.hs.ship.HsVictories.achievement(notice.hsVictoryType, ship, { n ->
+                (content.blueprintManager.blueprints[n] as? xyz.znix.xftl.LazyShipBlueprint)?.shipClass?.let { translator[it] } ?: n
+            }, { it.get(translator) })
+        }
+        var victoryLayouts = emptyList<Boolean>()
+        if (notice.shipVictory != null) {
+            icon = content.getImg("img/achievements/S_V_on.png")
+            heading = translator["ach_unlocked"]
+            val blueprint = content.blueprintManager.blueprints[notice.shipVictory] as? xyz.znix.xftl.LazyShipBlueprint
+            val className = blueprint?.shipClass?.let { translator[it] } ?: notice.shipVictory
+            name = translator["victory_ach_title"].replace("\\1", className)
+            victoryLayouts = notice.shipVictoryLayouts
+        } else if (victory != null) {
+            icon = content.getImg("img/" + victory.icon)
+            heading = translator["ach_unlocked"]
+            name = victory.name
+        } else if (custom != null) {
+            // A custom achievement is a CAchievement: its icon framed, ach_unlocked, its (unlocked) name.
+            val path = "img/" + custom.icon
+            icon = if (custom.icon.isNotEmpty() && content.datafile.getOrNull(path) != null) content.getImg(path) else return
+            heading = content.translator["ach_unlocked"]
+            name = custom.shownName?.let { content.translator[it] } ?: custom.nameId
+        } else if (achievement != null) {
             icon = content.getImg(achievement.img)
             heading = content.translator["ach_unlocked"]
             name = content.translator[achievement.name]
         } else if (shipId != null) {
             val blueprint = content.blueprintManager.blueprints[shipId] as? xyz.znix.xftl.LazyShipBlueprint
             val className = blueprint?.shipClass?.let { content.translator[it] } ?: shipId
-            if (notice.questShip != null) {
+            if (notice.ship != null && xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsShipUnlocks.customShipHasUnlock(shipId)) {
+                // CustomShipUnlocks::CreateUnlockAchievements: the layout file without _2/_3 + _1, the class and the slot.
+                val layout = (blueprint?.layout ?: shipId).replaceFirst("_2", "").replaceFirst("_3", "")
+                icon = content.getImg("img/achievements/${layout}_1.png")
+                heading = content.translator["ship_unlocked"]
+                val slot = if (shipId.endsWith("_2")) "type_b" else if (shipId.endsWith("_3")) "type_c" else "type_a"
+                name = className + "\n" + content.translator[slot]
+                framed = false
+            } else if (notice.questShip != null) {
                 icon = content.getImg("img/achievements/S_Q_on.png")
                 heading = content.translator["ach_unlocked"]
                 name = content.translator["quest_ach_title"].replace("\\1", className)
@@ -79,6 +114,11 @@ class BrowserProgressNotifications(private val main: MainGame) {
         val left = 1024f - icon.width / 2f
         val top = 51f - icon.width / 2f
         icon.draw(left, top)
+        // CAchievement::OnRender: the layouts' dots, 24 px down, +1 (or +6 for a two-layout family).
+        val dotX = left + if (victoryLayouts.size < 3) 6f else 1f
+        victoryLayouts.forEachIndexed { i, won ->
+            content.getImg("img/achievements/S_V_dot_" + (if (won) "on" else "off") + ".png").draw(dotX + 10 * i, top + 24f)
+        }
         if (framed && icon.width != 32) {
             g.colour = Colour(0.7843f, 0.7843f, 0.7843f, 1f)
             g.fillRect(left, top, 64f, 2f)

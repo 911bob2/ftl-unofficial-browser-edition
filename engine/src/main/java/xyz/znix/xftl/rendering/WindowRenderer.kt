@@ -16,6 +16,14 @@ class WindowRenderer(
     private val maskImage: Image
 ) {
     private val baseImage = BulkImageRenderer()
+    private var tint = Colour.white
+
+    /** A window in a colour: the touch layout's target box. */
+    fun renderTinted(x: Int, y: Int, width: Int, height: Int, colour: Colour) {
+        tint = colour
+        render(x, y, width, height)
+        tint = Colour.white
+    }
 
     fun render(x: Int, y: Int, width: Int, height: Int) {
         // Tile in the background area. We have to mask it, since the tiles
@@ -90,6 +98,13 @@ class WindowRenderer(
         font.drawString(x.f - GLOW + startWidth, y + 24f, text, textColour)
     }
 
+    /** The three parts of [render] on their own (WindowFrame::DrawMask, DrawBackground, DrawOutline): the caller sets the GL state. */
+    fun drawMask(x: Int, y: Int, width: Int, height: Int) = drawOutlineOrMask(maskImage, x, y, width, height)
+
+    fun drawBackground(x: Int, y: Int, width: Int, height: Int) = drawTiled(x, y, width, height, 0, 0)
+
+    fun drawOutline(x: Int, y: Int, width: Int, height: Int) = drawOutlineOrMask(outlineImage, x, y, width, height)
+
     // This draws more than the specified width/height, so it must be masked.
     // WindowFrame::constructor (0x00593180) tiles the 10x17 pattern cell from
     // (7,11) past its origin, which lies 7px outside the visible border: (0,4)
@@ -113,7 +128,7 @@ class WindowRenderer(
                     27f, 28f,
                     27f + TILE_X, 28f + TILE_Y,
 
-                    Colour.white
+                    tint
                 )
 
                 tileY += TILE_Y
@@ -152,28 +167,32 @@ class WindowRenderer(
         image.draw(
             x.f, y.f,
             leftLineX, topLineY,
-            0f, 0f, CORNER_SIZE.f, CORNER_SIZE.f
+            0f, 0f, CORNER_SIZE.f, CORNER_SIZE.f,
+            1f, tint
         )
 
         // Top-right
         image.draw(
             rightLineX, y.f,
             rightX, topLineY,
-            srcRightLine, 0f, srcRight, CORNER_SIZE.f
+            srcRightLine, 0f, srcRight, CORNER_SIZE.f,
+            1f, tint
         )
 
         // Bottom-left
         image.draw(
             x.f, bottomLineY,
             leftLineX, bottomY,
-            0f, srcBottomLine, CORNER_SIZE.f, srcBottom
+            0f, srcBottomLine, CORNER_SIZE.f, srcBottom,
+            1f, tint
         )
 
         // Bottom-right
         image.draw(
             rightLineX, bottomLineY,
             rightX, bottomY,
-            srcRightLine, srcBottomLine, srcRight, srcBottom
+            srcRightLine, srcBottomLine, srcRight, srcBottom,
+            1f, tint
         )
 
         // Draw the lines connecting the corners
@@ -182,35 +201,40 @@ class WindowRenderer(
         image.draw(
             x.f, topLineY,
             leftLineX, bottomLineY,
-            0f, CORNER_SIZE.f, CORNER_SIZE.f, srcBottomLine
+            0f, CORNER_SIZE.f, CORNER_SIZE.f, srcBottomLine,
+            1f, tint
         )
 
         // Right side
         image.draw(
             rightLineX, topLineY,
             rightX, bottomLineY,
-            srcRightLine, CORNER_SIZE.f, srcRight, srcBottomLine
+            srcRightLine, CORNER_SIZE.f, srcRight, srcBottomLine,
+            1f, tint
         )
 
         // Top side
         image.draw(
             leftLineX, y.f,
             rightLineX, topLineY,
-            CORNER_SIZE.f, 0f, srcRightLine, CORNER_SIZE.f
+            CORNER_SIZE.f, 0f, srcRightLine, CORNER_SIZE.f,
+            1f, tint
         )
 
         // Bottom side
         image.draw(
             leftLineX, bottomLineY,
             rightLineX, bottomY,
-            CORNER_SIZE.f, srcBottomLine, srcRightLine, srcBottom
+            CORNER_SIZE.f, srcBottomLine, srcRightLine, srcBottom,
+            1f, tint
         )
 
         // In case we're drawing the mask, fill in the centre too.
         image.draw(
             leftLineX, topLineY,
             rightLineX, bottomLineY,
-            CORNER_SIZE.f, CORNER_SIZE.f, srcRightLine, srcBottomLine
+            CORNER_SIZE.f, CORNER_SIZE.f, srcRightLine, srcBottomLine,
+            1f, tint
         )
     }
 

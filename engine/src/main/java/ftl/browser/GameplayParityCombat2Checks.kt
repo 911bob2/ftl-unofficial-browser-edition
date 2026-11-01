@@ -30,12 +30,12 @@ internal object GameplayParityCombat2Checks {
             val skill = skillGrid(main, container)
             val lock = permanentLock(main, container)
             val arm = repairArmJump(main, container)
-            val airlock = airlockVenting(main, container)
+            val airlock = BrowserGameplayParityDiagnostics.vanillaOnly("airlock") { airlockVenting(main, container) }
             val dodge = dodgeGate(main, container)
             val lockSave = lockOverrideSave(main, container)
             val rock = rockArmourHull(main, container)
             val achievements = achievementUpgrade(main)
-            val zoltan = zoltanLossAndRequeue(main, container)
+            val zoltan = BrowserGameplayParityDiagnostics.vanillaOnly("zoltan") { zoltanLossAndRequeue(main, container) }
             val shieldsStep = shieldRepowerStep(main, container)
             return "combat2 ok: $lockdown, $owner, $skill, $lock, $arm, $airlock, $dodge, $lockSave, $rock, $achievements, $zoltan, $shieldsStep"
         } finally {

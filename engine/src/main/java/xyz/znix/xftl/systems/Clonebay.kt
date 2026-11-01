@@ -12,6 +12,7 @@ import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.game.UIUtils
 import xyz.znix.xftl.game.WarningFlasher
 import xyz.znix.xftl.math.ConstPoint
+import xyz.znix.xftl.math.IPoint
 import xyz.znix.xftl.math.RoomPoint
 import xyz.znix.xftl.rendering.Colour
 import xyz.znix.xftl.rendering.Graphics
@@ -29,7 +30,44 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     var cloneProgress: Float = 0f
     var dyingProgress: Float = 0f
 
-    private val cloneDuration: Float
+    // Hyperspace CloneBox_Extend (enhancedCloneUI, hs/crew/HsCloneQueue.kt): the first shown queue entry, the
+    // page buttons, the hovered entry, the crew member carried by a right press and the last mouse position.
+    @JvmField var hsDisplayShift = 0
+    @JvmField var hsPageDown = false
+    @JvmField var hsPageUp = false
+    @JvmField var hsPageDownHover = false
+    @JvmField var hsPageUpHover = false
+    @JvmField var hsHoverCrew = -1
+    @JvmField var hsSelectedCrew: LivingCrew? = null
+    @JvmField var hsMouseX = 0
+    @JvmField var hsMouseY = 0
+
+    // Hyperspace Lua CloneSystem members (native 1.6.14 CloneSystem 0x644a20/OnLoop 0x645780): `clone` (+0x1c4) is the
+    // crew member the last finished cloning brought back; `bottom`/`top`/`gas` (+0x1d0..) the tub textures, replaced
+    // from Lua; `slot` (+0x1dc) the tub's slot. Null/unset means the engine's own.
+    @JvmField var hsLastClone: LivingCrew? = null
+    @JvmField var hsBottom: xyz.znix.xftl.hs.lua.LuaTexture? = null
+    @JvmField var hsTop: xyz.znix.xftl.hs.lua.LuaTexture? = null
+    @JvmField var hsGas: xyz.znix.xftl.hs.lua.LuaTexture? = null
+    @JvmField var hsSlotOverride: Int? = null
+
+    /** CloneSystem::slot: the tub's slot in the room, -1 without one. */
+    val hsSlot: Int get() = hsSlotOverride ?: equipmentLocation?.let { room!!.pointToSlot(it) } ?: -1
+
+    /**
+     * CloneSystem::fTimeToClone: the seconds of cloning so far; 0 with nobody queued or while unpowered (OnLoop
+     * 0x645780 writes -1 and then 0 for an empty queue).
+     */
+    var hsTimeToClone: Float
+        get() = if (queue.isEmpty() || !isEnabled) 0f else cloneProgress * cloneDuration
+        set(v) { cloneProgress = (v / cloneDuration).coerceAtLeast(0f) }
+
+    /** CloneSystem::fDeathTime: -1 unless the queue is dying, else the seconds of the 3 s death so far. */
+    var hsDeathTime: Float
+        get() = if (queue.isEmpty() || !isDying) -1f else dyingProgress * 3f
+        set(v) { dyingProgress = (v / 3f).coerceAtLeast(0f) }
+
+    internal val cloneDuration: Float
         get() {
             return CLONE_DURATIONS.getOrNull(powerSupplied - 1) ?: CLONE_DURATIONS[0]
         }
@@ -81,7 +119,9 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         if (isEnabled) {
             // Use a 0-1 progress instead of a timer, so changing
             // the power doesn't adjust your progress.
-            cloneProgress += dt / cloneDuration
+            cloneProgress += hsTime(dt, true) / cloneDuration
+            // Hyperspace CloneSystem::OnLoop (CustomCrew.cpp): the first queued crew member's cloneSpeedMultiplier
+            if (xyz.znix.xftl.hs.HS.active) cloneProgress += xyz.znix.xftl.hs.crew.HsCrewEffects.cloneSpeedExtra(queue.firstOrNull(), dt) / cloneDuration
 
             if (cloneProgress >= 1f) {
                 cloneFinished()
@@ -91,7 +131,7 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
 
         if (isDying) {
-            dyingProgress += dt / 3f
+            dyingProgress += hsTime(dt, false) / 3f
 
             if (dyingProgress > 1f) {
                 killCrew()
@@ -104,8 +144,24 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
     }
 
+    /**
+     * Hyperspace: CloneSystem::OnLoop runs at the room's temporal dilation, and the clone/death speeds follow the
+     * hyperspace.xml clone levels ([xyz.znix.xftl.hs.systems.HsClone]). Vanilla: [dt] unchanged.
+     */
+    private fun hsTime(dt: Float, cloning: Boolean): Float {
+        if (!xyz.znix.xftl.hs.HS.active) return dt
+        return dt * xyz.znix.xftl.hs.systems.HsTemporal.factor(room) *
+                xyz.znix.xftl.hs.systems.HsClone.speedMultiplier(this, cloning)
+    }
+
     override fun onJump() {
         super.onJump()
+
+        // Hyperspace: CloneHealing by the hyperspace.xml clone levels.
+        if (xyz.znix.xftl.hs.HS.active) {
+            xyz.znix.xftl.hs.systems.HsClone.jumpHeal(this)
+            return
+        }
 
         // Heal our crew each jump.
         if (undamagedEnergy == 0)
@@ -126,13 +182,9 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
     }
 
-    override fun drawRoom(g: Graphics) {
-        // Draw the cloning tub behind the system icon.
-        if (room!!.playerHasVision) {
-            drawEquipment()
-        }
-
-        super.drawRoom(g)
+    /** The cloning tub, with the room's floor stage (under the icon, which comes after the walls). */
+    override fun drawRoomFloor(g: Graphics) {
+        drawEquipment()
     }
 
     private fun drawEquipment() {
@@ -142,14 +194,19 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         val x = location.offsetX
         val y = location.offsetY
 
-        bottomImage.draw(x, y)
+        (hsBottom?.image ?: bottomImage).draw(x, y)
 
         val currentCrew = queue.firstOrNull()
         if (currentCrew != null) {
-            gasImage.draw(x, y)
+            (hsGas?.image ?: gasImage).draw(x, y)
         }
 
-        topImage.draw(x, y)
+        (hsTop?.image ?: topImage).draw(x, y)
+    }
+
+    override fun makeExtraButtons(powerPos: IPoint): List<xyz.znix.xftl.game.Button> {
+        if (!xyz.znix.xftl.hs.HS.active) return emptyList()
+        return listOf(xyz.znix.xftl.hs.crew.HsCloneQueue.QueueButton(ship.sys, this, powerPos))
     }
 
     override fun drawIconAndPower(
@@ -168,22 +225,65 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         drawOffWarning(game, g, x - 19, y - 11 - (energyLevels - 1) * 8)
 
-        val queueX = x - 7 - 6
+        // The queue goes on top of the top energy bar. Its bottom is that of the contents area
+        // of the boxes, not including the white outline.
+        drawQueueRows(x - 7 - 6, y - 11 - (energyLevels - 1) * 8 - 4 - 3)
 
-        // Find the position of the top energy bar, which we put the queue on top of.
-        val barY = y - 11 - (energyLevels - 1) * 8
+        if (xyz.znix.xftl.hs.HS.active) {
+            xyz.znix.xftl.hs.crew.HsCloneQueue.renderButtons(game, this, x, y)
+            xyz.znix.xftl.hs.crew.HsCloneQueue.renderCarried(this, soloBarImage)
+        }
+    }
 
-        // This is the bottom of the contents area of the boxes, not
-        // including the white outline.
-        var queueBottomY = barY - 4 - 3
+    /** The touch layout's small queue over a closed box, with its bay-off warning. */
+    internal fun touchDrawQueue(game: InGameState, g: Graphics, queueX: Int, bottomY: Int, boxX: Int, topBarTop: Int) {
+        drawQueueRows(queueX, bottomY)
+        drawOffWarning(game, g, boxX, topBarTop)
+    }
+
+    /** The touch layout's large queue rows in an open box: [centreY] is the middle of the bottom row, rows go up by 46. */
+    internal fun touchDrawLargeQueue(game: InGameState, g: Graphics, centreX: Int, centreY: Int) {
+        val fill = game.getImg("img/ipad/systemUI/clonebar_large_fill.png")
+        val shift = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCloneQueue.displayShift(this) else 0
+        val rows = min(queue.size, 3)
+        for (index in 0 until rows) {
+            val crewIdx = shift + index
+            val cy = centreY - 46 * index
+            val left = centreX - 31
+            if (crewIdx == 0 && isEnabled) {
+                val h = (cloneProgress * 40).toInt()
+                fill.draw(left.f, cy + 20f - h, left + 62f, cy + 20f, 0f, 40f - h, 62f, 40f, 1f, Colour.green)
+            }
+            if (index == 2 && crewIdx < queue.size - 1) {
+                xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 24)
+                    .printCenter(centreX.f, cy - 24f, "+" + (queue.size - 2), Colour.white)
+            } else {
+                g.pushTransform()
+                g.translate(left.f, cy - 30f)
+                g.scale(2f, 2f)
+                queue[crewIdx].drawPortrait(0, 0, false)
+                g.popTransform()
+            }
+            if (index == rows - 1 && isDying) {
+                val h = (dyingProgress * 40).toInt().f
+                for (i in 1..2) fill.draw(left.f, cy - 20f, left + 62f, cy - 20f + h, 0f, 0f, 62f, h, 1f, Constants.CLONE_DYING_FILTER)
+            }
+        }
+    }
+
+    private fun drawQueueRows(queueX: Int, startBottomY: Int) {
+        var queueBottomY = startBottomY
 
         // Only show up to three bars with cloning crew in them.
         // If we have four or more crew in the queue, the top box
         // has a '+x' in it to show the number of hidden crew.
         val barCount = min(queue.size, 3)
+        // Hyperspace (CloneQueue.cpp CloneBox::OnRender): the queue shows three entries from displayShift.
+        val shift = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCloneQueue.displayShift(this) else 0
 
         // Draw the crew icons/progress bar
         for (index in 0 until barCount) {
+            val crewIdx = shift + index
             val img = when {
                 barCount == 1 -> soloBarImage
                 index == 0 -> bottomBarImage
@@ -207,7 +307,7 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             val windowY = queueBottomY - windowHeight
 
             // Draw the progress bar
-            if (index == 0 && isEnabled) {
+            if (crewIdx == 0 && isEnabled) {
                 val fillTopHeight = windowHeight - (cloneProgress * windowHeight).toInt()
                 fillImage.draw(
                     windowX.f, windowY + fillTopHeight.f,
@@ -221,16 +321,16 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             }
 
             // Crew are drawn over the progress bar, but under the dying bar.
-            if (index == barCount - 1 && queue.size > barCount) {
+            if (index == 2 && crewIdx < queue.size - 1) {
                 // Draw the number of hidden crew
                 val shownCrew = barCount - 1 // -1 because this is taking up a slot
                 val hiddenCrew = queue.size - shownCrew
                 val numStr = "+$hiddenCrew"
 
                 hiddenCrewFont?.drawString(windowX + 11f, windowY + 15f, numStr, Colour.white)
-            } else {
-                // Draw the crewmember portrait
-                val crew = queue[index]
+            } else if (queue[crewIdx] !== hsSelectedCrew) {
+                // Draw the crewmember portrait (Hyperspace: not the one carried by the mouse)
+                val crew = queue[crewIdx]
                 crew.drawPortrait(windowX, windowY - 5, false)
             }
 
@@ -280,6 +380,7 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             return
 
         var top = topBarTop - (min(queue.size, 3) * 23 + 6) - 20
+        if (xyz.znix.xftl.hs.HS.active) top -= xyz.znix.xftl.hs.crew.HsCloneQueue.extraHeight(this)
         if (isIonised || hasWhiteLockingBox)
             top -= 24
         if (isHackActive)
@@ -313,9 +414,16 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         val freeSpace = ship.findSpaceForCrew(room!!, AbstractCrew.SlotType.CREW)
 
         val crew = queue.removeAt(0)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCloneQueue.removed(this, crew)
+        // Hyperspace CREW_CLONE (CrewMember::Clone, priority -9999): before the skill loss and the clone.
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaCrewEvents.crewClone(crew)
+        val hsSkills = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsClone.skillsBefore(crew) else null
         crew.onCloned()
+        // Hyperspace: CrewMember::Clone hook (clone health and skill loss by the clone levels).
+        if (hsSkills != null) xyz.znix.xftl.hs.systems.HsClone.afterClone(this, crew, hsSkills)
         ship.crew.add(crew)
         crew.jumpTo(freeSpace)
+        hsLastClone = crew
     }
 
     private fun killCrew() {
@@ -325,7 +433,8 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             return
 
         // Kill crew in the opposite order they are cloned in.
-        queue.removeAt(queue.size - 1)
+        val dead = queue.removeAt(queue.size - 1)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCloneQueue.removed(this, dead)
     }
 
     override fun saveSystem(elem: Element, refs: ObjectRefs) {
@@ -384,6 +493,11 @@ private object ClonebayInfo : SystemInfo("clonebay") {
     override fun create(blueprint: SystemBlueprint) = Clonebay(blueprint)
 
     override fun getLevelName(level: Int, translator: Translator): String {
+        if (xyz.znix.xftl.hs.HS.active) {
+            // SystemDescriptionFixes (HS 1.23.2): the fourth level reads clonebay_instant_fullheal.
+            if (level == 3) return translator["clonebay_instant_fullheal"]
+            return xyz.znix.xftl.hs.systems.HsClone.levelName(level, translator["clone_full"])
+        }
         val time = Clonebay.CLONE_DURATIONS[level].toInt()
         val heal = Clonebay.PASSIVE_HEALING[level]
         return translator["clone_full"].replaceArg(time).replaceArg(heal, 2)

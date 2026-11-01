@@ -14,8 +14,8 @@ class FTLAnimation(
 ) : Renderable {
     val sprites: List<Image> = (0 until spec.length).map { spec.spriteAt(game, it) }
 
-    val width: Int = sprites[0].width
-    val height: Int = sprites[0].height
+    val width: Int = if (spec.blank) spec.sheet.frameWidth else sprites[0].width
+    val height: Int = if (spec.blank) spec.sheet.frameHeight else sprites[0].height
 
     var timer: Float = 0f
         set(value) {
@@ -71,8 +71,10 @@ class FTLAnimation(
         // frames on weapon or missing crew animations). Instead, fall back
         // to using the first frame.
         // This isn't especially nice, so add an assertion here that only
-        // trips when -ea is specified on Java's command line.
-        assert(i in sprites.indices)
+        // trips when -ea is specified on Java's command line. Mods ship such
+        // weapons (MV: more boost levels than boost frames), so it only checks
+        // vanilla content.
+        assert(i in sprites.indices || xyz.znix.xftl.hs.HS.modded)
         return sprites.getOrElse(i) { sprites.first() }
     }
 
@@ -81,14 +83,17 @@ class FTLAnimation(
     }
 
     override fun draw(x: Float, y: Float, filter: Colour) {
+        if (spec.blank) return
         currentFrame.draw(x, y, filter)
     }
 
     override fun draw(x: Float, y: Float, width: Float, height: Float) {
+        if (spec.blank) return
         currentFrame.draw(x, y, width, height)
     }
 
     override fun draw(x: Float, y: Float, width: Float, height: Float, filter: Colour) {
+        if (spec.blank) return
         currentFrame.draw(x, y, width, height, filter)
     }
 }

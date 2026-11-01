@@ -120,7 +120,7 @@ class FriendlyCrewAI(private val ship: Ship) {
                 continue
 
             // We have to check playerControllable for mind-controlled crew.
-            if (crew.playerControllable)
+            if (crew.skippedByCrewAI)
                 continue
 
             // Ignore crew in the flagship's artillery rooms
@@ -182,26 +182,26 @@ class FriendlyCrewAI(private val ship: Ship) {
         // crew out in an attempt to board the enemy ship.
         val teleporter = ship.teleporter
         var teleportSend = false
-        var teleportForceRecv = false
-        if (teleporter != null && !ship.isPlayerShip && ship.sys.getEnemyOf(ship)?.superShield == 0) {
+        if (teleporter != null && !ship.isPlayerShip) {
+            // CrewAI::OnLoop runs before ShipAI::OnLoop sets CrewAI +0x5c, so its tasks are the ones the previous
+            // frame wanted: none on the first frame of a fight, when everyone takes a station first.
+            val wanted = sendCount
             // ShipAI::OnLoop (0x625c50): the budget is the crew above the ones to keep, and it drops to zero once
             // two send waves have completed.
             // Don't create more tasks than the teleporter can fit (CrewAI +0x5c).
             var budget = getNumMoreBoarders().coerceAtLeast(0)
             if (ship.aiTeleportWaves >= 2 && !ship.sys.debugFlags.noTeleportLimit.set)
                 budget = 0
-            val toSend = budget.coerceAtMost(teleporter.room!!.cellCount)
             sendBudget = budget
-            sendCount = toSend
+            // A super shield on the other ship leaves +0x5c as it was (0x625c50).
+            if (ship.sys.getEnemyOf(ship)?.superShield == 0)
+                sendCount = budget.coerceAtMost(teleporter.room!!.cellCount)
 
-            for (i in 1..toSend) {
+            for (i in 1..wanted) {
                 tasks += TeleportingTask(this, teleporter.room!!)
             }
-            if (toSend > 0)
+            if (wanted > 0)
                 teleportSend = true
-
-            if (shouldEvacuate(teleporter))
-                teleportForceRecv = true
         }
 
         // One problem for each breach, in the order the breaches were made (CrewAI +0x24, the list CheckForProblems
@@ -271,6 +271,15 @@ class FriendlyCrewAI(private val ship: Ship) {
             // idle. This matches the CrewAI::UpdateCrewMember logic.
             var task = assignments[crew]?.nextTask(crew)
 
+            // CrewAI::UpdateCrewMember: idle crew take on their room's system unless someone else has it, so they
+            // don't count as free for any task.
+            if (task == null && crew.currentAction.isIdle) {
+                val station = crew.room.system
+                val mannedBy = station?.manningCrew
+                if (station != null && (mannedBy == null || mannedBy === crew) && crew.room.crew.none { hasAlreadyAssignedManning(it) })
+                    task = ManningTask(this, crew.room)
+            }
+
             if (crew is LivingCrew && crew.health / crew.maxHealth < healingThreshold) {
                 if (medbay != null) {
                     if (task !is HealingTask && medbay.powerSupplied > 0 &&
@@ -316,20 +325,13 @@ class FriendlyCrewAI(private val ship: Ship) {
         }
 
         // Make sure all the crew are pathfinding to their target room.
-        for ((crew, task) in assignments) {
-            if (crew.room == task.room)
-                continue
-
-            if (crew.pathingTarget?.room == task.room)
-                continue
-
-            crew.setTargetRoom(task.room)
+        for (crew in aiCrew) {
+            val task = assignments[crew] ?: continue
+            moveToTask(crew, task)
         }
 
-        // If our boarders on the enemy ship are low on health, teleport them back.
-        // Do this first, so receiving low-health crew takes priority over
-        // sending more when the teleporter comes off cooldown.
-        doTeleportRecv(teleportForceRecv)
+        // Boarders called home (hurt ones, or all of them when evacuating) are the teleporter's own per-frame
+        // evacuation (Teleporter.evacuate, WorldManager::OnLoop 0x61b930), which runs whatever the hostility.
 
         // If the crew are ready, activate the teleporter.
         if (teleportSend) {
@@ -348,6 +350,16 @@ class FriendlyCrewAI(private val ship: Ship) {
      */
     fun hasAlreadyAssignedManning(crew: AbstractCrew): Boolean {
         return newAssignments[crew] is ManningTask
+    }
+
+    private fun moveToTask(crew: AbstractCrew, task: AITask) {
+        if (crew.room == task.room)
+            return
+
+        if (crew.pathingTarget?.room == task.room)
+            return
+
+        xyz.znix.xftl.hs.crew.HsCustomTeleport.aiMove(crew, task.room)
     }
 
     private fun assignTask(task: AITask) {
@@ -399,6 +411,7 @@ class FriendlyCrewAI(private val ship: Ship) {
                         currentTask is RepairBreachTask || currentTask is CombatTask)
             ) {
                 assignments[crew] = task
+                moveToTask(crew, task)
                 return
             }
 
@@ -428,8 +441,10 @@ class FriendlyCrewAI(private val ship: Ship) {
             return
         }
 
-        // Assign this task to the chosen crew.
+        // Assign this task to the chosen crew. They set off at once (CrewAI::AttemptToAssign), so a shared room's
+        // slots go in the order the tasks were handed out.
         assignments[bestCrew] = task
+        moveToTask(bestCrew, task)
     }
 
     /** The breach list as "room:cell" pairs in creation order, or null when there are no breaches (optional tag). */
@@ -480,7 +495,7 @@ class FriendlyCrewAI(private val ship: Ship) {
         // See doc/ship-ai for information about this.
 
         // Find the number of boarders to send, from our initial crew.
-        val sendTotal = when (ship.type.boardingStrategy) {
+        val sendTotal = when (ship.boardingStrategy) {
             BoardingStrategy.NONE -> return 0
             BoardingStrategy.SABOTAGE -> initialCrewCount / 2
             BoardingStrategy.INVASION -> initialCrewCount * 3 / 4
@@ -510,7 +525,7 @@ class FriendlyCrewAI(private val ship: Ship) {
     private fun sendAtArrival() {
         val teleporter = ship.teleporter ?: return
         val enemy = ship.sys.getEnemyOf(ship) ?: return
-        val budget = when (ship.type.boardingStrategy) {
+        val budget = when (ship.boardingStrategy) {
             BoardingStrategy.NONE -> 0
             BoardingStrategy.SABOTAGE -> initialCrewCount / 2
             BoardingStrategy.INVASION -> initialCrewCount * 3 / 4
@@ -542,50 +557,6 @@ class FriendlyCrewAI(private val ship: Ship) {
         }
 
         teleporter.selectTeleportAction(true, enemy.rooms.random(ftl.browser.BrowserRandom))
-    }
-
-    private fun doTeleportRecv(teleportForceRecv: Boolean) {
-        // See doc/ship-ai for this logic
-
-        val teleporter = ship.teleporter ?: return
-
-        val enemy = ship.sys.getEnemyOf(ship) ?: return
-        val boarders = enemy.crew.filterIsInstance<LivingCrew>().filter { it.mode == AbstractCrew.SlotType.INTRUDER }
-
-        val minHealthFraction = when (ship.type.boardingStrategy) {
-            BoardingStrategy.INVASION -> -1f // Never teleport back
-            else -> 0.25f
-        }
-
-        for (crew in boarders) {
-            val healthFraction = crew.health / crew.maxHealth
-
-            if (healthFraction > minHealthFraction && !teleportForceRecv)
-                continue
-
-            // Teleport the crew from this room
-            teleporter.selectTeleportAction(false, crew.room)
-            return
-        }
-    }
-
-    /**
-     * ShipAI::ShouldEvacuate (0x6254f0): the boarders are called back when a sabotage ship is about to escape or has
-     * lost more than two systems entirely, when it surrendered, or when its teleporter is hacked.
-     */
-    private fun shouldEvacuate(teleporter: Teleporter): Boolean {
-        if (ship.isDead)
-            return false
-
-        if (ship.type.boardingStrategy == BoardingStrategy.SABOTAGE) {
-            val escapeTimer = ship.escapeTimer
-            if (escapeTimer != null && escapeTimer < 15f)
-                return true
-            if (ship.aiDestroyedSystems > 2)
-                return true
-        }
-
-        return ship.aiSurrendered || teleporter.isHackActive
     }
 
     fun onCrewTeleportedOut() {
@@ -785,6 +756,8 @@ internal fun nativeSystemId(system: AbstractSystem?): Int {
         is Clonebay -> 13
         is MindControl -> 14
         is Hacking -> 15
+        is xyz.znix.xftl.hs.systems.Temporal -> 20
+        is xyz.znix.xftl.hs.systems.HsCustomSystem, is xyz.znix.xftl.hs.systems.HsCustomSubSystem -> xyz.znix.xftl.hs.systems.HsSystems.nameToId(system.codename)
         null -> Int.MAX_VALUE
         else -> 100
     }

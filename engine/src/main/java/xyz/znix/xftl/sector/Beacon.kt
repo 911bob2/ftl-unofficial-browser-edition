@@ -20,7 +20,7 @@ class Beacon(
     /**
      * The beacon's position on the sector map
      */
-    val pos: ConstPoint,
+    var pos: ConstPoint,
 
     /**
      * The event at this beacon, as the sector generation created it. Even
@@ -30,9 +30,9 @@ class Beacon(
     createdEvent: CreatedEvent,
 
     /**
-     * True if this is the exit beacon to progress to the next sector.
+     * True if this is the exit beacon to progress to the next sector (Location::beacon; Hyperspace scripts write it).
      */
-    val isExit: Boolean,
+    var isExit: Boolean,
 
     /**
      * True if this is the location of the rebel base, in the last stand.
@@ -119,11 +119,33 @@ class Beacon(
     }
 
     /** Nebula for map purposes: in a cloud, or a nebula event (older saves). */
-    val isMapNebula: Boolean get() = inNebula || environmentType.isNebula
+    val isMapNebula: Boolean get() = inNebula || environmentTypes.any { it.isNebula }
+
+    /** Every hazard the scene has up: the environment's type, then the ones later events stacked on it (Hyperspace). */
+    val environmentTypes: List<EnvironmentType>
+        get() = actualEnvironment?.let { env -> env.layers.map { it.type } } ?: listOf(environmentType)
 
     val environmentType: EnvironmentType
         get() {
             actualEnvironment?.let { return it.type }
+            val type = nativeEnvironmentType
+            return when {
+                // Hyperspace <removeNebula> (bNebula and the storm off) and <removeHazards> (only a nebula stays).
+                hsNebulaRemoved && type.isNebula -> EnvironmentType.NORMAL
+                hsHazardsRemoved -> if (type.isNebula) EnvironmentType.NEBULA else EnvironmentType.NORMAL
+                else -> type
+            }
+        }
+
+    /** Hyperspace: the secretSectorWarp of the last event shown here that named one (Location::event's name). */
+    @JvmField var hsSecretWarp: String? = null
+
+    /** Hyperspace: the scene's hazards and nebula were removed by an event (see [environmentType]). */
+    @JvmField var hsHazardsRemoved = false
+    @JvmField var hsNebulaRemoved = false
+
+    private val nativeEnvironmentType: EnvironmentType
+        get() {
             var type = if (forcedNebula) EnvironmentType.NEBULA else event.environment ?: EnvironmentType.NORMAL
             // StarMap::OvertakeLocation (0x5f4ca0) gave the beacon a fresh fleet event, never cleared since, whose own
             // environment is the hazard (WorldManager::CreateLocation 0x6183a0 -> ModifyEnvironment 0x613640): the ASB
@@ -152,6 +174,9 @@ class Beacon(
     lateinit var sector: Sector
         private set
 
+    /** Whether [sector] is set (test beacons may have none). */
+    val hasSector: Boolean get() = this::sector.isInitialized
+
     /**
      * The beacons connected this beacon on the star map, to which the player can jump from here.
      */
@@ -175,10 +200,63 @@ class Beacon(
             require(value?.boss == null) { "Cannot save the flagship at a beacon!" }
         }
 
+    /** Hyperspace: Location::visited as a count (revisit seeds), and the renameBeacon name (null: the event's). */
+    @JvmField var hsVisits: Int = 0
+    @JvmField var hsName: String? = null
+    /** Hyperspace: Location::spaceImage after a changeBackground (null: the event's own image list). */
+    @JvmField var hsSpaceImage: String? = null
+
     /**
      * Has this beacon been previously visited?
+     *
+     * Arriving is StarMap::TravelToLocation (1.6.9 0x5c8760): the beacon and every connected one become known
+     * (Location::known), which also drops a Hyperspace script's [hsKnown].
      */
     var visited: Boolean = false
+        set(value) {
+            field = value
+            if (value) {
+                hsKnown = null
+                if (this::neighbours.isInitialized) for (n in neighbours) n.hsKnown = null
+            }
+        }
+
+    /** Hyperspace: Location::known as a script last wrote it, until the next arrival here or next door. */
+    @JvmField var hsKnown: Boolean? = null
+
+    /**
+     * Location::known: set for the beacon arrived at and its neighbours (TravelToLocation), so visited or next to a
+     * visited beacon; a Hyperspace script may set or clear it ([hsKnown]).
+     */
+    val known: Boolean
+        get() = hsKnown ?: (visited || (this::neighbours.isInitialized && neighbours.any { it.visited }))
+
+    /** Hyperspace: Location::boss as a script last wrote it (null: the flagship's position, see [Sector.bosses]). */
+    @JvmField var hsBoss: Boolean? = null
+
+    /** Hyperspace Lua: the scene CreateLocation stored on the Location (image list, backdrop, planet desc). */
+    class HsScene(@JvmField val list: String, @JvmField val back: String?, @JvmField val planet: Pair<String?, IntArray>)
+    @JvmField var hsScene: HsScene? = null
+
+    /**
+     * The scene WorldManager::CreateLocation stored on this Location at the first arrival (backdrop, planet, fleet):
+     * null until then ([xyz.znix.xftl.environment.BeaconScene.create]).
+     */
+    @JvmField var scene: xyz.znix.xftl.environment.BeaconScene? = null
+
+    /** Hyperspace Lua: Location::spaceImage / planet / space as the arrival's [scene] set them (later events leave them). */
+    fun hsSceneFrom(game: InGameState, s: xyz.znix.xftl.environment.BeaconScene) {
+        if (hsScene != null) return
+        val planet = s.planet?.removePrefix("img/") to intArrayOf(s.planetW, s.planetH, s.planetX, s.planetY, if (s.planetTurned) 180 else 0)
+        hsScene = HsScene(s.backList, s.backdrop?.removePrefix("img/"), if (s.planet == null) null to IntArray(5) else planet)
+    }
+
+    /** SpaceManager's current backdrop and planet when the ship leaves (they stay for the next arrival's picks). */
+    fun captureSpace(map: GameMap) {
+        val env = actualEnvironment ?: return
+        map.spaceBack = env.spaceBackdropId ?: map.spaceBack
+        map.spacePlanet = env.spacePlanetId
+    }
 
     /**
      * Is a store available at this beacon? This isn't the same as event.isStore, as events
@@ -240,6 +318,9 @@ class Beacon(
 
     private var actualEnvironment: AbstractEnvironment? = null
 
+    /** The scene if it was built (visited or shown), without building it (Hyperspace Location::planet / space). */
+    val hsEnvironmentOrNull: AbstractEnvironment? get() = actualEnvironment
+
     init {
         val rand = Random(masterSeed)
         environmentSeed = rand.nextInt()
@@ -260,16 +341,41 @@ class Beacon(
      * with a store is applied, drawing from the global stream, and stays
      * with the beacon; a revisit finds the same store.
      */
-    fun createStore(game: InGameState) {
+    @JvmOverloads
+    fun createStore(game: InGameState, event: CreatedEvent? = null) {
         if (!hasStore || internalStore != null)
             return
 
+        // Hyperspace Seeds.cpp Store::OnInit (1b05a07) calls the CRT srand(), not srandom32: random32 is the
+        // game's own generator (its rand() hooks are commented out), so it does not reseed the stores. The
+        // original shows it: two console stores at the same beacon differ (.build/hs/oracle/ships-store-start-101).
+
+        // Hyperspace: an event's custom store replaces Store::OnInit (StoreComplete::OnInit).
+        val hsDef = xyz.znix.xftl.hs.ship.HsStores.definitionFor(game, event)
+        if (hsDef != null) {
+            xyz.znix.xftl.hs.ship.HsStores.diagnosticScan?.invoke(game, hsDef, game.eventCreator.currentLevel())
+            internalStore = StoreData().also { it.hs = xyz.znix.xftl.hs.ship.HsStores.generate(game, hsDef, game.eventCreator.currentLevel()) }
+            return
+        }
         internalStore = StoreData().also { it.generateRandomContents(game) }
+    }
+
+    /**
+     * CommandGui::CreateNewStore(level) (the HS console's STORE): a new store here, drawn from the global stream
+     * (an event's custom store or the console's FORCE_STORE one replaces the random contents).
+     */
+    fun hsCreateNewStore(game: InGameState, level: Int) {
+        hasStore = true
+        val hsDef = xyz.znix.xftl.hs.ship.HsStores.definitionFor(game, createdEvent)
+        internalStore = StoreData().also {
+            if (hsDef != null) it.hs = xyz.znix.xftl.hs.ship.HsStores.generate(game, hsDef, level)
+            else it.generateRandomContents(game, level = level)
+        }
     }
 
     /** The store, made now (from the global stream) if the event that carries it never created it. */
     fun getStore(game: InGameState): StoreData? {
-        createStore(game)
+        createStore(game, createdEvent)
         return internalStore
     }
 
@@ -286,7 +392,7 @@ class Beacon(
      * the environment if it doesn't exist yet.
      */
     val isEnvironmentDangerous: Boolean
-        get() = actualEnvironment?.isDangerous ?: environmentType.isDangerous
+        get() = actualEnvironment?.let { env -> env.layers.any { it.isDangerous } } ?: environmentType.isDangerous
 
     fun getEnvironment(game: InGameState): AbstractEnvironment {
         actualEnvironment?.let { return it }
@@ -295,6 +401,14 @@ class Beacon(
         actualEnvironment = env
         return env
     }
+
+    /**
+     * The environment a ship's power reads. Only an ion storm takes power, and it is the only hazard this may make:
+     * the others draw from the global stream when they start, which ModifyEnvironment does after the event's ship is
+     * built, and building that ship reads the power.
+     */
+    fun powerEnvironment(game: InGameState): AbstractEnvironment? =
+        actualEnvironment ?: if (environmentType == EnvironmentType.ION_STORM) getEnvironment(game) else null
 
     /**
      * Remove the current environment associated with the beacon, so it'll be
@@ -314,6 +428,21 @@ class Beacon(
      */
     fun restoreEnvironment(environment: AbstractEnvironment) {
         actualEnvironment = environment
+    }
+
+    /**
+     * Hyperspace (WorldManager::ModifyEnvironment): the hazard of a later event at the beacon is added to the ones the
+     * scene has up. [env] of the same family as the scene's own (nebula / ion storm) replaces it, keeping the stack;
+     * on a plain scene it is the scene.
+     */
+    fun addEnvironment(env: AbstractEnvironment) {
+        fun family(e: AbstractEnvironment) = if (e.type.isNebula) EnvironmentType.NEBULA else e.type
+        val cur = actualEnvironment
+        when {
+            cur == null || cur.type == EnvironmentType.NORMAL -> actualEnvironment = env
+            family(cur) == family(env) -> { env.stacked += cur.stacked; actualEnvironment = env }
+            else -> cur.stack(env)
+        }
     }
 
     /**
@@ -345,6 +474,15 @@ class Beacon(
         SaveUtil.addTagBoolIfTrue(elem, "hasStore", hasStore)
         SaveUtil.addTagBoolIfTrue(elem, "hasQuest", hasQuest)
         questName?.let { elem.setAttribute("browserQuestName", it) }
+        // Hyperspace: Location::visited and the changeBackground image (absent in vanilla saves).
+        if (hsVisits != 0) elem.setAttribute("hsVisits", hsVisits.toString())
+        hsSpaceImage?.let { elem.setAttribute("hsSpaceImage", it) }
+        if (hsHazardsRemoved) elem.setAttribute("hsHazardsRemoved", "true")
+        if (hsNebulaRemoved) elem.setAttribute("hsNebulaRemoved", "true")
+        hsKnown?.let { elem.setAttribute("hsKnown", it.toString()) }
+        hsBoss?.let { elem.setAttribute("hsBoss", it.toString()) }
+        scene?.let { elem.addContent(it.save()) }
+        hsScene?.let { s -> elem.setAttribute("hsScene", listOf(s.list, s.back ?: "", s.planet.first ?: "", s.planet.second.joinToString(",")).joinToString("|")) }
 
         // Save the event by name - events are immutable and are
         // loaded from the game's XML, so we only need to uniquely
@@ -366,6 +504,13 @@ class Beacon(
         if (actualEnvironment != null) {
             SaveUtil.addAttr(elem, "env", actualEnvironment!!.type.name)
             actualEnvironment!!.saveToXML(elem)
+            // Hyperspace: the hazards later events stacked on the scene
+            for (extra in actualEnvironment!!.stacked) {
+                val stackElem = Element("stackedEnv")
+                SaveUtil.addAttr(stackElem, "env", extra.type.name)
+                extra.saveToXML(stackElem)
+                elem.addContent(stackElem)
+            }
         }
 
         if (internalStore != null) {
@@ -406,7 +551,7 @@ class Beacon(
             // Everything else goes in mutable variables, so we can set them later.
             val eventId = SaveUtil.getAttr(elem, "eventId")
             val seed = SaveUtil.getAttrInt(elem, "seed")
-            val event = game.eventManager.getByDeserialisationId(eventId)
+            val event = game.eventManager.getSavedEvent(eventId)
             val isExit = SaveUtil.getOptionalTagBool(elem, "isExit") ?: false
             val isBase = SaveUtil.getOptionalTagBool(elem, "isBase") ?: false
 
@@ -428,6 +573,16 @@ class Beacon(
             beacon.hasStore = SaveUtil.getOptionalTagBool(elem, "hasStore") ?: false
             beacon.hasQuest = SaveUtil.getOptionalTagBool(elem, "hasQuest") ?: false
             beacon.questName = elem.getAttributeValue("browserQuestName")
+            beacon.hsVisits = elem.getAttributeValue("hsVisits")?.toIntOrNull() ?: 0
+            beacon.hsSpaceImage = elem.getAttributeValue("hsSpaceImage")
+            beacon.hsHazardsRemoved = elem.getAttributeValue("hsHazardsRemoved") == "true"
+            beacon.hsNebulaRemoved = elem.getAttributeValue("hsNebulaRemoved") == "true"
+            beacon.hsKnown = elem.getAttributeValue("hsKnown")?.toBooleanStrictOrNull()
+            elem.getAttributeValue("hsScene")?.split('|')?.takeIf { it.size == 4 }?.let { p ->
+                beacon.hsScene = HsScene(p[0], p[1].ifEmpty { null }, p[2].ifEmpty { null } to p[3].split(',').map { it.toInt() }.toIntArray())
+            }
+            beacon.hsBoss = elem.getAttributeValue("hsBoss")?.toBooleanStrictOrNull()
+            elem.getChild("scene")?.let { beacon.scene = xyz.znix.xftl.environment.BeaconScene.load(it) }
             beacon.isOvertaken = elem.getAttributeValue("browserOvertaken") == "true"
             beacon.browserFleetThreatened = elem.getAttributeValue("browserFleetThreatened") == "true"
             beacon.hasFleetEvent = elem.getAttributeValue("browserFleetEvent") == "true"
@@ -438,6 +593,10 @@ class Beacon(
             if (envType != null) {
                 beacon.actualEnvironment = envType.create(game, beacon)
                 beacon.actualEnvironment!!.loadFromXML(elem)
+                for (stackElem in elem.getChildren("stackedEnv")) {
+                    val extraType = stackElem.getAttributeValue("env")?.let { EnvironmentType.valueOf(it) } ?: continue
+                    beacon.actualEnvironment!!.stacked += extraType.create(game, beacon).also { it.loadFromXML(stackElem) }
+                }
             }
 
             val storeElem = elem.getChild("storeData")

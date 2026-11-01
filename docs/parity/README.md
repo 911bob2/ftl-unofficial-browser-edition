@@ -6,8 +6,8 @@ The maintained sources are authoritative. The direct-fork baseline retained ever
 
 ## Evidence and status
 
+- `upstream-inventory.json` enumerates Pocket Wormhole issues and Project Wormhole mechanics documents. Regenerate with `node tools/CollectUpstreamParity.mjs`. Closed issues and TODO comments remain audit leads; they do not establish that the local fork is missing the feature.
 - The table below is the curated implementation matrix. Detailed content entries remain **implemented but unverified** until their specific behavior has been checked. **Verified** means the named regression passed; it does not certify every related interaction or animation.
-- Executable addresses, hash, interpretation and corresponding tests are recorded in [original behavior notes](../ORIGINAL_BEHAVIOR.md). Decompiled output remains private.
 - [All-UI presentation audit](../UI_PARITY.md) expands the hangar plan to every
   game screen. The button-branch review corrects state colors/font coordinates,
   crew/empty-card alignment and autofire presentation. New rendered-pixel/input

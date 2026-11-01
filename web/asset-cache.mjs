@@ -8,7 +8,8 @@ async function sha256(bytes){return [...new Uint8Array(await crypto.subtle.diges
 
 // Call only after fetching a fresh, authorized manifest. This stores asset bytes,
 // never credentials, saves or a manifest that could authorize an offline launch.
-export async function createAssetCache(manifest,fetchBytes){
+// onProgress(text, {done, total}) reports the bundle download and the check of a cached copy (138 MB for the game).
+export async function createAssetCache(manifest,fetchBytes,onProgress=()=>{}){
  if(!hashPattern.test(manifest.bootHash))throw Error('Invalid game resource bundle hash');
  const bootHash=manifest.bootHash.toLowerCase(),bootKey='/api/assets/boot?hash='+bootHash;
  const audio=new Map(manifest.audio.map(a=>[a.hash.toLowerCase(),a]));
@@ -25,13 +26,14 @@ export async function createAssetCache(manifest,fetchBytes){
  // Bytes are used only when they have the manifest's exact length and SHA-256, whether they come from the cache
  // or the network; only such bytes are cached. Without Web Crypto (an insecure origin) nothing is cached.
  const canVerify=()=>!!globalThis.crypto?.subtle;
- async function read(key,path,hash,length){
+ async function read(key,path,hash,length,progress=null){
   let promise=pending.get(key);
   if(!promise){
    promise=(async()=>{
     if(cache)try{
      const stored=await cache.match(key);
      if(stored){
+      progress?.('Checking the game files in this browser…',{done:0,total:length});
       const bytes=await stored.arrayBuffer();
       // Hashing the 138 MB bundle takes well under a second (about 70 ms with SHA extensions).
       if(bytes.byteLength===length&&canVerify()&&await sha256(bytes)===hash)return bytes;
@@ -42,7 +44,8 @@ export async function createAssetCache(manifest,fetchBytes){
     for(let attempt=0;attempt<downloadAttempts;attempt++){
      let bytes;
      // HTTP refusals (signed out, account changed) are final; a dropped connection is worth another try.
-     try{bytes=await fetchBytes(path);}catch(e){if(e?.status||attempt+1===downloadAttempts)throw e;failure=e;continue;}
+     try{bytes=await fetchBytes(path,progress?{length,onProgress:done=>progress(attempt?'Downloading game resources again…':'Downloading game resources…',{done,total:length})}:undefined);}catch(e){if(e?.status||attempt+1===downloadAttempts)throw e;failure=e;continue;}
+     progress?.('Verifying game resources…',{done:length,total:length});
      if(bytes.byteLength!==length){failure=Error('Incomplete game resource download; retry the tests');continue;}
      if(!canVerify())return bytes;
      if(await sha256(bytes)!==hash){failure=Error('Game resources changed or failed verification; reload Tests and retry');continue;}
@@ -56,7 +59,7 @@ export async function createAssetCache(manifest,fetchBytes){
   try{return await promise;}finally{if(pending.get(key)===promise)pending.delete(key);}
  }
  return {
-  fetchBoot:()=>read(bootKey,'/api/assets/boot',bootHash,manifest.bootBytes),
+  fetchBoot:()=>read(bootKey,'/api/assets/boot',bootHash,manifest.bootBytes,onProgress),
   async fetchAudio(asset){
    const hash=asset.hash.toLowerCase(),entry=audio.get(hash);
    if(!entry)throw Error('Audio resource is absent from the current manifest');

@@ -21,18 +21,64 @@ public final class BrowserEngine {
         BrowserDebug.installOutputBridge(); BrowserDebug.tick=0;
         if(game!=null)game.shutdown();
         container.input.removeAllListeners();container.input.reset();
-        BrowserFiles.enableAE=ae;BrowserFiles.hydrate(run,profile);graphics=new Graphics();graphics.markCurrentImageTransformSource();ShaderProgramme.getSHADER_SCREEN_SIZE().set(1280,720);game=new MainGame(new MainGame.CommandLineArgs());game.init(container);
+        BrowserFiles.enableAE=ae;BrowserFiles.hydrate(run,profile);BrowserFiles.hydrateSettings();xyz.znix.xftl.hs.HS.init();graphics=new Graphics();graphics.markCurrentImageTransformSource();ShaderProgramme.getSHADER_SCREEN_SIZE().set(1280,720);game=new MainGame(new MainGame.CommandLineArgs());game.init(container);
+        if(!xyz.znix.xftl.hs.HS.scripts.isEmpty())xyz.znix.xftl.hs.lua.HsLua.startForSession(game,graphics);
     }
     /** CFPS::OnLoop (0x5ba020) caps a frame at half a speed unit, 1/32 s: a slower frame slows the game down. */
     static final float MAX_STEP = 1f / 32f;
-    @JSExport public static void step(float dt)throws Exception{game.update(container,Math.min(dt,MAX_STEP));if(dt>0)BrowserDebug.tick++;container.input.clearInputPressedRecord();if(BrowserDebug.enabled)BrowserDebug.record("simulation","state", "{\"dt\":"+dt+",\"state\":"+BrowserDebug.snapshot(game)+"}");}
+    /** With HS scripts a real frame (dt > 0) goes through Hyperspace.FPS (CFPS::OnLoop: speedLevel scales the step), MouseControl::Reset and OnLoop, and fires ON_TICK once. */
+    @JSExport public static void step(float dt)throws Exception{boolean hs=xyz.znix.xftl.hs.HS.luaActive&&dt>0;float step=hs?xyz.znix.xftl.hs.lua.LuaFps.onLoop(dt):Math.min(dt,MAX_STEP);if(hs)xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.frame(step);game.update(container,step);if(hs)xyz.znix.xftl.hs.lua.LuaEvents.onTick();if(dt>0)BrowserDebug.tick++;container.input.clearInputPressedRecord();if(BrowserDebug.enabled)BrowserDebug.record("simulation","state", "{\"dt\":"+dt+",\"state\":"+BrowserDebug.snapshot(game)+"}");}
     @JSExport public static void render()throws Exception{game.render(container,graphics);}
+    /** Diagnostics that render frames (BrowserWp4DroneOrderDiagnostics). */ static Graphics diagnosticGraphics(){return graphics;}
+    /** Diagnostics that move or click the pointer (BrowserHsSweepWorldDiagnostics): type 0 move, 1 press, 2 release. */ static void diagnosticMouse(int x,int y,int type,int button){mouse(x,y,type,button);}
     @JSExport public static void renderFrame(float dt)throws Exception{
         if(game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state) state.setRenderingDeltaTime(dt);
         else if(game.getCurrentState() instanceof xyz.znix.xftl.game.SettingsMenuState state) state.prepareBrowserRender(dt);
         render();
     }
     @JSExport public static void pause(){game.autoPauseIfInFlight();}
+    /** Mods: which loaded Hyperspace features are not implemented (JSON, see HS.capabilityReport). */
+    /** ships workstream diagnostics: "defs" | "ships" | "start <ship> [difficulty]" | "menu" (JSON / text). */
+    @JSExport public static String hsShipsProbe(String what){return BrowserHsShipsDiagnostics.INSTANCE.run(game,what,container,graphics);}
+    @JSExport public static String hsCapabilityReport(){return xyz.znix.xftl.hs.HS.capabilityReport();}
+    /** Mods: per-callback Lua calls/instructions/time and bridge state (JSON); reset clears the counters. */
+    @JSExport public static String hsProfile(boolean reset){return xyz.znix.xftl.hs.lua.HsLua.profileJson(reset);}
+    /** Diagnostics mode hs-lua: Lua runtime against real objects (bench, in-situ frames, script API semantics). */
+    @JSExport public static String hsLuaProbe(int frames){return xyz.znix.xftl.hs.lua.LuaProbe.INSTANCE.run(game,container,graphics,frames);}
+    // Hyperspace Lua bridge: imports of web/vendor/hs-lua.wasm (see web/hs-lua.mjs). Reached only with mod scripts.
+    @JSExport public static void hsLuaLog(int kind,String text){xyz.znix.xftl.hs.lua.HsLua.log(kind,text);}
+    @JSExport public static int hsLuaRand32(){return xyz.znix.xftl.hs.lua.LuaRng.rand32();}
+    @JSExport public static void hsLuaSrand32(int seed){xyz.znix.xftl.hs.lua.LuaRng.srand32(seed);}
+    @JSExport public static double hsLuaGetn(int h,int a){return xyz.znix.xftl.hs.lua.LuaBridge.getn(h,a);}
+    @JSExport public static String hsLuaGets(int h,int a){return xyz.znix.xftl.hs.lua.LuaBridge.gets(h,a);}
+    @JSExport public static double hsLuaGeto(int h,int a){return xyz.znix.xftl.hs.lua.LuaBridge.geto(h,a);}
+    @JSExport public static String hsLuaSetn(int h,int a,double v){return xyz.znix.xftl.hs.lua.LuaBridge.setn(h,a,v);}
+    @JSExport public static String hsLuaSets(int h,int a,String v){return xyz.znix.xftl.hs.lua.LuaBridge.sets(h,a,v);}
+    @JSExport public static String hsLuaSeto(int h,int a,int h2,int t2){return xyz.znix.xftl.hs.lua.LuaBridge.seto(h,a,h2,t2);}
+    @JSExport public static int hsLuaCall(int mid,int n){return xyz.znix.xftl.hs.lua.LuaBridge.call(mid,n);}
+    @JSExport public static void hsLuaRelease(int h){xyz.znix.xftl.hs.lua.Handles.release(h);}
+    @JSExport public static int hsLuaTableid(int h){return xyz.znix.xftl.hs.lua.Handles.tableId(h);}
+    @JSExport public static void hsLuaRegistered(int kind,int id){xyz.znix.xftl.hs.lua.HsLua.registered(kind,id);}
+    /** Mods: HS gate and modded run/profile save checks (BrowserHsDiagnostics); returns "PASS ..." or throws. */
+    @JSExport public static String hsCoreProbe(String ship){return BrowserHsDiagnostics.INSTANCE.run(game,ship);}
+    @JSExport public static String hsRenderProbe(String cmd){return BrowserHsRenderDiagnostics.INSTANCE.run(game,container,cmd);}
+    @JSExport public static String hsWeaponsProbe(String part){return BrowserHsWeaponsDiagnostics.INSTANCE.run(game,container,part);}
+    /** Mods: HS races and per-ship starting crew stats (BrowserStatCrewDiagnostics); returns JSON. */
+    @JSExport public static String hsStatCrewProbe(String ships){return BrowserStatCrewDiagnostics.INSTANCE.run(game,ships);}
+    /** Mods: the oracle statcrew-powers Lua scenario replayed here (BrowserStatCrewDiagnostics.luaScenario). */
+    @JSExport public static String hsStatCrewLua(String code,String keys,int frames,String reloadAt){return BrowserStatCrewDiagnostics.INSTANCE.luaScenario(game,code,keys,frames,reloadAt==null?"":reloadAt);}
+    @JSExport public static String hsEventsProbe(String script){return BrowserHsEventsDiagnostics.INSTANCE.run(game,container,graphics,script);}
+    /** Mods: a full policy-driven run over all sectors (BrowserHsFullRunDiagnostics); returns JSON lines. */
+    @JSExport public static String hsFullRunProbe(String script){return BrowserHsFullRunDiagnostics.INSTANCE.run(game,container,graphics,script);}
+    /** fix-runtime diagnostics: "ships [from] [count]" (evasion, dodge, paths and crew AI on every enemy blueprint; JSON). */
+    @JSExport public static String hsRuntimeProbe(String what){return BrowserHsRuntimeDiagnostics.INSTANCE.run(game,container,what);}
+    @JSExport public static String hsSystemsProbe(String part){return BrowserHsSystemsDiagnostics.INSTANCE.run(game,container,part);}
+    @JSExport public static String hsWp2Probe(String cmd){return BrowserHsWp2Diagnostics.INSTANCE.run(game,container,cmd);}
+    @JSExport public static String hsCrewUiProbe(String part){return BrowserHsCrewUiDiagnostics.INSTANCE.run(game,container,graphics,part);}
+    @JSExport public static String hsWp1Probe(String part){return BrowserHsWp1Diagnostics.INSTANCE.run(game,container,graphics,part);}
+    @JSExport public static String hsWp6MapProbe(String cmd){return BrowserHsWp6MapDiagnostics.INSTANCE.run(game,container,graphics,cmd);}
+    @JSExport public static String hsWp6EventsProbe(String cmd){return BrowserHsWp6EventsDiagnostics.INSTANCE.run(game,container,graphics,cmd);}
+    @JSExport public static String hsWp7UiProbe(String cmd){return BrowserHsWp7UiDiagnostics.INSTANCE.run(game,container,graphics,cmd);}
     @JSExport public static void parityNoBackground(boolean value){BrowserDebug.parityNoBackground=value;}
     /** UI parity captures only: start the original's continue.sav (base64). */
     @JSExport public static void parityImportVanillaSave(String base64){game.startVanillaSaveForParity(java.util.Base64.getDecoder().decode(base64));}
@@ -57,6 +103,16 @@ public final class BrowserEngine {
         game.writeRunSave();BrowserFiles.setProfile(BrowserXml.write(game.getProfile().save()));
     }
     @JSExport public static String runSave(){return BrowserFiles.getRun();}
+    private static java.util.List<String> reportedDropped=xyz.znix.xftl.savegame.MissingContent.getDropped();
+    /** What the last run load dropped because the game files lack it (MissingContent), newline separated, once per load; null when nothing new. */
+    @JSExport public static String missingContent(){
+        java.util.List<String> dropped=xyz.znix.xftl.savegame.MissingContent.getDropped();
+        if(dropped==reportedDropped)return null;
+        reportedDropped=dropped;
+        StringBuilder text=new StringBuilder();
+        for(String name:dropped){if(text.length()>0)text.append('\n');text.append(name);}
+        return text.length()==0?null:text.toString();
+    }
     /**
      * What a save made now keeps, for Save and close: "run" (an ordinary run, saved whole), "ended" (the run is over, so only
      * the profile is kept), "tutorial" (never saved, as in the original where CommandGui::CanSave is false) or "profile"
@@ -74,6 +130,12 @@ public final class BrowserEngine {
     @JSExport public static int frameRateLimit(){return game.getProfile().getFrameRateLimit();}
     @JSExport public static void diagnosticFrameLimit(int limit){game.getProfile().setFrameRateLimit(limit);}
     @JSExport public static void diagnosticSeed(String seed){BrowserRandom.restore(seed);}
+    @JSExport public static String diagnosticRandom(){return BrowserRandom.snapshot();}
+    @JSExport public static void newRunLayout(String ship,int difficulty,int layoutSeed){NativeRandom.setLayoutSeedOverride(layoutSeed);NativeRandom.trace=new ArrayList<Integer>();game.startNewGame(ship,xyz.znix.xftl.game.Difficulty.values()[difficulty],null);}
+    /** Diagnostics: the draws recorded since newRunLayout (seeds are Integer.MIN_VALUE then the seed), comma separated. */
+    @JSExport public static String nativeTrace(){ArrayList<Integer> t=NativeRandom.trace;if(t==null)return "";StringBuilder b=new StringBuilder();for(int i=0;i<t.size();i++){if(i>0)b.append(',');b.append(t.get(i));}return b.toString();}
+    /** Diagnostics: the start beacon's scene built again from a native capture's draws (comma separated), then shown. */
+    @JSExport public static String sceneReplay(String csv){String[] p=csv.split(",");int[] v=new int[p.length];for(int i=0;i<p.length;i++)v[i]=Integer.parseInt(p[i].trim());xyz.znix.xftl.game.InGameState g=(xyz.znix.xftl.game.InGameState)game.getCurrentState();g.getGameMap().setSpaceBack(null);g.getGameMap().setSpacePlanet(null);NativeRandom.startReplay(v);xyz.znix.xftl.environment.BeaconScene sc=xyz.znix.xftl.environment.BeaconScene.create(g,g.getCurrentBeacon());NativeRandom.startReplay(null);g.getCurrentBeacon().clearEnvironment();return "{\"back\":\""+sc.backdrop+"\",\"planet\":\""+sc.planet+"\",\"box\":["+sc.planetW+","+sc.planetH+","+sc.planetX+","+sc.planetY+","+sc.planetTurned+"]}";}
     @JSExport public static void newRun(String ship,int difficulty){game.startNewGame(ship,xyz.znix.xftl.game.Difficulty.values()[difficulty],null);}
     @JSExport public static void restore(String xml){game.loadSavedGame(BrowserXml.parse(xml));}
     public static MainGame getGame(){return game;}
@@ -81,6 +143,7 @@ public final class BrowserEngine {
     @JSExport public static String debugSnapshot(){return game==null?"{}":BrowserDebug.snapshot(game);}
     @JSExport public static String diagnosticRun(){return game!=null&&game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state ? BrowserXml.write(state.saveGameState()) : null;}
     @JSExport public static String diagnosticProfile(){return game==null ? null : BrowserXml.write(game.getProfile().save());}
+    @JSExport public static String diagnosticSettings(){return game==null ? null : BrowserXml.write(game.getProfile().saveSettings());}
     @JSExport public static void consoleOpen(){if(game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state)state.openDebugConsole();}
     /** The Console button: closes the console when it is open (as Escape does), opens it otherwise. Returns whether it is open now. */
     @JSExport public static boolean consoleToggle(){
@@ -124,8 +187,8 @@ public final class BrowserEngine {
     @JSExport public static String tutorialPlayProbe(){BrowserTutorialPlayDiagnostics.INSTANCE.run(game,container,graphics);return "PASS complete 33-step tutorial action traversal, real repairs/venting, map jump, normal combat/rewards, equipment drag, upgrades and isolated exit; time-stepped automation, human play and native presentation comparison remain pending.";}
     @JSExport public static void performancePreset(int phase){BrowserDiagnostics.INSTANCE.performancePreset(game,container,phase);}
     @JSExport public static String campaignProbe(int difficulty,int seed){return BrowserDiagnostics.INSTANCE.campaignProbe(game,container,graphics,difficulty,seed);}
-    @JSExport public static void mouse(int x,int y,int type,int button){container.input.mouse(x,y,type,button);}
-    @JSExport public static void key(int key,int character,boolean down){container.input.key(key,(char)character,down);}
+    @JSExport public static void mouse(int x,int y,int type,int button){BrowserInput in=container.input;if(xyz.znix.xftl.hs.HS.luaActive&&xyz.znix.xftl.hs.lua.LuaEvents.mouse(x,y,in.x,in.y,type,button,in.buttons.contains(0),in.buttons.contains(1),in.buttons.contains(2)))return;in.mouse(x,y,type,button);}
+    @JSExport public static void key(int key,int character,boolean down){if(xyz.znix.xftl.hs.HS.luaActive&&xyz.znix.xftl.hs.lua.LuaEvents.key(key,down))return;container.input.key(key,(char)character,down);}
     @JSBody(params="path",script="if(window.ftlSetCursor)window.ftlSetCursor(path);") private static native void cursor(String path);
     @JSBody(script="if(window.ftlExit)window.ftlExit();") private static native void exit();
     private static class Container implements GameContainer {

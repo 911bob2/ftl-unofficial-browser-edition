@@ -30,7 +30,15 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     override val sortingType: SortingType get() = SortingType.HACKING
     override val insertButtonSpace: Boolean get() = true
     override val holdsPermanentLock: Boolean get() = timeRemaining != null
+
+    /** Hyperspace: HackingSystem's constructor (0x62d9a0) gives its hacking drone a space id (Globals::GetNextSpaceId). */
+    @JvmField val hsDroneSelfId: Int = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsWeapons.nextSpaceId() else -1
     override val hasWhiteLockingBox: Boolean get() = active
+
+    override fun initialise(ship: Ship) {
+        super.initialise(ship)
+        xyz.znix.xftl.drones.DroneRuntime.joinHacking(this, ship)
+    }
 
     /**
      * Is the hacking module powered up, regardless
@@ -58,8 +66,26 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     private var timeRemaining: Float? = null
 
+    /** HackingSystem::effectTimer second - first: the pulse time left (0 when no pulse); read by Hyperspace's temporal AI. */
+    val browserPulseTimeLeft: Float get() = timeRemaining ?: 0f
+
+    /** HackingSystem::effectTimer.second: the running pulse's length, else the length a pulse would have now (oracle: 4 idle). */
+    val browserPulseDuration: Float get() = if (pulseDuration > 0f) pulseDuration else duration
+    /** HackingSystem::effectTimer.second: the constructor's 10 until a pulse sets it. */
+    val hsEffectSecond: Float get() = if (pulseDuration > 0f) pulseDuration else 10f
+
+    /** HackingSystem::effectTimer.first: the time into the running pulse (0 when none runs). */
+    val browserPulseElapsed: Float get() = timeRemaining?.let { if (pulseDuration > 0f) pulseDuration - it else 0f } ?: 0f
+
     // The pulse length the timer was last scaled to; zero until a pulse runs.
     private var pulseDuration: Float = 0f
+
+    /** Hyperspace: effectTimer.first written by a script (the time into the pulse moves). */
+    fun hsWritePulseElapsed(v: Float) { if (timeRemaining != null && pulseDuration > 0f) timeRemaining = pulseDuration - v }
+    /** Hyperspace: effectTimer.second written by a script (the pulse's length; the time into it stays). */
+    fun hsWritePulseDuration(v: Float) {
+        if (timeRemaining != null && pulseDuration > 0f) { val elapsed = browserPulseElapsed; pulseDuration = v; timeRemaining = v - elapsed }
+    }
 
     // HackingSystem's pulse lengths (0x885188): 4/7/10 seconds by power.
     private val duration get() = 1f + powerSupplied.coerceAtLeast(1) * 3f
@@ -73,10 +99,41 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     private var projectile: HackingDroneProjectile? = null
         set(value) {
             field = value
+            if (xyz.znix.xftl.hs.HS.active && value != null) hsLastDrone = value
 
             // The power button size changes when the drone lands or is killed
             updateButton()
         }
+    private var hsLastDrone: HackingDroneProjectile? = null
+
+    /** HS GPL-3.0-or-later 1b05a07 CustomDamage.cpp HackingDrone::CollisionMoving; the system owns the drone view. */
+    val hsCollisionBody: xyz.znix.xftl.hs.weapons.HsHackingDroneCollisionBody? =
+        if (xyz.znix.xftl.hs.HS.active) object : xyz.znix.xftl.hs.weapons.HsHackingDroneCollisionBody,
+            xyz.znix.xftl.hs.lua.LuaTyped {
+            override val luaType get() = xyz.znix.xftl.hs.lua.LuaApi.T_HackingDrone
+            override val hackingSystem: Hacking get() = this@Hacking
+            private fun actor() = projectile ?: hsLastDrone ?: throw IllegalStateException("Hacking drone has no flight body")
+            override val collisionReceiver: Any get() = this
+            override val collisionOwner: Ship get() = ship
+            override val blueprint: DroneBlueprint get() = ship.sys.blueprintManager["DRONE_HACKING"] as DroneBlueprint
+            override val collisionDeployed: Boolean get() = projectile != null
+            override fun resetCollisionDeath() { (projectile ?: hsLastDrone)?.hsDead = false }
+            override val collisionSpaceId: Int get() = (projectile ?: hsLastDrone)?.hsCurrentSpaceId
+                ?: xyz.znix.xftl.hs.weapons.HsWeapons.shipId(ship)
+            override val collisionSelfId: Int get() = hsDroneSelfId
+            override val collisionPosition: xyz.znix.xftl.math.FPoint get() = actor().position
+            override val collisionDodge: Int get() = actor().blueprint.dodge ?: 0
+            override val collisionPowered: Boolean get() = powerSupplied > 0
+            override val collisionEnabled: Boolean get() = projectile?.let { !it.hasLanded && !it.hsDead && !it.health.isBlowingUp } == true
+            override val collisionExploding: Boolean get() = (projectile ?: hsLastDrone)?.health?.isBlowingUp == true
+            override var collisionIonStun: Float
+                get() = actor().health.ionTimer
+                set(value) { actor().health.ionTimer = value }
+            override var arrived: Boolean
+                get() = (projectile ?: hsLastDrone)?.hasLanded == true
+                set(value) { actor().hasLanded = value }
+            override fun collisionBlowUp() = actor().hsBlowUp()
+        } else null
 
     private val launchSound by onInit { it.sounds.getSample("droneLaunch") }
     private val landSound by onInit { it.sounds.getSample("hackLand") }
@@ -106,6 +163,56 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
     }
 
+    /**
+     * Hyperspace hackingIonFix (Balance.cpp ShipSystem::IonDamage hook): ion of 1-3 on this system while it is hacking
+     * first locks it for 4 - ion units, so the ion that follows adds up to four (the pulse lock is replaced).
+     */
+    override fun dealDamage(damage: Int, ionDamage: Int) {
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.config?.hackingIonFix == true && ionDamage in 1..3 && active) {
+            lockUnits(4 - ionDamage)
+            permanentLockOverridden = true
+        }
+        super.dealDamage(damage, ionDamage)
+    }
+
+    /** HackingSystem::bBlocked (+0x7a8, ShipManager::OnLoop): the target's super shield, or the enemy's own jump. */
+    @JvmField var hsBlockedValue = false
+    val hsBlocked: Boolean get() = hsBlockedValue
+
+    /** HackingSystem::bCanHack (+0x7b8, ShipManager::OnLoop): the target is hostile. */
+    @JvmField var hsCanHackValue = false
+    val hsCanHack: Boolean get() = hsCanHackValue
+
+    /** HackingSystem::bArmed (+0x7a9): the player is picking the room to hack (CombatControl's arming); a Lua write arms. */
+    var hsArmed: Boolean
+        get() = ship.isPlayerShip && ship.sys.shipUI.isSelectingHackingTarget
+        set(value) {
+            if (!ship.isPlayerShip) return
+            if (value) ship.sys.shipUI.hackSelected()
+            else if (ship.sys.shipUI.isSelectingHackingTarget) ship.sys.clickEvent = null
+        }
+
+    /** A Lua write of HackingSystem::bHacking (+0x1c0): the pulse flag alone, as the native field. */
+    /** HackingSystem::bHacking (+0x1c0): a pulse is on, also while an ion hit holds its lock ([active] is PulseActive). */
+    val hsHacking: Boolean get() = timeRemaining != null
+
+    fun hsSetHacking(value: Boolean) {
+        if (value == hsHacking) return
+        timeRemaining = if (value) duration else null
+    }
+
+    /** HackingSystem::queuedSystem (+0x7bc): the system StartHacking was given, until StopHacking. */
+    val hsQueuedSystem: AbstractSystem? get() = selectedTarget?.system ?: droneTargetSystem
+
+    private fun hsShipFlags() {
+        val target = ship.sys.getEnemyOf(ship)
+        hsBlockedValue = (target?.superShield ?: 0) > 0 || (!ship.isPlayerShip && ship.browserJumping)
+        hsCanHackValue = target != null
+    }
+
+    /** HackingSystem::SoundLoop as HS replaces it (HackingSystem.cpp): drone landed, hacking, lock count -1. */
+    val hsSoundLoop: Boolean get() = active && droneLanded && hasPermanentLock
+
     override fun makeExtraButtons(powerPos: IPoint): List<Button> {
         button = HackButton(buttonHeight, powerPos)
         return listOf(button!!)
@@ -113,10 +220,12 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     override fun update(dt: Float) {
         super.update(dt)
+        if (xyz.znix.xftl.hs.HS.active) hsShipFlags()
 
         val remaining = timeRemaining
         if (remaining != null) {
-            if (active)
+            // Hyperspace plays the loop from ShipManager::OnLoop instead ([hsShipSoundLoop], hackLoopHS).
+            if (active && !xyz.znix.xftl.hs.HS.active)
                 loopSound.continueLoopAnyShip()
 
             // HackingSystem::OnLoop (0x62dc80): the pulse ends, locking the
@@ -156,6 +265,13 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         selectedTarget?.let {
             deployProbe(it)
             selectedTarget = null
+        }
+
+        // Hyperspace hackingDroneFix (Balance.cpp, HackingSystem::OnLoop after the original): a drone that has not
+        // landed blows up when the system is unpowered, so powering down cannot slip it past defence drones.
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.cfg().hackingDroneFix) {
+            val flying = this.projectile
+            if (flying != null && !flying.hasLanded && powerSupplied == 0) flying.hsBlowUp()
         }
     }
 
@@ -429,7 +545,7 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
     }
 
-    private class HackingDroneProjectile(val target: Room) : AbstractProjectile(target.ship) {
+    private class HackingDroneProjectile(val target: Room) : AbstractProjectile(target.ship, false) {
         lateinit var hacking: Hacking
 
         val game: InGameState = target.ship.sys
@@ -451,7 +567,12 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         // The hacking drone is a SpaceDrone in the original, so it follows the
         // drone collision rules (HackingDrone::CollisionMoving 0x455bb0).
-        private val health = PodHealth(game, blueprint.dodge ?: 0)
+        val health = PodHealth(game, blueprint.dodge ?: 0)
+        override val hsDroneCollisionBody: xyz.znix.xftl.hs.weapons.HsDroneCollisionBody?
+            get() = if (xyz.znix.xftl.hs.HS.active && this::hacking.isInitialized) hacking.hsCollisionBody else null
+
+        /** HackingSystem::BlowHackingDrone (Hyperspace's hackingDroneFix). */
+        fun hsBlowUp() = health.blowUp()
 
         private val isOwnerHacked: Boolean get() = hacking.ship.drones?.isHackActive == true
 
@@ -840,6 +961,23 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         /** The four-unit lock HackingSystem sets when a pulse ends. */
         const val PULSE_LOCK_UNITS = 4
+
+        /**
+         * Hyperspace hackLoopHS (CustomShips.cpp ShipManager::OnLoop and SoundControl::UpdateSoundLoop): every ship's
+         * loop plays "hackLoop" while its hacking system's SoundLoop holds, or while any system of either ship is under
+         * a hacking pulse (bUnderAttack, iHackEffect 2); the native "hackLoop" calls are dropped.
+         */
+        @JvmStatic
+        fun hsShipSoundLoop(ship: xyz.znix.xftl.Ship) {
+            var loop = ship.hacking?.hsSoundLoop == true
+            if (!loop) {
+                val game = ship.sys
+                val other = if (ship === game.player) game.enemy else game.player
+                loop = (other != null && game.isShipPresent(other) && other.systems.any { it.isHackActive }) ||
+                    ship.systems.any { it.isHackActive }
+            }
+            if (loop) ship.sys.sounds.getLoop("hackLoop").continueLoopAnyShip()
+        }
 
         fun loadProjectileFromXML(game: InGameState, elem: Element, refs: RefLoader, callback: (IProjectile) -> Unit) {
             SaveUtil.getRoomRef(elem, "target", refs) { target ->

@@ -58,6 +58,8 @@ public class InGameState extends MainGame.GameState {
 
     // These are copied from the GameContent object for convenience
     private final Datafile df;
+
+    public Datafile getDatafile() { return df; }
     private final boolean enableAdvancedEdition;
     private final BlueprintManager blueprintManager;
     private final EventManager eventManager;
@@ -82,6 +84,7 @@ public class InGameState extends MainGame.GameState {
     private final Point tempPoint = new Point(0, 0);
 
     private Room hoveredRoom;
+    private Room touchHoverRoom;
     private RoomClickListener clickEvent;
     private final boolean[] mouseDownPrev = new boolean[3];
     private final boolean[] tutorialMouseCaptured = new boolean[3];
@@ -126,8 +129,15 @@ public class InGameState extends MainGame.GameState {
 
     // Used for animation rendering only
     private float renderingDeltaTime;
+    /** Counts the updates: the UI's mouse pass runs twice per update, a timer kept there advances once per update. */
+    private int browserUpdateSerial;
+    public int getBrowserUpdateSerial() { return browserUpdateSerial; }
+    public void browserCountUpdate() { browserUpdateSerial++; }
 
     private final Point playerShipOffset = new Point(0, 0);
+
+    /** Hyperspace: the Lua view of CombatControl::playerShipPosition (hs.lua; a script may write it). */
+    public Object hsCombatShipPosition;
 
     /**
      * The names of the quest events that couldn't be fit in the current
@@ -173,15 +183,39 @@ public class InGameState extends MainGame.GameState {
         // global stream. The starting crew is named before this, so its names
         // are the ones the generated event crew has to avoid.
         eventManager.resetEventState();
+        // Modded: OnInit's equipment draws (lists) and Hyperspace's crew list come before the blueprint's crew.
+        if (xyz.znix.xftl.hs.HS.modded)
+            hsStartEquipment = xyz.znix.xftl.hs.ship.HsShipStart.resolve(blueprintManager.getShip(playerShipName), blueprintManager);
+        if (xyz.znix.xftl.hs.HS.active) {
+            hsStartCrew = xyz.znix.xftl.hs.ship.HsShipState.drawStartingCrew(playerShipName, this);
+            xyz.znix.xftl.hs.ship.HsAchievements.bindGame(this);
+        }
         List<LivingCrewInfo> newCrew = createStartingCrew(playerShipName, startingCrew);
+        if (hsStartCrew != null) {
+            List<LivingCrewInfo> named = new ArrayList<>(newCrew);
+            for (xyz.znix.xftl.hs.ship.HsStartingCrewMember c : hsStartCrew) named.add(c.info);
+            getCrewFactory().setUsedNames(named);
+        } else
         getCrewFactory().setUsedNames(newCrew);
-        gameMap = new GameMap(df, eventManager, enableAdvancedEdition, ftl.browser.NativeRandom.next31());
+        // Hyperspace (StarMap::NewGame hooks): the HS run state, the run seed and the initial variables.
+        boolean hsSeeded = false;
+        if (eventManager.getHs() != null) {
+            xyz.znix.xftl.hs.events.HsEvents.INSTANCE.newGame(this, playerShipName);
+            hsSeeded = xyz.znix.xftl.hs.sector.HsSeeds.enabled;
+        }
+        // Seeds.cpp: a seeded run's tree and first sector both come from the run seed (the original's own draw of
+        // the tree seed is made and then overridden).
+        int treeSeed = ftl.browser.NativeRandom.next31();
+        if (hsSeeded) treeSeed = xyz.znix.xftl.hs.sector.HsSeeds.currentSeed;
+        gameMap = new GameMap(df, eventManager, enableAdvancedEdition, treeSeed);
 
         // Start at the first beacon of the first sector
         // Be sure we do this after creating the player ship, it's used by the enemy AI
         // Note that we don't store the current sector anywhere - it's determined via
         // the current beacon.
-        Sector firstSector = gameMap.generateSector(gameMap.getSectors().get(0).get(0), this);
+        Sector firstSector = hsSeeded
+                ? gameMap.generateSector(gameMap.getSectors().get(0).get(0), this, xyz.znix.xftl.hs.sector.HsSeeds.currentSeed)
+                : gameMap.generateSector(gameMap.getSectors().get(0).get(0), this);
 
         // StarMap::NewGame (0x5f9e00) then gives the first beacon START_GAME's
         // text (TUTORIAL_START in the tutorial), created from the same stream.
@@ -189,13 +223,25 @@ public class InGameState extends MainGame.GameState {
         CreatedEvent startGame = eventCreator.create(eventManager.get(tutorialRun ? "TUTORIAL_START" : "START_GAME"), 0);
         if (startGame != null) {
             if (!tutorialRun) eventCreator.appendStartTip(startGame);
-            firstSector.getStartBeacon().setCreatedEvent(startGame);
+            if (eventManager.getHs() != null && !tutorialRun) {
+                // Hyperspace keeps the start beacon's own event (its HS tags run on arrival); only the text is
+                // START_GAME's, as in the original.
+                firstSector.getStartBeacon().getCreatedEvent().setText(startGame.getText());
+            } else {
+                firstSector.getStartBeacon().setCreatedEvent(startGame);
+            }
         }
         setCurrentBeacon(firstSector.getStartBeacon());
+        if (eventManager.getHs() != null && xyz.znix.xftl.hs.sector.HsSeeds.enabled) {
+            // Seeds.cpp NewGame (priority 500): the quest seed of the start location.
+            Beacon start = firstSector.getStartBeacon();
+            xyz.znix.xftl.hs.sector.HsSeeds.questSeed = xyz.znix.xftl.hs.sector.HsSeeds.INSTANCE.questSeedFor(start.getPos().getX(), start.getPos().getY());
+        }
 
         // Do this after setting the initial beacon, since the ship reads the current
         // beacon when calculating its power values.
         createNewPlayerShip(playerShipName, customised, newCrew);
+        if (eventManager.getHs() != null) xyz.znix.xftl.hs.events.HsEvents.INSTANCE.afterPlayerShip(this);
         browserAchievements.beaconArrived();
 
         // Don't create PlayerShipUI in automated tests
@@ -205,7 +251,12 @@ public class InGameState extends MainGame.GameState {
 
         // Show the starting beacon dialogue, since it wasn't displayed earlier
         // due to shipUI not existing yet.
-        showEventDialogue(currentBeacon.getCreatedEvent());
+        showArrivalEvent();
+    }
+
+    /** The beacon's own event on arrival (Hyperspace: WorldManager::CreateLocation; vanilla: the same window). */
+    private void showArrivalEvent() {
+        if (shipUI != null) shipUI.showEventDialogue(currentBeacon.getCreatedEvent(), true);
     }
 
     /**
@@ -228,8 +279,10 @@ public class InGameState extends MainGame.GameState {
         difficulty = Difficulty.valueOf(root.getAttributeValue("difficulty"));
 
         isCurrentlyLoadingSave = true;
+        if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSpaceId.restoreEarly(root);
         loadGameState(root);
         isCurrentlyLoadingSave = false;
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.drones.DroneRuntime.hsCrewBodies(this);
         currentBeacon.getSector().clearVisitedEvents(currentBeacon);
 
         // This just loads stuff from XML, we don't need to serialise it
@@ -239,6 +292,11 @@ public class InGameState extends MainGame.GameState {
         // doors automatically opening. This must only be done once all
         // the ships are loaded, otherwise it'd break hacking since the
         // hacked system would think it wasn't being hacked any more.
+        for (Beacon beacon : currentBeacon.getSector().getBeacons()) {
+            if (beacon.getShip() != null)
+                beacon.getShip().afterSaveLoad();
+        }
+        player.afterSaveLoad();
         for (Beacon beacon : currentBeacon.getSector().getBeacons()) {
             if (beacon.getShip() != null)
                 beacon.getShip().update(0f);
@@ -266,6 +324,7 @@ public class InGameState extends MainGame.GameState {
         }
 
         updatePlayerCrew();
+        if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSave.readRun(root);
     }
 
     /**
@@ -380,6 +439,9 @@ public class InGameState extends MainGame.GameState {
         if (enemy != null && data.getEnemyShip() != null)
             placeVanillaBoarders(data.getEnemyShip(), enemy, true);
 
+        if (enemy != null)
+            enemy.afterSaveLoad();
+        player.afterSaveLoad();
         for (Beacon beacon : sector.getBeacons()) {
             if (beacon.getShip() != null)
                 beacon.getShip().update(0f);
@@ -404,7 +466,7 @@ public class InGameState extends MainGame.GameState {
      */
     public void spawnVanillaEnemy(String eventId, int seed) {
         Event event = eventManager.getByDeserialisationIdOrNull(eventId);
-        if (event == null || event.getLoadShipName() == null) {
+        if (event == null || event.getLoadShipName() == null || !eventManager.hasShip(event.getLoadShipName())) {
             setEnemy(null);
             return;
         }
@@ -730,6 +792,12 @@ public class InGameState extends MainGame.GameState {
     public void placeDelayedQuests(Sector sector) {
         ArrayList<String> pending = new ArrayList<>(delayedQuests);
         delayedQuests.clear();
+        if (eventManager.getHs() != null) {
+            // Hyperspace's AddQuest (quest options, quest seeds, "QUEST	" names).
+            for (String name : pending)
+                xyz.znix.xftl.hs.events.HsQuests.INSTANCE.addQuest(this, sector, sector.getStartBeacon(), name, true, delayedQuests);
+            return;
+        }
         for (String name : pending) {
             Sector.QuestPlacement placement = sector.addQuest(sector.getStartBeacon(), eventCreator, name, true);
             if (placement == Sector.QuestPlacement.NO_SPACE && sector.getSectorNumber() < 6) {
@@ -740,6 +808,7 @@ public class InGameState extends MainGame.GameState {
 
 
     private InGameState(MainGame mainGame, GameContent content) {
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.lua.LuaEvents.runEnded();
         this.mainGame = mainGame;
         this.content = content;
 
@@ -748,6 +817,11 @@ public class InGameState extends MainGame.GameState {
         enableAdvancedEdition = content.enableAdvancedEdition;
         blueprintManager = content.blueprintManager;
         eventManager = content.eventManager;
+
+        // WorldManager::CreateNewGame / LoadGame hooks (StatBoost.cpp): fresh stat boost state per run.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewContent.newRun();
+        // Hyperspace custom achievements: the run's difficulty, ship and popups (new and loaded runs).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsAchievements.bindGame(this);
 
         // Don't load any assets while running automated tests
         if (isRunningAutomatedTest())
@@ -798,13 +872,31 @@ public class InGameState extends MainGame.GameState {
                     return;
                 }
 
+                // Hyperspace's command console (CommandConsole.cpp): the open box takes every key; the console hotkey opens it.
+                if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsConsole.enabled()) {
+                    if (xyz.znix.xftl.hs.render.HsConsole.key(InGameState.this, key, c)) {
+                        container.getInput().clearInputPressedRecord();
+                        return;
+                    }
+                    HotkeyButton hsButton = HotkeyButton.BY_KEY_ID.get(key);
+                    Hotkey hsBound = hsButton == null ? null : forwardHotkeyBindings.get(hsButton);
+                    if (hsBound != null && hsBound.getId().equals("console")) {
+                        Hotkey options = null;
+                        for (Hotkey k : forwardHotkeyBindings.values()) if (k.getId().equals("options")) options = k;
+                        xyz.znix.xftl.hs.render.HsConsole.tryOpen(InGameState.this, options != null && options == hsBound);
+                        container.getInput().clearInputPressedRecord();
+                        return;
+                    }
+                }
+
                 // If the window uses the key for typing, then prevent it
                 // from being used as a hotkey too.
                 if (shipUI.onTextInput(key, c)) {
                     container.getInput().clearInputPressedRecord();
                     return;
                 }
-                if (key == 96 || (consoleKey != null && key == consoleKey.getKeyID())) {
+                // Under Hyperspace backtick is the `speed` hotkey; the development console keeps its own hotkey.
+                if ((key == 96 && !xyz.znix.xftl.hs.HS.active) || (consoleKey != null && key == consoleKey.getKeyID())) {
                     openDebugConsole();
                     container.getInput().clearInputPressedRecord();
                     return;
@@ -831,6 +923,8 @@ public class InGameState extends MainGame.GameState {
                     return;
                 }
 
+                // Hyperspace Input.cpp: a scrolling tooltip takes the wheel first
+                if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.rendering.NativeTooltip.HsScroll.wheel(change)) return;
                 shipUI.mouseScroll(change);
             }
 
@@ -872,30 +966,60 @@ public class InGameState extends MainGame.GameState {
         ArrayList<LivingCrewInfo> crew = new ArrayList<>();
         int crewIndex = 0;
         for (ShipBlueprint.InitialCrewSpec spec : blueprint.getInitialCrew()) {
-            CrewBlueprint race = (CrewBlueprint) blueprintManager.get(spec.getRace());
+            boolean hs = xyz.znix.xftl.hs.HS.active;
+            CrewBlueprint race = hs ? null : blueprintManager.crewOrHuman(spec.getRace());
             for (int i = 0; i < spec.getAmount(); i++) {
                 StartingCrew choice = startingCrew == null || crewIndex >= startingCrew.size() ? null : startingCrew.get(crewIndex);
+                if (hs) {
+                    // Hyperspace: each member's GetCrewBlueprint resolves crew lists and gives unknown races the
+                    // human blueprint; a hangar choice keeps the race the hangar resolved.
+                    race = choice != null && blueprintManager.getOrNull(choice.getSpecies()) instanceof CrewBlueprint cb ? cb
+                            : xyz.znix.xftl.hs.crew.HsCrewContent.crewBlueprint(blueprintManager, spec.getRace(), ftl.browser.NativeRandom.INSTANCE);
+                }
                 LivingCrewInfo info = choice == null ? LivingCrewInfo.generateRandom(race, this) :
                         new LivingCrewInfo(this, race, choice.getName(), choice.getColour());
                 crewIndex++;
                 crew.add(info);
             }
         }
+        if (xyz.znix.xftl.hs.HS.active)
+            hsStartRooms = xyz.znix.xftl.hs.ship.HsShipState.startingCrewRooms(blueprint, crew.size());
         return crew;
     }
 
+    /** Modded run start: the equipment and Hyperspace crew drawn before the sector tree (see the constructor). */
+    private xyz.znix.xftl.hs.ship.HsShipStart.Equipment hsStartEquipment;
+    private List<xyz.znix.xftl.hs.ship.HsStartingCrewMember> hsStartCrew;
+    /** Hyperspace: the room of each blueprint crew member (HsShipState.startingCrewRooms), null in vanilla. */
+    private List<Integer> hsStartRooms;
+
     private void createNewPlayerShip(String shipName, EditableShip customised, List<LivingCrewInfo> startingCrew) {
-        ShipBlueprint blueprint = blueprintManager.getShip(shipName);
+        ShipBlueprint blueprint = playerBlueprint(blueprintManager.getShip(shipName));
+        // Hyperspace: the ShipManagers the hangar built and dropped (their constructor events), before this one
+        if (xyz.znix.xftl.hs.HS.active) { Ship before = player; xyz.znix.xftl.hs.crew.HsHangarIds.replay(this, s -> player = s); player = before; }
         player = new Ship(blueprint, this, customised, null, null);
+        player.hsStartEquipment = hsStartEquipment;
+        hsStartEquipment = null;
         player.loadDefaultContents();
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsShipState.applyStartingResources(player);
 
         // The systems are built (and powered, ShipSystem ctor 0x642370) before the crew boards: each takes
         // its starting target power from the reactor in creation order; the Zoltans' bonus bars come later
         // on top, and AddSystem's InstantPowerShields (0x49d710) finally raises and charges the shields.
         java.util.Map<MainSystem, Integer> reactorStart = player.browserStartingReactorPower();
 
-        for (LivingCrewInfo info : startingCrew) {
-            player.addCrewMember(info, true, false);
+        for (int i = 0; i < startingCrew.size(); i++) {
+            LivingCrewInfo info = startingCrew.get(i);
+            Integer hsRoom = hsStartRooms != null && i < hsStartRooms.size() ? hsStartRooms.get(i) : null;
+            if (hsRoom != null && hsRoom >= 0 && hsRoom < player.getRooms().size())
+                player.addInitialCrewInRoom(info, player.getRooms().get(hsRoom));
+            else
+                player.addCrewMember(info, true, false);
+        }
+        hsStartRooms = null;
+        if (hsStartCrew != null) {
+            xyz.znix.xftl.hs.ship.HsShipState.placeStartingCrew(player, hsStartCrew);
+            hsStartCrew = null;
         }
 
         // Save the default crew positions, so the player can immediately
@@ -915,6 +1039,7 @@ public class InGameState extends MainGame.GameState {
     public void update(@NotNull GameContainer container, float delta) throws SlickException {
         input = container.getInput();
         renderingDeltaTime = delta;
+        browserCountUpdate();
 
         // Pictures asked for ahead of time (the next beacon's backdrop) load a little each frame.
         content.getPrefetcher().step(IMAGE_PREFETCH_MS);
@@ -931,10 +1056,18 @@ public class InGameState extends MainGame.GameState {
         if (enemy != null) enemy.setBrowserJumping(enemyJumpOut > 0);
         // A reloaded save can hold a pending arrival event with the animation already over: it still waits.
         boolean arrivalHold = arrivalEventsPending;
-        if (!isPaused() && !arrivalHold)
+        if (!isPaused() && !arrivalHold) {
             updateGameState(delta);
-        else
+            // Hyperspace WorldManager::OnLoop (CustomEvents.cpp): a <finalBoss> ship event's enemy destroyed.
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.events.HsFinalBoss.onLoop(this);
+            // Hyperspace WorldManager::OnLoop (TriggeredEvents.cpp): the triggered events count game time.
+            if (eventManager.getHs() != null && shipUI != null)
+                xyz.znix.xftl.hs.events.HsTriggeredEvents.INSTANCE.updateAll(this, delta, shipUI.hsChoiceBoxOpen());
+        } else {
+            // WorldManager::PauseLoop hooks (StatBoost.cpp, CrewAbilities.cpp).
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewContent.pauseLoop(this);
             checkForGameOver();
+        }
 
         // The jump AnimationTracker (ShipManager +0x4a0, 2 s) is advanced from ShipManager::OnRender, so it
         // also plays while paused. When the player's jump-out finishes, the location changes
@@ -977,17 +1110,30 @@ public class InGameState extends MainGame.GameState {
             playerFlyIn = Math.max(0f, playerFlyIn - delta / ARRIVAL_TIME);
         }
 
-        if (arrivalEventsPending && playerFlyIn <= 0 && !isPaused()) {
+        // The arrival's own box is already open (hidden, a focus window pausing the game) and shows when the fly-in is
+        // over, whether or not the player paused meanwhile (the tutorial's COMBAT_0 asks for a pause right then).
+        if (arrivalEventsPending && playerFlyIn <= 0 && !focusPaused) {
             arrivalEventsPending = false;
+            arrivalBoxHidden = false;
             if (arrivalShowBeaconEvent) {
                 arrivalShowBeaconEvent = false;
-                showEventDialogue(currentBeacon.getCreatedEvent());
+                showArrivalEvent();
+            }
+            if (hsRevisitPending) {
+                hsRevisitPending = false;
+                if (shipUI != null) shipUI.showHsRevisit(currentBeacon);
             }
             if (arrivalEliteEvent != null) {
                 Event eliteEvent = arrivalEliteEvent;
                 arrivalEliteEvent = null;
                 showEventDialogue(eliteEvent, ftl.browser.BrowserRandom.INSTANCE.nextInt());
             }
+        }
+
+        // Hyperspace (TriggeredEvents.cpp, WorldManager::OnLoop/PauseLoop): queued events load while no choice
+        // box is open.
+        if (eventManager.getHs() != null && shipUI != null && !arrivalEventsPending && !shipUI.hsChoiceBoxOpen()) {
+            xyz.znix.xftl.hs.events.HsFlow.INSTANCE.checkEventQueue(this, shipUI.getHsHost(), shipUI::hsChoiceBoxOpen);
         }
 
         Input in = container.getInput();
@@ -1001,7 +1147,7 @@ public class InGameState extends MainGame.GameState {
             if (fastForwardButton != null && in.isKeyDown(fastForwardButton.getKeyID())) {
                 updateGameState(delta * 4);
             }
-            if (fastForwardButton != null && in.isKeyPressed(stepButton.getKeyID())) {
+            if (stepButton != null && in.isKeyPressed(stepButton.getKeyID())) {
                 updateGameState(0.01f);
             }
         }
@@ -1027,7 +1173,8 @@ public class InGameState extends MainGame.GameState {
             getDebugConsole().update(container, delta);
         }
 
-        if (debugConsoleVisible) queuedHotkeys.clear();
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsConsole.update(this, delta);
+        if (debugConsoleVisible || xyz.znix.xftl.hs.render.HsConsole.open) queuedHotkeys.clear();
         while (!queuedHotkeys.isEmpty()) {
             dispatchHotkey(queuedHotkeys.remove(0), in);
         }
@@ -1084,7 +1231,7 @@ public class InGameState extends MainGame.GameState {
 
             RoomPoint rp = enemy.shipToRoomPos(tempPoint);
             if (rp != null) {
-                shipUI.enemyRoomRightClicked(rp.getRoom(), enemy);
+                shipUI.enemyRoomRightClicked(rp.getRoom(), enemy, rp);
             }
         }
 
@@ -1098,15 +1245,35 @@ public class InGameState extends MainGame.GameState {
         }
     }
 
+    /** Hyperspace MouseControl.bHideMouse: no pointer at all (the browser shell's "none"). */
+    @NotNull
+    public Cursor getHiddenCursor() {
+        Cursor cursor = content.cursors.get("none");
+        if (cursor == null) {
+            cursor = new Cursor(content.resourceContext, df, df.get("img/mouse/pointerInvalid.png"), null, -1, "none");
+            content.cursors.put("none", cursor);
+        }
+        return cursor;
+    }
+
     @Nullable
     @Override
     public Cursor getCurrentCursor() {
         if (mainGame != null && mainGame.getTutorialOverlay() != null && input != null &&
                 mainGame.getTutorialOverlay().hitTest(this, input.getMouseX(), input.getMouseY())) return null;
-        return shipUI.getCurrentCursor();
+        Cursor cursor = shipUI.getCurrentCursor();
+        // Hyperspace: the pointer a script's MouseControl fields pick this frame
+        if (xyz.znix.xftl.hs.HS.luaActive) cursor = xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.cursor(this, cursor);
+        return cursor;
     }
 
     private void updateClickEvent(GameContainer container) {
+        // The touch HUD picks the room under the finger and clicks it itself.
+        if (shipUI.getTouch() != null) {
+            hoveredRoom = touchHoverRoom;
+            if (hoveredRoom != null && clickEvent != null && !clickEvent.canTargetRoom(hoveredRoom)) hoveredRoom = null;
+            return;
+        }
         // Handle stuff like weapon targeting where the player
         // highlights a room on the enemy (or their) ship.
         if (clickEvent == null)
@@ -1155,6 +1322,8 @@ public class InGameState extends MainGame.GameState {
 
         boolean shiftPressed = in.isKeyDown(Input.KEY_LSHIFT) || in.isKeyDown(Input.KEY_RSHIFT);
         boolean ctrlPressed = shipUI.isTargetingModifierDown();
+        // Hyperspace hotkeys (CommandGui::KeyDown / CombatControl::KeyDown hooks)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsHotkeys.dispatch(this, key, shiftPressed);
         for (int i = 0; i < VanillaHotkeys.WEAPON_SLOTS.size(); i++) {
             if (key.getId().equals(VanillaHotkeys.WEAPON_SLOTS.get(i))) {
                 shipUI.weaponHotkeyPressed(i, shiftPressed, ctrlPressed);
@@ -1179,14 +1348,47 @@ public class InGameState extends MainGame.GameState {
 
         g.pushTransform();
 
+        // Hyperspace GUI_CONTAINER render event around CommandGui::RenderStatic (the whole scene and HUD)
+        int luaGui = xyz.znix.xftl.hs.HS.luaActive ? xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_GUI_CONTAINER) : 0;
+        if (luaGui >= 0) renderStatic(container, g);
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_GUI_CONTAINER, luaGui);
+        renderMouseControl(container, g);
+        g.popTransform();
+    }
+
+    /** CommandGui::RenderStatic: the scene and HUD (everything but the tooltip). */
+    private void renderStatic(@NotNull GameContainer container, @NotNull Graphics g) throws SlickException {
         // CommandGui::RenderStatic (0x535070): the planet and the fleet (not the backdrop) shrink by 0.05 zoom.
         jumpSceneScale = playerJumpOut > 0 || playerFlyIn > 0
                 ? 1f - JUMP_PLANET_SHRINK * browserJumpZoom(browserPlayerTrackerTime()) : 1f;
-        if (!ftl.browser.BrowserDebug.parityNoBackground)
-            currentBeacon.getEnvironment(this).renderBackground(container, g);
+        // The touch layout's canvas is not 1280x720: the scene covers it.
+        boolean coverCanvas = TouchMode.enabled;
+        if (coverCanvas) {
+            float cover = Math.max(container.getWidth() / 1280f, container.getHeight() / 720f);
+            g.pushTransform();
+            g.translate((container.getWidth() - 1280 * cover) / 2, (container.getHeight() - 720 * cover) / 2);
+            g.scale(cover, cover);
+        }
+        // Hyperspace LAYER_BACKGROUND render event around SpaceManager::OnRenderBackground
+        // and LAYER_FOREGROUND / LAYER_ASTEROIDS around OnRenderForeground / OnRenderAsteroids(3) (HsRenderEvents)
+        if (xyz.znix.xftl.hs.HS.luaActive) {
+            if (!ftl.browser.BrowserDebug.parityNoBackground)
+                xyz.znix.xftl.hs.render.HsRenderEvents.spaceLayers(currentBeacon.getEnvironment(this), container, g);
+        } else if (!ftl.browser.BrowserDebug.parityNoBackground) {
+            // Hyperspace background objects go between SpaceManager's three layers (HsBackgroundObjects)
+            if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsBackgroundObjects.hasObjects())
+                xyz.znix.xftl.hs.render.HsRenderEvents.spaceLayers(currentBeacon.getEnvironment(this), container, g);
+            else
+                currentBeacon.getEnvironment(this).renderStack(container, g);
+        }
+        if (coverCanvas) g.popTransform();
 
         // Set the position of the player's ship, based on whether or not
         // there's also an enemy ship.
+        TouchHud touchHud = shipUI.getTouch();
+        if (touchHud != null) {
+            touchHud.layOutPlayerShip(playerShipOffset, player);
+        } else {
         if (enemy == null) {
             playerShipOffset.setX(350);
         } else if (enemy.isUsingBossUI()) {
@@ -1195,7 +1397,103 @@ public class InGameState extends MainGame.GameState {
             playerShipOffset.setX(200);
         }
         playerShipOffset.setY(170);
+        // CommandGui::AddEnemyShip (0x5326b0) / ClearLocation (0x532940) add the player layout's HORIZONTAL /
+        // VERTICAL shift, vanilla layouts included (Federation B 27 / -17: native capture vf-run).
+        playerShipOffset.setX(playerShipOffset.getX() + player.getType().getLayoutShift().getX());
+        playerShipOffset.setY(170 + player.getType().getLayoutShift().getY());
+        }
 
+        // Hyperspace LAYER_PLAYER render event around CommandGui::RenderPlayerShip
+        int luaPlayer = xyz.znix.xftl.hs.HS.luaActive ? xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_LAYER_PLAYER) : 0;
+        if (luaPlayer >= 0 && (touchHud == null || !touchHud.getPlayerOnTop())) renderPlayerShip(g);
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_LAYER_PLAYER, luaPlayer);
+        // Hyperspace LAYER_FRONT render event and front-layer background objects: SpaceManager::OnRenderAsteroids(1)
+        // after the player ship while the jump zoom is above zero
+        if (xyz.znix.xftl.hs.HS.active && (playerJumpOut > 0 || playerFlyIn > 0) && browserJumpZoom(browserPlayerTrackerTime()) > 0f)
+            xyz.znix.xftl.hs.render.HsRenderEvents.layerFront(this, g);
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.renderTooltip(g);
+
+        // CommandGui::RenderStatic (0x00535070) moves the HUD, not the ships, by the screen shake.
+        advanceScreenShake();
+        g.pushTransform();
+        g.translate(shakeX, shakeY);
+
+        if (touchHud == null) shipUI.render(container, g);
+        else touchHud.renderTopButtons(g);
+
+        if (enemy != null) {
+            // If the enemy ship is neutral but we still have crew inside,
+            // allow the user to control and recover them.
+            boolean anyLivingBoarders = enemy.hasCrewOwnedByShip(player);
+            // ShipManager::OnRender (0x4a3c00) skips the interior of a cloaked ship unless the player has someone aboard.
+            enemyInteriorVisible = (enemyIsHostile && !enemy.isCloakActive()) || anyLivingBoarders || enemy.getHasPlayerPresence();
+
+            hostileShipUI.render(container, g, hoveredRoom, enemyInteriorVisible, enemyIsHostile);
+        }
+
+        if (touchHud != null) {
+            if (luaPlayer >= 0 && touchHud.getPlayerOnTop()) renderPlayerShip(g);
+            shipUI.render(container, g);
+        }
+
+        // Draw the paused text before the UI, so the UI goes on top. CommandGui::OnLoop
+        // (0x00536770) sets menu_pause while any focus window is open, which shows it too. The new location's
+        // event box is already open (hidden) during the arrival animation, so PAUSED shows from the switch.
+        if (touchHud == null && (paused || focusPaused || (shipUI.isWindowOpen() && !shipUI.isGameOverOpen()) || arrivalEventsPending || xyz.znix.xftl.hs.render.HsConsole.open)) {
+            // CommandGui's pause banner (0x00532a10): Text_pause1 opaque, Text_pause2
+            // pulsing over it and the hint in white at alpha 0.6 + 0.3 * pulse. The
+            // pulse is a 0-0.75 triangle advanced at 1/s only while the banner shows.
+            float pulse = pauseBannerTimer / PAUSE_PULSE_MAX;
+            // CommandGui::OnLanguageChange centres the banners' primitives on (640, 558): the languages'
+            // own art (img/loc-<language>/) is cut to its letters, so its size differs from the English 256x64.
+            Image pauseImg = getImg("img/Text_pause1.png");
+            int imgY = container.getHeight() - 162 - pauseImg.getHeight() / 2;
+            int imgX = container.getWidth() / 2 - pauseImg.getWidth() / 2;
+            pauseImg.draw(imgX, imgY);
+            getImg("img/Text_pause2.png").draw(imgX, imgY, pulse);
+
+            String pauseKey = getButtonNameForHotkey(VanillaHotkeys.PAUSE, "<unbound>");
+            String pauseText = getTranslator().get("paused_text").replace("\\1", pauseKey);
+            pauseFont.drawStringCentred(
+                    // printed from y 580 (baseline 590) at 640 in font 5
+                    container.getWidth() / 2f, container.getHeight() - 130,
+                    0,
+                    pauseText, new Colour(1f, 1f, 1f, 0.6f + 0.3f * pulse)
+            );
+
+            pauseBannerTimer += pauseBannerDirection * renderingDeltaTime;
+            if (pauseBannerTimer > PAUSE_PULSE_MAX) {
+                pauseBannerDirection = -1f;
+                pauseBannerTimer = 2 * PAUSE_PULSE_MAX - pauseBannerTimer;
+            } else if (pauseBannerTimer < 0) {
+                pauseBannerDirection = 1f;
+                pauseBannerTimer = -pauseBannerTimer;
+            }
+        }
+        g.popTransform();
+
+        // Draw solar flares and pulsar pulses
+        Graphics.setTint(shipUI.getStatusTint());
+        currentBeacon.getEnvironment(this).overlayStack(container, g);
+        Graphics.setTint(Colour.white);
+
+        shipUI.renderMenus(container, g);
+
+        if (mainGame != null && mainGame.getTutorialOverlay() != null) {
+            mainGame.getTutorialOverlay().draw(this, g);
+        }
+
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsConsole.draw(this, g);
+
+        if (debugConsoleVisible) {
+            g.setTooltip(null);
+            getDebugConsole().render(container, g);
+        }
+
+    }
+
+    /** CommandGui::RenderPlayerShip: the player's ship and its own targeting. */
+    private void renderPlayerShip(@NotNull Graphics g) {
         // Get the player's ship away from the top UI
         g.pushTransform();
         g.translate(playerShipOffset.getX(), playerShipOffset.getY());
@@ -1221,9 +1519,14 @@ public class InGameState extends MainGame.GameState {
             g.translate(centreX, centreY);
             g.scale(scale, scale);
             g.translate(-centreX, -centreY);
+            // Hyperspace background objects of the player layers (CommandGui::RenderPlayerShip hook)
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.renderPlayer(this, g, false);
             player.renderJump(g, browserJumpFade(trackerTime));
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.renderPlayer(this, g, true);
         } else {
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.renderPlayer(this, g, false);
             player.render(g, true, hoveredRoom);
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.renderPlayer(this, g, true);
         }
 
         player.setRenderAlpha(1f);
@@ -1233,76 +1536,22 @@ public class InGameState extends MainGame.GameState {
             player.renderTargeting(g, player.getWeapons().getSelectedTargets());
         }
         g.popTransform();
+    }
 
-        // CommandGui::RenderStatic (0x00535070) moves the HUD, not the ships, by the screen shake.
-        advanceScreenShake();
-        g.pushTransform();
-        g.translate(shakeX, shakeY);
-
-        shipUI.render(container, g);
-
-        if (enemy != null) {
-            // If the enemy ship is neutral but we still have crew inside,
-            // allow the user to control and recover them.
-            boolean anyLivingBoarders = enemy.hasCrewOwnedByShip(player);
-            // ShipManager::OnRender (0x4a3c00) skips the interior of a cloaked ship unless the player has someone aboard.
-            enemyInteriorVisible = (enemyIsHostile && !enemy.isCloakActive()) || anyLivingBoarders || enemy.getHasPlayerPresence();
-
-            hostileShipUI.render(container, g, hoveredRoom, enemyInteriorVisible, enemyIsHostile);
+    /** MouseControl::OnRender: the tooltip. */
+    private void renderMouseControl(@NotNull GameContainer container, @NotNull Graphics g) {
+        // Hyperspace MOUSE_CONTROL render event around MouseControl::OnRender (the tooltip), PrintHelper first
+        int luaMouse = 0;
+        if (xyz.znix.xftl.hs.HS.active) {
+            xyz.znix.xftl.rendering.NativeTooltip.HsScroll.frame();
+            xyz.znix.xftl.rendering.NativeTooltip.HsScroll.images = this::getImg;
         }
-
-        // Draw the paused text before the UI, so the UI goes on top. CommandGui::OnLoop
-        // (0x00536770) sets menu_pause while any focus window is open, which shows it too. The new location's
-        // event box is already open (hidden) during the arrival animation, so PAUSED shows from the switch.
-        if (paused || focusPaused || shipUI.isWindowOpen() || arrivalEventsPending) {
-            // CommandGui's pause banner (0x00532a10): Text_pause1 opaque, Text_pause2
-            // pulsing over it and the hint in white at alpha 0.6 + 0.3 * pulse. The
-            // pulse is a 0-0.75 triangle advanced at 1/s only while the banner shows.
-            float pulse = pauseBannerTimer / PAUSE_PULSE_MAX;
-            Image pauseImg = getImg("img/Text_pause1.png");
-            int imgY = container.getHeight() - 193;
-            int imgX = container.getWidth() / 2 - pauseImg.getWidth() / 2;
-            pauseImg.draw(imgX, imgY);
-            getImg("img/Text_pause2.png").draw(imgX, imgY, pulse);
-
-            String pauseKey = getButtonNameForHotkey(VanillaHotkeys.PAUSE, "<unbound>");
-            String pauseText = getTranslator().get("paused_text").replace("\\1", pauseKey);
-            pauseFont.drawStringCentred(
-                    // printed from y 580 (baseline 590) at 640 in font 5
-                    container.getWidth() / 2f, imgY + 11 + 52,
-                    0,
-                    pauseText, new Colour(1f, 1f, 1f, 0.6f + 0.3f * pulse)
-            );
-
-            pauseBannerTimer += pauseBannerDirection * renderingDeltaTime;
-            if (pauseBannerTimer > PAUSE_PULSE_MAX) {
-                pauseBannerDirection = -1f;
-                pauseBannerTimer = 2 * PAUSE_PULSE_MAX - pauseBannerTimer;
-            } else if (pauseBannerTimer < 0) {
-                pauseBannerDirection = 1f;
-                pauseBannerTimer = -pauseBannerTimer;
-            }
-        }
-        g.popTransform();
-
-        // Draw solar flares and pulsar pulses
-        Graphics.setTint(shipUI.getStatusTint());
-        currentBeacon.getEnvironment(this).renderOverlay(container, g);
-        Graphics.setTint(Colour.white);
-
-        shipUI.renderMenus(container, g);
-
-        if (mainGame != null && mainGame.getTutorialOverlay() != null) {
-            mainGame.getTutorialOverlay().draw(this, g);
-        }
-
-        if (debugConsoleVisible) {
-            g.setTooltip(null);
-            getDebugConsole().render(container, g);
-        }
-
-        // Render the tooltip
-        ITooltipProvider tooltip = g.getTooltip();
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsOverlay.versionLabel(content);
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsConsole.drawSquishy(this);
+        if (xyz.znix.xftl.hs.HS.luaActive) { xyz.znix.xftl.hs.lua.LuaPrint.render(); luaMouse = xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_MOUSE_CONTROL); }
+        // Render the tooltip: a script's MouseControl tooltip of this frame (or its hidden mouse) in place of the engine's
+        boolean luaTooltip = luaMouse >= 0 && xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.renderTooltip(g);
+        ITooltipProvider tooltip = luaMouse >= 0 && !luaTooltip ? g.getTooltip() : null;
         if (tooltip != null) {
             Input in = container.getInput();
 
@@ -1324,8 +1573,7 @@ public class InGameState extends MainGame.GameState {
             }
         }
         lastFameTooltip = tooltip;
-
-        g.popTransform();
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_MOUSE_CONTROL, luaMouse);
     }
 
     /**
@@ -1396,18 +1644,32 @@ public class InGameState extends MainGame.GameState {
      * NOT be called elsewhere from the main code.
      */
     public void updateGameState(float dt) {
+        if (!isInDanger()) player.browserSetSafe();
+        // WorldManager::OnLoop hook (StatBoost.cpp): the stat boosts are gathered before the world updates.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.stat.StatBoostManager.onLoop(this);
         browserAchievements.advanceTime(dt);
-        currentBeacon.getEnvironment(this).update(dt);
+        currentBeacon.getEnvironment(this).updateStack(dt);
+        // Hyperspace SpaceManager::OnLoop hook: the background objects
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.update(this, dt);
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsPdsSmoke.INSTANCE.update(this, dt);
 
         if (shipUI != null)
             shipUI.update();
 
+        xyz.znix.xftl.drones.DroneRuntime.spaceLoop(this, dt);
+        xyz.znix.xftl.weapons.ProjectileRuntime.advanceFrame(this, dt);
+        xyz.znix.xftl.drones.DroneRuntime.afterProjectiles(this);
         player.update(dt);
         browserAchievements.update();
 
         updatePlayerCrew();
 
         checkForGameOver();
+
+        // The destroyed enemy's CompleteShip keeps looping while the player stays at its beacon (native 1.6.14
+        // drone-order probe: 760+ frames after the kill, its unpowered drones still in SpaceManager's loop).
+        Ship browserRetained = getBrowserRetainedEnemy();
+        if (enemy == null && browserRetained != null) browserRetained.update(dt);
 
         if (enemy != null) {
             enemy.update(dt);
@@ -1423,13 +1685,22 @@ public class InGameState extends MainGame.GameState {
                 enemyAI.update(dt);
                 if (enemy.getBoss() != null && !enemy.isDead()) {
                     enemy.getBoss().updateShip(enemy, dt);
+                } else if (enemy.getBoss() != null) {
+                    enemy.getBoss().updateDyingShip(enemy);
                 }
+                // Hyperspace super drones (CustomBoss.cpp): launched by the flagship or by events, from either ship.
+                if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsBoss.INSTANCE.update(this, dt);
             } else {
                 // ShipAI::OnLoop (0x625c50): a ship that isn't hostile stops fighting.
                 enemyAI.updateIdle();
             }
 
-            if (enemy.isGone()) {
+            // The player's DroneSystem (ShipManager loop, before the enemy's) sees the destruction done on the frame
+            // after the enemy's last explosion loop: native recall at +181 frames, one after Ship.DESTRUCTION_TIME.
+            boolean browserGoneNow = enemy.isGone() && browserEnemyGoneSeen;
+            if (enemy.isGone()) browserEnemyGoneSeen = true;
+            if (browserGoneNow) {
+                browserEnemyGoneSeen = false;
                 if (enemyIsHostile) {
                     browserAchievements.hullDefeat();
                     browserProgress.defeatShip();
@@ -1447,6 +1718,8 @@ public class InGameState extends MainGame.GameState {
                     enemy.getBoss().bossShipKilled(enemy);
                 }
 
+                browserDestroyedEnemy = enemy;
+                browserDestroyedEnemyBeacon = currentBeacon;
                 setEnemy(null);
                 currentBeacon.setShip(null);
 
@@ -1491,6 +1764,8 @@ public class InGameState extends MainGame.GameState {
     // from 1 (just arrived) to 0 (done).
     private float playerFlyIn = 0f;
     private boolean arrivalEventsPending = false;
+    /** The pending arrival's box was opened at the location switch (not the run's first box, not a loaded save's). */
+    private boolean arrivalBoxHidden = false;
 
     // The screen shake (CommandGui +0x2fdc and 0x005313d0's statics) - cosmetic, never serialised.
     private float shakeMagnitude = 0f;
@@ -1498,6 +1773,9 @@ public class InGameState extends MainGame.GameState {
     private float shakeTargetX = 0f, shakeTargetY = 0f;
     private float shakeVelX = 0f, shakeVelY = 0f;
     private boolean arrivalShowBeaconEvent = false;
+
+    /** Hyperspace: arriving at a beacon whose event is cleared runs CreateLocation's revisit path. */
+    private boolean hsRevisitPending = false;
     private Event arrivalEliteEvent;
     public Image jumpFlare;   // issue #4: shared by the arrival and jump-away animations
     private static final float ARRIVAL_TIME = 2.0f;
@@ -1615,7 +1893,9 @@ public class InGameState extends MainGame.GameState {
             }
         }
         arrivalEventsPending = false;
+        arrivalBoxHidden = false;
         arrivalShowBeaconEvent = false;
+        hsRevisitPending = false;
         arrivalEliteEvent = null;
 
         if (this.currentBeacon == null || this.currentBeacon.getSector() != currentBeacon.getSector()) {
@@ -1639,13 +1919,17 @@ public class InGameState extends MainGame.GameState {
         // unless an enemy ship stays there (the unforced ClearEvent is skipped then).
         if (beaconChanged && this.currentBeacon != null && !isCurrentlyLoadingSave) {
             // The scene goes with the location, whether or not its event survives: the next arrival builds a new one.
-            this.currentBeacon.clearEnvironment();
-            if (this.currentBeacon.getShip() == null) {
-                this.currentBeacon.clearEvent(false, true);
-            }
+            clearLocation();
         }
 
+        boolean hsSectorJump = this.currentBeacon != null && this.currentBeacon.getSector() != currentBeacon.getSector();
         this.currentBeacon = currentBeacon;
+
+        // WorldManager::CreateLocation (0x6183a0) starts with the scene: SwitchBackground, SwitchPlanet and SetDangerZone
+        // draw from the game's stream on the first arrival (a revisit applies the stored picks).
+        if (!isCurrentlyLoadingSave) {
+            xyz.znix.xftl.environment.BeaconScene.arrive(this, currentBeacon);
+        }
 
         // Keep track of which sectors we visit, to show on the sector map UI.
         GameMap.SectorInfo sectorInfo = currentBeacon.getSector().getInfo();
@@ -1671,6 +1955,12 @@ public class InGameState extends MainGame.GameState {
             if (currentBeacon.getState() == Beacon.State.UNVISITED) {
                 // Deferred until the arrival animation finishes (issue #4).
                 arrivalShowBeaconEvent = true;
+            } else if (eventManager.getHs() != null && beaconChanged && currentBeacon.getEventCleared()) {
+                hsRevisitPending = true;
+                // Hyperspace: arriving again runs the beacon's event resources once more, and a system upgrade in it
+                // is applied again unless upgradeRevisitFix is on (oracle hg-upg-off: shields 3 -> 4 on the revisit).
+                if (!xyz.znix.xftl.hs.HS.cfg().getUpgradeRevisitFix())
+                    applyEventUpgrades(currentBeacon.getCreatedEvent().getTemplate().getSystemUpgrades());
             }
         }
 
@@ -1710,6 +2000,7 @@ public class InGameState extends MainGame.GameState {
                 .anyMatch(thisBoss -> thisBoss.getBeacon() == currentBeacon);
         if (bossHere) {
             arrivalShowBeaconEvent = false;
+            hsRevisitPending = false;
             arrivalEliteEvent = null;
         }
         trySpawnBoss();
@@ -1717,6 +2008,21 @@ public class InGameState extends MainGame.GameState {
         if (achievementJump) browserAchievements.onJump();
         if (!isCurrentlyLoadingSave && !currentBeacon.getVisited()) browserProgress.visit(currentBeacon.getSector().getSectorNumber());
         currentBeacon.setVisited(true);
+        if (eventManager.getHs() != null && beaconChanged && !isCurrentlyLoadingSave) {
+            // WorldManager::CreateLocation (TriggeredEvents.cpp, before the original): triggered events counting arrivals.
+            xyz.znix.xftl.hs.events.HsTriggeredEvents.INSTANCE.jumpAll(this, 0);
+            // Location::visited counts the arrivals; HS seeds revisit events with it.
+            currentBeacon.hsVisits++;
+            if (xyz.znix.xftl.hs.sector.HsSeeds.enabled) {
+                // Seeds.cpp GetNewLocation: the quest seed follows the location. A jump to the next sector runs it
+                // before the new sector exists, so its start beacon gets the dummy location's seed.
+                if (hsSectorJump) {
+                    xyz.znix.xftl.hs.sector.HsSeeds.INSTANCE.onSectorJump(currentBeacon.getSector().getInfo().getSecretOrigin() != null);
+                } else {
+                    xyz.znix.xftl.hs.sector.HsSeeds.questSeed = xyz.znix.xftl.hs.sector.HsSeeds.INSTANCE.questSeedFor(currentBeacon.getPos().getX(), currentBeacon.getPos().getY());
+                }
+            }
+        }
 
         // Fly the ship in, like vanilla does when arriving at a beacon
         // (this includes the first beacon of a run and loading a game).
@@ -1734,7 +2040,24 @@ public class InGameState extends MainGame.GameState {
                 }
             }
 
-            arrivalEventsPending = arrivalShowBeaconEvent || arrivalEliteEvent != null;
+            arrivalEventsPending = arrivalShowBeaconEvent || arrivalEliteEvent != null || hsRevisitPending;
+            arrivalBoxHidden = false;
+
+            // WorldManager::CreateLocation loads the beacon's event at the location switch, its effects and script
+            // callbacks included (oracle sw4-arrive: PRE_CREATE_CHOICEBOX on the switch frame, before the fly-in); the box
+            // stays hidden and the game paused until the fly-in is over (PlayerShipUI.arrivalHidden).
+            if (arrivalEventsPending && shipUI != null && !isCurrentlyLoadingSave) {
+                if (arrivalShowBeaconEvent) {
+                    arrivalShowBeaconEvent = false;
+                    showArrivalEvent();
+                    arrivalBoxHidden = true;
+                }
+                if (hsRevisitPending) {
+                    hsRevisitPending = false;
+                    shipUI.showHsRevisit(currentBeacon);
+                    arrivalBoxHidden = true;
+                }
+            }
         }
     }
 
@@ -1745,12 +2068,19 @@ public class InGameState extends MainGame.GameState {
      */
     @Nullable public String progressionShipName() { return player == null ? null : player.getType().getName(); }
 
+    /** The beacon a star-map jump is flying to, until the jump-out ends (null otherwise). */
+    @Nullable public Beacon getJumpOutTarget() { return jumpOutTarget; }
+
     public void beginJumpOut(Beacon target) {
-        if (ftl.browser.BrowserLastStand.checkDefeat(this, target)) return;
         // ShipManager::JumpLeave (0x49c9c0) runs for every jump that leaves the beacon - a star map jump, the
         // sector exit and the secret sector warp alike: it takes one fuel (floored at 0).
+        int hsOldFuel = player.getFuelCount();
         player.setFuelCount(Math.max(0, player.getFuelCount() - 1));
+        // Hyperspace FTL_JUMPER_GOOD (ShipManager::JumpLeave hook): the jump costs the hovered beacon's fuel.
+        xyz.znix.xftl.hs.ship.HsNavAugments.jumpLeave(player, hsOldFuel);
         player.browserJumpLeave();
+        // Hyperspace ShipManager::JumpLeave (player): triggered events counting departures.
+        if (eventManager.getHs() != null) xyz.znix.xftl.hs.events.HsTriggeredEvents.INSTANCE.jumpAll(this, 1);
         // If an animation is still in progress, switch immediately.
         if (playerFlyIn > 0 || playerJumpOut > 0 || enemyJumpOut > 0) {
             setCurrentBeacon(target);
@@ -1793,12 +2123,15 @@ public class InGameState extends MainGame.GameState {
 
     public void browserEnterSecretSector() {
         if (isCurrentlyLoadingSave || currentBeacon.getSector().getInfo().isSecretSector()) return;
-        GameMap.SectorInfo info = gameMap.createSecretSector(currentBeacon.getSector().getInfo());
+        String hsWarp = eventManager.getHs() != null ? xyz.znix.xftl.hs.events.HsFlow.INSTANCE.secretSectorWarp(this) : null;
+        GameMap.SectorInfo info = hsWarp != null
+                ? gameMap.createSecretSector(currentBeacon.getSector().getInfo(), hsWarp)
+                : gameMap.createSecretSector(currentBeacon.getSector().getInfo());
         Sector sector = gameMap.generateSector(info, this);
         // The warp target (StarMap +0x714) goes through CommandGui::OnLoop's pending jump like a map jump:
         // ShipManager::JumpLeave takes the fuel and the jump animation plays before the arrival.
         browserAchievements.enterSecretSector();
-        ftl.browser.BrowserDebug.record("event", "sector.secret", "{\"type\":\"CRYSTAL_HOME\",\"sector\":" + sector.getSectorNumber() + "}");
+        ftl.browser.BrowserDebug.record("event", "sector.secret", "{\"type\":\"" + info.getType().getName() + "\",\"sector\":" + sector.getSectorNumber() + "}");
         beginJumpOut(sector.getStartBeacon());
     }
 
@@ -1844,7 +2177,8 @@ public class InGameState extends MainGame.GameState {
      */
     private List<MusicSpec> getSectorTracks(SectorType type) {
         return type.getSoundtracks().stream()
-                .map(name -> getSounds().getTrack(name))
+                .map(name -> getSounds().getTrackOrNull(name))
+                .filter(java.util.Objects::nonNull)
                 .collect(java.util.stream.Collectors.toList());
     }
 
@@ -1864,14 +2198,32 @@ public class InGameState extends MainGame.GameState {
     }
 
     private void loadEventShip(Event event, int shipSeed) {
-        if (event.getLoadShipName() != null) {
+        // Hyperspace without multiShipFix: UpdateLocation leaves the ship that is already here (WorldManager::ships is not
+        // empty), so a second <ship load> at the beacon makes none (the generator, its events and its draws do not run).
+        boolean keepOldShip = enemy != null && xyz.znix.xftl.hs.HS.active && !xyz.znix.xftl.hs.HS.cfg().getMultiShipFix();
+        if (event.getLoadShipName() != null && !keepOldShip && eventManager.hasShip(event.getLoadShipName())) {
             EnemyShipSpec spec = eventManager.getShip(event.getLoadShipName());
             int sector = currentBeacon.getSector().getSectorNumber();
-            setEnemy(content.generator.buildShip(this, spec, sector, difficulty, shipSeed != 0 ? Integer.valueOf(shipSeed) : null));
-            browserEnemyCreated();
+            // HS multiShipFix (WorldManager::UpdateLocation): loading a ship where one already is first brings the
+            // player's boarders home and kills off the old ship's crew; the old ship is dropped with the enemy swap.
+            if (enemy != null && xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.cfg().getMultiShipFix())
+                xyz.znix.xftl.hs.events.HsEventEffects.INSTANCE.replaceEnemyShip(this);
+            Ship built = null;
+            try {
+                built = content.generator.buildShip(this, spec, sector, difficulty, shipSeed != 0 ? Integer.valueOf(shipSeed) : null);
+            } catch (RuntimeException e) {
+                // A mod's ship whose layout is not in the game files: no ship comes.
+                if (!xyz.znix.xftl.hs.HS.modded || !String.valueOf(e.getMessage()).startsWith("Missing asset")) throw e;
+                System.out.println("[WARN] Ship " + event.getLoadShipName() + ": " + e.getMessage());
+            }
+            if (built != null) {
+                setEnemy(built);
+                browserEnemyCreated();
+                if (eventManager.getHs() != null) xyz.znix.xftl.hs.events.HsFlow.INSTANCE.afterCreateShip(this, event.getLoadShipName());
 
-            // Ships aren't hostile by default
-            setEnemyIsHostile(false);
+                // Ships aren't hostile by default
+                setEnemyIsHostile(false);
+            }
         }
         Boolean hostileState = event.getLoadShipHostile();
         if (hostileState != null) {
@@ -1921,6 +2273,7 @@ public class InGameState extends MainGame.GameState {
     private void setEnemy(Ship enemy) {
         Ship previous = this.enemy;
         this.enemy = enemy;
+        browserEnemyGoneSeen = false;
         if (player != null && previous != enemy) browserAchievements.enemyChanged();
         if (previous != null && previous != enemy && previous.getHacking() != null) previous.getHacking().browserEnemyChanged();
         if (player != null && player.getHacking() != null) player.getHacking().browserEnemyChanged();
@@ -1986,13 +2339,12 @@ public class InGameState extends MainGame.GameState {
         }
 
         if (!anyCrewLeft && !anyBoardersLeft && !clonebayOperational && !enemy.isAutoScout() && !enemy.isAutomated() && enemyIsHostile) {
+            // Hyperspace CompleteShip::DeadCrew hook (CustomEvents.cpp): a <finalBoss> ship event's crew killed
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.events.HsFinalBoss.deadCrew(this);
             if (enemy.getBoss() != null) {
-                // BossShip::GetSubEvent (0x4066d0): killing the flagship's crew doesn't
-                // defeat it, it sets the ship's automated flag and shows BOSS_AUTOMATED:
-                // the ship stays hostile and its systems run without crew.
-                enemy.setAutomated(true);
-                Event event = eventManager.get("BOSS_AUTOMATED").resolve();
-                showEventDialogue(event, ftl.browser.BrowserRandom.INSTANCE.nextInt());
+                // BossShip::GetSubEvent (0x4066d0): killing the flagship's crew doesn't defeat it (FlagshipBoss:
+                // automated, BOSS_AUTOMATED at world level 0).
+                enemy.getBoss().bossCrewKilled(enemy);
             } else {
                 browserAchievements.crewDefeat();
                 browserProgress.defeatShip();
@@ -2023,6 +2375,22 @@ public class InGameState extends MainGame.GameState {
     }
 
     public boolean browserCanWait() { return enemy == null || !enemyIsHostile; }
+
+    /** Hyperspace (hs.events): the enemy is hostile, and its jump-out is under way. */
+    public boolean isEnemyHostile() { return enemyIsHostile; }
+    public boolean isEnemyJumping() { return enemyJumpOut > 0; }
+
+    /**
+     * Hyperspace `<instantEscape>`: the enemy's ShipManager::JumpLeave now, without the escape timer or a charged FTL;
+     * it leaves like an escaping ship (fly-out, then the got-away event).
+     */
+    public void hsEnemyJumpLeave() {
+        if (enemy == null || enemyJumpOut > 0) return;
+        hostileShipUI.startFlyOut();
+        enemyJumpEvent = enemy.getSpec() == null ? null : enemy.getSpec().getGotaway();
+        enemyJumpOut = 1f;
+        enemy.browserJumpLeave();
+    }
     /** Diagnostics only: the fight is over, the enemy stays (the way a crew kill ends it). */
     public void browserEndHostility() { setEnemyIsHostile(false); }
 
@@ -2037,6 +2405,9 @@ public class InGameState extends MainGame.GameState {
         if (xyz.znix.xftl.crew.NativeHostilityKt.containsMindControlledEnemy(player))
             return true;
 
+        // Hyperspace DANGEROUS_ENVIRONMENT chain on SpaceManager::DangerousEnvironment
+        if (xyz.znix.xftl.hs.HS.luaActive)
+            return xyz.znix.xftl.hs.lua.LuaAdaptersWP1.dangerousEnvironment(currentBeacon.isEnvironmentDangerous());
         return currentBeacon.isEnvironmentDangerous();
     }
 
@@ -2047,6 +2418,12 @@ public class InGameState extends MainGame.GameState {
     public QuestAddResult addQuest(String questName) {
         Sector sector = currentBeacon.getSector();
         eventCreator.refreshUsedNames();
+        if (eventManager.getHs() != null) {
+            int before = delayedQuests.size();
+            boolean placed = xyz.znix.xftl.hs.events.HsQuests.INSTANCE.addQuest(this, sector, currentBeacon, questName, false, delayedQuests);
+            if (placed) return QuestAddResult.CURRENT_SECTOR;
+            return delayedQuests.size() > before ? QuestAddResult.NEXT_SECTOR : QuestAddResult.TOO_LATE;
+        }
         Sector.QuestPlacement placement = sector.addQuest(currentBeacon, eventCreator, questName, false);
 
         if (placement == Sector.QuestPlacement.PLACED) {
@@ -2110,7 +2487,9 @@ public class InGameState extends MainGame.GameState {
         // aboard, or an event's neutral ship with its own crew - is saved here, so a reload still shows it and its
         // target panel. A crew-killed ship with nobody aboard is gone after a reload.
         boolean saveDefeatedEnemy = enemy != null && !enemyIsHostile && !refs.isRegistered(enemy)
-                && (enemy.hasCrewOwnedByShip(player) || enemy.hasCrewOwnedByShip(enemy));
+                && (enemy.hasCrewOwnedByShip(player) || enemy.hasCrewOwnedByShip(enemy)
+                    // an event's neutral automated ship (a Zoltan guard drone) has no crew but is still there after a reload
+                    || (xyz.znix.xftl.hs.HS.active && enemy.isAutomated() && !enemy.isDead()));
         if (saveDefeatedEnemy) {
             refs.register(enemy, "defeatedEnemy");
         }
@@ -2179,6 +2558,7 @@ public class InGameState extends MainGame.GameState {
         shipUI.saveToXML(shipUiXML, refs);
         root.addContent(shipUiXML);
 
+        if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSave.writeRun(root);
         return new Document(root);
     }
 
@@ -2198,7 +2578,14 @@ public class InGameState extends MainGame.GameState {
 
         // Load the player ship
         Element playerShip = root.getChild("playerShip");
-        player = deserialiseSingleShip(playerShip, refs, customised);
+        if (playerShip != null && blueprintManager.getOrNull(playerShip.getAttributeValue("shipId")) == null)
+            throw new xyz.znix.xftl.hs.save.HsSave.Mismatch("This run's ship, " + playerShip.getAttributeValue("shipId") + ", came from a mod that is not in this save's mods. Put that mod back under Saves > Advanced to continue the run.");
+        hsLoadingPlayer = true;
+        try {
+            player = deserialiseSingleShip(playerShip, refs, customised);
+        } finally {
+            hsLoadingPlayer = false;
+        }
 
         // Load the flagship, if we're fighting it.
         Element flagshipElem = root.getChild("bossShip");
@@ -2263,8 +2650,9 @@ public class InGameState extends MainGame.GameState {
             arrivalShowBeaconEvent = "true".equals(arrival.getAttributeValue("showBeacon"));
             playerFlyIn = Math.max(0f, Math.min(1f, Float.parseFloat(arrival.getAttributeValue("flyIn"))));
             String eliteEvent = arrival.getAttributeValue("eliteEvent");
-            arrivalEliteEvent = eliteEvent == null ? null : eventManager.getByDeserialisationId(eliteEvent);
+            arrivalEliteEvent = eliteEvent == null ? null : eventManager.getByDeserialisationIdOrNull(eliteEvent);
             arrivalEventsPending = arrivalShowBeaconEvent || arrivalEliteEvent != null;
+            arrivalBoxHidden = false;
         }
         ftl.browser.BrowserRandom.restore(root.getAttributeValue("browserRngState"));
         ftl.browser.NativeRandom.restore(root.getAttributeValue("browserNativeRngState"));
@@ -2287,6 +2675,17 @@ public class InGameState extends MainGame.GameState {
      * the player ship deserialisation in this class and the enemy ship
      * deserialisation in beacons.
      */
+    private boolean hsLoadingPlayer;
+
+    /**
+     * Hyperspace: the player's ship is the player's whatever its blueprint (ShipManager iShipId 0), so a ship the
+     * console SWITCH built from an enemy blueprint keeps the player's start power, vision, shields and weapon rules.
+     */
+    private ShipBlueprint playerBlueprint(ShipBlueprint blueprint) {
+        if (blueprint.isPlayerShip() || !xyz.znix.xftl.hs.HS.active) return blueprint;
+        return new ShipBlueprint(blueprint.getSourceElement(), df, true);
+    }
+
     public Ship deserialiseSingleShip(Element shipElement, RefLoader refs, EditableShip customised) {
         // Load the appropriate ship definition XML element from the blueprints
         String shipId = shipElement.getAttributeValue("shipId");
@@ -2296,10 +2695,12 @@ public class InGameState extends MainGame.GameState {
         if (specId.equals("null")) {
             spec = null;
         } else {
-            spec = content.eventManager.getShip(specId);
+            spec = content.eventManager.hasShip(specId) ? content.eventManager.getShip(specId) : null;
+            if (spec == null) xyz.znix.xftl.savegame.MissingContent.note(specId);
         }
 
         ShipBlueprint blueprint = blueprintManager.getShip(shipId);
+        if (hsLoadingPlayer) blueprint = playerBlueprint(blueprint);
 
         // And use that to build and deserialise the ship
         // Note we pass in null as the boss - that'll be updated if this turns out to be a boss.
@@ -2316,6 +2717,7 @@ public class InGameState extends MainGame.GameState {
 
     @NotNull
     public Image getImg(String name) {
+        name = xyz.znix.xftl.Languages.localImage(df, name);
         Image img = content.images.get(name);
         if (img != null)
             return img;
@@ -2344,6 +2746,7 @@ public class InGameState extends MainGame.GameState {
      */
     @Nullable
     public Image getImgIfExists(String name) {
+        name = xyz.znix.xftl.Languages.localImage(df, name);
         Image img = content.images.get(name);
         if (img != null)
             return img;
@@ -2442,6 +2845,20 @@ public class InGameState extends MainGame.GameState {
         return gameMap;
     }
 
+    /**
+     * The enemy destroyed at this beacon. WorldManager keeps its CompleteShip (bDestroyed, still looping) until the
+     * next location (native 1.6.14 drone-order probe: 15 s after the kill; HS oracle wp4-drone-fight), while the
+     * engine drops it from play once its explosion is over. Hyperspace's ShipManager lookup reads it.
+     */
+    private Ship browserDestroyedEnemy;
+    private boolean browserEnemyGoneSeen;
+    private Beacon browserDestroyedEnemyBeacon;
+
+    public Ship getBrowserRetainedEnemy() {
+        if (enemy != null) return enemy;
+        return browserDestroyedEnemyBeacon == currentBeacon ? browserDestroyedEnemy : null;
+    }
+
     public Beacon getCurrentBeacon() {
         return currentBeacon;
     }
@@ -2449,6 +2866,10 @@ public class InGameState extends MainGame.GameState {
     public BlueprintManager getBlueprintManager() {
         return blueprintManager;
     }
+
+    /** The arrival's event box is open (hidden) during the fly-in: the game is paused (CFPS RunningTime stops). */
+    /** The arrival's box opened at the location switch and waits, hidden, for the fly-in to end. */
+    public boolean isArrivalHold() { return arrivalEventsPending && arrivalBoxHidden; }
 
     public boolean isPaused() {
         return focusPaused || isPausedExceptFocus();
@@ -2460,10 +2881,24 @@ public class InGameState extends MainGame.GameState {
         // manipulated) and the targeting modes (weapon aiming, or the
         // teleporter/hacking/mind-control room pickers) also freeze the
         // game.
-        return paused || debugConsoleVisible || shipUI.isWindowOpen() ||
+        return paused || debugConsoleVisible || shipUI.isWindowOpen() || xyz.znix.xftl.hs.render.HsConsole.open ||
                 (shipUI != null && shipUI.getRoomSelectionMode()) ||
                 (shipUI != null && shipUI.getPowerPopupOpen()) ||
                 isTouchTargeting();
+    }
+
+    /**
+     * The pause flag SpaceManager's shade sees (SpaceManager +0x360, copied by CommandGui::RenderStatic 0x535070 from
+     * CommandGui +0x2f6c, which only SetPaused and SpaceBar set). Focus windows (the event ChoiceBox, store, upgrades
+     * and its crew/equipment tabs, star map, pause menu, options, confirmations) pause the game through the focus
+     * window flag +0x2f6e instead (CommandGui::OnLoop 0x536ad6), so they never add the x0.4 shade; a full-focus one
+     * only dims the whole scene by 0.15 ({@link PlayerShipUI#getSceneTint}). Native captures vn-slug, vn-win, vn-win2:
+     * event box x1, store/upgrades/crew/equipment/map/menu/options/restart x0.15, Space x0.4, Space + upgrades x0.06;
+     * HS oracle r2-beacon 08b, 14-pause, ships-rng-101 store/pause-menu, mv-seed-12345 maps x0.15.
+     */
+    public boolean isShadePaused() {
+        return focusPaused || paused || debugConsoleVisible ||
+                shipUI.getRoomSelectionMode() || shipUI.getPowerPopupOpen() || isTouchTargeting();
     }
 
     /** Explicit player pause; modal/focus pauses do not satisfy tutorial input. */
@@ -2475,6 +2910,11 @@ public class InGameState extends MainGame.GameState {
     public void unpauseTutorial() {
         requireCurrentTutorial();
         paused = false;
+    }
+
+    /** Diagnostics only: an event by name, through the normal event path. */
+    public void debugShowEvent(String name) {
+        showEventDialogue(eventManager.get(name).resolve(), 0);
     }
 
     /** Deliver through the normal event/reward/save path; never directly grant items. */
@@ -2650,8 +3090,16 @@ public class InGameState extends MainGame.GameState {
      * - see {@link #convertScreenToPlayerShip(Point)}.
      */
     public float getPlayerShipRenderScale() {
+        if (shipUI != null && shipUI.getTouch() != null) return shipUI.getTouch().getPlayerScale();
         return isTouchTargeting() ? TARGETING_SHIP_SCALE : 1f;
     }
+
+    public IPoint getPlayerShipOffsetPoint() { return playerShipOffset; }
+
+    /** The touch HUD's room under the finger, for the highlight (the mouse path sets it in updateClickEvent). */
+    public void hoverRoomForTouch(@Nullable Room room) { touchHoverRoom = room; }
+
+    public void setPlayerPaused(boolean value) { paused = value; }
 
     /**
      * Convert a screen-space position to the player ship's render space
@@ -2675,6 +3123,12 @@ public class InGameState extends MainGame.GameState {
 
     public HotkeyManager getHotkeyManager() {
         return content.hotkeyManager;
+    }
+
+    /** Hyperspace: Sector::visited written by a script. */
+    public void hsSetVisited(GameMap.SectorInfo info, boolean visited) {
+        if (!visited) visitedSectors.remove(info);
+        else if (!visitedSectors.contains(info)) visitedSectors.add(info);
     }
 
     public List<GameMap.SectorInfo> getVisitedSectors() {
@@ -2815,8 +3269,11 @@ public class InGameState extends MainGame.GameState {
      * fraction, and the result is truncated once. Store sales, repairs and purchases never
      * carry the flag, so they are not modified.
      */
+    /** Hyperspace CustomEvents.cpp blockScrapCollected / blockScrapAugments: set while an event with disableScrapScore / disableScrapAugments is applied. */
+    public boolean hsBlockScrapCollected, hsBlockScrapAugments;
+
     private int applyScrapModifiers(int scrap) {
-        if (scrap <= 0)
+        if (scrap <= 0 || hsBlockScrapAugments)
             return scrap;
 
         float bonus = player.getAugmentValue(AugmentBlueprint.SCRAP_COLLECTOR);
@@ -2827,6 +3284,11 @@ public class InGameState extends MainGame.GameState {
     }
 
     /** ShipManager +0x4d8 for the player ship: from the start of the jump-out until the arrival animation ends. */
+    /** The enemy ship's AI (CombatAI), or null without a hostile ship. */
+    public ShipAI getEnemyAI() {
+        return enemyAI;
+    }
+
     public boolean isPlayerJumping() {
         return playerJumpOut > 0 || playerFlyIn > 0;
     }
@@ -2840,7 +3302,7 @@ public class InGameState extends MainGame.GameState {
         player.setMissilesCount(Math.max(0, player.getMissilesCount() + resources.getMissiles()));
 
         int scrapGain = resources.getScrap();
-        browserProgress.collectScrap(scrapGain);
+        if (!hsBlockScrapCollected) browserProgress.collectScrap(scrapGain);
         player.setScrap(Math.max(0, player.getScrap() + applyScrapModifiers(scrapGain)));
 
         // ModifyScrapCount (0x49ba70): REPAIR_ARM heals 2 hull on every positive reward, through
@@ -2856,6 +3318,7 @@ public class InGameState extends MainGame.GameState {
 
         for (LivingCrewInfo info : resources.getCrew()) {
             player.addCrewMember(info, false, false);
+            gameMap.noteBlueprintCrew(this, info);
         }
 
         for (RemoveCrewEval removed : resources.getLostCrew()) {
@@ -2888,38 +3351,8 @@ public class InGameState extends MainGame.GameState {
         // ship holds 15 intruders. They all start in one random room and
         // teleport in, or with breach="true" arrive through a hull breach
         // in that room, which also costs a point of hull.
-        long intruderCount = player.getCrew().stream()
-                .filter(c -> c.getMode() == AbstractCrew.SlotType.INTRUDER).count();
-        if (resources.getHasIntruders() && intruderCount < 15) {
-            // 0x408260: the room is the first draw, then each boarder's name, class and look.
-            int intruderRoomId = ftl.browser.NativeRandom.INSTANCE.nextInt(player.getRooms().size());
-            Room intruderRoom = player.getRooms().get(intruderRoomId);
-
-            List<LivingCrewInfo> infos = new ArrayList<>(resources.getIntruders());
-            List<Boolean> neverReady = new ArrayList<>();
-            for (int i = 0; i < infos.size(); i++) neverReady.add(null);
-            for (int i = 0; i < resources.getBoarderCount(); i++) {
-                NativeCrewFactory.Boarder boarder = getCrewFactory().createBoarder(this, resources.getBoarderRace());
-                infos.add(boarder.getInfo());
-                neverReady.add(boarder.getCrystalNeverReady());
-            }
-
-            for (int i = 0; i < infos.size(); i++) {
-                LivingCrew intruder = player.addCrewMember(infos.get(i), false, true);
-                if (intruder instanceof CrewCrystal && neverReady.get(i) != null)
-                    ((CrewCrystal) intruder).initEnemyPower(neverReady.get(i));
-
-                RoomPoint slot = player.findSpaceForCrew(intruderRoom, AbstractCrew.SlotType.INTRUDER);
-                intruder.jumpTo(slot);
-                if (!resources.getIntrudersBreach()) {
-                    intruder.startTeleportArrive();
-                }
-            }
-
-            if (resources.getIntrudersBreach()) {
-                intruderRoom.spawnBreach();
-                player.setHealth(player.getHealth() - 1);
-            }
+        if (resources.getHasIntruders() && !resources.getBoardersAboard() && intruderCount() < 15) {
+            placeIntruders(resources.getIntruders(), resources.getBoarderCount(), resources.getBoarderRace(), resources.getIntrudersBreach());
         }
 
         // Apply the hull damage. Vanilla plays its eventDamage explosion
@@ -2990,8 +3423,16 @@ public class InGameState extends MainGame.GameState {
             // TEST_EVENT is a good way to test this, as it spawns both of them.
         }
 
-        // Apply system/reactor upgrades
-        for (EventSystemUpgrade upgrade : resources.getUpgrades()) {
+        applyEventUpgrades(resources.getUpgrades());
+
+        // Apply the fleet pursuit modifier
+        Sector currentSector = currentBeacon.getSector();
+        currentSector.setFleetAdvanceModifier(currentSector.getFleetAdvanceModifier() + resources.getModifyPursuit());
+    }
+
+    /** An event's system and reactor upgrades, capped at each system's maximum. */
+    private void applyEventUpgrades(@NotNull java.util.List<EventSystemUpgrade> upgrades) {
+        for (EventSystemUpgrade upgrade : upgrades) {
             if (upgrade.getSystem().equals("reactor")) {
                 int newPower = player.getPurchasedReactorPower() + upgrade.getAmount();
                 player.setPurchasedReactorPower(Math.min(newPower, player.getMaxReactorPower()));
@@ -3008,10 +3449,6 @@ public class InGameState extends MainGame.GameState {
             int newPower = system.getEnergyLevels() + upgrade.getAmount();
             system.setEnergyLevels(Math.min(system.getBlueprint().getMaxPower(), newPower));
         }
-
-        // Apply the fleet pursuit modifier
-        Sector currentSector = currentBeacon.getSector();
-        currentSector.setFleetAdvanceModifier(currentSector.getFleetAdvanceModifier() + resources.getModifyPursuit());
     }
 
     /**
@@ -3108,6 +3545,12 @@ public class InGameState extends MainGame.GameState {
      * semantics). Winning keeps the save - the flagship fight isn't
      * implemented yet, so this only covers the loss outcomes in practice.
      */
+    /** Hyperspace GameOver::OpenText: a queued death event loads instead of the game over screen. */
+    private boolean hsDeathEvent() {
+        return eventManager.getHs() != null
+                && xyz.znix.xftl.hs.events.HsFlow.INSTANCE.onGameOver(this, shipUI.getHsHost(), false);
+    }
+
     private void checkForGameOver() {
         // CommandGui::OnLoop (0x536770) calls CheckGameover (0x52c900) every frame, paused or not, unless the player
         // is jumping or a focus window is open (menu_pause, +0x2f6e). It tests the crew first (gameover_crew); the
@@ -3117,12 +3560,30 @@ public class InGameState extends MainGame.GameState {
 
         if (!browserCrewLost()) {
             if (player.isGone()) {
+                // Hyperspace WorldManager::OnLoop: after a <finalBoss> victory the defeat is the victory
+                if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.events.HsFinalBoss.defeatIsVictory(this)) {
+                    shipUI.showGameOverScreen(GameOverWindow.Outcome.WIN);
+                    return;
+                }
+                if (hsDeathEvent()) return;
                 mainGame.deleteRunSave();
                 shipUI.showGameOverScreen(GameOverWindow.Outcome.LOOSE_HULL);
+                return;
+            }
+            // Third test: the flagship has finished the base and the player is not at its beacon. The jump that
+            // used the last turn therefore lands, and its event boxes play, before the run ends.
+            if (ftl.browser.BrowserLastStand.baseDestroyed(currentBeacon)) {
+                if (hsDeathEvent()) return;
+                ftl.browser.BrowserLastStand.checkDefeat(this, currentBeacon);
             }
             return;
         }
 
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.events.HsFinalBoss.defeatIsVictory(this)) {
+            shipUI.showGameOverScreen(GameOverWindow.Outcome.WIN);
+            return;
+        }
+        if (hsDeathEvent()) return;
         mainGame.deleteRunSave();
         shipUI.showGameOverScreen(GameOverWindow.Outcome.LOOSE_CREW);
     }
@@ -3261,10 +3722,12 @@ public class InGameState extends MainGame.GameState {
     }
 
     public boolean isPlayerCrewFull() {
+        if (xyz.znix.xftl.hs.HS.active && player != null) return xyz.znix.xftl.hs.ship.HsShipState.isCrewFull(player, playerCrew.size());
         return playerCrew.size() >= 8;
     }
 
     public boolean playerHasTooManyCrew() {
+        if (xyz.znix.xftl.hs.HS.active && player != null) return xyz.znix.xftl.hs.ship.HsShipState.isCrewOverFull(player, playerCrew.size());
         return playerCrew.size() > 8;
     }
 
@@ -3335,13 +3798,17 @@ public class InGameState extends MainGame.GameState {
                 audioContext = previous.audioContext;
             }
             generator = new ShipGenerator(datafile, blueprintManager);
-            translator = new Translator(datafile, "en");
+            xyz.znix.xftl.rendering.LanguageFonts.INSTANCE.useDatafile(datafile);
+            translator = new Translator(datafile, xyz.znix.xftl.Languages.getCurrent());
             eventManager = new EventManager(datafile, translator, blueprintManager);
-            nameManager = new CrewNameManager(datafile, "en");
+            nameManager = new CrewNameManager(datafile, xyz.znix.xftl.Translator.Companion.isEnglish(xyz.znix.xftl.Languages.getCurrent()) ? "en" : xyz.znix.xftl.Languages.getCurrent());
             achievements = new Achievement.AchievementTable(datafile);
             hotkeyManager = new HotkeyManager();
 
             blueprintManager.finishLoading(this);
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewContent.load(blueprintManager);
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsWeapons.loadContent(blueprintManager);
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.stat.StatBoostDefs.weaponsFirst(); // HS realBoostId order
 
             // TODO load this via the usual asset system, so mods can override it
             BrowserSaxBuilder builder = com.pocketwormhole.android.SafeXML.builder();
@@ -3388,6 +3855,7 @@ public class InGameState extends MainGame.GameState {
         }
 
         public Image getImg(String path) {
+            path = xyz.znix.xftl.Languages.localImage(datafile, path);
             Image image = images.get(path);
             if (image == null) {
                 image = loadImage(datafile.get(path));
@@ -3458,6 +3926,103 @@ public class InGameState extends MainGame.GameState {
         @Override
         public WindowRenderer getWindowRenderer() {
             return content.windowRenderer;
+        }
+    }
+
+    private long intruderCount() {
+        return player.getCrew().stream().filter(c -> c.getMode() == AbstractCrew.SlotType.INTRUDER).count();
+    }
+
+    /**
+     * WorldManager::AddBoarders(BoardingEvent&) (0x613440): nothing comes aboard once the ship holds 15 intruders or when
+     * the amount is not positive; otherwise BoarderSpawn (0x408260) places them and the call returns true.
+     */
+    public boolean addBoarders(String race, int amount, boolean breach) {
+        if (player == null || intruderCount() >= 15 || amount <= 0) return false;
+        placeIntruders(new ArrayList<>(), amount, race, breach);
+        return true;
+    }
+
+    private void placeIntruders(List<LivingCrewInfo> explicit, int boarderCount, String boarderRace, boolean breach) {
+        // 0x408260: the room is the first draw, then each boarder's name, class and look.
+        int intruderRoomId = ftl.browser.NativeRandom.INSTANCE.nextInt(player.getRooms().size());
+        Room intruderRoom = player.getRooms().get(intruderRoomId);
+
+        List<LivingCrewInfo> infos = new ArrayList<>(explicit);
+        List<Boolean> neverReady = new ArrayList<>();
+        for (int i = 0; i < infos.size(); i++) neverReady.add(null);
+        for (int i = 0; i < boarderCount; i++) {
+            NativeCrewFactory.Boarder boarder = getCrewFactory().createBoarder(this, boarderRace);
+            infos.add(boarder.getInfo());
+            neverReady.add(boarder.getCrystalNeverReady());
+        }
+
+        for (int i = 0; i < infos.size(); i++) {
+            LivingCrew intruder = player.addCrewMember(infos.get(i), false, true);
+            if (intruder instanceof CrewCrystal && neverReady.get(i) != null)
+                ((CrewCrystal) intruder).initEnemyPower(neverReady.get(i));
+
+            RoomPoint slot = player.findSpaceForCrew(intruderRoom, AbstractCrew.SlotType.INTRUDER);
+            intruder.jumpTo(slot);
+            if (!breach) {
+                intruder.startTeleportArrive();
+            }
+        }
+
+        if (breach) {
+            intruderRoom.spawnBreach();
+            player.setHealth(player.getHealth() - 1);
+        }
+    }
+
+    /**
+     * Hyperspace WorldManager::SwitchShip / SwitchShipTransfer (CustomShips.cpp, the console's SWITCH and SWITCHALL): the
+     * location is cleared (the ship there goes with it), then the player's ship is built again from [blueprintName] as a
+     * run start builds it (ShipBuilder::GetShip, CompleteShip::Restart: its systems, weapons, drones, augments and crew,
+     * the Hyperspace start equipment and crew) and the command GUI restarts (a new PlayerShipUI). Returns the old ship, so
+     * SWITCHALL can carry its state over. Hyperspace only (console).
+     */
+    public Ship hsRebuildPlayerShip(String blueprintName) {
+        return hsRebuildPlayerShip(blueprintName, null);
+    }
+
+    /** [crew] non-null: SWITCHALL's saved crew instead of the blueprint's (and no Hyperspace start crew or equipment). */
+    public Ship hsRebuildPlayerShip(String blueprintName, List<LivingCrewInfo> crew) {
+        if (enemy != null) {
+            setEnemy(null);
+            currentBeacon.setShip(null);
+        }
+        // The scene and the location's background objects stay (oracle sw2-switch: the start beacon's station after
+        // SWITCH); only the ship there goes.
+        Ship old = player;
+        if (crew == null) {
+            hsStartEquipment = xyz.znix.xftl.hs.ship.HsShipStart.resolve(blueprintManager.getShip(blueprintName), blueprintManager);
+            hsStartCrew = xyz.znix.xftl.hs.ship.HsShipState.drawStartingCrew(blueprintName, this);
+            createNewPlayerShip(blueprintName, null);
+        } else {
+            hsStartEquipment = null;
+            hsStartCrew = null;
+            hsStartRooms = null;
+            createNewPlayerShip(blueprintName, null, crew);
+        }
+        // ShipManager::Restart leaves scrap and fuel at 0 (a run start sets them in StarMap::NewGame); the Hyperspace
+        // definition's startingScrap / startingFuel still apply (ShipManager_Extend::Initialize(restarting)). Oracle
+        // sw2-switch: Kestrel 20 scrap 12 fuel -> MU_FED_BATTLESHIP 0 / 0, its 12 missiles and 7 reactor bars.
+        player.setScrap(0);
+        player.setFuelCount(0);
+        xyz.znix.xftl.hs.ship.HsShipState.applyStartingResources(player);
+        if (mainGame != null) shipUI = new PlayerShipUI(player, this);
+        updatePlayerCrew();
+        return old;
+    }
+
+    /** The location part of WorldManager::ClearLocation (0x614d00): the scene is kept, the hazard and the event go. */
+    public void clearLocation() {
+        if (currentBeacon == null) return;
+        currentBeacon.captureSpace(gameMap);
+        currentBeacon.clearEnvironment();
+        if (currentBeacon.getShip() == null) {
+            currentBeacon.clearEvent(false, true);
         }
     }
 }

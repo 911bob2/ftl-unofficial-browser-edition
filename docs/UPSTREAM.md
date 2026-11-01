@@ -8,4 +8,4 @@ Source-rewriting scripts and the duplicate vendor checkout have been removed fro
 
 The project is AGPL-3.0-or-later; the upstream GPL-2.0-or-later text and embedded third-party notices are retained in `third_party/notices`. Commercial assets, credentials, diagnostic logs, binary analysis and decompiler output are excluded from source history and release images. The browser zlib bridge uses fflate 0.8.3 under MIT; its notice is in `web/vendor/fflate-LICENSE`. Tailwind/daisyUI are pinned in package-lock.json and compiled locally.
 
-Original behavior is investigated against the installed FTL 1.6.14 binary; selected findings and their limitations are documented in ORIGINAL_BEHAVIOR.md. Hyperspace signatures serve as navigation aids, not authority for unmodified-game behavior. Acceptance and inventory records distinguish implemented behavior from verified parity.
+Original behavior is investigated against the installed FTL 1.6.14 binary. Hyperspace signatures serve as navigation aids, not authority for unmodified-game behavior. Acceptance and inventory records distinguish implemented behavior from verified parity.

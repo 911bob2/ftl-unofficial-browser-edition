@@ -52,7 +52,9 @@ class SettingsMenuState(
             background.render(container, g)
             Graphics.tint = Colour.white
         } else {
-            context.getImg("img/main_menus/main_base2.png").draw(0f, 0f)
+            val art = context.getImg(if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsTitleScreen.imagePath("img/main_menus/main_base2.png") else "img/main_menus/main_base2.png")
+            if (TouchMode.enabled) TouchArt.cover(g, art.width, art.height, container.width, container.height) { art.draw(0f, 0f) }
+            else art.draw(0f, 0f)
             g.colour = Colour(0f, 0f, 0f, .65f)
             g.fillRect(0, 0, container.width, container.height)
         }

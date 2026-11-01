@@ -29,7 +29,21 @@ abstract class AbstractExternalDrone(
      */
     val onEnemy: Boolean
 
-) : AbstractDrone(type) {
+) : AbstractDrone(type), xyz.znix.xftl.hs.weapons.HsDroneCollisionBody {
+
+    override val collisionReceiver: Any get() = this
+    override val collisionOwner: Ship get() = ownerShip
+    override val collisionSpaceId: Int get() = xyz.znix.xftl.hs.weapons.HsWeapons.shipId(targetShip)
+    override val collisionSelfId: Int get() = hsSelfId
+    override val collisionPosition: FPoint get() = flightController.position
+    override val collisionDodge: Int get() = type.dodge ?: 0
+    override val collisionPowered: Boolean get() = isPowered
+    override val collisionEnabled: Boolean get() = !isBlowingUp && this in targetShip.externalDrones
+    override val collisionExploding: Boolean get() = isBlowingUp
+    override var collisionIonStun: Float
+        get() = ionStunTimer
+        set(value) { ionStunTimer = value }
+    override fun collisionBlowUp() = blowUp(false)
 
     /**
      * The [DroneFlightController] that defines this drone's flight path.
@@ -89,7 +103,7 @@ abstract class AbstractExternalDrone(
 
     // An exploding drone does nothing (see isBlowingUp).
     override val isRunning: Boolean get() = super.isRunning && !isBlowingUp
-    private var ionStunTimer: Float = 0f
+    internal var ionStunTimer: Float = 0f
 
     /**
      * The speed multiplier applied to the orbit around the shields, used
@@ -112,6 +126,32 @@ abstract class AbstractExternalDrone(
     private var stunSparksMirror: Boolean = false
 
     protected val game: InGameState get() = ownerShip.sys
+
+    /** SpaceDrone::lastLocation (-FLT_MAX until the first move) and speedVector (current minus last, per frame). */
+    val lastLocation = MutFPoint(-Float.MAX_VALUE, -Float.MAX_VALUE)
+    val speedVector = MutFPoint(0f, 0f)
+
+    /**
+     * SpaceDrone::deployedLastFrame / poweredLastFrame (+0x15d/+0x15c). Only DefenseDrone::OnLoop (0x428010, also
+     * run by SuperShieldDrone's 0x428300) writes both, and BoarderPodDrone's loop (0x428bf0) the powered one; every
+     * other drone keeps the constructor's false (1.6.14: no other store to either byte; oracle wp4-drone-body
+     * temp-flown: a flying combat drone reads false/false).
+     */
+    var deployedLastFrame: Boolean = false
+    var poweredLastFrame: Boolean = false
+
+    /** DefenseDrone::OnLoop (0x428010) past the explosion check: both flags follow the drone. */
+    protected fun updateLastFrameFlags(dt: Float) {
+        if (dt > 0f && !isBlowingUp) {
+            deployedLastFrame = true
+            poweredLastFrame = isPowered
+        }
+    }
+
+    /** A drone made by ShipManager::CreateSpaceDrone flies around its movement target, not the owner's enemy. */
+    fun presetTargetShip(ship: Ship) {
+        if (!this::targetShip.isInitialized) targetShip = ship
+    }
 
     override fun init(ownerShip: Ship) {
         super.init(ownerShip)
@@ -143,7 +183,12 @@ abstract class AbstractExternalDrone(
         // If the drone disappears (for example, when jumping) then don't
         // leave it as being active, as that prevents it from being used again.
         if (!targetShip.externalDrones.contains(this)) {
-            recall()
+            // Hyperspace DroneSystem::Jump (Balance.cpp) with <repairDroneRecoveryFix>: a deployed hull repair drone
+            // is destroyed before the jump collects it, so the Drone Recovery Arm gets no part back.
+            if (xyz.znix.xftl.hs.HS.active && this is HullRepairDrone && xyz.znix.xftl.hs.HS.cfg().repairDroneRecoveryFix)
+                removeInstance()
+            else
+                recall()
         }
 
         if (isRunning) {
@@ -171,6 +216,13 @@ abstract class AbstractExternalDrone(
             stunRotationAnimation += Math.toRadians(480.0).toFloat() * dt
             stunSparksAnimation?.update(dt)
             measuredVelocity = ConstFPoint.ZERO
+            // A stunned drone drifts like an unpowered one (SpaceDrone::UpdatePoweredDown 0x427be0).
+            val lastX = flightController.position.xf
+            val lastY = flightController.position.yf
+            if (flightController.updatePoweredDown(dt) && dt > 0f) {
+                lastLocation.set(lastX, lastY)
+                speedVector.set(flightController.position.xf - lastX, flightController.position.yf - lastY)
+            }
             return
         }
         stunRotationAnimation = 0f
@@ -179,6 +231,10 @@ abstract class AbstractExternalDrone(
         val lastY = flightController.position.yf
 
         flightController.update(dt)
+        if (dt > 0f) {
+            lastLocation.set(lastX, lastY)
+            speedVector.set(flightController.position.xf - lastX, flightController.position.yf - lastY)
+        }
 
         measuredVelocity = when {
             !isPowered || dt <= 0f -> ConstFPoint.ZERO
@@ -213,8 +269,8 @@ abstract class AbstractExternalDrone(
         super.destroy()
     }
 
-    override fun removeInstance() {
-        super.removeInstance()
+    override fun removeInstance(keepDeployed: Boolean) {
+        super.removeInstance(keepDeployed)
 
         targetShip.externalDrones.remove(this)
     }
@@ -357,6 +413,8 @@ abstract class AbstractExternalDrone(
         if (proj.antiDroneBP == null)
             return false
 
+        if (xyz.znix.xftl.hs.HS.active) return xyz.znix.xftl.hs.weapons.HsDrones.canCollide(this, proj)
+
         val dodged = ftl.browser.BrowserRandom.nextInt(10) < (type.dodge ?: 0)
         if (dodged && isPowered) {
             targetShip.showDamageTextAt(flightController.position, "text_miss", Colour.white)
@@ -377,6 +435,15 @@ abstract class AbstractExternalDrone(
         // We checked this is non-null in canCollideWith.
         val type = other.antiDroneBP
         requireNotNull(type) { "Can't hit projectile without an anti-drone blueprint!" }
+
+        if (xyz.znix.xftl.hs.HS.active) {
+            // Hyperspace SpaceDrone::CollisionMoving rewrite: hull damage blows the drone up first; ion stuns only
+            // without it, for max(current, 5 s per point), a powered drone only unless <droneIonDodgeFix>.
+            if (type.damage > 0) { blowUp(); return }
+            if (type.ionDamage > 0 && (isPowered || xyz.znix.xftl.hs.HS.cfg().droneIonDodgeFix))
+                ionStunTimer = kotlin.math.max(ionStunTimer, 5f * type.ionDamage)
+            return
+        }
 
         if (type.ionDamage > 0) {
             if (isPowered) {
@@ -448,6 +515,13 @@ abstract class DroneFlightController(val drone: AbstractExternalDrone) {
     abstract fun update(dt: Float)
 
     /**
+     * SpaceDrone::UpdatePoweredDown (0x427be0): the motion of a drone that is unpowered or stunned. Natively combat,
+     * beam and ship repair drones (CombatDrone's loop 0x4285b0) and defence/super shield drones (0x428010) take it
+     * when unpowered or stunned (ion stun or hacked, SpaceDrone::GetStunned 0x756a10). Null: the drone stays put.
+     */
+    open fun updatePoweredDown(dt: Float): Boolean = false
+
+    /**
      * Called when the owner drone has finished seting itself up.
      */
     open fun init() {
@@ -514,7 +588,7 @@ class OrbitFlightController(drone: AbstractExternalDrone) : DroneFlightControlle
     // is x = a*cos(theta), y = b*sin(theta).
     var theta = 0f
 
-    private val destination = MutFPoint(0f, 0f)
+    internal val destination = MutFPoint(0f, 0f)
 
     private val vel = MutFPoint(0f, 0f)
     override val velocity: FPoint get() = vel
@@ -556,16 +630,7 @@ class OrbitFlightController(drone: AbstractExternalDrone) : DroneFlightControlle
         poweredLastFrame = drone.isPowered
 
         if (!drone.isPowered) {
-            // Copied from CombatFlightController
-            position.xf += vel.xf * dt
-            position.yf += vel.yf * dt
-
-            val slowdownFactor = 0.1f * dt * 16
-            vel *= 1 - slowdownFactor
-
-            if (vel.fLength < 16) {
-                vel.set(0f, 0f)
-            }
+            updatePoweredDown(dt)
             return
         }
 
@@ -581,6 +646,27 @@ class OrbitFlightController(drone: AbstractExternalDrone) : DroneFlightControlle
         }
 
         updateMovement(dt)
+    }
+
+    /**
+     * UpdatePoweredDown for a defence/super shield drone: DefenseDrone's loop (0x428010) zeroes the pause first, so the
+     * drone always moves by its last motion, which loses 10% per 1/16 s until slower than 16 px/s or more than 400 px
+     * from its movement target's shield centre.
+     */
+    override fun updatePoweredDown(dt: Float): Boolean {
+        position.xf += vel.xf * dt
+        position.yf += vel.yf * dt
+
+        val slowdownFactor = 0.1f * dt * 16
+        vel *= 1 - slowdownFactor
+
+        if (vel.fLength < 16) {
+            vel.set(0f, 0f)
+        }
+        val dx = position.xf - ship.shieldOrigin.x
+        val dy = position.yf - ship.shieldOrigin.y
+        if (dx * dx + dy * dy > 400f * 400f) vel.set(0f, 0f)
+        return true
     }
 
     private fun updateMovement(dt: Float) {
@@ -662,8 +748,12 @@ class OrbitFlightController(drone: AbstractExternalDrone) : DroneFlightControlle
 class CombatFlightController(drone: AbstractExternalDrone) : DroneFlightController(drone) {
     override val pixelAligned: Boolean get() = false
 
-    private var nextDestination: IPoint = ConstPoint.ZERO
-    private var currentDestAngle: Float = 0f // In radians
+    internal var nextDestination: IPoint = ConstPoint.ZERO
+
+    /** CombatDrone::lastDestination (+0x340): the destination before the current one (PickDestination 0x4270e0). */
+    internal var lastDestination: IPoint? = null
+    var currentDestAngle: Float = 0f // In radians
+        private set
 
     // We'll use this quite a bit
     private lateinit var shieldSize: IPoint
@@ -729,10 +819,16 @@ class CombatFlightController(drone: AbstractExternalDrone) : DroneFlightControll
     }
 
     override fun update(dt: Float) {
-        // Check if the drone is paused before applying the power-off
-        // momentum movement, as otherwise if you turned off a drone when
-        // it was coming to a stop it's jolt a bit since we're not updating
-        // the speed here.
+        // SpaceDrone::UpdatePoweredDown (0x427be0; CombatDrone's loop 0x4285b0 when unpowered or dead): a drone
+        // still stopping for its shot (pause > 0) stops where it is; otherwise it moves by its last motion, which then
+        // loses 10% per 1/16 s, until slower than 16 px/s or more than 400 px from its target's shield centre.
+        // Measured (native 1.6.14 drone-order probe 2, the destroyed enemy's drone): full motion on the first unpowered
+        // loop, then x0.9733 per frame, still at 0.2739 px/frame, stopped at 0.2666.
+        if (!drone.isPowered) {
+            updatePoweredDown(dt)
+            return
+        }
+
         if (paused) {
             pauseTimer += dt
 
@@ -748,20 +844,6 @@ class CombatFlightController(drone: AbstractExternalDrone) : DroneFlightControll
             return
         }
 
-        if (!drone.isPowered) {
-            position.xf += vel.xf * dt
-            position.yf += vel.yf * dt
-
-            val slowdownFactor = 0.1f * dt * 16
-            vel *= 1 - slowdownFactor
-
-            if (vel.fLength < 16) {
-                vel.set(0f, 0f)
-            }
-
-            return
-        }
-
         pauseTimer = 0f
 
         val inPosition = updateMovement(dt)
@@ -770,6 +852,26 @@ class CombatFlightController(drone: AbstractExternalDrone) : DroneFlightControll
 
             pickNextDestination()
         }
+    }
+
+    override fun updatePoweredDown(dt: Float): Boolean {
+        if (paused && pauseTimer < pauseStopTime) {
+            vel.set(0f, 0f)
+            return true
+        }
+        position.xf += vel.xf * dt
+        position.yf += vel.yf * dt
+
+        val slowdownFactor = 0.1f * dt * 16
+        vel *= 1 - slowdownFactor
+
+        if (vel.fLength < 16) {
+            vel.set(0f, 0f)
+        }
+        val dx = position.xf - ship.shieldOrigin.x
+        val dy = position.yf - ship.shieldOrigin.y
+        if (dx * dx + dy * dy > 400f * 400f) vel.set(0f, 0f)
+        return true
     }
 
     // Moves, and returns true if we're in position.
@@ -829,13 +931,23 @@ class CombatFlightController(drone: AbstractExternalDrone) : DroneFlightControll
         // wrap-around, so a roll across the 0/360 seam is always accepted.
         val oldDegrees = Math.round(currentDestAngle * 180f / PIf)
         var newDegrees: Int
-        do {
-            newDegrees = ftl.browser.BrowserRandom.nextInt(360)
-        } while (abs(newDegrees - oldDegrees) < 90)
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.cfg().combatDroneRapidFireFix) {
+            // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Gameplay/CustomDrones.cpp
+            // (CombatDrone::PickDestination with combatDroneRapidFireFix): the new angle is
+            // `random32() % 181 + 90` degrees on from the old one, wrapped into [0, 360), so it is always
+            // between 90 and 270 degrees away and the 0/360 seam no longer lets a short hop through.
+            newDegrees = oldDegrees + xyz.znix.xftl.hs.weapons.HsWeapons.r32() % 181 + 90
+            if (newDegrees >= 360) newDegrees -= 360
+        } else {
+            do {
+                newDegrees = ftl.browser.BrowserRandom.nextInt(360)
+            } while (abs(newDegrees - oldDegrees) < 90)
+        }
         val newAngle = newDegrees * PIf / 180f
 
         // Save the new angle for next time
         currentDestAngle = newAngle
+        lastDestination = nextDestination
 
         // Calculate the new destination, relative to the centre of the shields
         val baseX = shieldSize.x * cos(newAngle) * 1.15

@@ -66,7 +66,7 @@ class ObjectRefs {
         if (obj == null)
             return "null"
 
-        return lookup(obj) ?: throw IllegalArgumentException("Unregistered object $obj")
+        return lookup(obj) ?: throw IllegalArgumentException("Unregistered object ${obj.javaClass.name}")
     }
 
     private fun lookup(obj: ISerialReferencable): String? {

@@ -4,7 +4,6 @@ import org.jdom2.Element
 import xyz.znix.xftl.*
 import xyz.znix.xftl.Constants.*
 import xyz.znix.xftl.crew.AbstractCrew
-import xyz.znix.xftl.crew.CrewSlug
 import xyz.znix.xftl.game.UIUtils
 import xyz.znix.xftl.math.*
 import xyz.znix.xftl.rendering.Colour
@@ -52,10 +51,20 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
     /**
      * Oxygen level from 1-0.
      */
-    var oxygen: Float = 1f
+    private var oxygenLevel: Float = 1f
+    var oxygen: Float
+        get() = oxygenLevel
         set(value) {
-            field = value.coerceIn(0f..1f)
+            oxygenLevel = value.coerceIn(0f..1f)
         }
+
+    /**
+     * Hyperspace OxygenSystem::ComputeAirLoss writes the level without clamping (a draining room ends the frame a
+     * little below 0, as FTL does); the next refill clamps it again through [oxygen].
+     */
+    fun hsSetOxygenUnclamped(value: Float) {
+        oxygenLevel = value
+    }
 
     /**
      * True if the player can see the contents of the room.
@@ -82,19 +91,48 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
     val cellCount = width * height
 
     val fires: Array<FireInstance?> = Array(cellCount) { null }
+
+    /** Hyperspace: Fire::fireAnimation.animationStrip a script set, per cell (the native Fire object outlives the burning). */
+    @JvmField var hsFireStrips: Array<xyz.znix.xftl.hs.lua.LuaTexture?>? = null
+
+    /** Hyperspace's per-room system state (the temporal dilation); null in vanilla. */
+    @JvmField
+    var hsSys: xyz.znix.xftl.hs.systems.HsRoomSys? = null
+
     var lockdownTimer: Float = 0f
         private set
     val isLockedDown: Boolean get() = lockdownTimer > 0f
-    fun lockdown() {
+    /** Ship::LockdownRoom from ship pixel ([posX], [posY]) (the room's centre when not given): doors and shards. */
+    fun lockdown(posX: Float? = null, posY: Float? = null) {
+        // Hyperspace: the default lockdown (`<defaults><customLockdown>`) when a script or file changed it
+        if (xyz.znix.xftl.hs.HS.active) {
+            val d = xyz.znix.xftl.hs.ship.HsLockdowns.defaults()
+            if (d != xyz.znix.xftl.hs.crew.LockdownDefinition()) { xyz.znix.xftl.hs.ship.HsLockdowns.lockdown(this, d, posX, posY); return }
+        }
         lockdownTimer = 12f
-        doors.forEach { it.lockdown() }
+        doors.forEach { it.lockdown(this) }
+        ship.lockdownRoom(this, posX ?: (offsetX + pixelWidth / 2f), posY ?: (offsetY + pixelHeight / 2f))
+    }
+
+    /** Hyperspace custom lockdown (CustomLockdowns.cpp Ship::LockdownRoom): the shards' duration, door health and look. */
+    fun hsLockdown(duration: Float, health: Int, posX: Float? = null, posY: Float? = null,
+                   anims: List<String>? = null, colour: xyz.znix.xftl.rendering.Colour? = null, canDilate: Boolean = true) {
+        lockdownTimer = duration
+        doors.forEach { it.lockdown(this, duration, health, canDilate) }
+        ship.lockdownRoom(this, posX ?: (offsetX + pixelWidth / 2f), posY ?: (offsetY + pixelHeight / 2f), duration, anims, colour, canDilate, health)
     }
     val breaches: Array<BreachInstance?> = Array(cellCount) { null }
     private val fireSpreadTimers: Array<Float?> = Array(cellCount) { null }
     private val fireSpreadUpdated: Array<Boolean> = Array(cellCount) { false }
 
     private val reservedPlayerSlots: Array<AbstractCrew?> = Array(cellCount) { null }
+    fun hsReservedSlotOf(crew: AbstractCrew): Int = reservedPlayerSlots.indexOf(crew) // Lua CrewMember::OnRenderPath
     private val reservedEnemySlots: Array<AbstractCrew?> = Array(cellCount) { null }
+
+    // Hyperspace Lua Room::FillSlot without a crew member (crew 0, intruder 1): the slot stays taken until
+    // Ship::EmptySlots, as the native slot bits do. Lua-only, not saved.
+    private val hsLuaFilled = Array(2) { BooleanArray(cellCount) }
+    private var hsObstructionsFreed = false
 
     val obstructions = HashSet<ConstPoint>()
     private val obstructionSlots = HashSet<Int>()
@@ -115,7 +153,9 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
     }
 
     fun update(dt: Float) {
-        lockdownTimer = max(0f, lockdownTimer - dt)
+        // Hyperspace: a temporal dilation speeds the room's lockdown shard, fires and spread timers.
+        val hsDilation = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.factor(this) else 1f
+        lockdownTimer = max(0f, lockdownTimer - dt * hsDilation)
         // Always update who's in the room before updating the system.
         // This is to make deserialisation easier - some things (eg repair
         // progress or queued teleports) are cancelled if there's no one
@@ -144,12 +184,12 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         // though they had sensors - so intruders can be found even with no
         // sensors installed, unpowered, hacked or nebula-blocked.
         if (ship.isPlayerShip) {
-            if (crew.any { it is CrewSlug && it.ownerShip === ship }) {
+            if (crew.any { it.isTelepathic && (it as? xyz.znix.xftl.crew.LivingCrew)?.ownerShip === ship }) {
                 playerHasVision = true
             } else {
                 for (door in doors) {
                     val neighbour = door.other(this) ?: continue
-                    if (neighbour.crew.any { it is CrewSlug && it.ownerShip === ship }) {
+                    if (neighbour.crew.any { it.isTelepathic && (it as? xyz.znix.xftl.crew.LivingCrew)?.ownerShip === ship }) {
                         playerHasVision = true
                         break
                     }
@@ -188,7 +228,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         bigSparksHackAnimation?.update(dt)
 
         for (idx in fires.indices) {
-            fires[idx]?.update(dt)
+            fires[idx]?.update(dt * hsDilation)
 
             // Clear the spread progress if the tile is already
             // on fire, or it wasn't updated in the last update.
@@ -211,13 +251,35 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         }
     }
 
-    fun render(g: Graphics, selected: Boolean, alpha: Float) {
-        val x = offsetX
-        val y = offsetY
+    /** [wallAlpha]: the walls do not fade with a cloak (the oracle's cloaked ship keeps them opaque), only [alpha]'s rest. */
+    fun render(g: Graphics, selected: Boolean, alpha: Float, wallAlpha: Float = alpha) {
+        renderFloorPart(g, alpha)
+        renderSystemPart(g)
+        renderBreachPart(g)
+        renderSparkPart(g, false)
+        renderRest(g, selected, alpha, true, wallAlpha)
+    }
 
+    // The room's drawing in the stages of FTL's ShipManager::OnRender (Ship::OnRenderFloor, the systems,
+    // Ship::OnRenderBreaches, Ship::OnRenderSparks, the rest): [Ship.drawInterior] runs them per room in one go, or
+    // one stage over all rooms while a Lua script listens to SHIP_FLOOR / SHIP_BREACHES / SHIP_SPARKS.
+
+    fun renderFloorPart(g: Graphics, alpha: Float) {
         drawFloor(g, alpha)
 
+        // Hyperspace room animations (HsRoomAnims): layer 0 after the floor (Ship::OnRenderFloor hook: under the
+        // room's interior images and system icon, oracle r2-ships 14-rhyme), 1 before the breaches, 2 after them
+        val hsAnims = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsRoomAnims.has(ship)
+        if (hsAnims && playerHasVision) xyz.znix.xftl.hs.render.HsRoomAnims.renderRoom(g, this, 0)
+    }
+
+    fun renderSystemPart(g: Graphics) {
         renderSystemStuff(g)
+    }
+
+    fun renderBreachPart(g: Graphics) {
+        val hsAnims = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsRoomAnims.has(ship)
+        if (hsAnims && playerHasVision) xyz.znix.xftl.hs.render.HsRoomAnims.renderRoom(g, this, 1)
 
         // Breaches are drawn on top of the room image
         if (playerHasVision) {
@@ -225,6 +287,18 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
                 breach?.draw()
             }
         }
+    }
+
+    /** Ship::OnRenderSparks: the layer 2 room animations, and (when [withLight]) the flashing fire warning light. */
+    fun renderSparkPart(g: Graphics, withLight: Boolean) {
+        val hsAnims = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsRoomAnims.has(ship)
+        if (hsAnims) xyz.znix.xftl.hs.render.HsRoomAnims.renderRoom(g, this, 2)
+        if (withLight && playerHasVision) drawFireLight(g)
+    }
+
+    fun renderRest(g: Graphics, selected: Boolean, alpha: Float, withLight: Boolean, wallAlpha: Float = alpha) {
+        val x = offsetX
+        val y = offsetY
 
         // Draw the pathing-to boxes, if required. These are a UI affordance
         // for the player's own ship: the slots are keyed by mode, not
@@ -258,7 +332,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         }
 
         // Draw the flashing fire warning light, as required.
-        if (playerHasVision) {
+        if (withLight && playerHasVision) {
             drawFireLight(g)
         }
 
@@ -278,11 +352,14 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             }
         }
 
+        // Hyperspace: the temporal room animation goes under the walls (Ship::OnRenderWalls hook).
+        if (hsSys != null) xyz.znix.xftl.hs.systems.HsTemporal.renderRoom(this, g)
+
         // Draw the walls, leaving gaps for the doors.
         // Note that when drawing right-hand or bottom
         // walls, we need to subtract two from the x/y
         // in order to keep the lines internal to the room.
-        g.colour = Colour(ROOM_BORDER_COLOUR).apply { a = alpha }
+        g.colour = Colour(ROOM_BORDER_COLOUR).apply { a = wallAlpha }
         g.lineWidth = 2f
         for (cellX in 0 until width) {
             drawWall(g, x, y, cellX, 0, Direction.UP)
@@ -302,7 +379,10 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         val x = offsetX
         val y = offsetY
 
-        if (!playerHasVision) {
+        // Hyperspace alternateOxygenRendering (AlternateOxygenRendering.cpp): the floor takes the gradient colour of the room oxygen
+        val hsAlt = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsMoreInfo.alternateOxygenRendering()
+
+        if (!playerHasVision && !hsAlt) {
             g.colour = Colour(FLOOR_COLOUR_NO_VISION).apply { a = alpha }
             g.fillRect(
                 x.f,
@@ -313,7 +393,8 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             return
         }
 
-        g.colour = Colour(FLOOR_COLOUR_NO_OXYGEN.lerp(FLOOR_COLOUR, oxygen)).apply { a = alpha }
+        if (hsAlt) g.colour = xyz.znix.xftl.hs.render.HsAlternateOxygen.colour(oxygen * 100f)
+        else g.colour = Colour(FLOOR_COLOUR_NO_OXYGEN.lerp(FLOOR_COLOUR, oxygen.coerceIn(0f, 1f))).apply { a = alpha }
         g.fillRect(
             x.f,
             y.f,
@@ -321,7 +402,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             pixelHeight.f
         )
 
-        if (isOxygenCritical) {
+        if (isOxygenCritical && !hsAlt) {
             val img = ship.sys.getImg("img/effects/low_o2_stripes_${width}x${height}.png")
             img.draw(x.f, y.f, 0.5f)
         }
@@ -346,25 +427,57 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         }
     }
 
+    /**
+     * The system icon: ShipManager::OnRender draws every system's ShipSystem::OnRender (the icon in its state's
+     * colour) after Ship::OnRenderWalls, over the room's floor stages, its breaches, sparks and fires and Hyperspace's
+     * layer 0-2 room animations (oracle sweep-crew4-render: the medbay cross over the praetor's layer-1 spores).
+     */
+    fun renderSystemIcon(g: Graphics) {
+        system?.drawRoom(g)
+    }
+
+    /**
+     * ShipSystem::OnRenderFloor, player ship: the room layout's computerGlow (data/rooms.xml), by what the system's
+     * console shows: 1 lit, 2 and 3 a skilled crew member on it; rotated by the layout's direction, three quarters opaque.
+     */
+    private fun drawConsoleGlow(g: Graphics, system: xyz.znix.xftl.AbstractSystem, x: Int, y: Int) {
+        val level = xyz.znix.xftl.systems.ConsoleGlow.level(system)
+        if (level < 1) return
+        val glow = xyz.znix.xftl.systems.ConsoleGlow.of(ship.sys, system) ?: return
+        val img = ship.sys.getImg("img/ship/interior/" + glow.name + level + ".png")
+        var gx = (x + glow.x).toFloat(); var gy = (y + glow.y).toFloat()
+        val angle = when (glow.dir) { "RIGHT" -> 90f; "LEFT" -> 270f; "UP" -> 180f; else -> 0f }
+        if (angle == 90f || angle == 270f) {
+            val shift = (img.width - img.height) / 2f
+            gx -= shift; gy += shift
+        }
+        val ix = gx.toInt(); val iy = gy.toInt()
+        if (angle == 0f) { img.draw(ix, iy, 0.75f); return }
+        g.pushTransform()
+        g.rotate(ix + img.width / 2f, iy + img.height / 2f, angle)
+        img.draw(ix, iy, 0.75f)
+        g.popTransform()
+    }
+
     private fun renderSystemStuff(g: Graphics) {
         val system = system ?: return
         val config = system.configuration
 
-        // Draw only the system icon for non-visible rooms
-        if (!playerHasVision) {
-            system.drawRoom(g)
-            return
-        }
+        // A room out of sight shows only the system icon ([renderSystemIcon])
+        if (!playerHasVision) return
 
         val x = offsetX
         val y = offsetY
         val computerPoint = config.computerPoint
 
-        if (config.spec.interiorImage != null) {
+        val luaInterior = system.hsLuaInterior
+        if (luaInterior != null) {
+            xyz.znix.xftl.hs.lua.LuaAdaptersWrites.drawInterior(g, system, luaInterior[0], x, y)
+        } else if (config.spec.interiorImage != null) {
             // Render the interior decals
             val bg = ship.sys.getImg(config.spec.interiorImage)
             bg.draw(x, y, 0.75f)
-        } else if (computerPoint != null) {
+        } else if (computerPoint != null && config.computerDirection != null) {
             // AI ships rarely (never?) use proper room textures. For systems like
             // engines and piloting that can be manned, draw a standard computer image
             // on instead.
@@ -377,12 +490,16 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             g.popTransform()
         }
 
-        // Draw the system icon
-        system.drawRoom(g)
+        if (luaInterior != null) {
+            val level = xyz.znix.xftl.systems.ConsoleGlow.level(system)
+            if (level in 1..3) xyz.znix.xftl.hs.lua.LuaAdaptersWrites.drawInterior(g, system, luaInterior[level], x, y)
+        } else if (ship.isPlayerShip) drawConsoleGlow(g, system, x, y)
+
+        system.drawRoomFloor(g)
 
         // Render the hacking sparks - both those on the console (if one is present),
         // and the big ones on the floor while the hacking is active.
-        if (computerPoint != null) {
+        if (computerPoint != null && config.computerDirection != null) {
             // If we have a not-disabled hacking system, show the
             // hacking effect on the computer. This runs constantly,
             // unless the hacking system is powered down.
@@ -454,9 +571,21 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         val bottomCentreX = offsetX + pixelWidth / 2
         val bottomCentreY = offsetY + pixelHeight
 
-        val imgX = bottomCentreX - baseImg.width / 2
-        val imgY = bottomCentreY - baseImg.height - 2
+        var imgX = bottomCentreX - baseImg.width / 2
+        var imgY = bottomCentreY - baseImg.height - 2
+        var rotation = 0
 
+        // Hyperspace warningLightPositionFix (CustomShips.cpp RelocateWarningLight, Ship::OnInit)
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.cfg().warningLightPositionFix) {
+            val p = hsWarningLight()
+            imgX = p[0]; imgY = p[1]; rotation = p[2]
+        }
+
+        // The image is turned about its centre, clockwise
+        if (rotation != 0) {
+            g.pushTransform()
+            g.rotate(imgX + baseImg.width / 2f, imgY + baseImg.height / 2f, rotation.toFloat())
+        }
         baseImg.draw(imgX, imgY)
 
         // The glow flashes at 1Hz
@@ -468,6 +597,80 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             else -> 1f - (fireLightTimer - 0.5f) * 2f
         }
         glowImg.draw(imgX, imgY, alpha)
+        if (rotation != 0) g.popTransform()
+    }
+
+    private var hsLightCache: IntArray? = null
+
+    /**
+     * Hyperspace's warning light position (CustomShips.cpp, Ship::OnInit -> RelocateWarningLight): x, y of the
+     * 70 x 35 image and its rotation (clockwise degrees about its centre), in the ship's pixels. A room with an
+     * even column count keeps the light at the bottom centre; an odd one with an even row count gets it on the left
+     * wall's centre; an odd x odd room takes the doorless wall segment closest to the centre (bottom, top, left,
+     * right by index), and a room with a door on every wall segment falls back to the centre of the bottom, the left
+     * or the bottom left corner.
+     */
+    private fun hsWarningLight(): IntArray {
+        hsLightCache?.let { return it }
+        val rx = offsetX
+        val ry = offsetY
+        val rw = pixelWidth
+        val rh = pixelHeight
+        val columns = width
+        val rows = height
+
+        fun hasDoor(side: Direction, x: Int, y: Int): Boolean = doors.any {
+            it.dirFor(this) == side && (
+                    (it.left == this && it.leftPos!!.posEq(x, y)) || (it.right == this && it.rightPos!!.posEq(x, y)))
+        }
+
+        val out: IntArray
+        if (columns % 2 == 0) {
+            out = intArrayOf(rx + (columns / 2 - 1) * 35, ry + rh - 37, 0)
+        } else if (rows % 2 == 0) {
+            out = intArrayOf(rx - 15, ry + (rows / 2 - 1) * 35 + 17, 90)
+        } else {
+            val horizontalCentre = columns / 2
+            val verticalCentre = rows / 2
+            var diff = 9999
+            var dimension = -1 // 0: bottom, 1: top, 2: left, 3: right
+            var index = 0
+            var j = 0
+            while (j < columns && diff > 0) {
+                if (!hasDoor(Direction.DOWN, j, rows - 1) && Math.abs(j - horizontalCentre) < diff) {
+                    diff = Math.abs(j - horizontalCentre); dimension = 0; index = j
+                    j++; continue
+                }
+                if (!hasDoor(Direction.UP, j, 0) && Math.abs(j - horizontalCentre) < diff) {
+                    diff = Math.abs(j - horizontalCentre); dimension = 1; index = j
+                }
+                j++
+            }
+            j = 0
+            while (j < rows && diff > 0) {
+                if (!hasDoor(Direction.LEFT, 0, j) && Math.abs(j - verticalCentre) < diff) {
+                    diff = Math.abs(j - verticalCentre); dimension = 2; index = j
+                    j++; continue
+                }
+                if (!hasDoor(Direction.RIGHT, columns - 1, j) && Math.abs(j - verticalCentre) < diff) {
+                    diff = Math.abs(j - verticalCentre); dimension = 3; index = j
+                }
+                j++
+            }
+            out = when (dimension) {
+                0 -> intArrayOf(rx + index * 35 - 17, ry + rh - 37, 0)
+                1 -> intArrayOf(rx + index * 35 - 17, ry + 2, 180)
+                2 -> intArrayOf(rx - 15, ry + index * 35, 90)
+                3 -> intArrayOf(rx + rw - 54, ry + index * 35, 270)
+                else -> when {
+                    columns > 1 -> intArrayOf(rx + (horizontalCentre - 1) * 35, ry + rh - 37, 0)
+                    rows > 1 -> intArrayOf(rx - 15, ry + (verticalCentre - 1) * 35 + 17, 90)
+                    else -> intArrayOf(rx - 30, ry + rh - 37, 0)
+                }
+            }
+        }
+        hsLightCache = out
+        return out
     }
 
     private fun drawWall(g: Graphics, baseX: Int, baseY: Int, x: Int, y: Int, side: Direction) {
@@ -564,8 +767,21 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         }
     }
 
+    /** Hyperspace AddSystem of a type the ship has: [dup] takes the room, the old object stays in vSystemList. */
+    internal fun hsReplaceSystem(dup: AbstractSystem) {
+        system = dup
+    }
+
+    /** Hyperspace ShipManager::RemoveSystem: the room loses its system and the system's computer obstruction. */
+    internal fun hsClearSystem() {
+        system = null
+        obstructions.clear()
+        obstructionSlots.clear()
+    }
+
     fun setSystem(config: SystemInstallConfiguration) {
-        system = config.system.createInstance()
+        // Hyperspace AddSystem(0): the Shields object CreateSystems made without the system (HsDetachedShields)
+        system = xyz.znix.xftl.hs.systems.HsDetachedShields.take(ship, config) ?: config.system.createInstance()
 
         system?.configuration = config
         system?.energyLevels = config.spec.startingPower
@@ -574,6 +790,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
 
         obstructions.clear()
         obstructionSlots.clear()
+        hsObstructionsFreed = false
         if (config.obstructionPoint != null) {
             obstructions.add(config.obstructionPoint)
             obstructionSlots.add(pointToSlot(config.obstructionPoint))
@@ -652,13 +869,20 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
      */
     fun isSlotFree(point: IPoint, type: AbstractCrew.SlotType, allow: AbstractCrew? = null): Boolean {
         // Skip obstructed cells - eg, healer in the medbay
-        if (obstructions.contains(point))
+        if (obstructions.contains(point) && !hsObstructionsFreed)
             return false
 
         val slots = slotsFor(type)
         val occupier = slots[pointToSlot(point)]
+        if (hsLuaFilled[type.ordinal].getOrElse(pointToSlot(point)) { false }) return false
         return occupier == null || occupier == allow
     }
+
+    /** Whether an obstruction (the medbay or clonebay machine) takes this cell. */
+    fun isObstructed(point: IPoint): Boolean = obstructions.contains(point)
+
+    /** The crew member standing in or walking to this slot for [type] (Room::slots), or null. */
+    fun slotOccupier(point: IPoint, type: AbstractCrew.SlotType): AbstractCrew? = slotsFor(type)[pointToSlot(point)]
 
     /**
      * Update all of this rooms crew and intruder slots.
@@ -679,8 +903,21 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         // a two-peron room; we need to update the slots between
         // each crew reserving a slot).
         for (crew in ship.crew) {
+            if (crew.hsKilled) continue // Lua Kill: dead (bDead) with its slot emptied, until the loop drops it
             addCrewReservedSlot(conflicts, crew.mode, crew)
         }
+    }
+
+    /** Native RestoreCrewPositions empties all participating slots before assigning destinations. */
+    internal fun releaseStationSlots(members: Collection<AbstractCrew>) {
+        for (slots in listOf(reservedPlayerSlots, reservedEnemySlots))
+            for (i in slots.indices) if (slots[i] in members) slots[i] = null
+    }
+
+    /** Reserve a destination while a station batch defers the complete slot rebuild. */
+    internal fun reserveStationSlot(member: AbstractCrew) {
+        val target = member.pathingTarget ?: member.standingPosition ?: return
+        if (target.room === this) slotsFor(member.mode)[pointToSlot(target)] = member
     }
 
     private fun addCrewReservedSlot(
@@ -756,7 +993,9 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         val slots = slotsFor(type)
 
         for ((index, slotCrew) in slots.withIndex()) {
-            if (obstructionSlots.contains(index))
+            if (obstructionSlots.contains(index) && !hsObstructionsFreed)
+                continue
+            if (hsLuaFilled[type.ordinal][index])
                 continue
 
             if (slotCrew == crew || slotCrew == null)
@@ -771,6 +1010,27 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
      */
     fun isCrewAssigned(crew: AbstractCrew): Boolean {
         return reservedPlayerSlots.contains(crew) || reservedEnemySlots.contains(crew)
+    }
+
+    /**
+     * Room::FillSlot (1.6.9 0x46a1d0) from Lua: the slot of that side is taken (no crew member stands in it).
+     */
+    fun hsFillSlot(slot: Int, intruder: Boolean) {
+        if (slot in 0 until cellCount) hsLuaFilled[if (intruder) 1 else 0][slot] = true
+    }
+
+    /**
+     * Ship::EmptySlots (1.6.9 0x485a20) from Lua: every slot of both sides is freed (the crew keep standing; the
+     * engine claims their slots again on its next crew update). Returns the loop's count, the room's cell count,
+     * which the SWIG wrapper hands Lua as the return value.
+     */
+    fun hsEmptySlots(): Int {
+        java.util.Arrays.fill(reservedPlayerSlots, null)
+        java.util.Arrays.fill(reservedEnemySlots, null)
+        hsLuaFilled.forEach { java.util.Arrays.fill(it, false) }
+        // the medbay / clonebay machine's cell is a taken slot natively: it is freed too (until the system is rebuilt)
+        hsObstructionsFreed = true
+        return cellCount
     }
 
     private fun slotsFor(type: AbstractCrew.SlotType): Array<AbstractCrew?> = when (type) {
@@ -865,12 +1125,15 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
     fun saveToXML(): Element? {
         // The oxygen level is handled separately.
 
-        if (fires.all { it == null } && fireSpreadTimers.all { it == null } && breaches.all { it == null } && !isLockedDown) {
+        val hsBoosts = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.crew.HsCrewSave.hasRoomBoosts(this)
+        if (fires.all { it == null } && fireSpreadTimers.all { it == null } && breaches.all { it == null } && !isLockedDown && !hsBoosts &&
+            !(xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.systems.HsErosionRoom.active(this))) {
             return null
         }
 
         val elem = Element("room")
         if (isLockedDown) SaveUtil.addAttrFloat(elem, "browserLockdown", lockdownTimer)
+        if (hsBoosts) xyz.znix.xftl.hs.crew.HsCrewSave.saveRoomBoosts(this, elem)
 
         for (slot in fires.indices) {
             val fire = fires[slot]
@@ -905,12 +1168,14 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             breach.saveToXML(breachElem)
             elem.addContent(breachElem)
         }
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsErosionRoom.save(this, elem)
 
         return elem
     }
 
     fun loadFromXML(elem: Element) {
         lockdownTimer = elem.getAttributeValue("browserLockdown")?.toFloatOrNull()?.coerceAtLeast(0f) ?: 0f
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewSave.loadRoomBoosts(this, elem)
         for (fireElem in elem.getChildren("fire")) {
             val slot = SaveUtil.getAttrInt(fireElem, "slot")
             val fire = FireInstance(this, slot)
@@ -930,6 +1195,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             breach.loadFromXML(breachElem)
             breaches[slot] = breach
         }
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsErosionRoom.load(this, elem)
     }
 
     /**

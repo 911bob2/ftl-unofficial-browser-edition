@@ -13,7 +13,7 @@ object BrowserCombatAchievementDiagnostics {
         val profile = main.profile
         fun earned(id: String) = profile.getAchievement(main.gameContent.achievements[id]) != null
         fun reset(ship: String): InGameState {
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             main.startDiagnosticGame(ship, Difficulty.NORMAL)
             repeat(90) {
                 main.update(container, .05f)
@@ -22,6 +22,7 @@ object BrowserCombatAchievementDiagnostics {
                     BrowserEngine.key(49, '1'.code, false); BrowserEngine.step(0f)
                 }
             }
+            BrowserDiagnostics.closeBoxes(main, container)
             return (main.currentState as InGameState).also { it.debugFlags.noEnemyFire.set = true }
         }
         fun spawn(state: InGameState, drones: Boolean = false): Ship {
@@ -58,7 +59,13 @@ object BrowserCombatAchievementDiagnostics {
             }
         }
         fun advance(weapon: AbstractWeaponInstance, until: () -> Boolean = { !weapon.isFiring }) {
-            repeat(180) { if (!until() && weapon.isFiring) weapon.update(.05f, 0f, false) }
+            repeat(180) {
+                if (!until() && weapon.isFiring) {
+                    weapon.update(.05f, 0f, false)
+                    // A released beam is a world projectile, advanced by the space loop.
+                    if (weapon is BeamBlueprint.BeamInstance) xyz.znix.xftl.weapons.ProjectileRuntime.advanceFrame(weapon.ship.sys, .05f)
+                }
+            }
             check(until()) { "Weapon ${weapon.type.name} did not reach the expected firing phase" }
         }
         fun fire(weapon: AbstractWeaponInstance, target: Ship) {
@@ -142,7 +149,7 @@ object BrowserCombatAchievementDiagnostics {
         state = reload(state)
         check(state.player.hardpoints[1].weapon!!.browserEncounterVolleys == 1) { "Reorder/reload lost weapon-owned volley count" }
         state.enemy!!.health = 0
-        check(earned("ACH_ONE_VOLLEY")) { "BrowserCombatAchievementDiagnostics.kt:145" }
+        check(earned("ACH_ONE_VOLLEY")) { "BrowserCombatAchievementDiagnostics.kt:145 preignite=${state.player.getAugmentValue("WEAPON_PREIGNITE")} weapons=${state.player.hardpoints.map { it.weapon?.type?.name + ":" + it.weapon?.browserEncounterVolleys }} enemy=${state.enemy!!.hardpoints.map { it.weapon?.type?.name + ":" + it.weapon?.browserEncounterVolleys }}" }
         state = reset("PLAYER_SHIP_HARD"); spawn(state)
         state.player.addBlueprint(state.blueprintManager["WEAPON_PREIGNITE"] as xyz.znix.xftl.augments.AugmentBlueprint, true)
         weapon = equip(state.player, "LASER_BURST_2")
@@ -197,8 +204,11 @@ object BrowserCombatAchievementDiagnostics {
             state = reload(state); state.enemy!!.health = 0
             check(!earned("ACH_ROCK_MISSILES")) { "$name incorrectly qualified as a missile" }
         }
-        state = reset("PLAYER_SHIP_ROCK"); spawn(state, true); defense(state, "ANTI_DRONE")
-        state.enemy!!.health = 0; check(!earned("ACH_ROCK_MISSILES")) { "Anti-drone qualified as a missile-defense drone" }
+        // (A mod can remove the blueprint: Multiverse has no ANTI_DRONE.)
+        if (main.gameContent.blueprintManager.getOrNull("ANTI_DRONE") != null) {
+            state = reset("PLAYER_SHIP_ROCK"); spawn(state, true); defense(state, "ANTI_DRONE")
+            state.enemy!!.health = 0; check(!earned("ACH_ROCK_MISSILES")) { "Anti-drone qualified as a missile-defense drone" }
+        }
         state = reset("PLAYER_SHIP_ROCK"); spawn(state, true); defense(state)
         offensiveDrone(state); state.enemy!!.health = 0; check(!earned("ACH_ROCK_MISSILES")) { "BrowserCombatAchievementDiagnostics.kt:203" }
 

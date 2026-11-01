@@ -186,7 +186,7 @@ object BrowserParityGeneration {
             if (i > 0) sb.append(',')
             sb.append("{\"text\":").append(BrowserDebug.quote(choice.text.id ?: choice.text.localised))
             sb.append(",\"event\":")
-            if (choice.event != null) describeEvent(sb, choice.event) else sb.append("null")
+            choice.event.let { ce -> if (ce != null) describeEvent(sb, ce) else sb.append("null") }
             sb.append('}')
         }
         sb.append("]}")

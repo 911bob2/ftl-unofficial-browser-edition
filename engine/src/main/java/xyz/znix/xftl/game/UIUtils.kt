@@ -47,7 +47,9 @@ object UIUtils {
         text: String,
         x: Int, y: Int,
         colour: GlowColour,
-        alpha: Float
+        alpha: Float,
+        /** Hyperspace's warningMessage colour: the text colour when it isn't the glow's own. */
+        textColour: Colour? = null
     ) {
         val spaceWidth = font.getWidth(" ")
 
@@ -56,7 +58,7 @@ object UIUtils {
 
         val glowImage = game.getImg("img/warnings/backglow_warning_${colour.bgName}.png")
 
-        val fontColour = Colour(colour.colour)
+        val fontColour = Colour(textColour ?: colour.colour)
         fontColour.a = alpha
 
         // Draw on the text, with each word glowing separately.
@@ -64,7 +66,7 @@ object UIUtils {
         for (word in text.split(' ')) {
             val wordWidth = font.getWidth(word)
             font.drawString(mutX.f, y.f, word, fontColour)
-            drawGlow(glowImage, alpha, mutX - glowMargin, y, wordWidth + glowMargin * 2)
+            if (word.isNotEmpty()) drawGlow(glowImage, alpha, mutX - glowMargin, y, wordWidth + glowMargin * 2)
             mutX += wordWidth
 
             // The space doesn't glow

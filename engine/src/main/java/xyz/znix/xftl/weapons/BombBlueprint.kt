@@ -23,23 +23,56 @@ class BombBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         return BombInstance(ship)
     }
 
-    private fun makeBomb(target: Room, missed: Boolean, hitSuperShield: Boolean): FiredBomb {
-        val animation = target.ship.sys.animations[projectile!!].startSingle(target.ship.sys, 0.5f, true)
-        return FiredBomb(this@BombBlueprint, target, animation, missed, hitSuperShield)
+    /**
+     * The factory's bomb: a native BombProjectile created off-screen in the space opposite its target (HS
+     * CreateBomb: space 1 - targetSpace), owned by [owner]; the body itself decides a miss or a super shield
+     * contact when it reaches the target.
+     */
+    fun makeBomb(owner: Ship, target: Room, superShieldBypass: Boolean, fireLocation: xyz.znix.xftl.math.IPoint? = null): BombProjectile {
+        val targetId = xyz.znix.xftl.hs.weapons.HsWeapons.shipId(target.ship)
+        // A weapon's bomb is built at its fire location in the owner's space (BombProjectile(fireLocation,
+        // currentShipId, targetSpace, target); A's capture: (402, 97)); without one (a save), off-screen opposite.
+        val start = fireLocation?.let { ConstFPoint(it.x.toFloat(), it.y.toFloat()) } ?: BombProjectile.OFF_SCREEN
+        val context = if (fireLocation != null) xyz.znix.xftl.hs.weapons.HsProjectileConstruction.Context(start,
+            target.pixelCentre, owner, xyz.znix.xftl.hs.weapons.HsWeapons.shipId(owner),
+            xyz.znix.xftl.hs.weapons.HsWeapons.shipId(owner), targetId)
+        else xyz.znix.xftl.hs.weapons.HsProjectileConstruction.Context(start,
+            target.pixelCentre, target.ship.sys.getEnemyOf(target.ship) ?: owner,
+            xyz.znix.xftl.hs.weapons.HsWeapons.shipId(owner), 1 - targetId, targetId)
+        val bomb = xyz.znix.xftl.hs.weapons.HsProjectileConstruction.with(context) {
+            BombProjectile(this@BombBlueprint, target, superShieldBypass)
+        }
+        bomb.hsOwnerId = xyz.znix.xftl.hs.weapons.HsWeapons.shipId(owner)
+        if (!xyz.znix.xftl.hs.HS.active) bomb.setInitialPath(start, target.pixelCentre)
+        return bomb
     }
 
-    inner class BombInstance(ship: Ship) : AbstractWeaponInstance(this, ship), IRoomTargetingWeapon {
+    inner class BombInstance(ship: Ship) : AbstractWeaponInstance(this, ship), IRoomTargetingWeapon, HsProjectileQueue {
+        /** Hyperspace: the bomb is constructed when the weapon fires and leaves at the fire frame (queuedProjectiles). */
+        override val hsQueue = ArrayList<AbstractProjectile>()
+        override var hsFiredOnce: Boolean = false
+        private var hsFireShot = false
+        private var hsStartPending = false
+        /** ProjectileFactory::currentEntryAngle (degrees, random32() % 360 at Fire); a bomb teleports, so only Lua reads it. */
+        internal var hsEntryAngle = 0f
+
         private var firingAnimationTimer: Float = 0f
         private var target: Room? = null
         private var hasFired = false
+        /** Where an artillery's bombs start, and the rooms left in its volley without Hyperspace (its queue holds them with it). */
+        private var artilleryOrigin: xyz.znix.xftl.math.IPoint? = null
+        private val artilleryRooms = ArrayList<Room>()
 
         override val isFiring: Boolean get() = target != null
         override val canTargetOwnShip: Boolean get() = true
 
+        // Hyperspace <fireTime> (WeaponAnimation::SetFireTime, every non-beam weapon).
+        internal var bombFireTime: Float = type.hs?.fireTime?.takeIf { it != 0f } ?: Animations.BOMB_FIRE_TIME
+
         private val fireAnimationFrame: Int
             get() {
                 require(target != null)
-                return animation.fireIndex(firingAnimationTimer, Animations.BOMB_FIRE_TIME)
+                return animation.fireIndex(firingAnimationTimer, bombFireTime)
             }
 
         override fun render(g: Graphics) {
@@ -64,41 +97,109 @@ class BombBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
                 return
             }
 
-            firingAnimationTimer += dt
+            // Hyperspace: the fire frame set bFireShot last frame and ShipManager drains the factory now; the
+            // animation started this frame does not advance yet (StartFire after WeaponAnimation::Update).
+            if (hsFireShot) hsDrain(target)
+            if (hsStartPending) hsStartPending = false
+            else firingAnimationTimer += dt
 
             if (!hasFired && fireAnimationFrame >= animation.fireFrame) {
-                doBombFire(target)
+                if (xyz.znix.xftl.hs.HS.active) {
+                    browserRecordVolley(target.ship)
+                    hsFireShot = true
+                } else doBombFire(target)
                 hasFired = true
             }
 
-            if (firingAnimationTimer >= Animations.BOMB_FIRE_TIME) {
-                stopFiring()
+            if (firingAnimationTimer >= bombFireTime) {
+                if (hsFireShot) hsDrain(target)
+                // An artillery volley: the next bomb's animation starts straight away.
+                if (hsQueue.isNotEmpty() || artilleryRooms.isNotEmpty()) {
+                    if (artilleryRooms.isNotEmpty()) this.target = artilleryRooms.removeAt(0)
+                    firingAnimationTimer -= bombFireTime
+                    hasFired = false
+                } else stopFiring()
+            }
+        }
+
+        private fun hsDrain(target: Room) {
+            while (true) {
+                val bomb = hsGetProjectile() ?: break
+                if (bomb !in target.ship.projectiles) target.ship.projectiles += bomb
             }
         }
 
         private fun stopFiring() {
+            hsStartPending = false
             target = null
             hasFired = false
             firingAnimationTimer = 0f
+            // ProjectileFactory::Update unpowered deletes the queued projectiles (a jump leaves them behind too).
+            hsQueue.clear()
+            hsFireShot = false
+            artilleryRooms.clear()
+            if (HsProjectileQueue.simultaneousFireWeapon === this) HsProjectileQueue.simultaneousFireWeapon = null
         }
 
-        private fun doBombFire(target: Room) {
+        /**
+         * ProjectileFactory::GetProjectile for a bomb (native 0x40d120: FireShot() pops the back without a launch
+         * sound, FiredWeapon on the cloak when the queue holds numShots, bFiredOnce; HS: simultaneousFire keeps
+         * popping, then PROJECTILE_FIRE).
+         */
+        override fun hsGetProjectile(): AbstractProjectile? {
+            val fireShot = hsFireShot
+            hsFireShot = false
+            var ret: AbstractProjectile? = null
+            if (fireShot && hsQueue.isNotEmpty()) {
+                if (hsNumShots == hsQueue.size) damageCloak()
+                ret = hsQueue.removeAt(hsQueue.lastIndex)
+                hsFiredOnce = true
+            }
+            if (hsQueue.isNotEmpty()) {
+                if (fireShot && type.hs?.simultaneousFire == true) HsProjectileQueue.simultaneousFireWeapon = this
+                if (HsProjectileQueue.simultaneousFireWeapon === this && !fireShot && ret == null)
+                    ret = hsQueue.removeAt(hsQueue.lastIndex)
+            } else if (HsProjectileQueue.simultaneousFireWeapon === this) HsProjectileQueue.simultaneousFireWeapon = null
+            if (ret != null && xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.weapons.HsWeaponsLua.projectileFire(ret, this)
+            return ret
+        }
+
+        /** The weapon's fire location on its hardpoint (WeaponMount + WeaponAnimation fire point), if mounted. */
+        private fun bombFireLocation(): xyz.znix.xftl.math.IPoint? {
+            artilleryOrigin?.let { return it }
+            val weapons = ship.weapons ?: return null
+            if (ship.hardpoints.none { it.weapon === this }) return null
+            return weapons.getProjectileSpawnPos(this, animation.firePoint)
+        }
+
+        private fun doBombFire(target: Room): AbstractProjectile {
             browserRecordVolley(target.ship)
-            val firedAtSelf: Boolean = target.ship == ship
-
-            // Bombs we fire at ourselves can't miss or hit the super-shield.
-            val missed = !firedAtSelf && target.ship.pickMissed(-type.accuracyModifier)
-            if (missed) ship.sys.browserAchievements.damageDodged(target.ship, Damage(type).hullDamage)
-            // Zoltan Shield Bypass teleports bombs through a super shield.
-            val hitSuperShield = !firedAtSelf && target.ship.superShield > 0 && !missed &&
-                    !ship.hasAugment(xyz.znix.xftl.augments.AugmentBlueprint.ZOLTAN_BYPASS)
-
-            target.ship.projectiles += makeBomb(target, missed, hitSuperShield)
+            // Zoltan Shield Bypass teleports bombs through a super shield (BombProjectile::superShieldBypass).
+            val bypass = ship.hasAugment(xyz.znix.xftl.augments.AugmentBlueprint.ZOLTAN_BYPASS)
+            val bomb = makeBomb(ship, target, bypass, bombFireLocation())
+            target.ship.projectiles += bomb
+            // No PROJECTILE_FIRE here: Hyperspace raises it in ProjectileFactory::GetProjectile only (the weapon's
+            // own shots, hsGetProjectile above); a drone's bomb and a surge barrage's bombs are made directly.
+            return bomb
         }
 
         override fun fire(targetSource: () -> Room) {
             fire()
-            this.target = targetSource()
+            val target = targetSource()
+            this.target = target
+
+            if (xyz.znix.xftl.hs.HS.active) {
+                // ProjectileFactory::Update (HS rewrite): the bomb is constructed now and plays its launch sound;
+                // GetProjectile drains the cloak at the fire frame.
+                hsQueue.clear()
+                hsEntryAngle = (xyz.znix.xftl.hs.weapons.HsWeapons.r32() % 360).toFloat()
+                hsQueue += makeBomb(ship, target, ship.hasAugment(xyz.znix.xftl.augments.AugmentBlueprint.ZOLTAN_BYPASS),
+                    bombFireLocation())
+                type.launchSounds?.get()?.play()
+                hsStartPending = true
+                hsSpendMissiles()
+                return
+            }
 
             type.launchSounds?.get()?.play()
 
@@ -116,6 +217,36 @@ class BombBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
             stopFiring()
         }
 
+        /** Hyperspace super barrage (CustomBoss.cpp): a bomb at [target] at once, no charge or missile used. */
+        fun fireBarrage(target: Room): AbstractProjectile = doBombFire(target)
+
+        /**
+         * An artillery bomb volley: all its bombs are built when the artillery fires, each aimed at its own room while
+         * rooms last, and leave one per firing animation.
+         */
+        fun fireFromArtillery(possibleTargets: List<Room>, origin: xyz.znix.xftl.math.IPoint) {
+            val remaining = ArrayList(possibleTargets)
+            val rooms = List(maxOf(1, hsNumShots)) {
+                if (remaining.isEmpty()) remaining += possibleTargets
+                remaining.removeAt(ftl.browser.BrowserRandom.nextInt(remaining.size))
+            }
+            fire()
+            target = rooms[0]
+            type.launchSounds?.get()?.play()
+            artilleryOrigin = origin
+            if (xyz.znix.xftl.hs.HS.active) {
+                val bypass = ship.hasAugment(xyz.znix.xftl.augments.AugmentBlueprint.ZOLTAN_BYPASS)
+                hsQueue.clear()
+                hsEntryAngle = (xyz.znix.xftl.hs.weapons.HsWeapons.r32() % 360).toFloat()
+                for (room in rooms.asReversed()) hsQueue += makeBomb(ship, room, bypass, origin)
+                hsStartPending = true
+                hsSpendMissiles()
+            } else {
+                artilleryRooms.clear()
+                artilleryRooms += rooms.drop(1)
+            }
+        }
+
         override fun fireFromDrone(drone: CombatDrone, target: Room) {
             // Should we be subtracting a bomb when used on a drone?
             fire()
@@ -131,6 +262,13 @@ class BombBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
             if (target != null) {
                 SaveUtil.addRoomRef(elem, "target", refs, target!!)
             }
+            for (projectile in hsQueue) {
+                val queuedElem = Element("hsQueued")
+                SaveUtil.addAttr(queuedElem, "loadType", projectile.serialisationType)
+                projectile.saveToXML(queuedElem, refs)
+                elem.addContent(queuedElem)
+            }
+            SaveUtil.addTagBoolIfTrue(elem, "hsFiredOnce", hsFiredOnce)
         }
 
         override fun loadFromXML(elem: Element, refs: RefLoader) {
@@ -139,189 +277,42 @@ class BombBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
             firingAnimationTimer = SaveUtil.getOptionalTagFloat(elem, "firingAnimationTimer") ?: 0f
             hasFired = SaveUtil.getOptionalTagBool(elem, "hasFired") ?: false
 
+            val oldHsSave = xyz.znix.xftl.hs.HS.active && !hasFired && elem.getChildren("hsQueued").isEmpty()
             if (elem.getChild("target") != null) {
-                SaveUtil.getRoomRef(elem, "target", refs) { target = it }
-            }
-        }
-    }
-
-    class FiredBomb(
-        val type: BombBlueprint,
-        val target: Room,
-        val animation: FTLAnimation,
-        val missed: Boolean,
-        val hitSuperShield: Boolean
-    ) : IProjectile {
-
-        override var position: ConstFPoint = ConstFPoint.ZERO
-            private set
-
-        override val velocity: FPoint get() = ConstFPoint.ZERO
-
-        override val serialisationType: String get() = SERIALISATION_TYPE
-
-        // Can't collide with drones or other projectiles
-        override val collisionsEnabled: Boolean get() = false
-        override val antiDroneBP: AbstractWeaponBlueprint? get() = null
-        override val antiDroneExemption: Ship? get() = null
-
-        /**
-         * If non-null, the bomb has already exploded and
-         * the explosion animation is ongoing.
-         *
-         * This is used to provide vision until the animation stops.
-         */
-        private var explosionTimer: Float? = null
-
-        init {
-            val ship = target.ship
-            position = when {
-                missed -> {
-                    // BombProjectile::CollisionMoving (0x450080): a missed bomb
-                    // starts at the aimed room's centre and steps 117 pixels in
-                    // one random cardinal direction until it's outside every room
-                    // (walls included), where it then explodes harmlessly.
-                    val step = MISS_STEP
-                    val direction = ftl.browser.BrowserRandom.nextInt(4)
-                    var x = target.pixelCentre.x
-                    var y = target.pixelCentre.y
-                    while (ship.rooms.any { it.containsPixelInclusive(x, y) }) {
-                        when (direction) {
-                            0 -> y -= step
-                            1 -> y += step
-                            2 -> x -= step
-                            else -> x += step
-                        }
-                    }
-                    ConstFPoint(x.f, y.f)
+                SaveUtil.getRoomRef(elem, "target", refs) {
+                    target = it
+                    // A save from before the factory queue: the bomb is constructed again.
+                    if (oldHsSave && it != null) hsQueue += makeBomb(ship, it, ship.hasAugment(xyz.znix.xftl.augments.AugmentBlueprint.ZOLTAN_BYPASS))
                 }
-
-                hitSuperShield -> {
-                    // Pick a random point on the ship's shield line
-                    // We can't collide with anything, so it's safe to use VisualRandom.
-                    val halfSize = ship.shieldHalfSize
-                    val angle = VisualRandom.nextFloat() * TWO_PI
-                    ship.shieldOrigin.fConst + ConstFPoint(
-                        halfSize.x * cos(angle),
-                        halfSize.y * sin(angle)
-                    )
-                }
-
-                else -> target.pixelCentre.fConst
             }
-
-            if (missed) {
-                ship.showDamageTextAt(position, "text_miss", Colour.white)
-            }
-        }
-
-        override fun update(dt: Float, currentSpace: Ship) {
-            if (explosionTimer != null) {
-                // We've already exploded, wait until that animation ends.
-                val newValue = explosionTimer!! - dt
-                explosionTimer = newValue
-
-                if (newValue <= 0f) {
-                    currentSpace.projectiles.remove(this)
-                }
-                return
-            }
-
-            animation.update(dt)
-
-            if (!animation.isStopped)
-                return
-
-            // No blueprint gives a bomb a damage boost, so there's no chain
-            // damage to apply here.
-            val damage = Damage(type)
-            damage.ownerShip = currentSpace.sys.getEnemyOf(currentSpace)
-
-            if (missed) {
-                // Don't deal any damage
-            } else if (hitSuperShield) {
-                // Add sys to hull damage for super shield damage, and for popping
-                // shield bubbles otherwise.
-                // (Note that if a bomb is fired while the super shield is still
-                //  up, but it goes down before the bomb explodes, then it'll
-                //  damage the regular shields)
-                damage.hullDamage += damage.pureSysDamage
-                currentSpace.attackShields(damage, position)
-            } else {
-                currentSpace.damage(target, damage)
-                type.hitShipSounds?.get()?.play()
-            }
-
-            // Play the explosion animation, and note how long it'll take.
-            // We'll stay alive for that long, to keep the room vision available.
-            explosionTimer = currentSpace.playDamageEffect(type, position).spec.totalTime
-        }
-
-        override fun render(g: Graphics, currentSpace: Ship) {
-            if (explosionTimer != null)
-                return
-
-            animation.draw(position.x.f - animation.width / 2, position.y.f - animation.height / 2)
-        }
-
-        override fun hitOtherProjectile(currentSpace: Ship) = error("Bombs have collision disabled")
-
-        override fun providesPlayerVision(room: Room): Boolean {
-            return room == target && !missed && !hitSuperShield
-        }
-
-        override fun saveToXML(elem: Element, refs: ObjectRefs) {
-            SaveUtil.addAttr(elem, "type", type.name)
-
-            SaveUtil.addAttr(elem, "targetShip", refs[target.ship])
-            SaveUtil.addAttrInt(elem, "targetRoomId", target.id)
-            SaveUtil.addAttrFloat(elem, "animationTimer", animation.timer)
-
-            SaveUtil.addTagBoolIfTrue(elem, "missed", missed)
-            SaveUtil.addTagBoolIfTrue(elem, "hitSuperShield", hitSuperShield)
-
-            SaveUtil.addTagFloat(elem, "explosionTimer", explosionTimer, null)
-
-            // The position will always be the same if we hit, but if we miss
-            // or hit a zoltan shield then it's randomised.
-            SaveUtil.addPoint(elem, "position", position)
-        }
-
-        fun loadFromXML(elem: Element) {
-            position = SaveUtil.getPoint(elem, "position").fConst
-
-            animation.timer = SaveUtil.getAttrFloat(elem, "animationTimer")
-
-            explosionTimer = SaveUtil.getOptionalTagFloat(elem, "explosionTimer")
+            hsFiredOnce = SaveUtil.getOptionalTagBool(elem, "hsFiredOnce") ?: false
+            hsQueue.clear()
+            for (queuedElem in elem.getChildren("hsQueued"))
+                IProjectile.loadFromXML(ship.sys, queuedElem, refs, SaveUtil.getAttr(queuedElem, "loadType")) { hsQueue += it as AbstractProjectile }
         }
     }
 
     companion object {
-        fun loadProjectileFromXML(
-            game: InGameState,
-            elem: Element, refs: RefLoader,
-            callback: ProjectileLoadCallback
-        ) {
-            val typeName = SaveUtil.getAttr(elem, "type")
-            val type = game.blueprintManager[typeName] as BombBlueprint
+        /** The bomb of saves written before the native bomb body (a teleported, already placed bomb). */
+        const val SERIALISATION_TYPE = "firedBomb"
 
+        /** Restores such a bomb as an arrived native body: its saved spot, miss and super shield outcome. A bomb
+         * whose explosion was already playing is not restored (it had dealt its damage). */
+        fun loadProjectileFromXML(game: InGameState, elem: Element, refs: RefLoader, callback: ProjectileLoadCallback) {
+            val type = game.blueprintManager[SaveUtil.getAttr(elem, "type")] as BombBlueprint
             val targetShip = SaveUtil.getAttr(elem, "targetShip")
             val targetRoomId = SaveUtil.getAttrInt(elem, "targetRoomId")
-
-            val missed = SaveUtil.getOptionalTagBool(elem, "missed") ?: false
-            val hitSuperShield = SaveUtil.getOptionalTagBool(elem, "hitSuperShield") ?: false
-
+            if (SaveUtil.getOptionalTagFloat(elem, "explosionTimer") != null) return
             refs.asyncResolve(Ship::class.java, targetShip) {
                 val room = it!!.rooms[targetRoomId]
-                val bomb = type.makeBomb(room, missed, hitSuperShield)
-                bomb.loadFromXML(elem)
+                val owner = room.ship.sys.getEnemyOf(room.ship) ?: room.ship
+                val bomb = type.makeBomb(owner, room, false)
+                bomb.nativeRestoreArrived(SaveUtil.getPoint(elem, "position"),
+                    SaveUtil.getOptionalTagBool(elem, "missed") ?: false,
+                    SaveUtil.getOptionalTagBool(elem, "hitSuperShield") ?: false,
+                    SaveUtil.getAttrFloat(elem, "animationTimer"))
                 callback(bomb)
             }
         }
-
-        const val SERIALISATION_TYPE = "firedBomb"
-
-        // The distance a missed bomb moves per step, from 0x878370.
-        private const val MISS_STEP = 117
     }
 }

@@ -12,67 +12,97 @@ import xyz.znix.xftl.savegame.RefLoader
 import java.util.*
 
 abstract class AbstractWeaponBlueprint(xml: Element) : Blueprint(xml) {
-    val launcher: String = xml.getChildTextTrim("weaponArt")
-    val projectile: String? = xml.getChildTextTrim("image")
-    open val explosion: String? = xml.getChildTextTrim("explosion")
-    val shots = xml.getChildTextTrim("shots")?.toInt() ?: 1
-    val damage = xml.getChildTextTrim("damage")?.toInt() ?: 0
-    val sysDamage = xml.getChildTextTrim("sysDamage")?.toInt() ?: 0
-    val ionDamage = xml.getChildTextTrim("ion")?.toInt() ?: 0
-    val shieldPiercing: Int = xml.getChildTextTrim("sp")?.toInt() ?: 0
-    val missilesUsed: Int = xml.getChildTextTrim("missiles")?.toInt() ?: 0
-    val speed: Int? = xml.getChildTextTrim("speed")?.toInt()
-    val personnelDamage: Int = xml.getChildTextTrim("persDamage")?.toInt() ?: 0
-    val chargeLevels: Int? = xml.getChildTextTrim("chargeLevels")?.toInt()
-    val hullBust: Int = xml.getChildTextTrim("hullBust")?.toInt() ?: 0
+    // Native WeaponBlueprint ctor 1.6.9 72de30 /1.6.14 763dd0: raw RGB227,39,39, alpha1.
+    // ProcessWeaponBlueprint5e41d0 only reads integer r/g/b children; absent components under <color> are zero.
+    private val colorNode = xml.getChild("color")
+    @JvmField val nativeColor = xyz.znix.xftl.hs.lua.GlColorValue(
+        if (colorNode == null) 227f else colorNode.nativeInt("r")?.toFloat() ?: 0f,
+        if (colorNode == null) 39f else colorNode.nativeInt("g")?.toFloat() ?: 0f,
+        if (colorNode == null) 39f else colorNode.nativeInt("b")?.toFloat() ?: 0f, 1f)
+    /** Hyperspace's per-weapon data (CustomWeaponDefinition); null unless Hyperspace is active. */
+    @JvmField val hs: xyz.znix.xftl.hs.weapons.HsWeaponDef? =
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsWeaponDef.parse(xml) else null
 
-    // Parse these as floats and round back to ints, as vanilla appears to
-    // accept but silently truncate them. The Insurrection+ mod has floats
-    // for these, and while it's probably a bug, we still have to load it.
-    val fireChance: Int = xml.getChildTextTrim("fireChance")?.toFloat()?.toInt() ?: 0
-    val breachChance: Int = xml.getChildTextTrim("breachChance")?.toFloat()?.toInt() ?: 0
+    /** XML fields only Hyperspace's Lua WeaponBlueprint members read. */
+    @JvmField val hsLuaFacts = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.lua.LuaAdaptersArmament.Facts(xml) else null
+    // Numbers are read as ProcessWeaponBlueprint reads them (NativeNumbers: atoi / strtod); a child that is not
+    // there keeps the WeaponBlueprint constructor's value (weapon art "default", the basic laser; radius 0).
+    var launcher: String = xml.getChildTextTrim("weaponArt") ?: "default"
+    var projectile: String? = xml.getChildTextTrim("image")
+    open val explosion: String? = xml.getChildTextTrim("explosion")
+    /** Numbers below that Hyperspace scripts write are vars (hyperspace.i leaves them writable); weapons copy shots and power when built. */
+    var shots = xml.nativeInt("shots") ?: 1
+    val damage = xml.nativeInt("damage") ?: 0
+    val sysDamage = xml.nativeInt("sysDamage") ?: 0
+    val ionDamage = xml.nativeInt("ion") ?: 0
+    val shieldPiercing: Int = xml.nativeInt("sp") ?: 0
+    var missilesUsed: Int = xml.nativeInt("missiles") ?: 0
+    var speed: Int? = xml.nativeInt("speed")
+    /**
+     * WeaponBlueprint::radius (`<radius>`, any weapon type; 0 when absent): a burst's spread and the aiming disc of
+     * weapons made from it. A var: Hyperspace scripts may write it.
+     */
+    var blueprintRadius: Int = xml.nativeInt("radius") ?: 0
+    /** WeaponBlueprint::spin: a burst factory passes it to LaserBlast::SetSpin for its pieces. */
+    var spin: Int = xml.getChildTextTrim("spin")?.toFloatOrNull()?.toInt() ?: 0
+    /** `<drone_targetable>`: -1 (absent) keeps the body's Targetable type; 0 makes it 4 (laser), anything else 2. */
+    var droneTargetable: Int = xml.getChildTextTrim("drone_targetable")?.toIntOrNull() ?: -1
+    val personnelDamage: Int = xml.nativeInt("persDamage") ?: 0
+    var chargeLevels: Int? = xml.nativeInt("chargeLevels")
+    val hullBust: Int = xml.nativeInt("hullBust") ?: 0
+
+    // atoi truncates decimals (the Insurrection+ mod has floats for these).
+    val fireChance: Int = xml.nativeInt("fireChance") ?: 0
+    val breachChance: Int = xml.nativeInt("breachChance") ?: 0
 
     // If set, always 3s stun duration
-    val stunChance: Int = xml.getChildTextTrim("stunChance")?.toInt() ?: 0
+    val stunChance: Int = xml.nativeInt("stunChance") ?: 0
 
     // This is the duration, if set always 100% chance
-    val stun: Int = xml.getChildTextTrim("stun")?.toInt() ?: 0
-    val browserLockdown: Boolean = xml.getChildTextTrim("lockdown") == "1"
+    val stun: Int = xml.nativeInt("stun") ?: 0
+    // Hyperspace: a `<customLockdown>` also makes the weapon lock rooms down (CustomWeapons.cpp sets Damage::bLockdown)
+    val browserLockdown: Boolean = (xml.nativeInt("lockdown") ?: 0) != 0 || hs?.damage?.lockdownDef != null
 
     // These tags are from Hyperspace, and disable the hull damage being added
-    // to personnel and system damage.
-    val noPersonnelDamage = xml.getChildTextTrim("noPersDamage")?.toBoolean() ?: false
-    val noSysDamage = xml.getChildTextTrim("noSysDamage")?.toBoolean() ?: false
+    // to personnel and system damage. Vanilla FTL ignores them, so they only apply while Hyperspace is active.
+    val noPersonnelDamage = hs?.damage?.noPersDamage ?: false
+    val noSysDamage = hs?.damage?.noSysDamage ?: false
 
     // Hyperspace tag, a flat reduction to the evasion used in calculations with that gun (can be negative)
-    val accuracyModifier: Int = xml.getChildTextTrim("accuracyMod")?.toInt() ?: 0
+    val accuracyModifier: Int = hs?.damage?.accuracyMod ?: 0
 
     // Power, charge time and cost are null for drone blueprints.
     // Use some semi-sane defaults to avoid having to check everywhere.
-    val power = xml.getChildTextTrim("power")?.toInt() ?: 1
-    val chargeTime: Float = xml.getChildTextTrim("cooldown")?.toFloat() ?: 5f
-    override val cost: Int = xml.getChildTextTrim("cost")?.toInt() ?: 0
+    var power = xml.nativeInt("power") ?: 1
+    /** WeaponBlueprint::damage once a script has touched it: every hit built from this blueprint reads it. */
+    @JvmField var hsLuaDamage: Damage? = null
+    /** WeaponBlueprint::cooldown; var: Hyperspace scripts write it (Lua `blueprint.cooldown`). */
+    var chargeTime: Float = xml.nativeFloat("cooldown") ?: 5f
+    private val xmlCost: Int = xml.nativeInt("cost") ?: 0
+    override val cost: Int get() = hsCost ?: xmlCost
 
-    val launchSounds = xml.getChild("launchSounds")?.let { SoundList(it) }
-    val hitShipSounds = xml.getChild("hitShipSounds")?.let { SoundList(it) }
-    val hitShieldSounds = xml.getChild("hitShieldSounds")?.let { SoundList(it) }
-    val missSounds = xml.getChild("missSounds")?.let { SoundList(it) }
+    var launchSounds = xml.getChild("launchSounds")?.let { SoundList(it) }
+    var hitShipSounds = xml.getChild("hitShipSounds")?.let { SoundList(it) }
+    var hitShieldSounds = xml.getChild("hitShieldSounds")?.let { SoundList(it) }
+    var missSounds = xml.getChild("missSounds")?.let { SoundList(it) }
 
-    val flavourType: GameText? = xml.getGameTextChild("flavorType")
+    var flavourType: GameText? = xml.getGameTextChild("flavorType")
 
-    val boost: ChainBoost?
+    var boost: ChainBoost?
+    /** `<boost>`'s amount and count as read, kept even when its type is none (WeaponBlueprint::boostPower). */
+    var boostAmount: Float
+    var boostCount: Int
+
+    /** WeaponBlueprint::explosion written by a script. */
+    @JvmField var hsExplosion: String? = null
 
     init {
         val boostElem = xml.getChild("boost")
-        if (boostElem == null) {
-            boost = null
-        } else {
-            val typeName = boostElem.getChildTextTrim("type")
-            val type = BoostType.valueOf(typeName.toUpperCase(Locale.UK))
-            val amount = boostElem.getChildTextTrim("amount").toFloat()
-            val count = boostElem.getChildTextTrim("count").toInt()
-            boost = ChainBoost(type, amount, count)
-        }
+        // <boost>: type "cooldown" or "damage" (any other type is no boost), count by atoi, amount by strtod
+        val type = when (boostElem?.getChildTextTrim("type")) { "cooldown" -> BoostType.COOLDOWN; "damage" -> BoostType.DAMAGE; else -> null }
+        boostAmount = boostElem?.nativeFloat("amount") ?: 0f
+        boostCount = boostElem?.nativeInt("count") ?: 0
+        boost = if (type == null) null else ChainBoost(type, boostAmount, boostCount)
     }
 
     fun getLauncher(game: InGameState): Animations.WeaponAnimationSpec {
@@ -93,10 +123,25 @@ abstract class AbstractWeaponBlueprint(xml: Element) : Blueprint(xml) {
     fun drawLauncherUI(game: InGameState, g: Graphics, x: Float, y: Float) {
         val anim = getLauncher(game)
         val spr = anim.getChargedImage(game)
-        drawLauncherUI(spr, g, x, y)
+        drawLauncherUI(spr, g, x, y, game)
     }
 
-    fun drawLauncherUI(chargedImage: Image, g: Graphics, x: Float, y: Float) {
+    /**
+     * [game] lets Hyperspace's `<iconReplace>`/`<iconScale>` apply (WeaponBlueprint::RenderIcon hooks); they
+     * draw around the centre of the box the launcher would fill.
+     */
+    @JvmOverloads
+    fun drawLauncherUI(chargedImage: Image, g: Graphics, x: Float, y: Float, game: InGameState? = null) {
+        val hs = hs
+        if (hs != null && game != null && (hs.iconReplace.isNotEmpty() || hs.iconScale != 1f)) {
+            xyz.znix.xftl.hs.weapons.HsWeapons.drawIcon(this, hs, game, chargedImage, g, x + chargedImage.height / 2f, y + chargedImage.width / 2f)
+            return
+        }
+        drawLauncherRotated(chargedImage, g, x, y)
+    }
+
+    /** The launcher sprite turned to lie on a horizontal surface, its box's top left at [x], [y]. */
+    fun drawLauncherRotated(chargedImage: Image, g: Graphics, x: Float, y: Float) {
         g.pushTransform()
 
         // Flip and rotate the sprite appropriately to make it loop like it's mounted above
@@ -135,6 +180,9 @@ abstract class AbstractWeaponBlueprint(xml: Element) : Blueprint(xml) {
     }
 
     class SoundList(elem: Element) {
+        /** Hyperspace: the list a script wrote; [hsContent] is the game it was loaded for. */
+        constructor(names: List<String>, content: GameContent) : this(Element("sounds").also { e -> names.forEach { e.addContent(Element("sound").setText(it)) } }) { load(content) }
+
         private val names: List<String> = elem.getChildren("sound").map { it.textTrim }
         private var soundsInternal: List<FTLSound?>? = null
 
@@ -152,6 +200,10 @@ abstract class AbstractWeaponBlueprint(xml: Element) : Blueprint(xml) {
 
             soundsInternal = names.map { content.sounds.getSampleOrWarn(it) }
         }
+
+        /** One sound name, as Projectile::Initialize stores it in hitSolidSound/hitShieldSound/missSound. */
+        /** 1.6.14 0x602cb0: random32() % size (no draw for an empty list, which gives ""). */
+        fun randomName(): String = if (names.isEmpty()) "" else names[ftl.browser.BrowserRandom.nextBits(31) % names.size]
 
         fun get(): FTLSound? {
             if (sounds.isEmpty())

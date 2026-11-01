@@ -19,7 +19,7 @@ import kotlin.random.Random
 
 /**
  * Focused regressions for the gameplay parity port (native rules recorded
- * in docs/ORIGINAL_BEHAVIOR.md). Controlled fixtures, not played campaigns. Checks for
+ * in AGENT_HANDOFF.md). Controlled fixtures, not played campaigns. Checks for
  * the 1:1 pass live in GameplayParity*Checks.kt files and are run from [run].
  */
 object BrowserGameplayParityDiagnostics {
@@ -29,6 +29,7 @@ object BrowserGameplayParityDiagnostics {
             main.update(container, .05f)
             (main.currentState as InGameState).shipUI.diagnosticDialogue?.selectOption(0)
         }
+        BrowserDiagnostics.closeBoxes(main, container)
         val state = main.currentState as InGameState
         if (state.isPaused && !state.shipUI.isWindowOpen) state.toggleQuickPause()
         state.debugFlags.noEnemyFire.set = true
@@ -38,6 +39,12 @@ object BrowserGameplayParityDiagnostics {
         state.debugFlags.showEverything.set = false
         return state
     }
+
+    /** A mod's blueprints, sectors and events are in play: the native vanilla data and captures do not apply. */
+    internal val modded: Boolean get() = xyz.znix.xftl.hs.HS.active
+
+    /** One rule check that holds vanilla's data or classes. */
+    internal inline fun vanillaOnly(what: String, block: () -> String): String = if (modded) "$what: vanilla data" else block()
 
     internal fun reload(main: MainGame, state: InGameState): InGameState {
         main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
@@ -57,36 +64,41 @@ object BrowserGameplayParityDiagnostics {
                 failures += "$name: " + (e.message ?: e::class.simpleName)
             }
         }
+        // The steps that compare with captures of native vanilla (seeds, draw counts, pools, maps, stores) say nothing
+        // under a mod's data; the other steps run, with their vanilla data assertions held back one by one.
+        fun vanillaStep(name: String, block: () -> String) {
+            if (modded) results += "$name: vanilla captures, not run under a mod" else step(name, block)
+        }
         try {
             step("events") { events(main, container, graphics) }
             step("maps") { maps(main, container) }
-            step("rewards") { rewards(main, container) }
+            vanillaStep("rewards") { rewards(main, container) }
             step("systems") { systems(main, container) }
             step("hackingSystems") { hackingSystems(main, container) }
             step("crewRules") { crewRules(main, container) }
             step("enemyGeneration") { enemyGeneration(main, container) }
-            step("GameplayParityEnemyGenChecks.run") { GameplayParityEnemyGenChecks.run(main, container) }
+            vanillaStep("GameplayParityEnemyGenChecks.run") { GameplayParityEnemyGenChecks.run(main, container) }
             step("GameplayParityEnemyAiChecks.run") { GameplayParityEnemyAiChecks.run(main, container) }
             step("GameplayParityAi2Checks.run") { GameplayParityAi2Checks.run(main, container) }
             step("aeAugments") { aeAugments(main, container) }
             step("stores") { stores(main, container) }
-            step("flagshipSurges") { flagshipSurges(main, container) }
-            step("GameplayParityMapEventsChecks.run") { GameplayParityMapEventsChecks.run(main, container) }
-            step("GameplayParityEvents2Checks.run") { GameplayParityEvents2Checks.run(main, container) }
-            step("GameplayParityStoresChecks.run") { GameplayParityStoresChecks.run(main, container) }
+            vanillaStep("flagshipSurges") { flagshipSurges(main, container) }
+            vanillaStep("GameplayParityMapEventsChecks.run") { GameplayParityMapEventsChecks.run(main, container) }
+            vanillaStep("GameplayParityEvents2Checks.run") { GameplayParityEvents2Checks.run(main, container) }
+            vanillaStep("GameplayParityStoresChecks.run") { GameplayParityStoresChecks.run(main, container) }
             step("GameplayParityCombatRulesChecks.run") { GameplayParityCombatRulesChecks.run(main, container) }
             step("GameplayParityShipRulesChecks.run") { GameplayParityShipRulesChecks.run(main, container) }
             step("GameplayParityDronesCrewChecks.run") { GameplayParityDronesCrewChecks.run(main, container) }
             step("GameplayParityCombat2Checks.run") { GameplayParityCombat2Checks.run(main, container) }
             step("GameplayParityCombat3Checks.run") { GameplayParityCombat3Checks.run(main, container) }
             step("GameplayParityWeapons6Checks.run") { GameplayParityWeapons6Checks.run(main, container) }
-            step("GameplayParityGen3Checks.run") { GameplayParityGen3Checks.run(main, container) }
+            vanillaStep("GameplayParityGen3Checks.run") { GameplayParityGen3Checks.run(main, container) }
             step("GameplayParityAudio3Checks.run") { GameplayParityAudio3Checks.run(main, container) }
             step("GameplayParityFlow3Checks.run") { GameplayParityFlow3Checks.run(main, container) }
             step("GameplayParityFlow5Checks.run") { GameplayParityFlow5Checks.run(main, container) }
             step("GameplayParityUi3Checks.run") { GameplayParityUi3Checks.run(main, container) }
-            step("GameplayParityAsb6Checks.run") { GameplayParityAsb6Checks.run(main, container) }
-            step("GameplayParityAsb7Checks.run") { GameplayParityAsb7Checks.run(main, container) }
+            vanillaStep("GameplayParityAsb6Checks.run") { GameplayParityAsb6Checks.run(main, container) }
+            vanillaStep("GameplayParityAsb7Checks.run") { GameplayParityAsb7Checks.run(main, container) }
             step("GameplayParityShell6Checks.run") { GameplayParityShell6Checks.run(main, container) }
             step("GameplayParityJump6Checks.run") { GameplayParityJump6Checks.run(main, container, graphics) }
             step("GameplayParityCursor7Checks.run") { GameplayParityCursor7Checks.run(main, container) }
@@ -95,6 +107,8 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityCrew7Checks.run") { GameplayParityCrew7Checks.run(main, container) }
             step("GameplaySave8Checks.run") { GameplaySave8Checks.run(main, container) }
             step("GameplayParityCloak7Checks.run") { GameplayParityCloak7Checks.run(main, container, graphics) }
+            step("GameplayParityVanillaNativeChecks.run") { GameplayParityVanillaNativeChecks.run(main, container) }
+            step("GameplayParityLockdownShardChecks.run") { GameplayParityLockdownShardChecks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
@@ -109,20 +123,49 @@ object BrowserGameplayParityDiagnostics {
 
         // Ghost boarders: a default blueprint, human art, 50 health, no suffocation.
         val ghostBp = state.blueprintManager["ghost"] as CrewBlueprint
-        check(ghostBp.rarity == null && state.lootPool.pool.none { it === ghostBp }) { "Ghost blueprint entered the loot pool" }
+        // Hyperspace's blueprint has rarity 0, which keeps it out of the pool all the same.
+        check((modded || ghostBp.rarity == null) && state.lootPool.pool.none { it === ghostBp }) { "Ghost blueprint entered the loot pool" }
         val ghostEvent = events["GHOST_BOARDED"].resolve()
         val ghostResources = ghostEvent.resolveResources(state, Random(3))
         // The boarders are made when the event is applied (WorldManager 0x613440 -> 0x408260), so the resources
         // only carry their number (2..4) and class.
         check(ghostResources.boarderCount in 2..4 && ghostResources.boarderRace == "ghost") { "GHOST_BOARDED did not roll ghost boarders" }
         state.givePlayerResources(ghostResources)
-        val ghosts = state.player.crew.filterIsInstance<CrewGhost>()
+        // Hyperspace makes every race a plain crew member, so a ghost is one by its race, with the race's stats.
+        fun isGhost(crew: AbstractCrew) = crew is CrewGhost || crew.codename == "ghost"
+        val ghosts = state.player.crew.filter(::isGhost)
         check(ghosts.size == ghostResources.boarderCount) { "Ghosts not boarded: ${ghosts.size}" }
-        check(ghosts.all { it.maxHealth == 50f && it.suffocationMultiplier == 0f && it.mode == AbstractCrew.SlotType.INTRUDER }) { "BrowserGameplayParityDiagnostics.kt:92" }
+        if (!modded) check(ghosts.all { it.maxHealth == 50f && it.suffocationMultiplier == 0f && it.mode == AbstractCrew.SlotType.INTRUDER }) { "BrowserGameplayParityDiagnostics.kt:92" }
         repeat(20) { main.update(container, .05f) }
         main.render(container, graphics)
         state = reload(main, state)
-        check(state.player.crew.count { it is CrewGhost } == ghosts.size) { "Ghosts lost across save/load" }
+        check(state.player.crew.count(::isGhost) == ghosts.size) { "Ghosts lost across save/load" }
+
+        // An event's boarders are aboard while its box is open (CreateLocation / UpdateLocation add them ahead of
+        // CreateChoiceBox): closing the box adds none, and a save with the box open does not bring them twice.
+        state = fresh(main, container)
+        state.shipUI.showEventDialogue(state.eventManager["GHOST_BOARDED"].resolve(), 77)
+        val boxGhosts = state.player.crew.count(::isGhost)
+        check(boxGhosts in 2..4) { "Boarders not aboard with the box open: $boxGhosts" }
+        state = reload(main, state)
+        check(state.player.crew.count(::isGhost) == boxGhosts) { "A save with the box open changed the boarders" }
+        var closes = 0
+        while (closes++ < 6) (state.shipUI.diagnosticDialogue ?: break).selectOption(0)
+        check(state.player.crew.count(::isGhost) == boxGhosts) { "Closing the box added boarders" }
+
+        // A weapon the ship gains makes its ProjectileFactory, in a mount or in the hold: one draw on the global stream.
+        state = fresh(main, container)
+        NativeRandom.seed(4242)
+        val noWeapon = NativeRandom.next31()
+        val oneWeapon = NativeRandom.next31()
+        NativeRandom.seed(4242)
+        val gained = state.blueprintManager["LASER_BURST_1"] as xyz.znix.xftl.Blueprint
+        check(state.player.addBlueprint(gained, true)) { "No room for the weapon" }
+        check(NativeRandom.next31() == oneWeapon && oneWeapon != noWeapon) { "A gained weapon did not draw once" }
+
+        // Building an event's ship reads its power before ModifyEnvironment starts the hazard: only an ion storm exists by then.
+        check(state.currentBeacon.environmentType != xyz.znix.xftl.sector.Beacon.EnvironmentType.ION_STORM ||
+            state.currentBeacon.powerEnvironment(state) != null) { "An ion storm takes no power" }
 
         // A list name shadows an event with the same name; self-entries roll again.
         val nebulaRebel = events["NEBULA_REBEL"]
@@ -197,8 +240,10 @@ object BrowserGameplayParityDiagnostics {
         state.player.fuelCount = 0
         JumpWindow(state, {}, {}).waitOutOfFuel()
         check(beacon.environmentType == xyz.znix.xftl.sector.Beacon.EnvironmentType.NORMAL) { "Waiting left the hazard: ${beacon.environmentType}" }
-        val noFuel = events["NO_FUEL"] as EventList
-        check(noFuel.events.any { it is Event && it.deserialisationId == beacon.event.deserialisationId }) { "Wait event ${beacon.event.deserialisationId}" }
+        if (!modded) {
+            val noFuel = events["NO_FUEL"] as EventList
+            check(noFuel.events.any { it is Event && it.deserialisationId == beacon.event.deserialisationId }) { "Wait event ${beacon.event.deserialisationId}" }
+        }
 
         return "events: ghosts, list precedence, unique events, text lists, event damage, boarders, hazard waiting"
     }
@@ -230,6 +275,7 @@ object BrowserGameplayParityDiagnostics {
                 xyz.znix.xftl.sector.NativeSectorGenerator.lastNebulaCap = null
                 val sector = map.generateSector(info, state)
                 checkLayout(sector)
+                if (modded) continue // A mod's sector data places its own nebulas.
                 check(sector.nebulaClouds.isNotEmpty() && sector.beacons.count { it.inNebula } >= 1) { "Nebula sector without clouds" }
                 // StarMap::GenerateEvents (0x5f6540) caps only the named nebula events: names are dropped at random
                 // until the free beacons minus the names is at least four (placeNebulas). Filler NEBULA events
@@ -391,9 +437,9 @@ object BrowserGameplayParityDiagnostics {
         // Crystal Vengeance launches the real CRYSTAL_1 shard.
         val enemy = spawnCrewed(state)
         val shard = xyz.znix.xftl.weapons.VengeanceShardProjectile(enemy.rooms.first())
-        check(shard.type.name == "CRYSTAL_1" && shard.type.shieldPiercing == 5) { "Shard blueprint ${shard.type.name}" }
+        if (!modded) check(shard.type.name == "CRYSTAL_1" && shard.type.shieldPiercing == 5) { "Shard blueprint ${shard.type.name}" }
         val shardDamage = Damage(shard.type)
-        check(shardDamage.breachChance == 10 && shardDamage.stunChance == 20 && shard.speed == 35 * 16) { "Shard stats" }
+        if (!modded) check(shardDamage.breachChance == 10 && shardDamage.stunChance == 20 && shard.speed == 35 * 16) { "Shard stats" }
 
         return "systems: FTL charge, locks, weapon drain, AE manning, rock armour, crystal shard"
     }
@@ -479,7 +525,7 @@ object BrowserGameplayParityDiagnostics {
 
         // GetFireRepairMultiplier: 1.2 by default, Rock 2.0, Crystal 1.0.
         check(recruit("human", rooms[1], false).fireFightingSpeed == 1.2f) { "Default fire repair" }
-        check(recruit("rock", rooms[1], false).fireFightingSpeed == 2f && recruit("crystal", rooms[2], false).fireFightingSpeed == 1f) { "Race fire repair" }
+        check(modded || recruit("rock", rooms[1], false).fireFightingSpeed == 2f && recruit("crystal", rooms[2], false).fireFightingSpeed == 1f) { "Race fire repair" }
 
         // EnergyAlien death damage: 15 HP to crew of the other ship only.
         val room = rooms[0]
@@ -494,7 +540,8 @@ object BrowserGameplayParityDiagnostics {
         val ownHealth = own.health
         val boarderHealth = boarder.health
         zoltan.onStartedDying()
-        check(own.health == ownHealth - 15f && boarder.health == boarderHealth) { "Zoltan blast own=${own.health} boarder=${boarder.health}" }
+        // (Hyperspace: the race's own explosion, which this vanilla entry point does not run.)
+        check(modded || own.health == ownHealth - 15f && boarder.health == boarderHealth) { "Zoltan blast own=${own.health} boarder=${boarder.health}" }
 
         // CrewMember::IncreaseSkill: only the player's crew learn.
         val before = boarder.info.skills.getValue(Skill.COMBAT)

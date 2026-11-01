@@ -54,7 +54,8 @@ class Piloting(blueprint: SystemBlueprint) : SubSystem(blueprint) {
         }
 
     override fun isMannableBy(crew: AbstractCrew): Boolean {
-        if (ship.engines!!.powerSelected == 0) {
+        // A ship without engines (MV's stations) has none powered (GetSystemPower of a missing system is 0).
+        if ((ship.engines?.powerSelected ?: 0) == 0) {
             return false
         }
 
@@ -64,6 +65,8 @@ class Piloting(blueprint: SystemBlueprint) : SubSystem(blueprint) {
     override fun drawManningIcon(g: Graphics, x: Int, y: Int) {
         drawManningSkillIcon(x, y, getSkillLevel(Skill.PILOTING))
     }
+
+    override fun touchDrawManning(g: Graphics, x: Int, y: Int) = drawManningIcon(g, x, y)
 
     // Nothing to serialise
     override fun saveSystem(elem: Element, refs: ObjectRefs) = Unit

@@ -125,9 +125,11 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
     private fun computeStalemate(): Boolean {
         val engines = player.engines
         val piloting = player.piloting
+        // Hyperspace: `<noFuelStalemate>` on this ship's definition leaves the player's fuel out (ShipAI::SetStalemate hook).
+        val ignoreFuel = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name).noFuelStalemate
         val canJump = engines != null && nativePowerCap(engines) != 0
                 && piloting != null && nativePowerCap(piloting) != 0
-                && player.fuelCount > 0
+                && (ignoreFuel || player.fuelCount > 0)
         if (canJump)
             return false
         return ship.intruders.none { it is LivingCrew && it.currentAction != AbstractCrew.Action.DYING }
@@ -485,6 +487,9 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
             if (weapons != null && !weapons.isPowerLocked) {
                 for ((slot, hp) in ship.hardpoints.withIndex()) {
                     val weapon = hp.weapon ?: continue
+                    // Hyperspace WeaponSystem::PowerWeapon: an enemy weapon past its <shotLimit> refuses power.
+                    if (xyz.znix.xftl.hs.HS.active && !weapon.isFiring && xyz.znix.xftl.hs.weapons.HsWeapons.hitShotLimit(weapon))
+                        continue
                     if (weaponOn[slot] && !weapon.isPowered)
                         weapons.powerManager.setItemPower(slot, true)
                 }
@@ -527,6 +532,9 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
 
         updateHacking(target)
         updateMindControl()
+
+        // Hyperspace: CombatAI::OnLoop hook (TemporalSystem.cpp), after the vanilla loop.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.aiUpdate(ship, target, rand)
     }
 
     /**
@@ -541,6 +549,9 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
             val weapon = hp.weapon ?: continue
             val ready = weapon.totalReadyCharges
             if (!weapon.isPowered || !weapon.hasEnoughMissiles || ready < 1 || weapon.isFiring)
+                continue
+            // Hyperspace ProjectileFactory::ReadyToFire: false once <shotLimit> volleys were fired at this target.
+            if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.weapons.HsWeapons.hitShotLimit(weapon))
                 continue
 
             val levels = weapon.maxTotalCharges
@@ -558,7 +569,7 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
                     // ProjectileFactory::NumTargetsRequired (0x40d5f0): a weapon with several charge levels aims once
                     // per charge, any other one once per shot of its burst (blueprint +0x108, copied to +0x134).
                     // Every point is chosen on its own, so a burst can spread over several rooms.
-                    val shots = max(1, weapon.type.shots)
+                    val shots = max(1, weapon.hsNumShots)
                     val perPoint = if (levels > 1) shots else 1
                     val aimed = chooseAimPoints(target, if (levels > 1) max(1, ready) else shots)
 
@@ -569,8 +580,11 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
                 }
 
                 is BeamBlueprint.BeamInstance -> {
-                    val aimed = chooseAimPoints(target, 2)
-                    val aim = weapon.buildAim(aimed[0], aimed[aimed.size - 1], false)
+                    val pinpoint = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.weapons.HsWeapons.isPinpoint(weapon.type)
+                    // Hyperspace: a pinpoint beam needs one target (NumTargetsRequired), on a random slot (Fire).
+                    val aimed = chooseAimPoints(target, if (pinpoint) 1 else 2)
+                    val aim = if (pinpoint) xyz.znix.xftl.hs.weapons.HsWeapons.pinpointAim(weapon, aimed[0], -1, null)
+                        else weapon.buildAim(aimed[0], aimed[aimed.size - 1], false)
 
                     // Set the weapon to start firing
                     weapon.fire(aim)
@@ -588,6 +602,12 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
     }
 
     private fun selectChargeGoal(levels: Int): Int = rand.nextInt(max(1, levels)) + 1
+
+    /** ProjectileFactory::goalChargeLevel (+0x634) of one of this ship's weapons, read by IsChargedGoal (0x40cc50). */
+    fun chargeGoalOf(weapon: AbstractWeaponInstance): Int? = chargeGoal[weapon]
+
+    /** A script's write of goalChargeLevel: the field the AI's IsChargedGoal check reads. */
+    fun setChargeGoal(weapon: AbstractWeaponInstance, goal: Int) { chargeGoal[weapon] = goal }
 
     /**
      * Pick the rooms a weapon aims at. Every point comes from ChooseSystem (or a random room); a point that is

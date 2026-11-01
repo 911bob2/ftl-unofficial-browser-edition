@@ -59,7 +59,7 @@ class LootPool(private val bpManager: BlueprintManager, sector: SectorType?) {
 
     fun getCrewOrRandom(rand: Random, race: String): CrewBlueprint {
         if (race != "random") {
-            return bpManager[race].resolve(rand) as CrewBlueprint
+            return (bpManager.getOrNull(race) as? xyz.znix.xftl.BlueprintList)?.takeIf { it.names.isNotEmpty() }?.resolve(rand) as? CrewBlueprint ?: bpManager.crewOrHuman(race)
         }
 
         return getRandom(rand) { it is CrewBlueprint } as CrewBlueprint? ?: error("No available crew!")

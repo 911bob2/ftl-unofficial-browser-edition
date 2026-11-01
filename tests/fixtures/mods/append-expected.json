@@ -1,0 +1,278 @@
+{
+ "set-attributes": {
+  "ok": true,
+  "output": "<FTL>\n<target a=\"2\" b=\"false\" c=\"true\" key=\"not value\"> hello </target>\n\n</FTL>"
+ },
+ "remove-attributes": {
+  "ok": true,
+  "output": "<FTL>\n<target a=\"1\"> hello </target>\n\n</FTL>"
+ },
+ "set-value": {
+  "ok": true,
+  "output": "<FTL>\n<target a=\"1\">goodbye world!</target>\n\n</FTL>"
+ },
+ "set-value-cdata-ignored": {
+  "ok": true,
+  "output": "<FTL>\n<target></target>\n\n</FTL>"
+ },
+ "set-value-escaped": {
+  "ok": true,
+  "output": "<FTL>\n<target>a &lt; b &amp; c > d</target>\n\n</FTL>"
+ },
+ "remove-tag": {
+  "ok": true,
+  "output": "<FTL>\n<sibling where=\"start\"/><sibling where=\"end\"/>\n\n</FTL>"
+ },
+ "prepend-append": {
+  "ok": true,
+  "output": "<FTL>\n<target a=\"1\"><b/><a>A</a> hello <s>world</s>! <c>C</c><d/></target>\n\n</FTL>"
+ },
+ "overwrite": {
+  "ok": true,
+  "output": "<FTL>\n<target a=\"1\"> hello <s key=\"s\">sky</s>! <a key=\"a\">A</a></target>\n\n</FTL>"
+ },
+ "findname-last-match": {
+  "ok": true,
+  "output": "<FTL>\n<weapon name=\"A\" v=\"1\"/><weapon name=\"A\" v=\"2\"/><drone hit=\"yes\" name=\"A\" v=\"3\"/>\n\n</FTL>"
+ },
+ "findname-type": {
+  "ok": true,
+  "output": "<FTL>\n<weapon name=\"A\" v=\"1\"/><weapon hit=\"yes\" name=\"A\" v=\"2\"/><drone name=\"A\" v=\"3\"/>\n\n</FTL>"
+ },
+ "findname-forward": {
+  "ok": true,
+  "output": "<FTL>\n<weapon hit=\"yes\" name=\"A\" v=\"1\"/><weapon name=\"A\" v=\"2\"/>\n\n</FTL>"
+ },
+ "findname-all": {
+  "ok": true,
+  "output": "<FTL>\n<weapon hit=\"yes\" name=\"A\" v=\"1\"/><weapon hit=\"yes\" name=\"A\" v=\"2\"/>\n\n</FTL>"
+ },
+ "findlike-start-wraps": {
+  "ok": true,
+  "output": "<FTL>\n<e i=\"1\"/><e i=\"2\"/><e i=\"3\"/>\n\n</FTL>"
+ },
+ "findlike-start-limit": {
+  "ok": true,
+  "output": "<FTL>\n<e i=\"1\"/><e hit=\"yes\" i=\"2\"/><e hit=\"yes\" i=\"3\"/><e i=\"4\"/>\n\n</FTL>"
+ },
+ "findlike-limit-zero": {
+  "ok": true,
+  "output": "<FTL>\n<e i=\"1\"/><e i=\"2\"/>\n\n</FTL>"
+ },
+ "findlike-reverse-limit": {
+  "ok": true,
+  "output": "<FTL>\n<e i=\"1\"/><e hit=\"yes\" i=\"2\"/><e hit=\"yes\" i=\"3\"/>\n\n</FTL>"
+ },
+ "selector-attrs-value": {
+  "ok": true,
+  "output": "<FTL>\n<e hit=\"yes\" k=\"a\">  one </e><e k=\"a\">two</e><e k=\"b\">one</e>\n\n</FTL>"
+ },
+ "selector-regex": {
+  "ok": true,
+  "output": "<FTL>\n<e hit=\"yes\" k=\"weapon_1\"/><e hit=\"yes\" k=\"weapon_22\"/><e k=\"xweapon_3\"/>\n\n</FTL>"
+ },
+ "regex-leftmost-first": {
+  "ok": true,
+  "output": "<FTL>\n<e name=\"ab\"/><e hit=\"yes\" name=\"a\"/>\n\n</FTL>"
+ },
+ "regex-type": {
+  "ok": true,
+  "output": "<FTL>\n<weaponBlueprint hit=\"yes\" name=\"X\"/><droneBlueprint hit=\"yes\" name=\"X\"/><augBlueprint name=\"X\"/>\n\n</FTL>"
+ },
+ "with-child-like": {
+  "ok": true,
+  "output": "<FTL>\n<ship><crew race=\"human\"/></ship><ship hit=\"yes\"><crew race=\"engi\"/></ship><ship/>\n\n</FTL>"
+ },
+ "with-child-bad-regex-attr": {
+  "ok": true,
+  "output": "<FTL>\n<ship hit=\"yes\"><crew race=\"engi\"/></ship>\n\n</FTL>"
+ },
+ "composite-and": {
+  "ok": true,
+  "output": "<FTL>\n<e a=\"1\" b=\"1\" hit=\"yes\"/><e a=\"1\" b=\"2\"/><e a=\"2\" b=\"1\"/>\n\n</FTL>"
+ },
+ "composite-or": {
+  "ok": true,
+  "output": "<FTL>\n<e a=\"1\" b=\"1\"/><e a=\"1\" b=\"2\" hit=\"yes\"/><e a=\"2\" b=\"1\" hit=\"yes\"/><e a=\"3\" b=\"3\"/>\n\n</FTL>"
+ },
+ "composite-nor-nested": {
+  "ok": true,
+  "output": "<FTL>\n<e a=\"1\" b=\"1\"/><e a=\"1\" b=\"2\"/><e a=\"2\" b=\"1\"/><e a=\"3\" b=\"3\" hit=\"yes\"/>\n\n</FTL>"
+ },
+ "composite-nand": {
+  "ok": true,
+  "output": "<FTL>\n<e a=\"1\" b=\"1\"/><e a=\"1\" b=\"2\" hit=\"yes\"/>\n\n</FTL>"
+ },
+ "composite-empty-nor": {
+  "ok": true,
+  "output": "<FTL>\n<e hit=\"yes\" i=\"1\"/><e hit=\"yes\" i=\"2\"/>\n\n</FTL>"
+ },
+ "composite-findname-inside": {
+  "ok": true,
+  "output": "<FTL>\n<e i=\"1\" name=\"x\"/><e hit=\"yes\" i=\"2\" name=\"x\"/>\n\n</FTL>"
+ },
+ "insert-by-find": {
+  "ok": true,
+  "output": "<FTL>\n<list><a/><x/><b/><y/><z/><c/></list>\n\n</FTL>"
+ },
+ "insert-by-find-reverse-range": {
+  "ok": true,
+  "output": "<FTL>\n<list><b i=\"1\"/><c/><y/><x/><b i=\"2\"/></list>\n\n</FTL>"
+ },
+ "insert-by-find-add-anyway": {
+  "ok": true,
+  "output": "<FTL>\n<list><x/><a/><y/></list>\n\n</FTL>"
+ },
+ "insert-by-find-no-add": {
+  "ok": true,
+  "output": "<FTL>\n<list><a/></list>\n\n</FTL>"
+ },
+ "nested-finds": {
+  "ok": true,
+  "output": "<FTL>\n<ship name=\"S\"><weapons><w n=\"1\" seen=\"1\"/><w n=\"2\" seen=\"1\"/><w n=\"3\"/></weapons></ship>\n\n</FTL>"
+ },
+ "panic-true": {
+  "ok": false,
+  "error": "error: find tag panicked"
+ },
+ "panic-message": {
+  "ok": false,
+  "error": "error: find tag panicked"
+ },
+ "panic-false-hit": {
+  "ok": true,
+  "output": "<FTL>\n\n\n</FTL>"
+ },
+ "unknown-command-unmatched": {
+  "ok": true,
+  "output": "<FTL>\n<e/>\n\n<new/></FTL>"
+ },
+ "unknown-command-matched": {
+  "ok": false,
+  "error": "error: invalid mod command"
+ },
+ "unknown-find-top": {
+  "ok": false,
+  "error": "error: unrecognized mod find tag"
+ },
+ "bad-limit": {
+  "ok": false,
+  "error": "error: invalid findLike limit attribute value"
+ },
+ "bad-reverse": {
+  "ok": false,
+  "error": "error: mod:findLike reverse attribute has invalid value"
+ },
+ "findname-missing-name": {
+  "ok": false,
+  "error": "error: mod:findName is missing a name attribute"
+ },
+ "overwrite-removed": {
+  "ok": true,
+  "output": "<FTL>\n<p><a v=\"new\"/><a v=\"2\"/></p>\n\n</FTL>"
+ },
+ "content-append-cleanup": {
+  "ok": true,
+  "output": "<FTL>\n<e/>\n\n\n\n<added><x/><y a=\"1\">t</y></added>\ntext at top\n</FTL>"
+ },
+ "entities-unescape-bug": {
+  "ok": true,
+  "output": "<FTL>\n<e t=\"R&amp;D\">D &amp; more</e><f>&lt;ok> AB \"q'</f><g>a&amp;b</g>\n\n<new/></FTL>"
+ },
+ "attribute-quote-raw": {
+  "ok": true,
+  "output": "<FTL>\n<e t=\"say \"hi\"\" u=\"it\"s\"/>\n\n<new/></FTL>"
+ },
+ "numeric-entities": {
+  "ok": true,
+  "output": "<FTL>\n<e>x</e><f>&amp;#xD800;</f><g>&amp;#x110000;</g><h></h>\n\n<new/></FTL>"
+ },
+ "nul-in-text": {
+  "ok": true,
+  "output": "<FTL>\n<e>a&amp;b</e>\n\n<new/></FTL>"
+ },
+ "comment-gt-escape-removed": {
+  "ok": true,
+  "output": "<FTL>\n<e><c/></e>\n\n</FTL>"
+ },
+ "attribute-sort-dup": {
+  "ok": true,
+  "output": "<FTL>\n<e a=\"4\" m=\"3\" z=\"1\"/>\n\n<new/></FTL>"
+ },
+ "empty-elements": {
+  "ok": true,
+  "output": "<FTL>\n<e/><f>  </f><g/>\n\n<new/></FTL>"
+ },
+ "prefixed-elements": {
+  "ok": true,
+  "output": "<FTL>\n<foo:bar x=\"1\"><foo:baz/></foo:bar>\n\n<other:thing/></FTL>"
+ },
+ "no-ftl-root": {
+  "ok": true,
+  "output": "<a/>\n<b>t</b>\n<c/>"
+ },
+ "no-ftl-root-text-between": {
+  "ok": true,
+  "output": "<a x=\"1\"/>\ntext\n<b/>"
+ },
+ "nested-ftl-tags": {
+  "ok": true,
+  "output": "<FTL>\n<e>inner</e>\n\n<new/></FTL>"
+ },
+ "stray-close": {
+  "ok": false,
+  "error": "[ERROR]   #1: parse error at 20..26: expected element name"
+ },
+ "unclosed-base": {
+  "ok": false,
+  "error": "[ERROR]   #1: parse error at 20..20: unclosed element"
+ },
+ "cdata-base": {
+  "ok": true,
+  "output": "<FTL>\n<e><![CDATA[a < b]]></e>\n\n<new/></FTL>"
+ },
+ "doctype-pi": {
+  "ok": true,
+  "output": "<FTL>\n\n<e/><new/></FTL>"
+ },
+ "multibyte": {
+  "ok": true,
+  "output": "<FTL>\n<e t=\"ä€😀\">日本語</e>\n\n</FTL>"
+ },
+ "selector-value-trim": {
+  "ok": true,
+  "output": "<FTL>\n<e hit=\"yes\">  x </e><e hit=\"yes\">x</e>\n\n</FTL>"
+ },
+ "script-unclosed": {
+  "ok": true,
+  "output": "<FTL>\n<e><x>t</x></e>\n\n</FTL>"
+ },
+ "script-ftl-wrapped": {
+  "ok": true,
+  "output": "<FTL>\n<e a=\"1\"/>\n\n\n\n</FTL>"
+ },
+ "prefixed-attribute-error": {
+  "ok": false,
+  "error": "error: parse error | [ERROR]   #1: parse error at 5..10: expected `=` after attribute name"
+ },
+ "whitespace-in-tags": {
+  "ok": true,
+  "output": "<FTL>\n<e a=\"1\" b=\"2\"/><f/><g/>\n\n<new/></FTL>"
+ },
+ "set-attributes-entities": {
+  "ok": true,
+  "output": "<FTL>\n<e v=\"a&amp;b &lt;c> \"d\"\"/>\n\n</FTL>"
+ },
+ "raw-basic": {
+  "ok": true,
+  "output": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<FTL>\n\n<e/>\n\n\n\n<!-- Appended by ftlman 0.7.4 -->\n\n\n<raw a=\"1\"/>\n\n</FTL>\n"
+ },
+ "raw-no-root": {
+  "ok": true,
+  "output": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<a/>\n<b/>\n\n<!-- Appended by ftlman 0.7.4 -->\n\n<c/>\n\n"
+ },
+ "raw-keeps-mod-tags": {
+  "ok": true,
+  "output": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<FTL>\n\n<e/>\n\n\n\n<!-- Appended by ftlman 0.7.4 -->\n\n<mod:findLike type=\"e\"><mod:removeTag/></mod:findLike>\n</FTL>\n"
+ }
+}

@@ -16,14 +16,46 @@ class StartGameButton(val state: SelectShipState) {
     var selected: Difficulty = Difficulty.NORMAL
     private var hoveredControl: String? = null
 
+    /**
+     * ShipBuilder's layout sizes the difficulty buttons to the widest of the three labels: the widest
+     * easy_measurePrintLines(62) width (rounded, at least 89) less 80, truncated to tens, widens them (and the
+     * box_start frame) and moves them left by as much, so their right edge stays put.
+     */
+    private val growth: Int get() {
+        var widest = 0x59
+        for (d in Difficulty.entries) {
+            val text = state.translator[d.startButtonKey]
+            widest = maxOf(widest, text.split('\n').maxOf { difficultyFont.measure(it) })
+        }
+        return (widest - 80) / 10 * 10
+    }
+    private val difficultyX get() = DIFFICULTY_X + HangarLayout.startDx - growth
+    private val difficultyY get() = DIFFICULTY_Y + HangarLayout.startDy
+    private val startX get() = START_X + HangarLayout.startDx
+    private val difficultyWidth get() = DIFFICULTY_WIDTH + growth
+
     val hoveredDifficulty: Difficulty? get() {
-        if (state.mousePos.x !in DIFFICULTY_X until DIFFICULTY_X + DIFFICULTY_WIDTH) return null
-        return Difficulty.entries.firstOrNull { state.mousePos.y in DIFFICULTY_Y + DIFFICULTY_STRIDE * it.ordinal until DIFFICULTY_Y + DIFFICULTY_STRIDE * it.ordinal + DIFFICULTY_HEIGHT }
+        if (state.mousePos.x !in difficultyX until difficultyX + difficultyWidth) return null
+        return Difficulty.entries.firstOrNull { state.mousePos.y in difficultyY + DIFFICULTY_STRIDE * it.ordinal until difficultyY + DIFFICULTY_STRIDE * it.ordinal + DIFFICULTY_HEIGHT }
     }
 
+    /** Hyperspace's ShipBuilder::Open hook puts the START button at y 15 (Seeds.cpp), 13 px above the vanilla one. */
+    private val startY get() = (if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsSeedBox.START_Y else START_Y) + HangarLayout.startDy
+
     fun draw(g: Graphics) {
+        // box_start.png: its first 42 columns, then columns 42..52 once per ten px of growth, then columns 42 on.
         val image = state.getImg("img/customizeUI/box_start.png")
-        image.draw(FRAME_X.f, FRAME_Y.f)
+        val grow = growth
+        var x = (FRAME_X + HangarLayout.startDx - grow).f
+        val h = image.height.f
+        val frameY = FRAME_Y + HangarLayout.startDy
+        image.draw(x, frameY.f, x + 42f, frameY + h, 0f, 0f, 42f, h)
+        x += 42f
+        repeat(grow / 10) {
+            image.draw(x, frameY.f, x + 10f, frameY + h, 42f, 0f, 52f, h)
+            x += 10f
+        }
+        image.draw(x, frameY.f, x + image.width - 42f, frameY + h, 42f, 0f, image.width.f, h)
 
         for (difficulty in Difficulty.entries) {
             drawDifficultyButton(g, difficulty)
@@ -33,26 +65,26 @@ class StartGameButton(val state: SelectShipState) {
     }
 
     private fun drawDifficultyButton(g: Graphics, difficulty: Difficulty) {
-        val x = DIFFICULTY_X
-        val y = DIFFICULTY_Y + DIFFICULTY_STRIDE * difficulty.ordinal
-        val width = DIFFICULTY_WIDTH
+        val x = difficultyX
+        val y = difficultyY + DIFFICULTY_STRIDE * difficulty.ordinal
+        val width = difficultyWidth
         val height = DIFFICULTY_HEIGHT
 
         val text = state.translator[difficulty.startButtonKey]
         val isHovering = state.mousePos.x in x until x + width && state.mousePos.y in y until y + height
 
         val bgColour = when {
-            selected == difficulty -> Constants.TEXT_BUTTON_SELECTED
-            isHovering -> Constants.TEXT_BUTTON_HOVER
-            else -> Constants.TEXT_BUTTON_NORMAL
+            selected == difficulty -> xyz.znix.xftl.hs.render.HsColors.tbSelected()
+            isHovering -> xyz.znix.xftl.hs.render.HsColors.tbSelected()
+            else -> xyz.znix.xftl.hs.render.HsColors.tbActive()
         }
 
         drawButton(g, x, y, width, height, 4, text, difficultyFont, bgColour)
     }
 
     private fun drawStartButton(g: Graphics) {
-        val x = START_X
-        val y = START_Y
+        val x = startX
+        val y = startY
         val width = START_WIDTH
         val height = START_HEIGHT
         val text = if (state.isSelectedUnlocked) state.translator["start_button"] else "LOCKED"
@@ -60,9 +92,9 @@ class StartGameButton(val state: SelectShipState) {
         val hoveringStart = state.isSelectedUnlocked && state.mousePos.x in x until x + width && state.mousePos.y in y until y + height
 
         val bgColour = when {
-            !state.isSelectedUnlocked -> Constants.TEXT_BUTTON_DISABLED
-            hoveringStart -> Constants.TEXT_BUTTON_HOVER
-            else -> Constants.TEXT_BUTTON_NORMAL
+            !state.isSelectedUnlocked -> xyz.znix.xftl.hs.render.HsColors.tbInactive()
+            hoveringStart -> xyz.znix.xftl.hs.render.HsColors.tbSelected()
+            else -> xyz.znix.xftl.hs.render.HsColors.tbActive()
         }
 
         drawButton(g, x, y, width, height, 6, text, startFont, bgColour)
@@ -72,17 +104,17 @@ class StartGameButton(val state: SelectShipState) {
                            text: String, font: NativeFonts.NativeFont, bgColour: xyz.znix.xftl.rendering.Colour) {
         g.colour = bgColour
         Buttons.drawChamfer(g, x, y, width, height, inset)
-        font.printButtonLabel(x, y, width, height, text, Constants.TEXT_BUTTON_TEXT)
+        font.printButtonLabel(x, y, width, height, text, xyz.znix.xftl.hs.render.HsColors.tbText())
     }
 
     fun updateHover(enabled: Boolean) {
         val x = state.mousePos.x
         val y = state.mousePos.y
         val next = if (!enabled) null else when {
-            state.isSelectedUnlocked && x in START_X until START_X + START_WIDTH &&
-                    y in START_Y until START_Y + START_HEIGHT -> "start"
-            x in DIFFICULTY_X until DIFFICULTY_X + DIFFICULTY_WIDTH ->
-                Difficulty.entries.firstOrNull { it != selected && y in DIFFICULTY_Y + DIFFICULTY_STRIDE * it.ordinal until DIFFICULTY_Y + DIFFICULTY_STRIDE * it.ordinal + DIFFICULTY_HEIGHT }?.name
+            state.isSelectedUnlocked && x in startX until startX + START_WIDTH &&
+                    y in startY until startY + START_HEIGHT -> "start"
+            x in difficultyX until difficultyX + difficultyWidth ->
+                Difficulty.entries.firstOrNull { it != selected && y in difficultyY + DIFFICULTY_STRIDE * it.ordinal until difficultyY + DIFFICULTY_STRIDE * it.ordinal + DIFFICULTY_HEIGHT }?.name
             else -> null
         }
         if (next != null && next != hoveredControl) state.sounds.getSample("hoverBeep").play()
@@ -94,13 +126,13 @@ class StartGameButton(val state: SelectShipState) {
             return
 
         for (difficulty in Difficulty.entries) {
-            val y = DIFFICULTY_Y + DIFFICULTY_STRIDE * difficulty.ordinal
-            if (mouseX in DIFFICULTY_X until DIFFICULTY_X + DIFFICULTY_WIDTH &&
+            val y = difficultyY + DIFFICULTY_STRIDE * difficulty.ordinal
+            if (mouseX in difficultyX until difficultyX + difficultyWidth &&
                 mouseY in y until y + DIFFICULTY_HEIGHT) selected = difficulty
         }
         if (state.isSelectedUnlocked &&
-            mouseX in START_X until START_X + START_WIDTH &&
-            mouseY in START_Y until START_Y + START_HEIGHT) {
+            mouseX in startX until startX + START_WIDTH &&
+            mouseY in startY until startY + START_HEIGHT) {
             state.startGame(selected)
         }
     }

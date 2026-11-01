@@ -12,7 +12,7 @@ object BrowserCrewRecordDiagnostics {
     fun run(main: MainGame, container: GameContainer, graphics: Graphics) {
         val profile = main.profile
         fun reset(): InGameState {
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             main.startDiagnosticGame("PLAYER_SHIP_HARD", Difficulty.NORMAL)
             repeat(90) {
                 main.update(container, .05f)
@@ -124,7 +124,7 @@ object BrowserCrewRecordDiagnostics {
         repeat(40) { trainee.addSkillPoint(Skill.ENGINES) }
         trainee.update(.05f)
         check(trainee.info.browserCounters[CrewRecordKind.SKILLS] == 4 && profile.crewRecord(CrewRecordKind.SKILLS)?.value == 4) { "BrowserCrewRecordDiagnostics.kt:119" }
-        val restored = SaveProfile.createBlank().also { it.load(BrowserXml.parse(BrowserXml.write(profile.save()))) }
+        val restored = SaveProfile.createBlank().also { it.restore(BrowserXml.parse(BrowserXml.write(profile.snapshot()))) }
         for (kind in CrewRecordKind.entries) check(restored.crewRecord(kind) == profile.crewRecord(kind)) { "BrowserCrewRecordDiagnostics.kt:121" }
         profile.markSaveComplete(); profile.updateCrewRecords(trainee.info)
         check(!profile.dirty) { "Unchanged crew dirtied the profile every update" }
@@ -145,16 +145,17 @@ object BrowserCrewRecordDiagnostics {
         for ((index, portrait) in listOf("human" to false, "human" to true, "engi" to false,
             "mantis" to false, "rock" to false, "energy" to false, "slug" to false,
             "crystal" to false, "anaerobic" to false).withIndex()) {
-            val race = state.blueprintManager[portrait.first] as CrewBlueprint
+            // (A mod can remove a vanilla race: Multiverse has no anaerobic.)
+            val race = state.blueprintManager.getOrNull(portrait.first) as CrewBlueprint? ?: continue
             val info = LivingCrewInfo(state, race, "Portrait ${portrait.first}", if (portrait.second) race.baseNumberOfColours else 0)
             repeat(index + 1) { info.browserCounters.increment(CrewRecordKind.REPAIRS) }
             profile.updateCrewRecords(info)
-            val before = BrowserXml.write(profile.save())
+            val before = BrowserXml.write(profile.snapshot())
             val random = BrowserRandom.snapshot()
             main.render(container, graphics)
-            check(BrowserRandom.snapshot() == random && BrowserXml.write(profile.save()) == before) { "Portrait rendering changed progression or simulation RNG" }
+            check(BrowserRandom.snapshot() == random && BrowserXml.write(profile.snapshot()) == before) { "Portrait rendering changed progression or simulation RNG" }
         }
-        val navigationProfile = BrowserXml.write(profile.save())
+        val navigationProfile = BrowserXml.write(profile.snapshot())
         val navigationRandom = BrowserRandom.snapshot()
         stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 800, 80, 1)
         check(stats.diagnosticTab == "STATISTICS") { "BrowserCrewRecordDiagnostics.kt:153" }
@@ -176,7 +177,7 @@ object BrowserCrewRecordDiagnostics {
         // Ship Best's LIST opens the hangar's ShipSelect, whose Open (0x00529940) marks the list tutorial shown.
         check(profile.listTutorialState == 2) { "Ship Best list did not mark its tutorial shown" }
         val withoutListTutorial = { xml: String -> xml.replace(Regex(" listTutorial=\"[0-9]\""), "") }
-        check(withoutListTutorial(BrowserXml.write(profile.save())) == withoutListTutorial(navigationProfile)) { "Statistics navigation changed progression" }
+        check(withoutListTutorial(BrowserXml.write(profile.snapshot())) == withoutListTutorial(navigationProfile)) { "Statistics navigation changed progression" }
         check(BrowserRandom.snapshot() == navigationRandom) { "Statistics navigation changed simulation RNG" }
         stats.close(); check(main.currentState === state) { "BrowserCrewRecordDiagnostics.kt:170" }
     }

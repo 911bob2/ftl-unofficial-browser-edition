@@ -36,14 +36,14 @@ internal object GameplayParityDronesCrewChecks {
         val rng = BrowserRandom.snapshot()
         val nativeRng = NativeRandom.snapshot()
         try {
-            val races = raceStats(main, container)
+            val races = BrowserGameplayParityDiagnostics.vanillaOnly("races") { raceStats(main, container) }
             val air = suffocation(main, container)
-            val crystal = crystalCharge(main, container)
+            val crystal = BrowserGameplayParityDiagnostics.vanillaOnly("crystal") { crystalCharge(main, container) }
             val bodies = droneBodies(main, container)
             val pods = podRules(main, container)
             val cooldown = droneCooldown(main, container)
             val natives = nativeConstants()
-            val fallback = humanFallback(main, container)
+            val fallback = BrowserGameplayParityDiagnostics.vanillaOnly("fallback") { humanFallback(main, container) }
             val ion = ionPulseCadence()
             val lockdown = lockdownDoors(main, container)
             return "dronescrew ok: $races, $air, $crystal, $bodies, $pods, $cooldown, $natives, $fallback, $ion, $lockdown"

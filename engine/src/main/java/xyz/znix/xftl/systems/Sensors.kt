@@ -9,7 +9,7 @@ import xyz.znix.xftl.savegame.RefLoader
 class Sensors(blueprint: SystemBlueprint) : SubSystem(blueprint) {
     override val sortingType = SortingType.SENSORS
 
-    private val blocked: Boolean get() = ship.sys.currentBeacon.environmentType.isNebula || isHackActive
+    private val blocked: Boolean get() = ship.sys.currentBeacon.environmentTypes.any { it.isNebula } || isHackActive
     val providesPlayerVision: Boolean get() = !blocked && effectivePower >= 1
     val providesEnemyVision: Boolean get() = !blocked && effectivePower >= 2
     val showsEnemyWeaponCharge: Boolean get() = !blocked && effectivePower >= 3

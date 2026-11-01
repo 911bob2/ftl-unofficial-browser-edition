@@ -5,7 +5,7 @@ import org.teavm.jso.JSByRef;
 import org.teavm.jso.typedarrays.Uint8Array;
 public final class BrowserFiles {
     public static boolean enableAE = true;
-    private static String run, profile;
+    private static String run, profile, settings;
     private static boolean temporaryWrites;
     /** Tutorial actions can use the normal save paths without publishing progress. */
     public static void beginTemporaryWrites() {
@@ -16,14 +16,23 @@ public final class BrowserFiles {
     public static boolean isTemporaryWrites() { return temporaryWrites; }
     public static String getRun() { return run; }
     public static String getProfile() { return profile; }
+    /** The device's settings (settings.ini in the original): language, volumes, hotkeys, options. Null until first written. */
+    public static String getSettings() { return settings; }
     public static void setRun(String xml) {if(ignoreTemporaryWrite("run"))return; run=xml; changed("run",xml);}
     public static void setProfile(String xml) {if(ignoreTemporaryWrite("profile"))return; profile=xml; changed("profile",xml);}
+    public static void setSettings(String xml) {if(ignoreTemporaryWrite("settings"))return; settings=xml; keepSettings(xml); changed("settings",xml);}
     private static boolean ignoreTemporaryWrite(String kind) {
         if (!temporaryWrites) return false;
         BrowserDebug.record("persistence", "save.ignored", "{\"kind\":"+BrowserDebug.quote(kind)+",\"reason\":\"tutorial\"}");
         return true;
     }
     public static void hydrate(String r,String p) {run=r;profile=p;}
+    /** The settings the page holds for this device; a restart in the same page keeps what the engine last wrote. */
+    public static void hydrateSettings() {settings=pageSettings();}
+    @JSBody(script="return window.ftlSettings||null;")
+    private static native String pageSettings();
+    @JSBody(params="xml",script="window.ftlSettings=xml;")
+    private static native void keepSettings(String xml);
     @JSBody(params={"kind","xml"},script="if(window.ftlOnSave)window.ftlOnSave(kind,xml);")
     private static native void changed(String kind,String xml);
     /** One bulk copy: a call per byte through JSO is slow for the megabytes of an image. */

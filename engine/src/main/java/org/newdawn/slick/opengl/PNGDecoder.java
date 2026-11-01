@@ -43,6 +43,9 @@ import ftl.browser.BrowserInflater;
  * <p>
  * znix: modified to load Multiverse's indexed RGB images, for example
  * the one at img/stars/bg_lonelyRedStar.png.
+ * <p>
+ * As in FTL 1.6.14, greyscale at any bit depth and greyscale with alpha load, as RGBA (grey in red, green and blue);
+ * interlaced files are refused, as FTL refuses them.
  *
  * @author Matthias Mann
  */
@@ -104,6 +107,8 @@ public class PNGDecoder {
     private int bitdepth;
     private int colorType;
     private int bytesPerPixel;
+    /** Bytes per whole pixel in the filtered data: twice bytesPerPixel for 16-bit samples. */
+    private int filterBpp;
     private byte[] palette;
     private byte[] paletteA;
     private byte[] transPixel;
@@ -221,6 +226,8 @@ public class PNGDecoder {
     private byte[] decodeCurLine;
     private byte[] decodePrevLine;
     private byte[] decodePalLine;
+    /** 16-bit images: the row with each sample cut to its high byte, as libpng's strip_16 does. */
+    private byte[] decodeLine8;
     private BrowserInflater decodeInflater;
     private int decodeRow;
 
@@ -237,6 +244,7 @@ public class PNGDecoder {
         decodeCurLine = new byte[lineSize + 1];
         decodePrevLine = new byte[lineSize + 1];
         decodePalLine = (bitdepth < 8) ? new byte[width + 1] : null;
+        decodeLine8 = (bitdepth == 16) ? new byte[width * bytesPerPixel + 1] : null;
         decodeInflater = new BrowserInflater();
         decodeRow = 0;
     }
@@ -264,16 +272,32 @@ public class PNGDecoder {
 
     private void decodeOneRow() throws IOException {
         final ByteBuffer buffer = decodeBuffer;
-        final Format fmt = decodeFormat;
-        byte[] curLine = decodeCurLine;
+        byte[] rawLine = decodeCurLine;
         byte[] prevLine = decodePrevLine;
-        byte[] palLine = decodePalLine;
         final int y = decodeRow;
 
-        readChunkUnzip(decodeInflater, curLine, 0, curLine.length);
-        unfilter(curLine, prevLine);
-
+        readChunkUnzip(decodeInflater, rawLine, 0, rawLine.length);
+        unfilter(rawLine, prevLine);
         buffer.position(decodeOffset + y * decodeStride);
+        emitRow(buffer, rawLine, decodeLine8, decodePalLine, width, decodeFormat);
+
+        decodeCurLine = prevLine;
+        decodePrevLine = rawLine;
+        decodeRow = y + 1;
+    }
+
+    /**
+     * Writes one unfiltered row of pixels pixels in fmt at the buffer's position. line8 (16-bit images) and
+     * palLine (indexed images below 8 bits) are scratch rows of the right size.
+     */
+    private void emitRow(ByteBuffer buffer, byte[] rawLine, byte[] line8, byte[] palLine, int pixels, Format fmt) {
+        byte[] curLine = rawLine;
+        if (line8 != null) {
+            curLine = line8;
+            for (int i = 1, n = curLine.length; i < n; i++) {
+                curLine[i] = rawLine[2 * i - 1];
+            }
+        }
 
         switch (colorType) {
             case COLOR_TRUECOLOR:
@@ -305,14 +329,21 @@ public class PNGDecoder {
                 }
                 break;
             case COLOR_GREYSCALE:
-                if ((fmt == LUMINANCE) || (fmt == ALPHA)) {
+                if (fmt == RGBA) {
+                    copyGREYtoRGBA(buffer, rawLine, pixels);
+                } else if ((fmt == LUMINANCE) || (fmt == ALPHA)) {
                     copy(buffer, curLine);
                 } else {
                     throw new UnsupportedOperationException("Unsupported format for this image");
                 }
                 break;
             case COLOR_GREYALPHA:
-                if (fmt == LUMINANCE_ALPHA) {
+                if (fmt == RGBA) {
+                    for (int i = 1, n = curLine.length; i + 1 < n; i += 2) {
+                        byte g = curLine[i];
+                        buffer.put(g).put(g).put(g).put(curLine[i + 1]);
+                    }
+                } else if (fmt == LUMINANCE_ALPHA) {
                     copy(buffer, curLine);
                 } else {
                     throw new UnsupportedOperationException("Unsupported format for this image");
@@ -350,11 +381,31 @@ public class PNGDecoder {
             default:
                 throw new UnsupportedOperationException("Not yet implemented");
         }
+    }
 
-        decodeCurLine = prevLine;
-        decodePrevLine = curLine;
-        decodePalLine = palLine;
-        decodeRow = y + 1;
+    /**
+     * Greyscale to RGBA as libpng expands it: samples below 8 bits scaled to 0-255, 16-bit samples cut to their high
+     * byte, and the tRNS grey (compared with the sample as stored) fully transparent.
+     */
+    private void copyGREYtoRGBA(ByteBuffer buffer, byte[] rawLine, int pixels) {
+        final int trans = transPixel == null ? -1 : (((transPixel[0] & 255) << 8) | (transPixel[1] & 255));
+        final int max = (1 << bitdepth) - 1;
+        for (int x = 0; x < pixels; x++) {
+            int sample;
+            byte grey;
+            if (bitdepth == 16) {
+                sample = ((rawLine[1 + 2 * x] & 255) << 8) | (rawLine[2 + 2 * x] & 255);
+                grey = rawLine[1 + 2 * x];
+            } else if (bitdepth == 8) {
+                sample = rawLine[1 + x] & 255;
+                grey = (byte) sample;
+            } else {
+                int bit = x * bitdepth;
+                sample = ((rawLine[1 + (bit >> 3)] & 255) >> (8 - bitdepth - (bit & 7))) & max;
+                grey = (byte) (sample * 255 / max);
+            }
+            buffer.put(grey).put(grey).put(grey).put(sample == trans ? (byte) 0 : (byte) 0xFF);
+        }
     }
 
     private void copy(ByteBuffer buffer, byte[] curLine) {
@@ -595,21 +646,21 @@ public class PNGDecoder {
     }
 
     private void unfilterSub(byte[] curLine) {
-        final int bpp = this.bytesPerPixel;
+        final int bpp = this.filterBpp;
         for (int i = bpp + 1, n = curLine.length; i < n; ++i) {
             curLine[i] += curLine[i - bpp];
         }
     }
 
     private void unfilterUp(byte[] curLine, byte[] prevLine) {
-        final int bpp = this.bytesPerPixel;
+        final int bpp = this.filterBpp;
         for (int i = 1, n = curLine.length; i < n; ++i) {
             curLine[i] += prevLine[i];
         }
     }
 
     private void unfilterAverage(byte[] curLine, byte[] prevLine) {
-        final int bpp = this.bytesPerPixel;
+        final int bpp = this.filterBpp;
 
         int i;
         for (i = 1; i <= bpp; ++i) {
@@ -621,7 +672,7 @@ public class PNGDecoder {
     }
 
     private void unfilterPaeth(byte[] curLine, byte[] prevLine) {
-        final int bpp = this.bytesPerPixel;
+        final int bpp = this.filterBpp;
 
         int i;
         for (i = 1; i <= bpp; ++i) {
@@ -656,25 +707,25 @@ public class PNGDecoder {
 
         switch (colorType) {
             case COLOR_GREYSCALE:
-                if (bitdepth != 8) {
+                if (bitdepth != 1 && bitdepth != 2 && bitdepth != 4 && bitdepth != 8 && bitdepth != 16) {
                     throw new IOException("Unsupported bit depth: " + bitdepth);
                 }
                 bytesPerPixel = 1;
                 break;
             case COLOR_GREYALPHA:
-                if (bitdepth != 8) {
+                if (bitdepth != 8 && bitdepth != 16) {
                     throw new IOException("Unsupported bit depth: " + bitdepth);
                 }
                 bytesPerPixel = 2;
                 break;
             case COLOR_TRUECOLOR:
-                if (bitdepth != 8) {
+                if (bitdepth != 8 && bitdepth != 16) {
                     throw new IOException("Unsupported bit depth: " + bitdepth);
                 }
                 bytesPerPixel = 3;
                 break;
             case COLOR_TRUEALPHA:
-                if (bitdepth != 8) {
+                if (bitdepth != 8 && bitdepth != 16) {
                     throw new IOException("Unsupported bit depth: " + bitdepth);
                 }
                 bytesPerPixel = 4;
@@ -694,6 +745,7 @@ public class PNGDecoder {
             default:
                 throw new IOException("unsupported color format: " + colorType);
         }
+        filterBpp = (bitdepth == 16) ? bytesPerPixel * 2 : bytesPerPixel;
 
         if (buffer[10] != 0) {
             throw new IOException("unsupported compression method");
@@ -701,6 +753,7 @@ public class PNGDecoder {
         if (buffer[11] != 0) {
             throw new IOException("unsupported filtering method");
         }
+        // FTL 1.6.14 cannot read interlaced files either ("Could not parse file"; the game then shows nullResource.png)
         if (buffer[12] != 0) {
             throw new IOException("unsupported interlace method");
         }
@@ -726,6 +779,12 @@ public class PNGDecoder {
                 checkChunkLength(6);
                 transPixel = new byte[6];
                 readChunk(transPixel, 0, 6);
+                if (bitdepth == 16) {
+                    // compared against the stripped samples: keep each sample's high byte
+                    transPixel[1] = transPixel[0];
+                    transPixel[3] = transPixel[2];
+                    transPixel[5] = transPixel[4];
+                }
                 break;
             case COLOR_INDEXED:
                 if (palette == null) {

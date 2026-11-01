@@ -60,7 +60,7 @@ class SystemObject(
 
         // For artillery systems, draw the weapon name.
         if (room != null && !editor.isDragging(this) && systemType.info == Artillery.INFO) {
-            val weapon = system.artilleryWeapon?.let { editor.state.blueprints[it] } as AbstractWeaponBlueprint?
+            val weapon = system.artilleryWeapon?.let { editor.state.blueprints.getOrNull(it) } as? AbstractWeaponBlueprint
             val weaponName = if (weapon == null) "NO WEAPON!" else editor.state.translator[weapon.short!!]
             editor.font.drawStringCentred(dragX.f, dragY + 13f, 0f, weaponName, Colour.black)
         }

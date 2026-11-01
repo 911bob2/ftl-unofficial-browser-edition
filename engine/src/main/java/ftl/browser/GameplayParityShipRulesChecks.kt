@@ -23,7 +23,7 @@ internal object GameplayParityShipRulesChecks {
         val nativeRng = NativeRandom.snapshot()
         try {
             val doors = doors(main, container)
-            val scrap = scrapModifiers(main, container)
+            val scrap = BrowserGameplayParityDiagnostics.vanillaOnly("scrap") { scrapModifiers(main, container) }
             val asteroids = asteroidRanges()
             val ion = ionArmour(main, container)
             val storm = stormPower(main, container)

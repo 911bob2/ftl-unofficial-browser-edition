@@ -9,7 +9,7 @@ import xyz.znix.xftl.sys.GameContainer
 object BrowserTutorialEntryDiagnostics {
     fun run(main: MainGame, container: GameContainer) {
         val profile = main.profile
-        val profileXml = BrowserXml.write(profile.save())
+        val profileXml = BrowserXml.write(profile.snapshot())
         val storedProfile = BrowserFiles.getProfile()
         val run = BrowserFiles.getRun()
         val rng = BrowserRandom.snapshot()
@@ -143,7 +143,7 @@ object BrowserTutorialEntryDiagnostics {
             tick(); check(controller.canContinue) { "BrowserTutorialEntryDiagnostics.kt:142" }
             check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == storedProfile) { "BrowserTutorialEntryDiagnostics.kt:143" }
             main.endTutorialSession()
-            check(main.profile === profile && BrowserXml.write(profile.save()) == profileXml) { "BrowserTutorialEntryDiagnostics.kt:145" }
+            check(main.profile === profile && BrowserXml.write(profile.snapshot()) == profileXml) { "BrowserTutorialEntryDiagnostics.kt:145" }
             check(BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialEntryDiagnostics.kt:146" }
             val ordinaryRng = BrowserRandom.snapshot()
             var rejected = false

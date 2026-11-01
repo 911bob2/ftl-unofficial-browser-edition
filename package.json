@@ -5,7 +5,8 @@
   "scripts": {
     "build:web": "tailwindcss -i web/styles.css -o web/style.css --minify",
     "test:diagnostics": "node tests/diagnostic-export.mjs && node tests/diagnostics.mjs",
-    "test:menus": "node tests/menus.mjs"
+    "test:menus": "node tests/menus.mjs",
+    "test:savecore": "node tests/savecore.mjs"
   },
   "devDependencies": {
     "@fontsource/chakra-petch": "5.3.0",

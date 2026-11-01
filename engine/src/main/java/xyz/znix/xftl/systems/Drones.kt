@@ -7,6 +7,7 @@ import xyz.znix.xftl.Translator
 import xyz.znix.xftl.crew.AbstractCrew
 import xyz.znix.xftl.crew.LivingCrew
 import xyz.znix.xftl.crew.MedbayHealing
+import xyz.znix.xftl.hs.crew.droneHealFactor
 import xyz.znix.xftl.drones.AbstractDrone
 import xyz.znix.xftl.savegame.ObjectRefs
 import xyz.znix.xftl.savegame.RefLoader
@@ -18,13 +19,18 @@ import kotlin.math.max
 class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     override val sortingType: SortingType get() = SortingType.DRONES
 
-    val drones = ArrayList<DroneInfo?>()
+    /** The slots; assigning a DroneInfo equips it (DroneSystem::AddDrone after ShipManager::CreateSpaceDrone). */
+    val drones: ArrayList<DroneInfo?> = xyz.znix.xftl.drones.DroneRuntime.SlotList(this)
+
+    /** The ship once the system is installed (the slot list attaches bodies to it). */
+    val attachedShip: Ship? get() = room?.ship
 
     private val droneLaunchSound by onInit { it.sounds.getSample("droneLaunch") }
 
     private var playDroneLaunchSound = false
 
-    private lateinit var powerManager: WeaponPowerManager
+    lateinit var powerManager: WeaponPowerManager
+        private set
 
     // This is kinda horrible, but it's a convenient way to prevent
     // zoltan power from deploying drones automatically.
@@ -42,6 +48,7 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             drones.add(null)
 
         powerManager = WeaponPowerManager(this, DronePowerAccess(), requeueOnLostForcedPower = true)
+        xyz.znix.xftl.drones.DroneRuntime.attachPending(this)
     }
 
     override fun powerStateChanged() {
@@ -74,16 +81,27 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             if (info == null)
                 continue
 
-            info.instance?.update(dt)
+            // Space drones run their OnLoop in the space loop (DroneRuntime.spaceLoop) before the ships; zero-time
+            // updates (save restoration) still reach them here.
+            if (dt <= 0f || !xyz.znix.xftl.drones.DroneRuntime.loopsInSpace(info)) info.instance?.update(dt)
 
-            val oldCooldown = info.cooldown
-            if (oldCooldown != null) {
-                val newCooldown = oldCooldown - dt
-                if (newCooldown <= 0) {
-                    info.cooldown = null
-                } else {
-                    info.cooldown = newCooldown
-                }
+            // DroneSystem::OnLoop (0x639a50): SetHacked(bUnderAttack ? iHackEffect : 0), Drone::UpdateRebuilding
+            // (0x462470: the timer only counts while above zero, so it ends just below it), poweredAtLocation
+            // latches once powered, and a dead drone (Lua SetDestroyed) is undeployed and revived.
+            info.iHackLevel = if (hackedBy == null && hsHackLevel <= 0) 0 else if (isHackActive) 2 else 1
+            if (info.destroyedTimer > 0f) info.destroyedTimer -= dt
+            if (info.powered) info.poweredAtLocation = true
+            // Only a deployed dead drone is undeployed and revived (0x639a50 checks GetDeployed). A combat drone whose
+            // passes are used up keeps looping undeployed, and CombatDrone's loop (0x4285b0: lifespan < 1 ->
+            // SetDestroyed(true, false)) marks it dead again the frame after, for good (native 1.6.14 drone-order
+            // probe 2: life 0, undeployed with bDead 0, then bDead 1).
+            if (info.bDead && info.deployed) {
+                info.bDead = false
+                info.instance?.let { it.isPowered = false; it.removeInstance() }
+                info.storedPowered = false
+            } else if (dt > 0f && !info.bDead && !info.deployed && info.instance == null &&
+                info.type.type == DroneBlueprint.DroneType.COMBAT && info.storedLifespan < 1) {
+                info.bDead = true
             }
         }
 
@@ -118,7 +136,7 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
                 continue
             if (crew.health <= 0f || crew.health >= crew.maxHealth)
                 continue
-            crew.dealDamage(MedbayHealing(-0.4f * 16f * 0.2f * dt))
+            crew.dealDamage(MedbayHealing(-0.4f * 16f * (if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrew.droneHealFactor(crew) else 0.2f) * dt))
         }
     }
 
@@ -128,13 +146,45 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
      */
     fun swapSlots(from: Int, to: Int): Boolean {
         if (from !in drones.indices || to !in drones.indices || from == to || drones[from] == null) return false
-        val first = drones[from]
-        drones[from] = drones[to]
-        drones[to] = first
+        (drones as xyz.znix.xftl.drones.DroneRuntime.SlotList).swap(from, to)
         powerManager.powerStateChanged()
         ship.sys.shipUI.dronesSlotsChanged()
         ftl.browser.BrowserDebug.record("drones", "slots.swap", "{\"from\":$from,\"to\":$to}")
         return true
+    }
+
+    /**
+     * DroneSystem::RemoveDrone (Hyperspace Lua): the [index]th equipped drone leaves (depowered, undeployed) and the
+     * drones after it move up a slot, as the native vector closes the gap. Returns the removed drone.
+     */
+    fun luaRemoveDrone(index: Int): DroneInfo? {
+        val slots = drones.indices.filter { drones[it] != null }
+        val slot = slots.getOrNull(index) ?: return null
+        val info = drones[slot]!!
+        if (info.powered) setDronePower(slot, false)
+        info.instance?.removeInstance()
+        drones.removeAt(slot)
+        drones.add(null)
+        powerManager.powerStateChanged()
+        ship.sys.shipUI.dronesSlotsChanged()
+        return info
+    }
+
+    /**
+     * ShipManager::AddDrone (0x4b1020) -> DroneSystem::AddDrone (0x639640): a slot inside the drone vector replaces
+     * that drone (depowered and undeployed first), otherwise the drone is appended while there is room.
+     */
+    fun luaAddDrone(bp: DroneBlueprint, slot: Int) {
+        val slots = drones.indices.filter { drones[it] != null }
+        val target = if (slot >= 0 && slot < slots.size) slots[slot] else drones.indexOfFirst { it == null }
+        if (target < 0) return
+        drones[target]?.let { old ->
+            if (old.powered) setDronePower(target, false)
+            old.instance?.removeInstance()
+        }
+        drones[target] = DroneInfo(bp)
+        powerManager.powerStateChanged()
+        ship.sys.shipUI.dronesSlotsChanged()
     }
 
     /**
@@ -143,6 +193,9 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
      *
      * @return True if the given change was made.
      */
+    /** DroneSystem::userPowered: slots the player powered. */
+    @JvmField val hsUserPowered = HashMap<Int, Boolean>()
+
     fun setDronePower(slot: Int, power: Boolean): Boolean {
         val info = drones.getOrNull(slot) ?: return false
         if (info.type.type == DroneBlueprint.DroneType.HACKING) return false
@@ -157,9 +210,10 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     private fun setDronePowerInternal(slot: Int, power: Boolean) {
         val info = drones[slot] ?: return
 
-        // If we're allowed to deploy a drone, it only counts once
+        // If we're allowed to deploy a drone, it only counts once. Hyperspace: only for that drone, since the power
+        // update in between re-powers 0-power drones (MV's MANNING) through here (oracle sweep-crew4-drone)
         val allowDeploy = allowDroneDeploy == info
-        allowDroneDeploy = null
+        if (allowDeploy || !xyz.znix.xftl.hs.HS.active) allowDroneDeploy = null
 
         // If the drone is already powered appropriately, nothing needs to be done.
         // This includes 'off' when the drone hasn't been spawned.
@@ -171,8 +225,10 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         if (power) {
             // If this drone attacks hostile ships but there isn't
-            // one present, we can't turn it on.
-            val hostileShip = ship.sys.enemy
+            // one present, we can't turn it on. A ship that is present but no longer hostile (surrendered, crew
+            // dead) is no target either: WorldManager::OnLoop (0x61b930) ends the fight with the player's
+            // ShipManager::SetTarget(0) (0x4a2b30), and AbstractExternalDrone.init would fail on it.
+            val hostileShip = ship.sys.getEnemyOf(ship)
             if (info.type.type.needsHostileShip && hostileShip == null) {
                 return
             }
@@ -197,8 +253,8 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
                     ship.dronesCount--
                 }
 
-                info.instance = info.type.makeInstance()
-                info.instance!!.init(ship)
+                // Drone::SetDeployed(true) on the equipped body: the engine builds the drone's actor now.
+                info.deployActor(ship)
 
                 // We should only play the launch sound when unpaused, both
                 // to match vanilla and to only play the sound once if multiple
@@ -265,13 +321,11 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
     }
 
-    class DroneInfo(val type: DroneBlueprint, var instance: AbstractDrone? = null) {
-        /**
-         * The cooldown (counting down) for how long until the player can
-         * deploy this drone again, after it was destroyed.
-         */
-        var cooldown: Float? = null
-    }
+    /**
+     * One equipped drone: the native Drone object ([xyz.znix.xftl.drones.NativeDrone]), made when the drone joins
+     * the ship and kept while it stays equipped; [instance] is its actor while deployed.
+     */
+    class DroneInfo(type: DroneBlueprint, instance: AbstractDrone? = null) : xyz.znix.xftl.drones.NativeDrone(type, instance)
 
     private inner class DronePowerAccess : WeaponPowerManager.ItemAccess {
         // The flagship has more drones than slots, so slots are added either
@@ -285,7 +339,8 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
 
         override fun getItemPowerDraw(slot: Int): Int {
-            return drones.getOrNull(slot)?.type?.power ?: 0
+            // Drone::GetRequiredPower: powerRequired - iBonusPower (both writable from Lua under Hyperspace).
+            return drones.getOrNull(slot)?.requiredPower ?: 0
         }
 
         override fun isItemPowered(slot: Int): Boolean {

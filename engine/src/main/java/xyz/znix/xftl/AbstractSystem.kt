@@ -19,6 +19,7 @@ import xyz.znix.xftl.savegame.RefLoader
 import xyz.znix.xftl.savegame.SaveUtil
 import xyz.znix.xftl.systems.*
 import xyz.znix.xftl.weapons.Damage
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -51,6 +52,24 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
     val info: SystemInfo = blueprint.info ?: error("System $codename doesn't have system info set!")
 
     /**
+     * ShipSystem::maxLevel, the level upgrades stop at: the system blueprint's maxPower; under Hyperspace the ship
+     * blueprint's `max` attribute when it is above zero (getTrueSystemMaxPower, CustomSystems.cpp), as all 2664
+     * systems of the oracle's MV ship dumps show.
+     */
+    /** Hyperspace: a script's write of ShipSystem.maxLevel (the field itself; the blueprint's again after a reload). */
+    @JvmField var hsMaxLevel: Int? = null
+
+    val maxLevel: Int
+        get() {
+            hsMaxLevel?.let { return it }
+            if (xyz.znix.xftl.hs.HS.active && this::configuration.isInitialized) {
+                val max = configuration.spec.aiMaxPower
+                if (max != null && max > 0) return max
+            }
+            return blueprint.maxPower
+        }
+
+    /**
      * The power limit applied by a <status/> effect at the current beacon,
      * or null if no limit is imposed.
      */
@@ -76,7 +95,8 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
      */
     val scriptedLockFrom: Int?
         get() {
-            val loss = if (scriptedPowerLoss > 0) energyLevels - scriptedPowerLoss else null
+            val totalLoss = scriptedPowerLoss + (hsExt?.appliedLoss ?: 0)
+            val loss = if (totalLoss > 0) energyLevels - totalLoss else null
             val limit = scriptedPowerLimit
             return if (loss != null && limit != null) min(loss, limit) else loss ?: limit
         }
@@ -119,8 +139,15 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
     var permanentLockOverridden: Boolean = false
         internal set
 
+    /**
+     * Hyperspace Lua: ShipSystem::AddLock(-1) / LockSystem(-1) / iLockCount = -1 lock the system until a script (or
+     * an ion hit, as IonDamage overwrites the count) unlocks it. Off in vanilla play.
+     */
+    @JvmField
+    var hsLuaPermanentLock: Boolean = false
+
     /** The native lock count is -1: [holdsPermanentLock] and not overwritten by an ion hit. */
-    val hasPermanentLock: Boolean get() = holdsPermanentLock && !permanentLockOverridden
+    val hasPermanentLock: Boolean get() = (holdsPermanentLock && !permanentLockOverridden) || hsLuaPermanentLock
 
     // Note that system cooldowns set the ion timer without adding
     // any ion damage, to lock in the power. Hence we need to check
@@ -136,7 +163,28 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
      * True if this system is being hacked by a hacking system currently
      * running its hacking pulse.
      */
-    val isHackActive: Boolean get() = hackedBy?.active == true
+    val isHackActive: Boolean get() = hackedBy?.active == true || hsHackLevel >= 2
+
+    /**
+     * Hyperspace: ShipSystem::iHackEffect set from Lua with SetHackingLevel (0 none, 1 drone attached, 2 pulse)
+     * without a hacking system; a level of 2 runs the hack pulse's effects. Never set by the vanilla engine.
+     */
+    @JvmField
+    var hsHackLevel: Int = 0
+
+    /** Hyperspace: interiorImage, On, Manned, MannedFancy written by a script (null until the first write). */
+    @JvmField var hsLuaInterior: Array<xyz.znix.xftl.hs.lua.LuaPrimitive?>? = null
+
+    /** Hyperspace: ShipSystem_Extend (System_Extend.h), null until used. */
+    @JvmField
+    var hsExt: xyz.znix.xftl.hs.systems.HsSysExt? = null
+
+    /**
+     * Hyperspace Lua: the native ShipSystem/Repairable fields the engine does not keep itself (HsSystemState), made
+     * at construction while scripts run (CONSTRUCT_SHIP_SYSTEM) or on first use.
+     */
+    @JvmField
+    var hsState: xyz.znix.xftl.hs.systems.HsSystemState? = null
 
     /**
      * The number of intact energy bars in the system. Ion damage is subtracted from this.
@@ -151,6 +199,8 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
 
             // ShipSystem::SetPowerLoss (0x63d300): the loss is taken off with the damage.
             available -= scriptedPowerLoss
+            // Hyperspace: ShipSystem_Extend::additionalPowerLoss joins iTempPowerLoss (CustomCrew.cpp CheckMaxPower).
+            hsExt?.let { available -= it.appliedLoss }
 
             scriptedPowerLimit?.let { limit ->
                 available = min(limit, available)
@@ -189,6 +239,9 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
     open val hasWhiteLockingBox: Boolean get() = false
 
     open fun update(dt: Float) {
+        // Hyperspace Lua: ShipSystem::OnLoop restarts the per-frame fields scripts may have written (HsSystemState).
+        hsState?.onLoop()
+
         if (!damaged) {
             repairProgress = 0f
         } else if (ship.isAutoScout || ship.isAutomated) {
@@ -196,7 +249,8 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
             // scouts and the crewless flagship) call PartialRepair(1, true) on
             // every damaged system: a third of the 8%/s crew speed, whatever
             // is burning or breached in the room.
-            repair(0.08f / 3 * dt)
+            // Hyperspace: PartialRepair(autoRepair) runs at the room's temporal dilation (TemporalSystem.cpp).
+            repair(0.08f / 3 * dt * (if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.factor(room) else 1f))
         } else if (room?.crew?.none { it.mode == AbstractCrew.SlotType.CREW } == true) {
             // No-one is in the room
             repairProgress = 0f
@@ -206,7 +260,9 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         // if there's neither of them here.
         val hasIntruders = room?.crew?.any { it.mode == AbstractCrew.SlotType.INTRUDER } == true
         val hasFire = room?.fires?.any { it != null } == true
-        if (broken || !(hasIntruders || hasFire))
+        // Hyperspace erosion (ErosionEffect.cpp) also builds up the damage progress.
+        val hsEroding = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.systems.HsErosionRoom.active(room)
+        if (broken || !(hasIntruders || hasFire || hsEroding))
             damageProgress = 0f
 
         if (!holdsPermanentLock)
@@ -260,30 +316,54 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         for (item in onInitValues) {
             item.doInit(ship.sys)
         }
+        // Hyperspace: ShipSystem::constructor (System_Extend.cpp) fires CONSTRUCT_SHIP_SYSTEM.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystemState.constructed(this)
     }
 
+    /** Hyperspace Lua (ShipSystem::fRepairOverTime / PartialRepair): the repair progress, 0..1 (cleared if undamaged). */
+    fun hsSetRepairProgress(value: Float) { repairProgress = value }
+
+    /** Hyperspace Lua (ShipSystem::fDamageOverTime / DamageOverTime): the damage progress, 0..1 (cleared if broken). */
+    fun hsSetDamageProgress(value: Float) { damageProgress = value }
+
+    /** What the system draws on its room's floor while the room is in sight, under breaches and walls (Room.renderSystemPart). */
+    open fun drawRoomFloor(g: Graphics) {}
+
+    /** The system icon, after the ship's walls (ShipSystem::OnRender; Room.renderSystemIcon). */
     open fun drawRoom(g: Graphics) {
         // Draw the system icon
         val room = room!!
         val img = room.ship.sys.getImg(blueprint.roomIconPath)
 
+        // A locked system's icon blinks blue, on for the middle half of a 0.75s loop kept even while paused.
+        roomIconBlink = (roomIconBlink + room.ship.sys.renderingDeltaTime) % ROOM_ICON_BLINK_TIME
+        val half = ROOM_ICON_BLINK_TIME / 2
+        val blinkOn = (half - abs(roomIconBlink - half)) / half > 0.5f
+
         val colour = when {
+            (isIonised || hasPermanentLock || isHackActive) && blinkOn -> Constants.SYSTEM_IONISED
             damagedEnergyLevels == energyLevels -> Constants.SYSTEM_BROKEN
             damagedEnergyLevels > 0 -> Constants.SYSTEM_DAMAGED
             else -> Constants.SYSTEM_NORMAL
         }
 
-        img.draw(
-            (room.offsetX + (room.pixelWidth / 2f - img.width / 2f).toInt()).f,
-            (room.offsetY + (room.pixelHeight / 2f - img.height / 2f).toInt()).f,
-            colour
-        )
+        val iconX = (room.offsetX + (room.pixelWidth / 2f - img.width / 2f).toInt()).f
+        val iconY = (room.offsetY + (room.pixelHeight / 2f - img.height / 2f).toInt()).f
+        img.draw(iconX, iconY, colour)
+
+        // A hacking drone's target: its outline purple, blinking until the hack pulse holds it on.
+        if (isHackActive || (hackedBy != null && !blinkOn)) {
+            room.ship.sys.getImgIfExists(blueprint.roomIconPath.removeSuffix(".png") + "2.png")
+                ?.draw(iconX, iconY, Constants.SYSTEM_HACKED)
+        }
     }
+
+    private var roomIconBlink = 0f
 
     open fun dealDamage(damage: Int, ionDamage: Int) {
         // Add the specified amount of damage, but avoid having more damage than we have power (which
         // would come to a negative amount of available power)
-        damagedEnergyLevels = (damagedEnergyLevels + damage).coerceAtMost(energyLevels)
+        if (damage != 0) addDamage(damage, false)
 
         // Apply ion damage. If we're not already ion-locked, use
         // the current power (don't mind the ugly hack to get it).
@@ -302,9 +382,18 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         // overwrites a permanent lock rather than adding to it.
         if (ionDamage > 0 && holdsPermanentLock)
             permanentLockOverridden = true
+        if (ionDamage > 0) hsLuaPermanentLock = false
         addLockUnits(ionDamage)
 
         powerLimitChanged()
+    }
+
+    /** Native ShipSystem::AddDamage (1.6.9 0x614e50): clamp health, then constrain power to the remaining bars. */
+    fun addDamage(amount: Int, updatePower: Boolean = true) {
+        val applied = if (xyz.znix.xftl.hs.HS.active)
+            xyz.znix.xftl.hs.weapons.HsWeaponHooks.systemAddDamage(this, amount) ?: return else amount
+        damagedEnergyLevels = (damagedEnergyLevels + applied).coerceIn(0, energyLevels)
+        if (updatePower) powerLimitChanged()
     }
 
     /**
@@ -366,6 +455,29 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
      * Returns true if the system was repaired by a level, and
      * some repair experience should be awarded.
      */
+    /**
+     * Hyperspace erosion's system part (ShipManager::UpdateEnvironment, ErosionEffect.cpp), [amount] in the engine's
+     * 0..1 progress units: it first counters repair progress, then (if the system is not fully broken) adds to the
+     * damage progress and runs PartialDamage(0)'s check. Returns the amount left for the room's breaches.
+     */
+    fun hsErode(amount: Float): Float {
+        var left = amount
+        if (repairProgress >= left) {
+            repairProgress -= left
+            left = 0f
+        } else {
+            if (repairProgress > 0f) {
+                left -= repairProgress
+                repairProgress = 0f
+            }
+            if (!broken) {
+                attack(left)
+                left = 0f
+            }
+        }
+        return left
+    }
+
     fun repair(progress: Float): Boolean {
         var modifiedProgress = progress
 
@@ -373,6 +485,8 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         if (hackedBy?.isPoweredUp == true) {
             modifiedProgress /= 2f
         }
+        // Hyperspace ShipSystem::PartialRepair (ErosionEffect.cpp): an eroding room repairs at systemRepairMultiplier.
+        if (xyz.znix.xftl.hs.HS.active) modifiedProgress *= xyz.znix.xftl.hs.systems.HsErosionRoom.repairMultiplier(room)
 
         repairProgress += modifiedProgress
 
@@ -627,6 +741,9 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
     /** Whether the system has power for its crew-slot icon; subsystems always do. */
     protected open val manningIconPowered: Boolean get() = true
 
+    /** Hyperspace custom systems: the person icon of [drawManningSkillIcon]. */
+    internal fun hsDrawManningSkillIcon(x: Int, y: Int, level: SkillLevel?) = drawManningSkillIcon(x, y, level)
+
     protected fun drawManningSkillIcon(x: Int, y: Int, level: SkillLevel?) {
         val iconPath = when (level) {
             SkillLevel.BASE -> "img/systemUI/manning_white.png"
@@ -654,6 +771,8 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
                 && hackedBy?.isPoweredUp != true
                 && undamagedEnergy > 0
                 && info.canBeManned
+                // Hyperspace: a Lua-defined system is manned while its bBoostable is (a script may clear it)
+                && (info !is xyz.znix.xftl.hs.systems.HsCustomSystemInfo || xyz.znix.xftl.hs.systems.HsSystemState.of(this).bBoostable)
                 && !isIonised
                 && scriptedPowerLimit == null
                 && scriptedPowerLoss == 0
@@ -664,6 +783,21 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
      *
      * @param yOfBottom The Y of the bottom of the lowest bar in the stack.
      */
+    /** The icon over a system's bars on the touch HUD: fire, sabotage or its crew slot, as the desktop picks them. */
+    internal fun touchDrawStatus(g: Graphics, game: InGameState, x: Int, y: Int) {
+        val hasIntruders = room!!.crew.any { it.mode == AbstractCrew.SlotType.INTRUDER }
+        when {
+            damageProgress != 0f && hasIntruders -> game.getImg("img/icons/s_sabatoge.png").draw(x - 9, y - 26)
+            room!!.fires.any { it != null } -> game.getImg("img/icons/s_fire2.png").draw(x - 9, y - 24)
+            damagedEnergyLevels == 0 && manningIconPowered -> touchDrawManning(g, x, y)
+        }
+    }
+
+    protected open fun touchDrawManning(g: Graphics, x: Int, y: Int) = drawManningIcon(g, x, y)
+
+    /** The power bars at the origin, for the touch HUD (which scales them to its own size). */
+    internal fun touchDrawBars(g: Graphics) { drawPowerBars(g, 0, 0, false) }
+
     protected abstract fun drawPowerBars(g: Graphics, x: Int, yOfBottom: Int, hoverGlow: Boolean): Int
 
     /**
@@ -808,6 +942,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
          * The time in seconds a system is locked per ion damage.
          */
         const val TIME_PER_ION = 5f
+        private const val ROOM_ICON_BLINK_TIME = 0.75f
     }
 }
 
@@ -901,12 +1036,18 @@ class SystemInstallConfiguration(
             // -2 appears to be used for the medbay to indicate no obstruction in 2-cell medbays
             if (it == -2)
                 return@let null
+            // Modded layouts may name a slot the room does not have (MV Knight C's medbay, slot 3 of a 2x1 room): the
+            // original indexes no tile, so an obstruction blocks nothing and a console falls back below.
+            if (xyz.znix.xftl.hs.HS.modded && it !in 0 until room.cellCount)
+                return@let if (system.info?.isComputerObstruction == true) null else ConstPoint(999, 999)
             room.slotToPoint(it).const
         }
 
         // Pick a room with the invalid computer position if it's a mannable system
-        // and the computer is not set.
-        if (compPoint == null && system.info?.canBeManned == true) {
+        // and the computer is not set. Hyperspace custom systems: AddSystem gives a player system
+        // without a blueprint slot no console (the default case of its switch); an enemy's is drawn later
+        // (ShipConstructionDraws.addSystem).
+        if (compPoint == null && system.info?.canBeManned == true && system.info !is xyz.znix.xftl.hs.systems.HsCustomSystemInfo) {
             compPoint = ConstPoint(999, 999)
         }
 
@@ -914,7 +1055,7 @@ class SystemInstallConfiguration(
         // that makes sense (doesn't overlap a door).
         if (compPoint != null && !room.containsRelative(compPoint)) {
             // Take a range of the valid X values
-            val validPlaces = (0 until room.width).asSequence().flatMap { x ->
+            val allPlaces = (0 until room.width).asSequence().flatMap { x ->
                 // Flatmap each of them to the valid positions in that column
                 (0 until room.height).asSequence().map { y -> ConstPoint(x, y) }
             }.flatMap {
@@ -923,7 +1064,8 @@ class SystemInstallConfiguration(
                 val horizontal = if (it.x == 0) Direction.LEFT else Direction.RIGHT
                 val vertical = if (it.y == 0) Direction.UP else Direction.DOWN
                 sequenceOf(Pair(it, horizontal), Pair(it, vertical))
-            }.filter { pos ->
+            }
+            val validPlaces = allPlaces.filter { pos ->
                 // Filter out anything that intersects with a door
                 room.doors.none { it.roomPos(room) posEq pos.first && it.dirFor(room) == pos.second }
             }.sortedBy { pos ->
@@ -931,7 +1073,9 @@ class SystemInstallConfiguration(
                 if (room.doors.none { it.roomPos(room) posEq pos.first }) 0 else 1
             }
 
-            val place = validPlaces.first()
+            // A one-tile room with doors on both of its candidate edges (MV's MU_OUTCAST_GUARD doors room) has no
+            // valid place: take the first edge anyway. An enemy console is chosen again when the system is added.
+            val place = validPlaces.firstOrNull() ?: allPlaces.first()
             compPoint = place.first
             compDir = place.second
         }
@@ -944,11 +1088,9 @@ class SystemInstallConfiguration(
             obstructionPoint = null
         }
 
-        // Except for the medbay and clonebay - which are handled above - all systems
-        // that specify a computer point must also specify a direction.
-        if (compPoint != null) {
-            requireNotNull(compDir) { "Cannot set computer point but not computer direction for system ${system.type}" }
-        }
+        // A slot given with a number but no direction keeps its console slot and no direction, as the original's
+        // blueprint reader and AddSystem do (Outer Expansion's aea_clone_crime gives only <number>; its script then
+        // makes the system unmannable). Nothing that needs a facing is drawn or played for such a console.
 
         // If the computer point isn't set, it doesn't make sense for the direction to be.
         // Some mods can set this, eg fed tanker C from Dyno's Hangar.

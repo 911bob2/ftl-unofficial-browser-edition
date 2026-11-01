@@ -32,18 +32,7 @@ class LaserBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         override fun buildProjectile(target: Room) = LaserProjectile(target)
     }
 
-    inner class LaserProjectile(room: Room) : AbstractWeaponProjectile(this@LaserBlueprint, room) {
-        private val spr = target.ship.sys.animations[projectile!!].spriteAt(ship.sys, 0)
-
-        override val defaultSpeed: Int get() = 60
-
-        override val isLaserForDD: Boolean get() = true
-
-        override fun renderPreTranslated(g: Graphics) {
-            // Hitbox for lasers is in the centre of the projectile
-            spr.draw(-spr.width / 2f, -spr.height / 2f)
-        }
-
+    inner class LaserProjectile(room: Room) : LaserBlastProjectile(this@LaserBlueprint, room) {
         override fun saveToXML(elem: Element, refs: ObjectRefs) {
             super.saveToXML(elem, refs)
             SaveUtil.addRoomRef(elem, "target", refs, target)

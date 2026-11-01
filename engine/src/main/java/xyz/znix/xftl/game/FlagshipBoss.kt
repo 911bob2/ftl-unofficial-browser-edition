@@ -52,6 +52,7 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
 
     private var mapIconRotation: Float = (0f..10f).random(VisualRandom)
     private val flagshipIcon = game.getImg("img/map/map_icon_boss.png")
+    private val touchFlagshipIcon = if (TouchMode.enabled) game.getImgIfExists("img/ipad/map/map_icon_boss.png") else null
 
     /**
      * BossShip +0x150: how many living crew the flagship had in each room (indexed by room id) the last time it was
@@ -68,6 +69,10 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
     }
 
     override fun createShip(): Ship {
+        // WorldManager::CreateLocation (0x6183a0) creates the arrival event with BossShip::GetEvent (0x407580) before
+        // WorldManager::CreateShip runs StartStage, so BOSS_TEXT_n draws ahead of the ship's crew; it is shown last.
+        val arrivalText = createBossEvent("BOSS_TEXT_$stage")
+
         // BossShip::StartStage (0x406980): every arrival builds a brand new ship. Nothing of the last fight (damage,
         // systems, power) comes back, only the per-room crew counts.
         // The ship name is in the format of BOSS_1_NORMAL_DLC
@@ -88,6 +93,9 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
             flagship.dronesCount = (flagship.dronesCount + 10).coerceAtLeast(0)
         }
 
+        // StartStage: ShipManager::bInvincible = stage != 3, so stages 1 and 2 end in the wreck's emergency jump.
+        flagship.invincible = stage != 3
+
         // The last stage starts with the super shield already up (the shield surge, 0x49cb50).
         if (stage == 3) {
             shieldSurge(flagship)
@@ -107,17 +115,16 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
             roomCrew = roomCrew.copyOf(flagship.rooms.size)
         }
 
-        // Spawn the crew through AddCrewMemberFromString (0x4aea60): human, a random name, the room from the table.
-        val human = game.blueprintManager["human"] as CrewBlueprint
-        val factory = game.crewFactory
-        for ((id, count) in roomCrew.withIndex()) {
+        // Spawn the crew through AddCrewMemberFromString (0x4aea60) with an empty name, "human" and the room from
+        // the table: GetCrewBlueprint (0x60e020) draws a name (0x605750) for the blueprint, the empty name then makes
+        // AddCrewMemberFromString draw a second one (and its sex), which is kept; the crew constructor (0x4685a0)
+        // follows. Hyperspace (CustomBoss.cpp): the first of those calls adds the <boss> crew instead, the rest add
+        // nothing.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsBoss.spawnStageCrew(game, flagship, stage, roomCrew.any { it > 0 })
+        else for ((id, count) in roomCrew.withIndex()) {
             val room = flagship.rooms.firstOrNull { it.id == id } ?: continue
             repeat(count) {
-                val name = factory.newName()
-                NativeRandom.next31() // the animation timer's start delay (TimerHelper::Start)
-                val colours = factory.drawColours(human)
-                val info = LivingCrewInfo(game, human, name.name, factory.colourIndex(human, colours, name.male))
-                flagship.addCrewMemberInRoom(info, room, false)
+                flagship.addCrewMemberInRoom(game.crewFactory.createFromString(game, "human").info, room, false)
             }
         }
         // CompleteShip::SetShip (0x4081a0) runs ShipAI::OnInit after the crew are in: its boarding budget and the
@@ -131,8 +138,9 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
         clearSurge()
         surgeDroneTypes.clear()
 
-        val event: Event = game.eventManager["BOSS_TEXT_$stage"].resolve()
-        game.shipUI.showEventDialogue(event, ftl.browser.BrowserRandom.nextInt())
+        // WorldManager::CreateLocation shows it as the location's event: Hyperspace runs its CreateLocation hooks for
+        // it (the event's custom fleet among them), not UpdateLocation's.
+        arrivalText?.let { game.shipUI.showEventDialogue(it, true) }
 
         return flagship
     }
@@ -144,7 +152,9 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
         // These offsets are approximate.
         g.pushTransform()
         g.rotate(centre.x.f, centre.y.f, -mapIconRotation)
-        flagshipIcon.draw(centre.x - 8, centre.y - 32)
+        val touchIcon = touchFlagshipIcon
+        if (touchIcon != null) touchIcon.draw(centre.x - touchIcon.width / 2, centre.y - 10 - touchIcon.height)
+        else flagshipIcon.draw(centre.x - 8, centre.y - 32)
         g.popTransform()
     }
 
@@ -171,7 +181,8 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
     }
 
     override fun drawJumpArc(g: Graphics, from: IPoint, to: IPoint) {
-        val width = 10f
+        // StarMap::OnRender: a 9 px line while the flagship jumps this turn.
+        val width = 9f
         val angle = atan2(from.y.f - to.y, from.x.f - to.x)
         val tangentX = cos(angle + PIf / 2f) * width / 2
         val tangentY = sin(angle + PIf / 2f) * width / 2
@@ -215,6 +226,14 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
         return (ftl.browser.BrowserRandom.nextInt(SURGE_TIME_MAX - SURGE_TIME_MIN) + SURGE_TIME_MIN) / 1000f
     }
 
+    // The victory sound, the win achievements and the ship's victory come as the last flagship starts breaking up;
+    // its wreck stays for twice an ordinary ship's before the credits.
+    override fun updateDyingShip(ship: Ship) {
+        if (stage != 3) return
+        ship.hsDestructionTime = 2 * Ship.DESTRUCTION_TIME
+        game.browserProgress.flagshipDefeated()
+    }
+
     override fun updateShip(ship: Ship, dt: Float) {
         for (i in surgeDrones.indices) {
             val drone = surgeDrones[i] ?: continue
@@ -233,6 +252,9 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
                 it is LivingCrew && it.health > 0f && it.ownerShip === ship && it.room.id == id
             }
         }
+
+        // Hyperspace BossShip::OnLoop hook: the living crew list the next stage is built from.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsBoss.recordCrew(ship)
 
         // TimerHelper::Done (0x5cb200) fires once the time is over the goal, then loops with a new goal.
         surgeTimer += dt
@@ -253,6 +275,8 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
     // 0x4a5b00: the first surge makes the pool of seven drones, each Combat I or Combat Beam; every surge then
     // launches the first 4/6/7 (easy/normal/hard) of them, each leaving after two passes.
     private fun droneSurge(ship: Ship) {
+        // Hyperspace PrepareSuperDrones hook: the <boss> surge drones replace the vanilla pool.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsBoss.droneDef("")?.let { xyz.znix.xftl.hs.ship.HsBoss.prepareSuperDrones(game, ship, it); return }
         if (surgeDroneTypes.isEmpty()) {
             repeat(SURGE_DRONE_POOL) {
                 surgeDroneTypes += if (ftl.browser.BrowserRandom.nextInt(2) == 1) "COMBAT_1" else "COMBAT_BEAM"
@@ -276,6 +300,8 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
 
     // 0x4a6a90: seven LASER_HEAVY_1 shots at random rooms.
     private fun laserSurge(ship: Ship) {
+        // Hyperspace PrepareSuperBarrage hook: the <boss> barrage replaces the seven heavy lasers.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsBoss.barrageDef("")?.let { xyz.znix.xftl.hs.ship.HsBoss.prepareSuperBarrage(game, ship, it); return }
         val laser = game.blueprintManager["LASER_HEAVY_1"] as xyz.znix.xftl.weapons.LaserBlueprint
         repeat(7) {
             val target = game.player.rooms.random(ftl.browser.BrowserRandom)
@@ -306,6 +332,7 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
     // after the last is the victory.
     override fun bossShipKilled(enemy: Ship) {
         clearSurge()
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsBoss.clearSuperDrones(enemy, true)
         surgeTimer = 0f
 
         updateNextBeacon()
@@ -325,15 +352,54 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
             jumping = true
         }
 
-        if (stage == 3) {
-            game.shipUI.showGameOverScreen(GameOverWindow.Outcome.WIN)
-        } else {
-            stage++
-
-            // The event when you defeat a stage
-            val event: Event = game.eventManager["BOSS_ESCAPED"].resolve()
-            game.shipUI.showEventDialogue(event, ftl.browser.BrowserRandom.nextInt())
+        // BossShip::GetSubEvent (0x4066d0) once the wreck is done (Ship::DestroyedDone): a flagship that was escaping
+        // (ShipAI +0xaa, the stalemate) shows BOSS_STALEMATE and keeps its stage (+0x160 = +0x134, so StartStage
+        // builds the same stage again); otherwise BOSS_ESCAPED, or BOSS_DESTROYED at the last stage. WorldManager::
+        // OnLoop (0x61b930) then forces the boss jump, or at the last stage opens the victory (0x530c50).
+        val escaping = enemy.escapeTimer != null
+        val finalKill = stage == 3
+        val name = when {
+            escaping -> "BOSS_STALEMATE"
+            finalKill -> "BOSS_DESTROYED"
+            else -> "BOSS_ESCAPED"
         }
+        if (!finalKill && !escaping) stage++
+        browserLastEvent = name
+        val event = createBossEvent(name)
+        if (finalKill) game.shipUI.showGameOverScreen(GameOverWindow.Outcome.WIN)
+        else event?.let { game.shipUI.showEventDialogue(it) }
+    }
+
+    /**
+     * BossShip::GetSubEvent's crew branch (CompleteShip::DeadCrew): the flagship's crew are all dead, so it turns
+     * automated (ShipManager +0x4d9) and shows BOSS_AUTOMATED; the ship stays hostile (the event's ship present and
+     * hostile) and its systems run without crew.
+     */
+    override fun bossCrewKilled(enemy: Ship) {
+        enemy.isAutomated = true
+        browserLastEvent = "BOSS_AUTOMATED"
+        createBossEvent("BOSS_AUTOMATED")?.let { game.shipUI.showEventDialogue(it) }
+    }
+
+    /** Diagnostics: the name of the last boss event BossShip::GetSubEvent created. */
+    var browserLastEvent: String? = null
+        private set
+
+    /**
+     * BossShip::GetEvent / GetSubEvent (1.6.14 0x407580 / 0x4066d0, 1.6.9 0x406ee0 / 0x406200) create the boss's
+     * events with `GetBaseEvent(name, 0, false, -1)`: world level 0 on the global stream, so an autoReward
+     * (BOSS_ESCAPED's HIGH standard, vanilla and MV) rolls sector-1 amounts.
+     */
+    /**
+     * BossShip::GetEvent: the stage's BOSS_TEXT event at world level 0 with the ship present. The original adds a
+     * status to it, the player's sensors limited to 2, so level 3 sensors show no flagship power. Hyperspace's GetEvent
+     * hook (CustomBoss.cpp) then clears every status of the returned event, the XML's and that one included.
+     */
+    private fun createBossEvent(name: String): xyz.znix.xftl.sector.CreatedEvent? {
+        val created = game.eventCreator.createFrom(game.eventManager[name].resolve(), 0) ?: return null
+        created.statusOverride = if (xyz.znix.xftl.hs.HS.active) emptyList() else created.template.statuses +
+            xyz.znix.xftl.sector.EventStatus("sensors", xyz.znix.xftl.sector.EventStatus.Operation.LIMIT, xyz.znix.xftl.sector.EventStatus.Target.PLAYER, 2)
+        return created
     }
 
     private fun updateNextBeacon() {
@@ -351,6 +417,16 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
 
         val route = routeFromHere()
         nextBeacon = route[route.indexOf(beacon) + 1]
+    }
+
+    /**
+     * The beacons the flagship has stood on: the stored route up to its current beacon. The one it started on is a
+     * danger zone for good (Hyperspace oracle, 303 sector 8) without ever being overtaken.
+     */
+    fun browserStoodOn(): List<Beacon> {
+        val route = path ?: return listOf(beacon)
+        val at = route.indexOf(beacon)
+        return if (at < 0) listOf(beacon) else route.subList(0, at + 1)
     }
 
     /** The stored route, rebuilt from the current beacon only when the flagship is off it (old saves, debug moves). */
@@ -461,6 +537,13 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
             ?.takeIf { it.size >= 1 && it.last() == sector.finishBeacon }
         surgeDroneTypes.clear()
         elem.getAttributeValue("browserSurgeDrones")?.split(",")?.filter { it.isNotEmpty() }?.let { surgeDroneTypes.addAll(it) }
+        // Hyperspace StarMap::LoadGame: the reversed route of a retreat from the base is not kept across a load (HS
+        // resets the flag the original carried over from the last game), so the flagship keeps to its way to the base.
+        if (xyz.znix.xftl.hs.HS.active && runningAway) {
+            runningAway = false
+            // Once the references are resolved: the route starts from the flagship's beacon. A jump under way finishes first.
+            SaveUtil.getAttrRef(elem, "beacon", refs, Beacon::class.java) { if (!jumping) updateNextBeacon() }
+        }
     }
 
     companion object {
@@ -473,6 +556,7 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
 
         /** The rooms StartStage fills with one human each at stage 1 (11 crew in all). */
         private val INITIAL_CREW_ROOMS = intArrayOf(0, 1, 2, 3, 4, 5, 6, 9, 10, 14, 18)
+
 
         const val SERIALISATION_TYPE = "wormhole.flagship"
 

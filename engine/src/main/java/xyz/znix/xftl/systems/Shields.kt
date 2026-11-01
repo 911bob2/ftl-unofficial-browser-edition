@@ -30,13 +30,19 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             val old = field
             field = value.coerceIn(0..selectedShieldBars)
 
-            if (value < old) {
+            if (value < old && !hsSilent) {
                 shieldsDownSound.play()
             }
         }
 
+    /** Hyperspace Lua writes Shields::shields.power.first directly (no sound, as a field write in FTL). */
+    @JvmField var hsSilent = false
+
     var rechargeTimer: Float = 0f
         private set
+
+    /** Hyperspace Lua: Shields::shields.charger written by a script. */
+    fun hsSetRechargeTimer(value: Float) { rechargeTimer = value }
 
     // Used for hacking - the charge bar runs backwards
     // and then drops a shield level when it hits zero.
@@ -47,11 +53,56 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     val hackDrainTime: Float get() = 2f
 
+    /** An AnimationTracker of a shield effect. */
+    class ShieldTracker(@JvmField var time: Float, @JvmField var current: Float = 0f, private val stops: Boolean = true) {
+        @JvmField var running = false
+        @JvmField var finished = true
+        fun start() { running = true; finished = false; current = 0f }
+        fun update(dt: Float) {
+            if (!running || finished) return
+            current += dt
+            if (current >= time) { current = time; finished = true; if (stops) running = false }
+        }
+        val progress: Float get() = if (time > 0f) current / time else 1f
+    }
+
+    /** Shields::shieldsDown: a hole opening from where a layer was lost. */
+    @JvmField val downTracker = ShieldTracker(0.5f, 0f, false)
+    /** Shields::shieldsUp: the bubble growing when the first layer charges (full from the start). */
+    @JvmField val upTracker = ShieldTracker(0.15f, 0.15f, false).also { it.running = true }
+    /** Shields::superShieldUp: a drone's super shield opening from where it was hit. */
+    @JvmField val superUpTracker = ShieldTracker(0.5f)
+    @JvmField var downX = 0
+    @JvmField var downY = 0
+    @JvmField var superUpX = 0
+    @JvmField var superUpY = 0
+    /** Shields::superShieldDown: what the hole shows, a super shield or a layer. */
+    @JvmField var superShieldDown = false
+
+    /** Shields::CollisionReal: a hit that took something off starts the hole there. */
+    fun startDown(x: Int, y: Int, superShield: Boolean) {
+        downTracker.start()
+        downX = x; downY = y
+        superShieldDown = superShield
+        hsOut()
+    }
+
+    /** What the engine started or stopped reaches the members scripts read. */
+    fun hsOut() { if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdaptersWritesPictures.shieldsOut(this) }
+
     private val shieldsUpSound by onInit { it.sounds.getSample("shieldsUp") }
     private val shieldsDownSound by onInit { it.sounds.getSample("shieldsDown") }
 
     override fun update(dt: Float) {
         super.update(dt)
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdaptersWritesPictures.shieldsIn(this)
+        downTracker.update(dt); upTracker.update(dt); superUpTracker.update(dt)
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdaptersWritesPictures.shieldsOut(this)
+
+        if (ship.superShield < 0) ship.nativeSetSuperShield(0)
+
+        // Hyperspace: Shields::OnLoop keeps an augment super shield's maximum (CustomSuperShield.cpp).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSuperShield.onLoop(ship)
 
         if (isHackActive) {
             updateHacked(dt)
@@ -102,7 +153,11 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         if (activeShields == 0) {
             shieldsUpSound.play()
+            upTracker.start()
         }
+        // A charged layer ends the hole (oracle hw-shw).
+        downTracker.running = false
+        hsOut()
 
         rechargeTimer = 0f
         activeShields++
@@ -157,6 +212,8 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         if (ship.hasAugment(AugmentBlueprint.ENERGY_SHIELD_NAME)) {
             ship.superShield = 5
         }
+        // Hyperspace: Shields::InstantCharge fills an augment super shield (CustomSuperShield.cpp).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSuperShield.fill(ship)
     }
 
     fun popShieldLayer() {
@@ -223,11 +280,10 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     override fun dealDamage(damage: Int, ionDamage: Int) {
         super.dealDamage(damage, ionDamage)
 
-        // If the player shoots a beam from shields to another room, the shields
-        // should go down immediately. We can't afford to wait for the next
-        // update, in case the frame-time is too high as the user could hit
-        // another room on the same frame.
-        if (activeShields > selectedShieldBars) {
+        // Native 1.6.9 and1.6.14 retain active layers after ion damage until Shields::OnLoop.
+        // The real-flight HS probe and native14 ShipManager ray-collision fixture observe this
+        // before the system loop. Keep the existing physical-bar-loss path separate.
+        if (damage != 0 && activeShields > selectedShieldBars) {
             activeShields = selectedShieldBars
         }
     }
@@ -266,7 +322,7 @@ private object ShieldsInfo : SystemInfo("shields") {
             3 -> translator["shields_1"]
             5 -> translator["shields_2"]
             7 -> translator["shields_3"]
-            else -> "INVALID LEVEL ${level + 1}"
+            else -> if (level > 7 && level % 2 == 1) translator["shields_${level / 2}"] else if (level > 7) "" else "INVALID LEVEL ${level + 1}" // HS over 8 levels (oracle sw2-switch s-h0: level 10 "Five Shield Barriers")
         }
     }
 }

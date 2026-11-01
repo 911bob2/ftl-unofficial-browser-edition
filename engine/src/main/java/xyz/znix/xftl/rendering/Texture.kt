@@ -20,6 +20,11 @@ class Texture(
     // The OpenGL resource reference ('name') of this image.
     private val glName: Int
 ) : INativeResource {
+    init {
+        liveCount++
+        liveBytes += rawTextureWidth.toLong() * rawTextureHeight * 4
+    }
+
     private var currentFiltering = -1
 
     override var freed: Boolean = false
@@ -37,6 +42,7 @@ class Texture(
             // rotated (but not scaled) drones.
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, filtering)
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, filtering)
+            currentFiltering = filtering
         }
     }
 
@@ -45,9 +51,17 @@ class Texture(
         freed = true
 
         GL11.glDeleteTextures(glName)
+        liveCount--
+        liveBytes -= rawTextureWidth.toLong() * rawTextureHeight * 4
     }
 
     companion object {
+        /** Textures alive and their pixels as RGBA, what the GPU holds for images (for the memory checks). */
+        @JvmStatic var liveCount: Int = 0
+            private set
+        @JvmStatic var liveBytes: Long = 0
+            private set
+
         /** Draws refused because their texture had been deleted (see [BulkImageRenderer.flush]), for the checks. */
         var freedDraws: Int = 0
             private set

@@ -20,7 +20,7 @@ object BrowserTravelDiagnostics {
             }
         }
         fun reset(ship: String): InGameState {
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             main.startDiagnosticGame(ship, Difficulty.NORMAL)
             repeat(90) {
                 main.update(container, .05f)
@@ -153,7 +153,7 @@ object BrowserTravelDiagnostics {
     }
 
     private fun secretSector(main: MainGame, container: GameContainer, graphics: Graphics) {
-        main.profile.load(SaveProfile.createBlank().save())
+        main.profile.restore(SaveProfile.createBlank().snapshot())
         main.startDiagnosticGame("PLAYER_SHIP_ROCK", Difficulty.NORMAL)
         var state = main.currentState as InGameState
         fun dismiss() {

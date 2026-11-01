@@ -9,7 +9,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Represents the user's profile: achievements/ships/high scores/settings/etc.
+ * Represents the user's profile: achievements/ships/high scores/etc. It is written with the save it belongs to
+ * ([save]). The options, volumes, hotkeys and language kept here too are the device's settings instead, the original's
+ * settings.ini ([saveSettings]): they stay when another save is played.
  *
  * Unlike the game state saves, this is supposed to be durable, as it'd be
  * much, much worse to lose it than a savegame.
@@ -39,13 +41,23 @@ class SaveProfile private constructor() {
      */
     data class ProgressNotification(
         val achievement: String? = null, val ship: String? = null, val questShip: String? = null,
-        val silent: Boolean = false
+        val silent: Boolean = false,
+        /** A Hyperspace custom achievement (HsAchievements), shown as the original shows any CAchievement. */
+        val hsAchievement: String? = null,
+        /** A Hyperspace victory achievement of this ship; [hsVictoryType] null for the plain ship victory. */
+        val hsVictoryShip: String? = null,
+        val hsVictoryType: String? = null,
+        /** A ship's victory achievement: the family's first ship, and which of its layouts have won. */
+        val shipVictory: String? = null,
+        val shipVictoryLayouts: List<Boolean> = emptyList()
     )
     private val pendingNotifications = ArrayList<ProgressNotification>()
     private var suppressNotifications = false
     val pendingNotificationCount get() = pendingNotifications.size
     fun pollNotification(): ProgressNotification? = if (pendingNotifications.isEmpty()) null else pendingNotifications.removeAt(0)
     fun clearNotifications() { pendingNotifications.clear() }
+    /** Hyperspace ship unlock popups (HsProfileHooks), shown like the vanilla ones. */
+    fun addHsNotification(n: ProgressNotification) { if (achievementPopups && !suppressNotifications) pendingNotifications.add(n) }
 
     fun configureProgression(families: ShipFamily.FamilyTable, achievements: Achievement.AchievementTable) {
         progressionFamilies = families
@@ -60,12 +72,20 @@ class SaveProfile private constructor() {
     }
 
     fun isShipUnlocked(ship: String): Boolean {
+        if (xyz.znix.xftl.hs.HS.active) return xyz.znix.xftl.hs.ship.HsProfileHooks.isShipUnlocked(this, ship)
+        return isVanillaShipUnlocked(ship)
+    }
+
+    /** The vanilla rule (Hyperspace sessions consult it for the vanilla ships). */
+    fun isVanillaShipUnlocked(ship: String): Boolean {
         if (ship == ShipProgression.KESTREL || unlockedLayouts.containsKey(ship)) return true
         val family = progressionFamilies?.byShipId?.get(ship) ?: return false
         return ship == family.ships.first() && family.unlockId?.let { unlockedShips.containsKey(it) } == true
     }
 
     fun unlockLayout(ship: String, difficulty: Difficulty) {
+        // Hyperspace's ScoreKeeper::UnlockShip hook (Seeds.cpp): a seeded run unlocks nothing unless <seeds allowUnlocks>.
+        if (xyz.znix.xftl.hs.HS.active && !xyz.znix.xftl.hs.ship.HsShipUnlocks.unlocksAllowed()) return
         if ((unlockedLayouts[ship]?.difficulty?.ordinal ?: -1) >= difficulty.ordinal) return
         val firstUnlock = !unlockedLayouts.containsKey(ship)
         unlockedLayouts[ship] = AchievementUnlockInfo(difficulty)
@@ -74,10 +94,24 @@ class SaveProfile private constructor() {
         ftl.browser.BrowserDebug.record("progression", "layout.unlock", "{\"ship\":${ftl.browser.BrowserDebug.quote(ship)},\"difficulty\":${ftl.browser.BrowserDebug.quote(difficulty.name)}}")
     }
 
-    fun recordLayoutVictory(ship: String, difficulty: Difficulty) {
-        if ((layoutVictories[ship]?.difficulty?.ordinal ?: -1) >= difficulty.ordinal) return
+    /** False when this layout had already won at this difficulty or above. */
+    fun recordLayoutVictory(ship: String, difficulty: Difficulty): Boolean {
+        if ((layoutVictories[ship]?.difficulty?.ordinal ?: -1) >= difficulty.ordinal) return false
         layoutVictories[ship] = AchievementUnlockInfo(difficulty)
         dirty = true
+        return true
+    }
+
+    fun notifyShipVictory(family: ShipFamily) {
+        if (!achievementPopups || suppressNotifications) return
+        if (xyz.znix.xftl.hs.HS.active) {
+            if (!xyz.znix.xftl.hs.ship.HsAchievements.achievementsAllowed()) return
+            if (family.ships.any { xyz.znix.xftl.hs.ship.HsShips.isCustomShip(it) }) return
+        }
+        pendingNotifications.add(ProgressNotification(
+            shipVictory = family.ships.first(),
+            shipVictoryLayouts = family.ships.map { layoutVictories[it] != null }
+        ))
     }
 
     fun getLayoutVictory(ship: String): AchievementUnlockInfo? = layoutVictories[ship]
@@ -86,11 +120,20 @@ class SaveProfile private constructor() {
     fun visitSector(ship: String, sector: Int, advanced: Boolean, difficulty: Difficulty) {
         progressionFamilies?.let { ShipProgression.visit(this, it, ship, sector, advanced, difficulty) }
         reconcileProgression()
+        // Hyperspace: StarMap::AdvanceWorldLevel -> CustomShipUnlocks::CheckSectorUnlocks.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsProfileHooks.sector(this, ship, sector, difficulty)
     }
 
     fun recordShipVictory(ship: String, difficulty: Difficulty) {
         progressionFamilies?.let { ShipProgression.victory(this, it, ship, difficulty) }
         reconcileProgression()
+        // Hyperspace: AchievementTracker::SetVictoryAchievement.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsProfileHooks.victory(this, ship, difficulty)
+    }
+
+    /** Hyperspace: the CommandGui::Victory unlock checks. */
+    fun recordVictoryScreen(ship: String, difficulty: Difficulty) {
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsProfileHooks.victoryScreen(this, ship, difficulty)
     }
 
     /**
@@ -229,8 +272,12 @@ class SaveProfile private constructor() {
     /** Zero removes the browser render limit; simulation updates are unaffected. */
     var frameRateLimit: Int = 60
         set(value) { field = if (value == 0) 0 else value.coerceIn(30, 360) }
+    /** Touch Command Auto-Pause (touch layout): the game pauses while a command is being given. */
+    var touchAutoPause: Boolean = true
     /** ScoreKeeper's ship-list tutorial state: 0 unseen, 1 encouraged, 2 shown. */
     var listTutorialState: Int = 0
+    /** Settings::language once chosen (languageSet), else null: written like settings.ini's `language=`. */
+    var language: String? = null
 
     /**
      * Set to true if this profile needs saving.
@@ -251,6 +298,9 @@ class SaveProfile private constructor() {
     }
 
     fun unlockAchievement(ach: Achievement, difficulty: Difficulty) {
+        // Hyperspace's AchievementTracker::SetAchievement hook (Seeds.cpp): a seeded run awards nothing unless
+        // <seeds allowAchievements="true"> (oracle r3-flag1: no popup on the seeded victory).
+        if (xyz.znix.xftl.hs.HS.active && !xyz.znix.xftl.hs.ship.HsAchievements.achievementsAllowed()) return
         val current = unlockedAchievements[ach.id]
 
         // AchievementTracker::SetAchievement (0x432010): an unlocked achievement is only re-awarded when it is
@@ -285,6 +335,8 @@ class SaveProfile private constructor() {
      */
     fun unlockShip(shipFamily: ShipFamily, difficulty: Difficulty, fromEvent: Boolean = false) {
         requireNotNull(shipFamily.unlockId)
+        // Hyperspace's ScoreKeeper::UnlockShip hook (Seeds.cpp): a seeded run unlocks nothing unless <seeds allowUnlocks>.
+        if (xyz.znix.xftl.hs.HS.active && !xyz.znix.xftl.hs.ship.HsShipUnlocks.unlocksAllowed()) return
 
         val current = unlockedShips[shipFamily.unlockId]
         if (current == null && achievementPopups && !suppressNotifications) {
@@ -324,15 +376,39 @@ class SaveProfile private constructor() {
         dirty = true
     }
 
-    fun save(): Document {
-        val doc = Document(Element("xftl-profile"))
+    /** The device's settings: global, not part of any save. */
+    fun saveSettings(): Document {
+        val doc = Document(Element("xftl-settings"))
         val root = doc.rootElement
         root.setAttribute("achPopups", achievementPopups.toString())
         root.setAttribute("hangarAE", lastAdvancedEdition.toString())
         root.setAttribute("fpsLimit", frameRateLimit.toString())
+        root.setAttribute("touchAutoPause", touchAutoPause.toString())
         root.setAttribute("autoPause", autoPauseOnFocusLoss.toString())
         root.setAttribute("beaconPaths", showBeaconPaths.toString())
         root.setAttribute("dialogKeys", eventChoiceHotkeys.id.toString())
+        language?.let { root.setAttribute("language", it) }
+
+        for ((hotkey, button) in keybinds.entries.sortedBy { it.key }) {
+            val elem = Element("hotkey")
+            root.addContent(elem)
+
+            elem.setAttribute("action", hotkey)
+            if (button != null) {
+                elem.setAttribute("key", button)
+            }
+        }
+
+        val volumes = Element("soundVolume")
+        root.addContent(volumes)
+        volumes.setAttribute("sfx", soundVolume.toString())
+        volumes.setAttribute("music", musicVolume.toString())
+        return doc
+    }
+
+    fun save(): Document {
+        val doc = Document(Element("xftl-profile"))
+        val root = doc.rootElement
         root.setAttribute("listTutorial", listTutorialState.toString())
         for ((ship, info) in unlockedLayouts.entries.sortedBy { it.key }) root.addContent(Element("layout").setAttribute("ship", ship).setAttribute("diff", info.difficulty.name))
         for ((ship, info) in layoutVictories.entries.sortedBy { it.key }) root.addContent(Element("layoutVictory").setAttribute("ship", ship).setAttribute("diff", info.difficulty.name))
@@ -353,21 +429,6 @@ class SaveProfile private constructor() {
             elem.setAttribute("diff", info.difficulty.name)
         }
 
-        for ((hotkey, button) in keybinds.entries.sortedBy { it.key }) {
-            val elem = Element("hotkey")
-            root.addContent(elem)
-
-            elem.setAttribute("action", hotkey)
-            if (button != null) {
-                elem.setAttribute("key", button)
-            }
-        }
-
-        val volumes = Element("soundVolume")
-        root.addContent(volumes)
-        volumes.setAttribute("sfx", soundVolume.toString())
-        volumes.setAttribute("music", musicVolume.toString())
-
         val stats = Element("browserStats").setAttribute("games", browserGamesPlayed.toString()).setAttribute("wins", browserVictories.toString())
             .setAttribute("scrap", browserLifetimeScrap.toString()).setAttribute("ships", browserLifetimeShips.toString())
             .setAttribute("beacons", browserLifetimeBeacons.toString()).setAttribute("crew", browserLifetimeCrew.toString())
@@ -377,6 +438,7 @@ class SaveProfile private constructor() {
         for (record in browserScores) stats.addContent(record.save("score"))
         for (kind in ftl.browser.CrewRecordKind.entries) browserCrewRecords[kind]?.let { stats.addContent(it.save()) }
         root.addContent(stats)
+        if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSave.writeProfile(root)
         return doc
     }
 
@@ -391,22 +453,42 @@ class SaveProfile private constructor() {
         dirty = false
     }
 
+    fun loadSettings(doc: Document) {
+        val root = doc.rootElement
+        check(root.name == "xftl-settings")
+        achievementPopups = root.getAttributeValue("achPopups")?.toBoolean() ?: true
+        lastAdvancedEdition = root.getAttributeValue("hangarAE")?.toBoolean() ?: true
+        frameRateLimit = root.getAttributeValue("fpsLimit")?.toIntOrNull() ?: 60
+        touchAutoPause = root.getAttributeValue("touchAutoPause") != "false"
+        autoPauseOnFocusLoss = root.getAttributeValue("autoPause")?.toBooleanStrictOrNull() ?: true
+        showBeaconPaths = root.getAttributeValue("beaconPaths")?.toBooleanStrictOrNull() ?: true
+        eventChoiceHotkeys = EventChoiceHotkeyMode.fromId(root.getAttributeValue("dialogKeys")?.toIntOrNull())
+        language = root.getAttributeValue("language")?.let(xyz.znix.xftl.Languages::validSetting)
+        xyz.znix.xftl.Languages.select(language ?: "en")
+        xyz.znix.xftl.Languages.atStart = xyz.znix.xftl.Languages.current
+        keybinds.clear()
+        for (elem in root.getChildren("hotkey")) {
+            val action: String = elem.getAttributeValue("action")
+            val key: String? = elem.getAttributeValue("key")
+            keybinds[action] = key
+        }
+
+        val volumes = root.getChild("soundVolume")
+        if (volumes != null) {
+            soundVolume = volumes.getAttributeValue("sfx").toFloat()
+            musicVolume = volumes.getAttributeValue("music").toFloat()
+        }
+    }
+
     fun load(doc: Document) {
         val root = doc.rootElement
         check(root.name == "xftl-profile")
         clearNotifications()
-        achievementPopups = root.getAttributeValue("achPopups")?.toBoolean() ?: true
-        lastAdvancedEdition = root.getAttributeValue("hangarAE")?.toBoolean() ?: true
-        frameRateLimit = root.getAttributeValue("fpsLimit")?.toIntOrNull() ?: 60
-        autoPauseOnFocusLoss = root.getAttributeValue("autoPause")?.toBooleanStrictOrNull() ?: true
-        showBeaconPaths = root.getAttributeValue("beaconPaths")?.toBooleanStrictOrNull() ?: true
-        eventChoiceHotkeys = EventChoiceHotkeyMode.fromId(root.getAttributeValue("dialogKeys")?.toIntOrNull())
         listTutorialState = root.getAttributeValue("listTutorial")?.toIntOrNull()?.coerceIn(0, 2) ?: 0
         unlockedAchievements.clear()
         unlockedShips.clear()
         unlockedLayouts.clear()
         layoutVictories.clear()
-        keybinds.clear()
         browserScores.clear()
         browserCrewRecords.clear()
         browserGamesPlayed = 0
@@ -458,19 +540,9 @@ class SaveProfile private constructor() {
             )
         }
 
-        for (elem in root.getChildren("hotkey")) {
-            val action: String = elem.getAttributeValue("action")
-            val key: String? = elem.getAttributeValue("key")
-            keybinds[action] = key
-        }
-
-        val volumes = root.getChild("soundVolume")
-        if (volumes != null) {
-            soundVolume = volumes.getAttributeValue("sfx").toFloat()
-            musicVolume = volumes.getAttributeValue("music").toFloat()
-        }
         suppressNotifications = true
         try { reconcileProgression() } finally { suppressNotifications = false }
+        if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSave.readProfile(root)
     }
 
     class AchievementUnlockInfo(val difficulty: Difficulty)

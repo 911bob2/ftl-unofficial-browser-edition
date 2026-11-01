@@ -5,8 +5,11 @@ import kotlin.random.Random
 object BrowserRandom : Random() {
     private const val MASK = (1L shl 48) - 1
     private var state = (System.nanoTime() xor 0x5DEECE66DL) and MASK
+    /** Diagnostics only (native 1.6.14 replays): draw from [NativeRandom], so a seeded native draw order replays. */
+    @JvmField var nativeStream = false
     override fun nextBits(bitCount: Int): Int {
         if (bitCount == 0) return 0
+        if (nativeStream) return NativeRandom.nextBits(bitCount)
         state = (state * 0x5DEECE66DL + 11) and MASK
         return (state ushr (48 - bitCount)).toInt()
     }

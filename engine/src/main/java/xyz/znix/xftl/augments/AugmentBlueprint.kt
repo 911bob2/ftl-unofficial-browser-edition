@@ -16,9 +16,13 @@ import xyz.znix.xftl.layout.BreachInstance
  * to show likely pain points for modding.
  */
 open class AugmentBlueprint(elem: Element) : Blueprint(elem) {
-    override val cost: Int = elem.getChildTextTrim("cost").toInt()
+    private val xmlCost: Int = elem.getChildTextTrim("cost").toInt()
+    override val cost: Int get() = hsCost ?: xmlCost
     val stackable: Boolean = elem.getChildTextTrim("stackable")!!.toBoolean()
     val value: Float = elem.getChildTextTrim("value")?.toFloat() ?: 1f
+
+    /** AugmentBlueprint::value as FTL parses it: 0 without a `<value>` (HS augment values and Lua read this one). */
+    val nativeValue: Float = elem.getChildTextTrim("value")?.toFloat() ?: 0f
 
     open fun update(ship: Ship, dt: Float, totalValue: Float) {}
 
@@ -143,6 +147,10 @@ class AugPreigniter(elem: Element) : AugmentBlueprint(elem) {
         for (hp in ship.hardpoints) {
             val weapon = hp.weapon ?: continue
 
+            // Hyperspace <preIgniteChargers>: ProjectileFactory::ForceCoolup charges every charger level.
+            if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.weapons.HsWeapons.forceCoolup(weapon))
+                continue
+
             // We don't charge up unpowered weapons
             if (!weapon.isPowered)
                 continue
@@ -181,7 +189,7 @@ class AugSlugGel(elem: Element) : AugmentBlueprint(elem) {
         // PartialRepair(0.75) on every breach of a ship with SLUG_GEL, so
         // all breaches seal at once at 75% of a crewmember's speed,
         // stacking with crew repairs. The dat's value (0.25) is unused.
-        val rate = GEL_CREW_SPEED_FRACTION * BreachInstance.CREW_REPAIR_RATE * dt
+        val rate = xyz.znix.xftl.hs.systems.HsClone.slugGelFraction(ship, GEL_CREW_SPEED_FRACTION) * BreachInstance.CREW_REPAIR_RATE * dt
         if (rate <= 0f)
             return
 

@@ -7,7 +7,6 @@ import xyz.znix.xftl.math.Direction
 import xyz.znix.xftl.math.IPoint
 import xyz.znix.xftl.math.Point
 import xyz.znix.xftl.rendering.Colour
-import xyz.znix.xftl.rendering.DelayedTooltip
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.rendering.Image
 import xyz.znix.xftl.sector.Beacon
@@ -29,8 +28,10 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     // enough to keep it on-screen: centreY <= 348 with 10px margin.
     override val renderScale = if (PlatformSpecific.INSTANCE.isTouchUi) 1.2f else 1f
     // Desktop: StarMap renders translated to its position, (340,83) on the canvas.
+    // The touch layout centres the map in the HUD block, at y 100 of its 768.
     override val windowCentreOffset: IPoint =
-        if (PlatformSpecific.INSTANCE.isTouchUi) ConstPoint(0, -75) else ConstPoint(76, -10)
+        if (TouchMode.enabled) ConstPoint(0, -17)
+        else if (PlatformSpecific.INSTANCE.isTouchUi) ConstPoint(0, -75) else ConstPoint(76, -10)
 
     // Tap-to-arm: first tap on a beacon/button highlights it, second tap
     // confirms (see Window.tapToArm). Runtime-gated on isTouchUi.
@@ -42,6 +43,7 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     private val font = game.getFont("HL2", 3f)
     private val buttonFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 63)
     private val cutoutFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 14)
+    private val hsCostFont by lazy { xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 0) }
     private val cancelButtonOutline = game.getImg("img/main_menus/button_cancel_base.png")
     private val sectorInfoFont = game.getFont("c&cnew", 2f)
     private val beaconLabelFont = game.getFont("HL1")
@@ -49,7 +51,12 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
 
     private val outlineImage = game.getImg("img/window_outline.png")
 
-    private val lineImg = game.getImg("img/map/dotted_line.png")
+    /** The touch layout's larger map art, where the data set has it. */
+    private fun mapImg(name: String): Image =
+        (if (TouchMode.enabled) game.getImgIfExists("img/ipad/map/$name") else null) ?: game.getImg("img/map/$name")
+
+    private val lineImg = mapImg("dotted_line.png")
+    private val lineHeight = if (TouchMode.enabled) lineImg.height else 4
     private val targetBox = game.getImg("img/map/map_targetbox.png")
 
     private val fleetAdvanceImg = game.getImg("img/map/map_warningcircle_point.png")
@@ -58,7 +65,7 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     private val fleetControlTile = game.getImg("img/map/map_warningcircle_tile.png")
 
     private val beaconShadow = game.getImg("img/map/map_icon_diamond_shadow.png")
-    private val beaconEnvironmentHazard = game.getImg("img/map/map_icon_hazard.png")
+    private val beaconEnvironmentHazard = mapImg("map_icon_hazard.png")
 
     // Nebula puffs (GitHub issue #74): vanilla envelopes each nebula beacon
     // on the map in one of these soft clouds, making the sector's nebula
@@ -70,15 +77,15 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         game.getImg("img/map/nebula_2.png"),
         game.getImg("img/map/nebula_3.png"),
     )
-    private val beaconYellow = game.getImg("img/map/map_icon_diamond_yellow.png")
-    private val beaconBlue = game.getImg("img/map/map_icon_diamond_blue.png")
-    private val beaconDanger = game.getImg("img/map/map_icon_triangle_red.png")
-    private val beaconShipPresent = game.getImg("img/map/map_icon_triangle_yellow.png")
+    private val beaconYellow = mapImg("map_icon_diamond_yellow.png")
+    private val beaconBlue = mapImg("map_icon_diamond_blue.png")
+    private val beaconDanger = mapImg("map_icon_triangle_red.png")
+    private val beaconShipPresent = mapImg("map_icon_triangle_yellow.png")
     private val beaconWillOvertakeCircle = game.getImg("img/tutorial/player_circle.png") // This is the right image!
-    private val beaconOvertaken = game.getImg("img/map/map_icon_warning.png")
+    private val beaconOvertaken = mapImg("map_icon_warning.png")
 
-    private val playerShip = game.getImg("img/map/map_icon_ship.png")
-    private val playerShipNoFuel = game.getImg("img/map/map_icon_ship_fuel.png")
+    private val playerShip = mapImg("map_icon_ship.png")
+    private val playerShipNoFuel = mapImg("map_icon_ship_fuel.png")
 
     private val noFuelImage = game.getImg("img/map/map_fuel_text_nofuel.png")
     private val waitingImage = game.getImg("img/map/map_fuel_text_waiting.png")
@@ -89,10 +96,15 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
      */
     private var waitingTimer = 0f
     internal val isWaiting: Boolean get() = waitingTimer > 0f
+
+    /** StarMap::dangerWaitStart: the danger zone's x when WAIT was pressed; the zone moves on from it while waiting. */
+    private var waitStartX = 0
+    private var waitSerial = 0
     private val waitDistressFrame = game.getImg("img/map/side_wait_distress.png")
     private val fuelDistressFlashLight = game.getImg("img/map/side_distressbeacon_redlight.png")
 
-    private val beaconOffset = Point(-beaconYellow.width / 2, -beaconYellow.height / 2)
+    // The labels, lines and target box are placed from the desktop icon's corner, whichever art is drawn.
+    private val beaconOffset = game.getImg("img/map/map_icon_diamond_yellow.png").let { Point(-it.width / 2, -it.height / 2) }
 
     // The offsets to the coordinate system the beacons are positioned on
     private val mapBase = Point(0, 0)
@@ -108,6 +120,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     private val labelWhite = (1..3).map { game.getImg("img/map/map_box_white_$it.png") }
     private val labelGreen = (1..3).map { game.getImg("img/map/map_box_green_$it.png") }
     private val labelPurple = (1..3).map { game.getImg("img/map/map_box_purple_$it.png") }
+
+    /** Hyperspace beacon types: the coloured label box (RenderLabels' boxCustom), loaded only in HS sessions. */
+    private val labelCustom by lazy { (1..3).map { game.getImg("img/map/map_box_custom_$it.png") } }
 
     val cancelButton: Button
     val nextSectorButton: Button
@@ -129,12 +144,22 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     private val fuelDistressFlashOn: Boolean get() = fuelDistressOn && fuelDistressFlashTimer < 0.5f
 
     var hovered: Beacon? = null
+        set(v) { field = v; if (!isWaiting && !outOfFuel) xyz.znix.xftl.hs.sector.HsStarMap.hoverLoc = v } // StarMap::hoverLoc outlives the map
 
     private var playerRotation: Float = (0f..10f).random(VisualRandom)
 
-    private val outOfFuel: Boolean get() = game.player.fuelCount == 0
+    // Touch layout: a finger picks the beacon nearest to it on every press and move. [hovered] then keeps the picked
+    // beacon (its target box, tooltip and line); the target is set only when the ship can go there, and only the Jump
+    // button jumps.
+    private var touchFingerDown = false
+    private var touchTarget: Beacon? = null
+    private var touchJumpButton: Button? = null
+
+    // Hyperspace StarMap::OnLoop rewrite (CustomMap.cpp): a script's ForceWaitMessage holds the wait controls too.
+    private val outOfFuel: Boolean get() = xyz.znix.xftl.hs.sector.HsStarMap.outOfFuel(game.player.fuelCount)
 
     init {
+        xyz.znix.xftl.hs.sector.HsStarMap.hoverLoc = game.currentBeacon.takeIf { game.player.fuelCount >= 1 } // StarMap::Open
         // The buttons are fiddly to set up, as they move depending on
         // the length of the text inside them.
 
@@ -186,6 +211,18 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 override val disabled: Boolean get() = !game.browserCanWait()
             }.also { buttons += it }
         }
+
+        if (TouchMode.enabled) {
+            val text = game.translator["button_jump"]
+            val width = maxOf(buttonFont.measure(text) + 4 * 2, 101)
+            touchJumpButton = object : Buttons.BasicButton(
+                game, ConstPoint(size.x - 12 - width, 486), ConstPoint(width, 36), text,
+                3, font, 27, ::touchJumpPressed
+            ) {
+                override val nativeFont = buttonFont
+                override val disabled: Boolean get() = touchTarget == null || outOfFuel || isWaiting
+            }.also { buttons += it }
+        }
     }
 
     /**
@@ -193,7 +230,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
      */
     private fun drawMapContent(g: Graphics) {
         // Draw the background image, offset 4px to account for the line wall of the window.
-        background.draw(position.x + 4f, position.y + 4f, Colour(0.75f, 0.75f, 0.75f, 1f))
+        // Hyperspace: a script may replace StarMap::mapsBottom[worldLevel % 3]
+        if (!(xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.lua.LuaStarMap.drawBottom(sector.sectorNumber % 3, position.x + 4f, position.y + 4f)))
+            background.draw(position.x + 4f, position.y + 4f, Colour(0.75f, 0.75f, 0.75f, 1f))
 
         mapBase.x = position.x + Sector.OFFSET.x
         mapBase.y = position.y + Sector.OFFSET.y
@@ -202,6 +241,17 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         // TODO draw the player and boss ships below this.
         if (sector.isLastStand) {
             drawLastStandDangerZone(g)
+        }
+
+        // Hyperspace showAllConnections (CustomMap.cpp StarMap::DrawConnection, 1.23.2): the first connection drawn
+        // is preceded by every other one in white, but those of the current and the hovered beacon.
+        if (game.eventManager.hs != null && xyz.znix.xftl.hs.sector.HsStarMap.showAllConnections()) {
+            val drawn = HashSet<Pair<Beacon, Beacon>>()
+            for (a in sector.beacons) for (b in a.neighbours) {
+                if (a === game.currentBeacon || b === game.currentBeacon || a === hovered || b === hovered) continue
+                if (!drawn.add(if (System.identityHashCode(a) < System.identityHashCode(b)) a to b else b to a)) continue
+                drawBeaconLine(g, a, b, Colour.white, fade = false)
+            }
         }
 
         // Draw the connections to the adjacent beacons.
@@ -233,8 +283,13 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         val hovered = hovered
 
         if (hovered != null && hovered != game.currentBeacon && (game.mainGame?.profile?.showBeaconPaths != false)) {
-            // Draw the lines between the hovered beacon and it's neighbours
-            drawBeaconLinesTo(g, hovered, Constants.BEACON_LINE_HOVER) { it != game.currentBeacon }
+            if (TouchMode.enabled) {
+                // The path from the ship to the picked beacon
+                drawBeaconLine(g, game.currentBeacon, hovered, Constants.BEACON_LINE_HOVER)
+            } else {
+                // Draw the lines between the hovered beacon and it's neighbours
+                drawBeaconLinesTo(g, hovered, Constants.BEACON_LINE_HOVER) { it != game.currentBeacon }
+            }
         }
 
         val nextFleetPos = Point(sector.dangerZoneCentre)
@@ -254,7 +309,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
             val centrePos = mapBase + beacon.pos
             val pos = centrePos + beaconOffset
 
-            val isNeighbour = neighbourVisSet.contains(beacon)
+            // Hyperspace: Location::known, which scripts may write (MV's Aether boon reveals a ruin).
+            val isNeighbour = if (game.eventManager.hs != null) beacon.known else neighbourVisSet.contains(beacon)
             val showBasicInfo = beacon.visited || sector.mapRevealed || isNeighbour
             val showAdvInfo = beacon.visited || sector.mapRevealed || (isNeighbour && hasLRS)
 
@@ -276,8 +332,11 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 }
             }
 
-            if (showAdvInfo && beacon.environmentType.isDangerous) {
-                beaconEnvironmentHazard.draw(pos.x - 5, pos.y - 5)
+            // Hyperspace GET_BEACON_HAZARD (StarMap::OnRender): a beacon the callbacks name is drawn as a hazard beacon.
+            if (showAdvInfo && (beacon.environmentType.isDangerous ||
+                        (game.eventManager.hs != null && xyz.znix.xftl.hs.lua.LuaAdaptersWP1.beaconHazardMarker(beacon)))) {
+                if (TouchMode.enabled) drawCentred(beaconEnvironmentHazard, centrePos)
+                else beaconEnvironmentHazard.draw(pos.x - 5, pos.y - 5)
             }
 
             // Draw the flashing background if this beacon
@@ -296,7 +355,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 )
             }
 
-            beaconShadow.draw(pos)
+            if (TouchMode.enabled) beaconShadow.draw(centrePos.x - 20f, centrePos.y - 20f, 40f, 40f)
+            else beaconShadow.draw(pos)
 
             val beaconImg = when (beacon.state) {
                 Beacon.State.UNVISITED -> when {
@@ -308,17 +368,27 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 Beacon.State.VISITED_DANGER -> beaconDanger
                 Beacon.State.OVERTAKEN -> beaconOvertaken
             }
-            beaconImg.draw(pos)
+            if (TouchMode.enabled) drawCentred(beaconImg, centrePos) else beaconImg.draw(pos)
 
-            if (beacon.event.isDistressBeacon && !beacon.visited && showBasicInfo && !willBeOvertaken)
+            // Hyperspace <beaconType> (StarMap::RenderLabels hook): a custom label, and the original's quest, exit,
+            // repair, store and distress labels hidden.
+            val hsLabel = if (game.eventManager.hs != null)
+                xyz.znix.xftl.hs.events.HsBeaconLabels.label(game, beacon, beacon.visited || isNeighbour, sector.mapRevealed) else null
+            val hideVanilla = hsLabel?.hideVanilla == true
+            hsLabel?.text?.let { text ->
+                if (hsLabel.white) drawBeaconLabel(labelWhite, hsLabel.colour, pos, text)
+                else drawBeaconLabel(labelCustom, hsLabel.colour, pos, text, hsLabel.colour)
+            }
+
+            if (!hideVanilla && beacon.event.isDistressBeacon && !beacon.visited && showBasicInfo && !willBeOvertaken)
                 drawBeaconLabel(labelWhite, Constants.SECTOR_CUTOUT_TEXT, pos, game.translator["map_icon_distress"])
 
-            if (beacon.event.isLastStandRepair && !beacon.visited && !willBeOvertaken)
+            if (!hideVanilla && beacon.event.isLastStandRepair && !beacon.visited && !willBeOvertaken)
                 drawBeaconLabel(labelWhite, Constants.SECTOR_CUTOUT_TEXT, pos, game.translator["map_icon_repair"])
 
             // Note that quests and stores are cleared when the beacon is overrun,
             // so we don't have to check if willBeOvertaken is set.
-            if (beacon.hasQuest && !beacon.visited)
+            if (!hideVanilla && beacon.hasQuest && !beacon.visited)
                 drawBeaconLabel(
                     labelPurple,
                     Constants.SECTOR_CUTOUT_TEXT_PURPLE,
@@ -326,16 +396,17 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                     game.translator["map_icon_quest"]
                 )
 
-            if (beacon.hasStore && showBasicInfo)
+            if (!hideVanilla && beacon.hasStore && showBasicInfo)
                 drawBeaconLabel(labelWhite, Constants.SECTOR_CUTOUT_TEXT, pos, game.translator["map_icon_store"])
 
-            if (beacon.isExit)
+            if (!hideVanilla && beacon.isExit)
                 drawBeaconLabel(labelGreen, Constants.SECTOR_CUTOUT_TEXT_GREEN, pos, game.translator["map_icon_exit"])
 
             if (beacon.isBase)
                 drawBeaconLabel(labelPurple, Constants.SECTOR_CUTOUT_TEXT_PURPLE, pos, game.translator["map_icon_base"])
 
-            if (beacon == hovered && canJumpTo(hovered)) {
+            // A finger on a beacon the ship can't reach still shows where it landed.
+            if (beacon == hovered && (TouchMode.enabled || canJumpTo(hovered))) {
                 drawTargetBox(g, pos)
             }
 
@@ -355,7 +426,10 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 // These offsets are approximate
                 g.pushTransform()
                 g.rotate(centrePos.x.f, centrePos.y.f, -playerRotation)
-                icon.draw(centrePos.x - 8, centrePos.y - 32)
+                // Hyperspace: StarMap::ship / shipNoFuel as a script set them (FTL's primitive sits at -10, -32)
+                if (!(xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.lua.LuaStarMap.drawIcon(fuelDistressFlashOn, centrePos.x.toFloat(), centrePos.y.toFloat())))
+                    if (TouchMode.enabled && icon.height < 64) icon.draw(centrePos.x - icon.width / 2, centrePos.y - 10 - icon.height)
+                    else icon.draw(centrePos.x - 8, centrePos.y - 32)
                 g.popTransform()
             }
 
@@ -372,7 +446,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
             if (hovered !== tooltipBeacon) {
                 tooltipBeacon = hovered
                 val text = beaconTooltipText(hovered, nextFleetPos, tutorial, hasLRS)
-                beaconTooltip = object : DelayedTooltip(game) {
+                // StarMap::OnLoop shows the beacon's text at once (an instant tooltip), Hyperspace's rewrite too.
+                beaconTooltip = object : xyz.znix.xftl.rendering.StandardTooltip(game) {
                     override fun getText(): String = text
                 }
             }
@@ -398,8 +473,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
             }
         }
 
-        // If we're out of fuel, tint the map black and draw the text on top
-        if (outOfFuel) {
+        // Out of fuel or waiting: the map is tinted black and the text drawn on top. A wait keeps both until it ends,
+        // even when a script gave fuel meanwhile; the labels then come on top of them (oracle hg-wait).
+        if (outOfFuel || isWaiting) {
             g.colour = Constants.JUMP_NO_FUEL_TINT
             g.fillRect(position.x, position.y, size.x, size.y)
 
@@ -411,7 +487,14 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 widest * 2 <= 750 -> 2
                 else -> 1
             }
-            if (isWaiting) {
+            val hsMessage = if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.sector.HsStarMap.waitMessage else null
+            if (!isWaiting && hsMessage != null) {
+                // A script's StarMap::fuelMessage (ForceWaitMessage), drawn in the map's frame.
+                g.pushTransform()
+                g.translate(position.x.f, position.y.f)
+                xyz.znix.xftl.hs.lua.LuaGraphics.renderPrimitive(hsMessage, null)
+                g.popTransform()
+            } else if (isWaiting) {
                 waitingImage.draw(
                     position.x + 385f - scale * (waitingImage.width - 12) / 2, position.y + 263f - scale * waitingImage.height / 2,
                     scale * waitingImage.width.f, scale * waitingImage.height.f
@@ -423,7 +506,18 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 )
             }
         }
+
+        drawingDeferredLabels = true
+        try {
+            for (label in deferredLabels) label()
+        } finally {
+            drawingDeferredLabels = false
+            deferredLabels.clear()
+        }
     }
+
+    private val deferredLabels = ArrayList<() -> Unit>()
+    private var drawingDeferredLabels = false
 
     private fun willBeOvertaken(beacon: Beacon, nextFleetPos: IPoint, tutorial: Boolean): Boolean {
         return !tutorial && (if (sector.isLastStand) beacon.browserFleetThreatened else beacon.pos.distToSq(nextFleetPos) < Sector.DANGER_ZONE_RADIUS_SQUARED)
@@ -439,28 +533,40 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         val tr = game.translator
         val lastStand = sector.isLastStand
         // Location+0x15 (known: visited or next to a visited beacon), or the whole map revealed.
-        val nearby = beacon.visited || neighbourVisSet.contains(beacon)
+        val nearby = if (game.eventManager.hs != null) beacon.known else beacon.visited || neighbourVisSet.contains(beacon)
         val known = nearby || sector.mapRevealed
         val scanned = sector.mapRevealed || (nearby && hasLRS)
         val bossBeacon = sector.bosses.any { it.beacon == beacon }
         val event = beacon.event
+
+        // Hyperspace <beaconType> tooltips (StarMap::GetLocationText hook).
+        var hsHide = false
+        if (game.eventManager.hs != null) {
+            val overtaken = willBeOvertaken(beacon, nextFleetPos, tutorial) && !beacon.isOvertaken
+            when (val t = xyz.znix.xftl.hs.events.HsBeaconLabels.tooltip(game, beacon, nearby, sector.mapRevealed, overtaken)) {
+                is xyz.znix.xftl.hs.events.HsBeaconLabels.Tooltip.Custom -> return hsTooltipLines(t.text, beacon, nearby, hasLRS)
+                xyz.znix.xftl.hs.events.HsBeaconLabels.Tooltip.OriginalHidden -> hsHide = true
+                else -> Unit
+            }
+        }
+
         val shipPresent = if (beacon.visited) beacon.ship != null else event.loadShipName != null
-        val repair = event.isLastStandRepair && !beacon.eventCleared
+        val repair = !hsHide && event.isLastStandRepair && !beacon.eventCleared
 
         val description = when {
             beacon == game.currentBeacon -> "map_current_loc"
             bossBeacon && lastStand -> "map_boss_loc"
-            beacon.isExit || beacon.isBase -> if (lastStand) "map_base_loc" else "map_exit_loc"
+            (beacon.isExit && !(hsHide && !beacon.visited)) || beacon.isBase -> if (lastStand) "map_base_loc" else "map_exit_loc"
             willBeOvertaken(beacon, nextFleetPos, tutorial) && !beacon.isOvertaken -> "map_rebels_loc"
             beacon.visited && beacon.hasStore && !(bossBeacon && lastStand) -> "map_store_loc"
             known && repair -> "map_repair_loc"
             beacon.isOvertaken -> "map_fleet_loc"
             beacon.visited -> if (shipPresent) "map_hostile_loc" else "map_nothing_loc"
-            event.isDistressBeacon && known -> "map_distress_loc"
+            !hsHide && event.isDistressBeacon && known -> "map_distress_loc"
             repair -> "map_repair_loc"
             shipPresent && scanned -> "map_ship_loc"
-            beacon.hasQuest -> "map_quest_loc"
-            beacon.hasStore && known -> "map_merchant_loc"
+            !hsHide && beacon.hasQuest -> "map_quest_loc"
+            !hsHide && beacon.hasStore && known -> "map_merchant_loc"
             else -> "map_unvisited_loc"
         }
         val sb = StringBuilder(tr[description])
@@ -471,6 +577,10 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         }
 
         if (scanned) {
+            // Hyperspace GET_BEACON_HAZARD (StarMap::GetLocationText): a callback's string is the hazard line.
+            val hsHazard = if (game.eventManager.hs != null) xyz.znix.xftl.hs.lua.LuaAdaptersWP1.beaconHazardText(beacon) else null
+            if (hsHazard != null)
+                return sb.append(" \n").append(hsHazard).toString()
             val hazard = when (beacon.environmentType) {
                 Beacon.EnvironmentType.ASTEROID -> "map_asteroid_loc"
                 Beacon.EnvironmentType.SUN -> "map_sun_loc"
@@ -490,14 +600,48 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         return sb.toString()
     }
 
+    /** HS GetLocationText with a beacon type's tooltip: the text, then the nebula line and the hazard line. */
+    private fun hsTooltipLines(text: String, beacon: Beacon, nearby: Boolean, hasLRS: Boolean): String {
+        val tr = game.translator
+        val sb = StringBuilder(text)
+        if (beacon.isMapNebula) {
+            val fleetReady = sector.info.sectorClass == xyz.znix.xftl.sector.GameMap.SectorClass.NEBULA
+            sb.append(" \n").append(tr[if (fleetReady) "map_nebula_fleet_loc" else "map_nebula_loc"])
+        }
+        if (!sector.mapRevealed && (!nearby || !hasLRS)) return sb.toString()
+        xyz.znix.xftl.hs.lua.LuaAdaptersWP1.beaconHazardText(beacon)?.let { return sb.append(" \n").append(it).toString() }
+        when (beacon.environmentType) {
+            Beacon.EnvironmentType.ASTEROID -> sb.append(" \n").append(tr["map_asteroid_loc"])
+            Beacon.EnvironmentType.SUN -> sb.append(" \n").append(tr["map_sun_loc"])
+            Beacon.EnvironmentType.ION_STORM -> sb.append(" \n").append(tr["map_ion_loc"])
+            Beacon.EnvironmentType.PULSAR -> sb.append(" \n").append(tr["map_pulsar_loc"])
+            Beacon.EnvironmentType.PDS -> if (!beacon.isBase)
+                sb.append(" \n").append(tr[if (beacon.isOvertaken) "map_pds_fleet" else "map_pds_loc"])
+            else -> Unit
+        }
+        return sb.toString()
+    }
+
     // StarMap's FLAGSHIP JUMPING (0x005f1d20): at the map's spot plus (375, -72), with WARNING!, flashing, while
     // the flagship jumps this turn in the last stand (OnRender 0x005fdbf0).
     private val bossJumpWarning = WarningFlasher.atNative(
         game, 0, 0, "warning_boss_jump", true, GlowColour.RED, flash = true
     )
 
+    private val bossHintFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 10)
+
+    /** The touch layout explains the last stand under the map, in a window centred on it. */
+    private fun drawBossHint(g: Graphics) {
+        val lines = bossHintFont.font.wrapString(game.translator["ipad_boss"], 750)
+        val width = lines.maxOf { bossHintFont.measure(it) } + 30
+        val x = position.x + 375 - width / 2
+        val y = position.y + 590
+        game.windowRenderer.render(x, y, width, lines.size * bossHintFont.lineHeight + 20)
+        bossHintFont.print(x + 20f, y + 10f, lines.joinToString("\n"), Colour.white)
+    }
+
     private var tooltipBeacon: Beacon? = null
-    private var beaconTooltip: DelayedTooltip? = null
+    private var beaconTooltip: xyz.znix.xftl.rendering.StandardTooltip? = null
 
     private fun drawDangerZone(g: Graphics) {
         val dangerZoneRHS = sector.dangerZoneCentre.x + Sector.DANGER_ZONE_RADIUS
@@ -631,12 +775,19 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         val sectorText = game.translator["map_sector"]
         buttonFont.print(position.x + 6f, position.y + 531f, sectorText, Constants.JUMP_DISABLED_TEXT)
 
-        val sectorName = game.translator[sector.type.nameTextId]
+        val sectorName = game.translator[sector.info.displayName]
         val numberX = buttonFont.measure(sectorText) + 18
         val nameX = numberX + 49
         val nameWidth = maxOf(459 - nameX, sectorInfoFont.getWidth(sectorName) + 8)
         drawCutout(position.x + numberX, position.y + size.y - 1, 38, (sector.sectorNumber + 1).toString())
         drawCutout(position.x + nameX, position.y + size.y - 1, nameWidth, sectorName)
+
+        // Hyperspace FTL_JUMPER_GOOD (StarMap::OnRender hook): the hovered beacon's fuel cost, font 0 centred at (173, 83)
+        // of the screen, under the fuel counter (oracle hg-nav)
+        if (!outOfFuel) xyz.znix.xftl.hs.ship.HsNavAugments.costText(game.player)?.let { text ->
+            val red = xyz.znix.xftl.hs.ship.HsNavAugments.fuelReq > game.player.fuelCount
+            hsCostFont.printCenter(if (TouchMode.enabled) TouchMode.hudX + 173f else 173f, 83f, text, if (red) Colour(253, 84, 70) else Colour(243, 255, 230))
+        }
 
         // The top and bottom tabs are slightly different sizes, this compensates for them
         drawSide(Direction.LEFT, 45, size.y + GLOW * 2 - 27)
@@ -653,6 +804,7 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         bossJumpWarning.loopWhile(sector.isLastStand && sector.bosses.any { it.jumping })
         bossJumpWarning.placeNative(position.x + 375, position.y - 72)
         bossJumpWarning.draw(g)
+        if (TouchMode.enabled && sector.isLastStand) drawBossHint(g)
 
         // Draw the out-of-fuel UI
         if (outOfFuel) {
@@ -662,6 +814,27 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 button.draw(g)
             }
         }
+
+        if (!outOfFuel && !isWaiting) touchJumpButton?.let { drawTouchJump(g, it) }
+
+        // Hyperspace splitAllNodeView (StarMap.cpp, after StarMap::OnRender): the superGrid button.
+        if (game.eventManager.hs != null) xyz.znix.xftl.hs.sector.HsStarMap.renderGrid(game, g, false)
+    }
+
+    /** The Jump button in the frame the out-of-fuel controls use at the same spot. */
+    private fun drawTouchJump(g: Graphics, button: Button) {
+        val rightX = position.x + size.x
+        val imgY = position.y + size.y - 67
+        val imgH = waitDistressFrame.height
+        val midX = button.pos.x + 3
+        waitDistressFrame.drawSection(button.pos.x - 19, imgY, 22, imgH)
+        waitDistressFrame.drawSection(midX, imgY, 1, imgH, 22, 0, rightX - 15 - midX)
+        waitDistressFrame.drawSection(rightX - 15, imgY, 15, imgH, 62)
+        button.draw(g)
+    }
+
+    private fun drawCentred(image: Image, centre: IPoint) {
+        image.draw(centre.x - image.width / 2, centre.y - image.height / 2)
     }
 
     // It's a bit horrible, but this function can both draw and create buttons, since
@@ -722,18 +895,25 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
             }
         } else {
             // Wait button
-            buttons += Buttons.BasicButton(
+            // StarMap::OnLoop while out of fuel: tooltip_map_wait / tooltip_map_distress over the two buttons.
+            val waitTooltip = xyz.znix.xftl.rendering.FixedDelayedTooltip(game, "tooltip_map_wait")
+            buttons += object : Buttons.BasicButton(
                 game,
                 ConstPoint(waitButtonX, frameY + 9), ConstPoint(waitButtonWidth, 36),
-                waitText, 4, font, 27
+                waitText, 4, font, 27, { waitPressed() }
             ) {
-                waitPressed()
+                override fun draw(g: Graphics) {
+                    super.draw(g)
+                    if (hovered && !disabled) g.tooltip = waitTooltip
+                }
             }
+            val distressTooltip = xyz.znix.xftl.rendering.FixedDelayedTooltip(game, "tooltip_map_distress")
 
             // Toggle distress beacon
             buttons += object : Button(game, ConstPoint(toggleX, frameY + 9), ConstPoint(toggleButtonWidth, 36)) {
                 override fun draw(g: Graphics) {
                     g.colour = when {
+                        xyz.znix.xftl.hs.HS.active -> xyz.znix.xftl.hs.render.HsColors.tbFill(disabled, hovered)
                         disabled -> Constants.JUMP_DISABLED
                         hovered -> Constants.UI_BUTTON_HOVER
                         else -> Constants.SECTOR_CUTOUT_TEXT
@@ -751,7 +931,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                         false -> offText
                     }
 
-                    font.drawStringCentred(pos.x.f, pos.y + 27f, size.x.f, label, Constants.JUMP_DISABLED_TEXT)
+                    font.drawStringCentred(pos.x.f, pos.y + 27f, size.x.f, label,
+                        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.tbText() else Constants.JUMP_DISABLED_TEXT)
+                    if (hovered && !disabled) g.tooltip = distressTooltip
                 }
 
                 override fun click(button: Int) {
@@ -766,15 +948,43 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         if (isWaiting) {
             for (button in buttons) button.update(-1, -1)
             hovered = null
-            waitingTimer -= game.renderingDeltaTime
+            touchTarget = null
+            // The tracker advances once per frame (this mouse pass runs twice per update).
+            if (waitSerial != game.browserUpdateSerial) {
+                waitSerial = game.browserUpdateSerial
+                waitingTimer -= game.renderingDeltaTime
+            }
+            val moving = !sector.isLastStand && !(game.mainGame?.isTutorialRunning ?: false)
             if (waitingTimer <= 0f) {
                 waitingTimer = 0f
-                waitOutOfFuel()
+                // The fleet's move of the wait is completed from where it started (Sector.advanceFleet).
+                if (moving) sector.dangerZoneCentre.x = waitStartX
+                // StarMap::UpdateDangerZone: the wait itself only follows when the ship is still out of fuel (a
+                // script can refill it while the tracker runs); otherwise the map stays open and only the fleet moved
+                // (oracle hg-wait).
+                if (outOfFuel || !moving) waitOutOfFuel() else game.advanceFleet()
+            } else if (moving) {
+                // StarMap::UpdateDangerZone while waiting: the zone's centre moves with the tracker's progress (oracle
+                // hg-wait: one pixel at a time over the 2 s), and every beacon it reaches on the way is overtaken then.
+                val progress = (WAIT_TIME - waitingTimer) / WAIT_TIME
+                sector.dangerZoneCentre.x = (progress * sector.getFleetAdvanceFor(game.currentBeacon) + waitStartX).toInt()
+                sector.overtakeReached(game)
             }
             return
         }
 
         super.updateUI(x, y)
+        if (game.eventManager.hs != null) xyz.znix.xftl.hs.sector.HsStarMap.mouseMoveGrid(game, x, y, false)
+
+        if (TouchMode.enabled) {
+            if (outOfFuel) {
+                hovered = null
+                touchTarget = null
+            } else if (touchFingerDown) {
+                touchPick(x, y)
+            }
+            return
+        }
 
         val p = scaleWindowPoint(x, y)
 
@@ -792,11 +1002,33 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         }.minByOrNull { it.second } ?: return
 
         val hoverDist = 12
-        if (closest.second > hoverDist * hoverDist)
-            return
-
-        hovered = closest.first
+        if (closest.second <= hoverDist * hoverDist)
+            hovered = closest.first
+        // Hyperspace FTL_JUMPER_GOOD (StarMap::MouseMove hook): any beacon the fuel reaches
+        hsJumpGood = xyz.znix.xftl.hs.ship.HsNavAugments.mouseMove(game.player, game.currentBeacon, hovered, sector.beacons)
     }
+
+    /** The finger's beacon, within sqrt(1000) px; away from any beacon the last pick stays. */
+    private fun touchPick(x: Int, y: Int) {
+        if (buttons.any { !it.disabled && it.contains(x, y) }) return
+        val finger = ConstPoint(x, y)
+        val pick = sector.beacons.minByOrNull { (it.pos + mapBase).distToSq(finger) } ?: return
+        if ((pick.pos + mapBase).distToSq(finger) >= TOUCH_PICK_DIST_SQ) return
+        hovered = pick
+        hsJumpGood = xyz.znix.xftl.hs.ship.HsNavAugments.mouseMove(game.player, game.currentBeacon, pick, sector.beacons)
+        touchTarget = pick.takeIf { canJumpTo(it) }
+    }
+
+    private fun touchJumpPressed() {
+        val target = touchTarget ?: return
+        if (canJumpTo(target)) jumpTo(target)
+    }
+
+    /** The hovered beacon is a jump target through FTL_JUMPER_GOOD ([xyz.znix.xftl.hs.ship.HsNavAugments]). */
+    private var hsJumpGood = false
+
+    /** StarMap::potentialLoc: the hovered beacon when it can be jumped to. */
+    val hsPotentialLoc: Beacon? get() = hovered?.takeIf { canJumpTo(it) }
 
     override fun clickTargetAt(x: Int, y: Int): Any? {
         super.clickTargetAt(x, y)?.let { return it }
@@ -837,6 +1069,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
 
         if (game.currentBeacon.neighbours.contains(beacon))
             return true
+        if (hsJumpGood && beacon == hovered)
+            return true
 
         return beacon.visited && hasAdvFtlNavigation
     }
@@ -844,6 +1078,14 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     override fun mouseClick(button: Int, x: Int, y: Int) {
         if (isWaiting)
             return
+        if (TouchMode.enabled) {
+            if (button != Input.MOUSE_LEFT_BUTTON) return
+            touchFingerDown = true
+            super.mouseClick(button, x, y)
+            if (game.eventManager.hs != null) xyz.znix.xftl.hs.sector.HsStarMap.clickGrid(game, false)
+            if (!outOfFuel) touchPick(x, y)
+            return
+        }
         if (!tapArmGate(button, x, y))
             return
 
@@ -851,12 +1093,22 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
 
         if (button != Input.MOUSE_LEFT_BUTTON)
             return
+        if (game.eventManager.hs != null) xyz.znix.xftl.hs.sector.HsStarMap.clickGrid(game, false)
 
         val hovered = hovered ?: return
 
         if (!canJumpTo(hovered))
             return
 
+        jumpTo(hovered)
+    }
+
+    override fun mouseReleased(button: Int, x: Int, y: Int) {
+        if (button == Input.MOUSE_LEFT_BUTTON) touchFingerDown = false
+        super.mouseReleased(button, x, y)
+    }
+
+    private fun jumpTo(hovered: Beacon) {
         jump(hovered)
 
         // Advance the fleet pursuit *before* changing the beacon, since
@@ -864,7 +1116,12 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         // it is through the jump-out, even when this jump hands the beacon to the fleet (OvertakeLocation).
         val departing = game.currentBeacon
         val scene = departing.getEnvironment(game)
-        game.advanceFleet()
+        sector.hsJumpTarget = hovered
+        try {
+            game.advanceFleet()
+        } finally {
+            sector.hsJumpTarget = null
+        }
         departing.restoreEnvironment(scene)
 
         // ShipManager::JumpLeave takes the fuel and starts the jump-out; the beacon switch - and the
@@ -874,8 +1131,10 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
 
     /** WAIT: StarMap starts its wait tracker; the wait itself follows when it ends (see [updateUI]). */
     internal fun waitPressed() {
-        if (!isWaiting)
+        if (!isWaiting) {
             waitingTimer = WAIT_TIME
+            waitStartX = sector.dangerZoneCentre.x
+        }
     }
 
     internal fun waitOutOfFuel() {
@@ -884,7 +1143,6 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         game.advanceFleet()
         // CommandGui::OnLoop's wait branch calls ShipManager::Wait (0x49d300): the partial jump reset.
         game.player.browserWaitOutOfFuel()
-        if (ftl.browser.BrowserLastStand.checkDefeat(game, game.currentBeacon)) return
         if (sector.isLastStand && game.browserSpawnBossHere()) {
             game.mainGame.writeRunSave(); return
         }
@@ -894,7 +1152,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         // straight to the fleet event.
         val beacon = game.currentBeacon
         val overtaken = beacon.isOvertaken
-        val environment = beacon.environmentType
+        val environments = beacon.environmentTypes
+        // Hyperspace stacked hazards: the first dangerous one picks the escape event
+        val environment = environments.firstOrNull { it.isDangerous } ?: beacon.environmentType
         val escapeName: String? = when (environment) {
             Beacon.EnvironmentType.ASTEROID -> "FUEL_ESCAPE_ASTEROIDS"
             Beacon.EnvironmentType.SUN -> "FUEL_ESCAPE_SUN"
@@ -926,7 +1186,7 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         // The wait event replaces the beacon's event, so the hazard is gone;
         // a nebula or storm beacon stays a (plain) nebula.
         beacon.createdEvent = event
-        beacon.forcedNebula = !overtaken && environment.isNebula
+        beacon.forcedNebula = !overtaken && environments.any { it.isNebula }
 
         game.shipUI.showEventDialogue(event)
         if (escapeName != null) {
@@ -962,7 +1222,12 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         }
     }
 
-    private fun drawBeaconLine(g: Graphics, from: Beacon, to: Beacon, colour: Colour) {
+    /**
+     * StarMap::DrawConnection: dotted segments from [from] to [to] whose alpha falls from 1 at the start to 0.3 at the
+     * end (the colour's own alpha is not used). Hyperspace's showAllConnections lines skip the per-vertex colours, so
+     * they are drawn at full alpha ([fade] false).
+     */
+    private fun drawBeaconLine(g: Graphics, from: Beacon, to: Beacon, colour: Colour, fade: Boolean = true) {
         g.pushTransform()
 
         val fromPos = from.pos + mapBase + beaconOffset
@@ -976,23 +1241,36 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         // Translate to the start position, and rotate so that positive x runs along our line.
         // The beacons are drawn at their image origins, and they're 32px² - so +16 for x,y.
         g.translate(fromPos.x + 16f, fromPos.y + 16f)
-        g.rotate(0f, 1.5f, angle)
+        g.rotate(0f, lineHeight / 2f - 0.5f, angle)
 
         val segmentWidth = 10
 
         // Step along the path of the vector, drawing images in each place
         for (i in 6..(dist - 5) step segmentWidth) {
-            // Draw the line itself
-            lineImg.drawSection(i, 0, segmentWidth, 4, 1, 0, colour = colour)
+            if (!fade) {
+                lineImg.drawSection(i, 0, segmentWidth, lineHeight, 1, 0, colour = colour)
+                continue
+            }
+            val end = i + segmentWidth
+            g.drawImageAlphaRamp(
+                lineImg, i.f, 0f, end.f, lineHeight.f, 1f, 0f, 1f + segmentWidth, lineHeight.f, colour,
+                1f - 0.7f * i / dist, if (end >= dist) 0.3f else 1f - 0.7f * end / dist
+            )
         }
 
         g.popTransform()
     }
 
-    private fun drawBeaconLabel(images: List<Image>, colour: Colour, pos: IPoint, text: String) {
+    private fun drawBeaconLabel(images: List<Image>, colour: Colour, pos: IPoint, text: String, boxFilter: Colour = Colour.white) {
         // StarMap's label pass (0x005ef050) is skipped while out of fuel.
         if (outOfFuel)
             return
+        // The label pass comes after the map's tint and message: a wait refuelled by a script shows its labels over
+        // "Waiting..." (oracle hg-wait).
+        if (isWaiting && !drawingDeferredLabels) {
+            deferredLabels += { drawBeaconLabel(images, colour, pos, text, boxFilter) }
+            return
+        }
         // AFAIK the labels in FTL are drawn with alpha=204, TODO use that
 
         val strWidth = beaconLabelFont.getWidth(text)
@@ -1000,9 +1278,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         val boxTop = pos.y - 11
         val boxTopWithGlow = boxTop - 6
 
-        images[0].draw(pos.x + 15, boxTopWithGlow)
-        images[1].draw(pos.x + 34f, boxTopWithGlow.f, strWidth - 8f, 32f)
-        images[2].draw(pos.x + 26 + strWidth, boxTopWithGlow)
+        images[0].draw(pos.x + 15, boxTopWithGlow, boxFilter)
+        images[1].draw(pos.x + 34f, boxTopWithGlow.f, strWidth - 8f, 32f, boxFilter)
+        images[2].draw(pos.x + 26 + strWidth, boxTopWithGlow, boxFilter)
 
         beaconLabelFont.drawString(pos.x + 30f, boxTop + 10f, text, colour)
     }
@@ -1078,6 +1356,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
 
         // StarMap's wait tracker (0x6b0) runs 2 s.
         private const val WAIT_TIME = 2f
+
+        /** How far (squared) from a beacon a finger still picks it. */
+        private const val TOUCH_PICK_DIST_SQ = 1000
 
         /**
          * This draws the little rounded corners that move in and out, which is used

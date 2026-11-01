@@ -23,9 +23,18 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
     // The ion intruder is the BOARDER_ION blueprint: IonDrone (vtable 0x90d060)
     // with IonDroneAnimation (0x90c504) instead of BoarderDrone.
     private val isIonIntruder: Boolean get() = type.name == "BOARDER_ION"
+
+    /** The landed ion intruder's pulse clock (diagnostics). */
+    val ionClock: IonPulseClock? get() = (pawn as? BoardingPawn)?.ionClock
     override val pawnCodename: String get() = if (isIonIntruder) "boarder_ion" else "battle"
 
     private var projectile: FlyingDrone? = null
+    // HS GPL-3.0-or-later 1b05a07 CustomDamage.cpp BoarderPodDrone::CollisionMoving delivery guard.
+    private var hsLastPod: FlyingDrone? = null
+    var hsPodDelivered = false
+    var hsPodDeployed = false
+    /** The native pod remains a valid Lua object after delivery, although it no longer accepts collisions. */
+    val hsCollisionBody: xyz.znix.xftl.hs.weapons.HsDroneCollisionBody? get() = hsLastPod
 
     override fun init(ownerShip: Ship) {
         super.init(ownerShip)
@@ -42,9 +51,11 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         // (BoarderPodDrone::PickDestination 0x420b70, see FlyingDrone.calculateTargetPosition),
         // so this room only gives the projectile its ship.
         projectile = FlyingDrone(enemyShip.rooms.first())
+        if (xyz.znix.xftl.hs.HS.active) { hsLastPod = projectile; hsPodDeployed = true; hsPodDelivered = false }
 
         // Start in the centre of the drones room, per vanilla
-        val startingPoint = ownerShip.drones!!.room!!.pixelCentre
+        // A pod made by CreateSpaceDrone on a ship without a drone system launches from the ship's first room.
+        val startingPoint = (ownerShip.drones?.room ?: ownerShip.rooms.first()).pixelCentre
 
         // The direction the drone flies in depends on whether this is
         // a player ship or an enemy ship, as it's supposed to go
@@ -56,12 +67,17 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         ownerShip.projectiles += projectile!!
     }
 
+    // HS 1b05a07 CustomDrones.cpp CrewAI::UpdateDrones suppresses orders, while Balance.cpp's
+    // CrewDrone::OnLoop / IonDroneAnimation::UpdateShooting still run for controllable ion drones.
+    override fun updatePawnPassive(dt: Float) {
+        if (!isIonIntruder) return
+        val pawn = this.pawn as BoardingPawn
+        pawn.tickIon(dt)
+        pawn.pulsedThisUpdate = pawn.standingShipHostile && pawn.pathingTarget == null && pawn.fireIonIfReady()
+    }
+
     override fun updatePawn(dt: Float) {
         val pawn = this.pawn!!
-
-        // The ion intruder's timers run whatever the pawn is doing.
-        if (isIonIntruder)
-            (pawn as BoardingPawn).tickIon(dt)
 
         // Once the ship we're aboard is no longer at war with the ship
         // that deployed us - for example all of its crew were just killed -
@@ -100,7 +116,7 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         super.update(dt)
 
         // Check if the player ship jumped away or shot down the projectile
-        if (pawn != null)
+        if (pawn != null || hsCrewLost)
             return
 
         val projectile = this.projectile
@@ -135,8 +151,8 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         return system.damagedEnergyLevels != system.energyLevels
     }
 
-    override fun removeInstance() {
-        super.removeInstance()
+    override fun removeInstance(keepDeployed: Boolean) {
+        super.removeInstance(keepDeployed)
 
         // If a flying drone was sent out, get rid of it.
         projectile?.destroyFlying()
@@ -155,6 +171,10 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
             val projectileElem = Element("projectile")
             SaveUtil.addRoomRef(elem, "targetRoom", refs, projectile!!.target)
             projectile!!.saveToXML(projectileElem, refs)
+            if (xyz.znix.xftl.hs.HS.active) {
+                SaveUtil.addAttrBool(projectileElem, "hsPodDeployed", hsPodDeployed)
+                SaveUtil.addAttrBool(projectileElem, "hsPodDelivered", hsPodDelivered)
+            }
             elem.addContent(projectileElem)
         }
     }
@@ -165,6 +185,11 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         if (projectileElem != null) {
             SaveUtil.getRoomRef(elem, "targetRoom", refs) { target ->
                 projectile = FlyingDrone(target)
+                if (xyz.znix.xftl.hs.HS.active) {
+                    hsLastPod = projectile
+                    hsPodDeployed = projectileElem.getAttributeValue("hsPodDeployed")?.toBoolean() ?: true
+                    hsPodDelivered = projectileElem.getAttributeValue("hsPodDelivered")?.toBoolean() ?: false
+                }
                 projectile!!.loadPropertiesFromXML(projectileElem, refs)
                 containingShip.projectiles.add(projectile!!)
             }
@@ -177,7 +202,7 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
      * The projectile that represents the drone flying through space towards
      * the target ship.
      */
-    inner class FlyingDrone(target: Room) : FlyingDroneProjectile(target.ship) {
+    inner class FlyingDrone(target: Room) : FlyingDroneProjectile(target.ship), xyz.znix.xftl.hs.weapons.HsDroneCollisionBody {
         var target: Room = target
             private set
 
@@ -187,16 +212,35 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
 
         // The portrait frame of the robot, which is shown on top
         // of the thruster sprite
-        val portrait = game.animations["${pawnCodename}_portrait"].spriteAt(game, 0)
+        // Hyperspace BoarderPodDrone constructor (CustomDrones.cpp): a custom drone's pod is its race's `_fly` image.
+        val hsRace = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsDrones.customRace(type.name) else null
+        val portrait = ((if (hsRace != null) game.animations.getOrNull("${hsRace}_fly") else null)
+            ?: game.animations.crewStrip("${pawnCodename}_portrait")).spriteAt(game, 0)
 
         val thruster = game.getImg("img/ship/drones/boarder_engine.png")
 
         // Boarder pods are SpaceDrones in the original: they dodge, can be
         // ion-stunned and explode like any other drone (0x4213d0, 0x421680).
-        private val health = PodHealth(game, type.dodge ?: 0)
+        private val health = PodHealth(game, type.dodge ?: 0, explosionSpec ?: game.animations["explosion_random"])
+
+        override val hsDroneCollisionBody: xyz.znix.xftl.hs.weapons.HsDroneCollisionBody?
+            get() = if (xyz.znix.xftl.hs.HS.active) this else null
+        override val collisionReceiver: Any get() = this@BoardingDrone
+        override val collisionOwner: Ship get() = ownerShip
+        override val collisionSpaceId: Int get() = hsCurrentSpaceId
+        override val collisionSelfId: Int get() = hsSelfId
+        override val collisionPosition: xyz.znix.xftl.math.FPoint get() = position
+        override val collisionDodge: Int get() = type.dodge ?: 0
+        override val collisionPowered: Boolean get() = isPowered
+        override val collisionEnabled: Boolean get() = hsPodDeployed && !hsPodDelivered && projectile === this && pawn == null && !dead && !health.isBlowingUp
+        override val collisionExploding: Boolean get() = health.isBlowingUp
+        override var collisionIonStun: Float
+            get() = health.ionTimer
+            set(value) { health.ionTimer = value }
+        override fun collisionBlowUp() = health.blowUp()
 
         private val isPodStunned: Boolean
-            get() = health.ionTimer > 0f || (initialised && ownerShip.drones!!.isHackActive)
+            get() = health.ionTimer > 0f || (initialised && ownerShip.drones?.isHackActive == true)
 
         // Fished out with x32dbg as I couldn't be bothered to find
         // it via static analysis, and it's not guaranteed to be correct
@@ -205,6 +249,7 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         // SpeedFactor to pixels per second. See doc/reveng-general.md.
         override val speed: Int
             get() = when {
+                xyz.znix.xftl.hs.HS.active && (!hsPodDeployed || hsPodDelivered) -> 0
                 // Pause when the drone is powered off
                 !isPowered -> 0
 
@@ -241,16 +286,18 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         }
 
         override fun update(dt: Float, currentSpace: Ship) {
+            if (xyz.znix.xftl.hs.HS.active && (!hsPodDeployed || hsPodDelivered)) return
             super.update(dt, currentSpace)
 
             // The pod is destroyed (and the drone starts its ten second
             // rebuild) once the explosion animation has finished.
-            if (health.update(dt, initialised && ownerShip.drones!!.isHackActive, isPowered)) {
+            if (health.update(dt, initialised && ownerShip.drones?.isHackActive == true, isPowered)) {
                 destroy()
             }
         }
 
         override fun reachedTarget() {
+            if (xyz.znix.xftl.hs.HS.active) hsPodDelivered = true
             // We've hit our target room.
 
             destroyFlying()
@@ -280,6 +327,7 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         }
 
         override fun renderPreTranslated(g: Graphics) {
+            if (xyz.znix.xftl.hs.HS.active && (!hsPodDeployed || hsPodDelivered)) return
             // An exploding pod is drawn as just the explosion (0x422040).
             // Undo the pod's rotation so the animation isn't turned.
             g.pushTransform()
@@ -351,17 +399,55 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
     private inner class BoardingPawn(room: Room) : AbstractIndoorsDrone.Pawn(room) {
         // Always fight by shooting a laser
         override val canPunch: Boolean get() = false
-        override val canFight: Boolean get() = !isIonIntruder
+        override val canFight: Boolean
+            get() {
+                // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Gameplay/DroneVTable.cpp
+                // (CrewDrone::_HS_CanFight): a BOARDER_ION drone fights only through a `boarder_ion` race, never its species'.
+                if (isIonIntruder && xyz.znix.xftl.hs.HS.active) {
+                    if (!xyz.znix.xftl.hs.crew.CustomCrewManager.isRace("boarder_ion")) return false
+                }
+                return hsFlag(xyz.znix.xftl.hs.stat.CrewStat.CAN_FIGHT) ?: !isIonIntruder
+            }
+
+        // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Ship/CrewMember_Extend.cpp (CrewDrone constructor):
+        // the BOARDER_ION drone is marked isIonDrone; its species stays the CrewDrone type string `battle` (the vanilla
+        // IonDrone builds a battle CrewDrone with an IonDroneAnimation), which MV's hyperspace.xml defines "for ion intruder".
+        override val hsSpecies: String
+            get() = if (isIonIntruder && xyz.znix.xftl.hs.weapons.HsDrones.customRace(type.name) == null) "battle" else codename
+
+        init {
+            if (isIonIntruder && xyz.znix.xftl.hs.HS.active) {
+                // AbstractCrew's constructor already read the maximum health, as the species' race: a `boarder_ion` race
+                // starts over with its own, here and when a save builds this body.
+                val extend = xyz.znix.xftl.hs.crew.HsCrew.ex(this)
+                extend.isIonDrone = true
+                extend.clearStatCache()
+                health = maxHealth
+            }
+        }
         // CrewMember::CanSabotage is 1 for the IonDrone too, and its animation only charges its
         // pulse while sabotaging (animation state 7, IonDroneAnimation update 0x440490).
-        override val canSabotage: Boolean get() = true
+        override val canSabotage: Boolean get() = hsFlag(xyz.znix.xftl.hs.stat.CrewStat.CAN_SABOTAGE)?.let { it && mode == SlotType.INTRUDER } ?: true
+        override val sabotageDamagesSystem: Boolean get() = !isIonIntruder
         override val doorAttackMultiplier: Int get() = if (isIonIntruder) 4 else 1
-        override val attackDamageMult: Float get() = 1.2f
+        override val attackDamageMult: Float get() = hsStat(xyz.znix.xftl.hs.stat.CrewStat.DAMAGE_MULTIPLIER) ?: 1.2f
 
-        override val baseMaxHealth: Float get() = if (isIonIntruder) 125f else 150f
+        override val vanillaMaxHealth: Float get() = if (isIonIntruder) 125f else 150f
 
         // The pulse cadence is IonDroneAnimation's, see IonPulseClock.
-        private val ionClock = IonPulseClock()
+        val ionClock = IonPulseClock()
+
+        // HS controllableIonDroneFix applies to the player's ion intruders (iShipId == 0). Decided on the first
+        // update: the pawn may be built (or loaded) before its owner ship is set; a loaded clock knows its mode.
+        private var hsIonChecked = false
+
+        private fun hsIonCheck() {
+            hsIonChecked = true
+            if (ionClock.hsMode || !xyz.znix.xftl.hs.HS.active || !isIonIntruder) return
+            val cfg = xyz.znix.xftl.hs.HS.cfg()
+            if (cfg.controllableIonDroneFix && ownerShip.isPlayerShip)
+                ionClock.hsInit(cfg.controllableIonDroneDelay, cfg.controllableIonDroneDelayInitial)
+        }
 
         private val isSabotagingIon: Boolean
             get() {
@@ -370,14 +456,32 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
             }
 
         fun tickIon(dt: Float) {
+            if (ionClock.hsMode) return // CrewDrone::OnLoop drives it, see update
             if (ionClock.tick(dt, isSabotagingIon))
+                room.ship.sys.sounds.getSampleOrWarn("ionBoarderCharge")?.play()
+        }
+
+        override fun update(dt: Float) {
+            if (!hsIonChecked && xyz.znix.xftl.hs.HS.active) hsIonCheck()
+            super.update(dt)
+            // CrewDrone::OnLoop (HS controllableIonDroneFix) runs every frame, power-up animation included; an
+            // unpowered ion drone loses its timer and charge.
+            if (!ionClock.hsMode) return
+            if (!drone.isPowered) { ionClock.hsReset(); return }
+            if (ionClock.hsTick(dt, isSabotagingIon, currentAction == AbstractCrew.Action.ATTACKING_DOOR, pathingTarget != null, true))
                 room.ship.sys.sounds.getSampleOrWarn("ionBoarderCharge")?.play()
         }
 
         fun updateIon(dt: Float) {
             val system = room.system
-            if (system == null || system.broken) { moveToIonTarget(); return }
-            if (!ionClock.isReady) return
+            if (system == null || system.broken || pulsedThisUpdate) moveToIonTarget()
+        }
+
+        var pulsedThisUpdate = false
+
+        fun fireIonIfReady(): Boolean {
+            val system = room.system ?: return false
+            if (system.broken || !ionClock.isReady) return false
 
             ionClock.fired()
             room.ship.sys.sounds.getSampleOrWarn("ionHit1")?.play()
@@ -386,7 +490,7 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
                 if (crew.mode != mode && !(crew is AbstractIndoorsDrone.Pawn && crew.drone is BoardingDrone)) crew.stun(6f)
             }
             room.ship.playCentredAnimation(room.ship.sys.animations["stun_spark_big"], room.pixelCentre)
-            moveToIonTarget()
+            return true
         }
         private fun moveToIonTarget() {
             val rooms = room.ship.rooms.filter { it != room && it.system?.broken == false }

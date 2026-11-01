@@ -17,6 +17,13 @@ COPY third_party/ third_party/
 RUN --mount=type=cache,id=ftl-gradle-home,target=/home/gradle/.gradle \
     gradle :engine:generateJavaScript --no-daemon --console=plain "-Dorg.gradle.jvmargs=-Xmx3g" "-Pkotlin.daemon.jvmargs=-Xmx3g" && cp -r engine/build/generated/teavm/js /engine-output
 
+# The shared save rules (savecore/, docs/SAVES.md) as savecore.js, after the engine so editing them keeps its layer.
+COPY savecore/ savecore/
+RUN --mount=type=cache,id=ftl-gradle-home,target=/home/gradle/.gradle     gradle :savecore:generateJavaScript --no-daemon --console=plain "-Dorg.gradle.jvmargs=-Xmx2g" && cp -r savecore/build/generated/teavm/js /savecore-output
+
+FROM scratch AS savecore-js
+COPY --from=engine-build /savecore-output/ /
+
 # Engine JavaScript alone, for exporting a local build without the full image:
 # docker build --target engine-js -o type=local,dest=<dir> .
 FROM scratch AS engine-js
@@ -39,6 +46,7 @@ RUN dotnet publish tests/server-security/Ftl.SecurityTests.csproj -c Release -o 
 COPY web/ /app/wwwroot/web/
 COPY --from=web-build /workspace/web/style.css /app/wwwroot/web/style.css
 COPY --from=engine-build /engine-output/ /app/wwwroot/engine/
+COPY --from=engine-build /savecore-output/ /app/wwwroot/savecore/
 COPY --from=web-build /workspace/resources.pack /app/resources.pack
 
 FROM node:22-bookworm-slim AS test-node
@@ -51,7 +59,7 @@ COPY --from=test-node /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 COPY package.json package-lock.json /app/
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
-RUN npm ci --ignore-scripts --omit=optional && npx playwright install --with-deps chromium firefox chrome msedge && apt-get update && apt-get install -y --no-install-recommends pulseaudio && chmod -R a+rX /opt/playwright && rm -rf /var/lib/apt/lists/* /root/.npm
+RUN npm ci --ignore-scripts --omit=optional && npx playwright install --with-deps chromium firefox && apt-get update && apt-get install -y --no-install-recommends pulseaudio && chmod -R a+rX /opt/playwright && rm -rf /var/lib/apt/lists/* /root/.npm
 COPY --from=server-build --chown=10001:10001 /app/ ./
 COPY --from=server-build --chown=10001:10001 /security-tests/ ./security-tests/
 COPY third_party/notices/ /app/notices/

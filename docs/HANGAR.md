@@ -54,7 +54,7 @@ Private reference exports, original assets, isolated native progress and capture
 remain ignored under `.build/reverse/` and `.build/native-fidelity/`. The native
 copy changes only a same-length save-folder literal; the installed executable and
 original save files are untouched. Save hashes and deployment data checks are
-maintained privately.
+maintained privately; outcomes and next actions are in `AGENT_HANDOFF.md`.
 
 Relevant references: main initialization004cdeb0/custom button004ca260 and
 render004cbb70; hangar geometry004f1dd0; text input004ff810; crew00544180;

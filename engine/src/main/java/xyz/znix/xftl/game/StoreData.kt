@@ -57,6 +57,15 @@ class StoreData {
     val systemVariants = ArrayList<Int>()
 
     /**
+     * Hyperspace: the drone each system box gives (SystemStoreBox::freeBlueprint after HS's `<freeDrones>` hook), by box;
+     * null for no drone. Only filled while Hyperspace is active; [freeDrone] reads it then.
+     */
+    val hsFreeDrones = ArrayList<String?>()
+
+    /** Hyperspace: the custom store (StoreComplete) this store is, or null for a vanilla store. */
+    var hs: xyz.znix.xftl.hs.ship.HsStoreState? = null
+
+    /**
      * The original's Store creation (WorldManager::CreateStore 0x613010 ->
      * Store::OnInit 0x4c3b20 -> 0x4bed80 per section -> 0x4c2710 for the
      * resources), drawing in the original's order from [rand], which is the
@@ -130,18 +139,9 @@ class StoreData {
         availableResources[Resource.DRONES] = rand.nextInt(3) + 2
     }
 
-    /**
-     * The item count of an item section: 3 in AE and 2-3 without. The draw
-     * is made either way (`rand % 1 + 3` in AE).
-     */
-    private fun itemCount(game: InGameState, rand: Random): Int {
-        return if (game.content.enableAdvancedEdition) rand.nextInt(1) + 3 else rand.nextInt(2) + 2
-    }
-
     /** A weapons, drones or augments section: the count, then that many distinct weighted picks. */
     private fun <T> pickItems(game: InGameState, rand: Random, type: Class<T>): List<T?> {
-        val count = itemCount(game, rand)
-        val items = ArrayList<T?>(game.lootPool.getManyRandom(type, rand, count))
+        val items = ArrayList<T?>(vanillaSectionItems(game, rand, type))
         while (items.size < 3)
             items.add(null)
         return items
@@ -149,12 +149,7 @@ class StoreData {
 
     /** CrewStoreBox 0x51ae20: a weighted race, then the name, the colours and the skills. */
     private fun generateCrew(game: InGameState, rand: Random, level: Int): List<LivingCrewInfo?> {
-        val count = itemCount(game, rand)
-        val result = ArrayList<LivingCrewInfo?>()
-        repeat(count) {
-            val race = game.lootPool.getRandom(rand) { it is CrewBlueprint } as? CrewBlueprint ?: error("No available crew!")
-            result += game.crewFactory.createStoreCrew(game, race, level)
-        }
+        val result = ArrayList<LivingCrewInfo?>(vanillaSectionCrew(game, rand, level))
         while (result.size < 3)
             result.add(null)
         return result
@@ -162,6 +157,15 @@ class StoreData {
 
     /** The system section: SystemStoreBox candidates and the selection of 0x4bed80 case 4. */
     private fun generateSystems(game: InGameState, rand: Random, hasDronesSection: Boolean) {
+        if (xyz.znix.xftl.hs.HS.active) {
+            // Hyperspace replaces this section (its Store::CreateStoreBoxes(4) hook).
+            for (box in xyz.znix.xftl.hs.ship.HsStores.systemBoxes(game, rand, false, hasDronesSection)) {
+                systems += box.system
+                systemVariants += -1
+                hsFreeDrones += box.freeDrone
+            }
+            return
+        }
         val ae = game.content.enableAdvancedEdition
         val ship = game.player
         val owned = ship.systems.map { it.blueprint.name }.toSet()
@@ -258,6 +262,8 @@ class StoreData {
     /** The drone given with the drone control in this box, if it is one. */
     fun freeDrone(game: InGameState, index: Int): DroneBlueprint? {
         val system = systems.getOrNull(index) ?: return null
+        if (index < hsFreeDrones.size)
+            return hsFreeDrones[index]?.let { game.blueprintManager.getOrNull(it) as? DroneBlueprint }
         if (system.info != Drones.INFO)
             return null
         val name = DRONE_CONTROL_DRONES.getOrNull(systemVariants.getOrNull(index) ?: -1) ?: return null
@@ -285,7 +291,9 @@ class StoreData {
             val variant = systemVariants.getOrNull(idx) ?: continue
             if (variant >= 0)
                 SaveUtil.addAttrInt(systemElem, "variant", variant)
+            hsFreeDrones.getOrNull(idx)?.let { systemElem.setAttribute("hsFreeDrone", it) }
         }
+        hs?.save(elem)
         saveBlueprints(elem, "augment", augments)
 
         for ((i, crew) in crew.withIndex()) {
@@ -320,6 +328,14 @@ class StoreData {
                 systemVariants.add(-1)
             systemVariants[idx] = variant
         }
+        for (systemElem in elem.getChildren("system")) {
+            val free = systemElem.getAttributeValue("hsFreeDrone") ?: continue
+            val idx = SaveUtil.getAttrInt(systemElem, "idx")
+            while (hsFreeDrones.size <= idx)
+                hsFreeDrones.add(null)
+            hsFreeDrones[idx] = free
+        }
+        hs = xyz.znix.xftl.hs.ship.HsStoreState.load(game, elem)
         loadBlueprints(game, elem, "augment", augments, AugmentBlueprint::class.java)
 
         for (crewElem in elem.getChildren("crew")) {
@@ -369,6 +385,33 @@ class StoreData {
     }
 
     companion object {
+        /**
+         * The item count of an item section: 3 in AE and 2-3 without. The draw
+         * is made either way (`rand % 1 + 3` in AE).
+         */
+        private fun itemCount(game: InGameState, rand: Random): Int {
+            return if (game.content.enableAdvancedEdition) rand.nextInt(1) + 3 else rand.nextInt(2) + 2
+        }
+
+        /** A weapons, drones or augments section as 0x4bed80 makes it: the count, then that many distinct weighted picks. */
+        @JvmStatic
+        fun <T> vanillaSectionItems(game: InGameState, rand: Random, type: Class<T>): List<T> {
+            val count = itemCount(game, rand)
+            return game.lootPool.getManyRandom(type, rand, count)
+        }
+
+        /** The crew section as 0x4bed80 makes it (CrewStoreBox 0x51ae20 per box: a weighted race, the name, colours, skills). */
+        @JvmStatic
+        fun vanillaSectionCrew(game: InGameState, rand: Random, level: Int): List<LivingCrewInfo> {
+            val count = itemCount(game, rand)
+            val result = ArrayList<LivingCrewInfo>()
+            repeat(count) {
+                val race = game.lootPool.getRandom(rand) { it is CrewBlueprint } as? CrewBlueprint ?: error("No available crew!")
+                result += game.crewFactory.createStoreCrew(game, race, level)
+            }
+            return result
+        }
+
         // The section ids of Store::OnInit (0x4c3b20).
         private const val SECTION_WEAPONS = 0
         private const val SECTION_DRONES = 1

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+const skipPerformance=process.env.FTL_SKIP_PERFORMANCE==='1';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {chromium,firefox} from 'playwright';
@@ -7,8 +8,8 @@ const origin=process.env.LAUNCHER_ORIGIN??'http://localhost:8084';
 if(!['http://localhost:8083','http://localhost:8084'].includes(origin))throw Error('Use a disposable resource-cache fixture');
 const credentials=new Map((await readFile((process.env.DEBUG_FIXTURE_DIR??'.build/debug-data')+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(line=>line.split('\t')));
 const checks=[],evidence=[];
-const selected=(process.env.MENU_BROWSERS??'Chrome,Edge,Firefox').split(',');
-const browsers=[['Chrome',chromium,{channel:'chrome'}],['Edge',chromium,{channel:'msedge'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name));
+const selected=(process.env.MENU_BROWSERS??'Chromium,Firefox').split(',');
+const browsers=[['Chromium',chromium,{channel:'chromium'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name));
 if(!browsers.length)throw Error('No resource-cache browsers selected');
 async function login(page){
  await page.goto(origin);await page.waitForFunction(()=>document.body.dataset.sessionReady==='true');
@@ -34,6 +35,7 @@ async function run(page,id){
  assert.equal(await page.locator('#test-status').textContent(),'Completed',await page.locator('#results').textContent());
 }
 async function benchmark(page){
+ if(skipPerformance){console.log('SKIP performance benchmark (FTL_SKIP_PERFORMANCE=1)');return;}
  await page.locator('.preset[data-preset="benchmark"]').click();await page.locator('#benchmark-duration').selectOption('5000');await page.locator('#benchmark-limit').selectOption('30');
  await page.locator('#run-tests').click();await done(page);
  assert.equal(await page.locator('#test-status').textContent(),'Completed',await page.locator('#results').textContent());
@@ -68,20 +70,20 @@ for(const [name,type,options] of browsers){
  const pass=label=>{checks.push(name+': '+label);console.log('PASS '+name+': '+label);};
  try{
   await login(page);
-  const before=await page.evaluate(async()=>(await(await fetch('/api/saves/current')).json()));
+  const before=await page.evaluate(async()=>(await(await fetch('/api/saves')).json()).saves);
   const manifest=await page.evaluate(async()=>(await(await fetch('/api/assets/manifest',{cache:'no-store'})).json()));
   assert.match(manifest.bootHash,/^[a-f0-9]{64}$/);pass('Authorized manifest includes the exact bundle hash');
   await run(page,'mechanics');assert.equal(requests.get('/api/assets/boot'),1);
   await run(page,'audio');await benchmark(page);await run(page,'mechanics');await run(page,'audio');
   assert.equal(requests.get('/api/assets/boot'),1);assert.ok([...requests.keys()].some(path=>path.includes('/audio/')));
   assert.ok([...requests.values()].every(count=>count===1),JSON.stringify([...requests]));
-  pass('Suites, repeated runs and the three-phase benchmark share one boot download and lazy audio');
+  pass(skipPerformance?'Suites and repeated runs share one boot download and lazy audio; benchmarks deferred':'Suites, repeated runs and the three-phase benchmark share one boot download and lazy audio');
   await page.reload();await page.waitForFunction(()=>!document.getElementById('run-tests').disabled);
   await page.locator('#individual-tests').evaluate(element=>element.parentElement.open=true);
   await run(page,'mechanics');await run(page,'audio');await benchmark(page);
   assert.equal(requests.get('/api/assets/boot'),1);assert.ok([...requests.values()].every(count=>count===1),JSON.stringify([...requests]));
-  assert.ok(manifests>=9,'Every run must fetch a fresh manifest');pass('Page reload preserves the cache with fresh authorization on every run');
-  assert.deepEqual(await page.evaluate(async()=>(await(await fetch('/api/saves/current')).json())),before);pass('Cached tests and benchmarks preserve cloud progress');
+  assert.ok(manifests>=(skipPerformance?7:9),'Every run must fetch a fresh manifest');pass('Page reload preserves the cache with fresh authorization on every run');
+  assert.deepEqual(await page.evaluate(async()=>(await(await fetch('/api/saves')).json()).saves),before);pass(skipPerformance?'Cached tests preserve cloud progress; benchmarks deferred':'Cached tests and benchmarks preserve cloud progress');
   // A corrupted copy in Cache Storage (same length, garbled scrap/missile/drone icons) and a download that stalls
   // and stops half way are both caught and replaced, and the game draws the true icons.
   const icons=['img/ui_icons/icon_scrap.png','img/ui_icons/icon_missiles.png','img/ui_icons/icon_drones.png','img/ui_icons/icon_fuel.png'];

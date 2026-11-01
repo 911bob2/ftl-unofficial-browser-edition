@@ -21,17 +21,36 @@ object BrowserLastStand {
      */
     @JvmStatic fun advance(game: InGameState) {
         val sector = game.currentBeacon.sector
+        // Hyperspace StarMap::UpdateBoss (Seeds.cpp, CustomEvents.cpp): a seeded run draws the whole update, the
+        // fleet events of the beacons it takes included, from the boss fleet seed's stream (one global draw
+        // reseeds the global stream afterwards), and <preventBossFleet>/<preventFleet> beacons are held out of
+        // the candidates (BossFleetPrevention marks them as taken while the original runs).
+        val hs = xyz.znix.xftl.hs.HS.active && game.eventManager.hs != null
+        val seeded = hs && xyz.znix.xftl.hs.sector.HsSeeds.enabled
+        var savedSeed = 0
+        if (seeded) {
+            savedSeed = NativeRandom.next31()
+            NativeRandom.seed(xyz.znix.xftl.hs.sector.HsSeeds.bossFleetSeed)
+        }
+        // BossFleetPrevention::Set; a <runFromFleet> relocation during the update runs Clear and Set again.
+        xyz.znix.xftl.hs.sector.HsGeneration.bossBlockedNow = if (hs) xyz.znix.xftl.hs.sector.HsGeneration.bossFleetBlocked(game, sector) else null
+        // The flagship's step is part of UpdateBoss too: the fleet event of the beacon it lands on is drawn from
+        // the same stream, ahead of the selection (seed 303 sector 8: the pick follows two events' draws).
         for (boss in sector.bosses) boss.advanceFleet()
+        val stoodOn: Set<Beacon> = if (hs) sector.bosses.filterIsInstance<FlagshipBoss>().flatMap { it.browserStoodOn() }.toSet() else emptySet()
         // Last turn's warnings become fleet encounters; a new selection warns for next turn.
         val candidates = ArrayList<Beacon>()
         for (beacon in sector.beacons) {
             if (beacon.browserFleetThreatened) {
                 capture(game, beacon)
                 beacon.browserFleetThreatened = false
-            } else if (!beacon.isBase && !beacon.isOvertaken) {
+            } else if (!beacon.isBase && !beacon.isOvertaken && beacon !in stoodOn) {
                 candidates.add(beacon)
             }
         }
+        val blocked = xyz.znix.xftl.hs.sector.HsGeneration.bossBlockedNow ?: emptySet<Beacon>()
+        xyz.znix.xftl.hs.sector.HsGeneration.bossBlockedNow = null
+        candidates.removeAll(blocked)
         if (candidates.isNotEmpty()) {
             val selections = sector.bosses.filterIsInstance<FlagshipBoss>()
                 .maxOfOrNull { it.browserFleetSelections } ?: 1
@@ -39,6 +58,10 @@ object BrowserLastStand {
             candidates[NativeRandom.nextInt(candidates.size)].browserFleetThreatened = true
             if (selections > 1 && candidates.size > 1)
                 candidates[NativeRandom.nextInt(candidates.size)].browserFleetThreatened = true
+        }
+        if (seeded) {
+            xyz.znix.xftl.hs.sector.HsSeeds.bossFleetSeed = NativeRandom.next31()
+            NativeRandom.seed(savedSeed)
         }
         sector.fleetAdvanceModifier += when {
             sector.fleetAdvanceModifier < 0 -> 1
@@ -51,11 +74,15 @@ object BrowserLastStand {
         if (!here.isOvertaken) here.clearEvent(true, false)
     }
 
+    /** The flagship has spent its turns at the base and the player is at another beacon. */
+    @JvmStatic fun baseDestroyed(current: Beacon): Boolean =
+        current.sector.bosses.filterIsInstance<FlagshipBoss>().any {
+            it.beacon.isBase && it.browserArrivedAtBase >= 4 && current != it.beacon
+        }
+
     @JvmStatic fun checkDefeat(game: InGameState, destination: Beacon): Boolean {
         if (game.browserRunEnded) return true
-        val defeated = destination.sector.bosses.filterIsInstance<FlagshipBoss>().any {
-            it.beacon.isBase && it.browserArrivedAtBase >= 4 && destination != it.beacon
-        }
+        val defeated = baseDestroyed(destination)
         if (defeated) game.shipUI.showGameOverScreen(GameOverWindow.Outcome.LOOSE_BASE_DESTROYED)
         return defeated
     }
@@ -63,7 +90,6 @@ object BrowserLastStand {
     @JvmStatic fun waitAtBeacon(game: InGameState) {
         if (!game.browserCanWait()) return
         game.advanceFleet()
-        if (checkDefeat(game, game.currentBeacon)) return
         // Waiting is stationary: preserve charge, cargo and a friendly encounter.
         // Fleet capture still replaces that encounter, and the flagship takes precedence.
         if (!game.browserSpawnBossHere() && game.currentBeacon.isOvertaken && game.currentBeacon.hasFleetEvent) {
@@ -84,3 +110,4 @@ object BrowserLastStand {
         game.mainGame.writeRunSave()
     }
 }
+

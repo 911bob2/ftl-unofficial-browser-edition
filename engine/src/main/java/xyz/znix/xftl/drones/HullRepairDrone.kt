@@ -27,7 +27,10 @@ class HullRepairDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false)
 
     // The hull points this drone will provide before being destroyed;
     // SpaceDrone::SetDeployed (0x421ba0) rolls 3 + rand % 3 per deployment.
-    private var remainingRepairs = (3..5).random(ftl.browser.BrowserRandom)
+    internal var remainingRepairs = (3..5).random(ftl.browser.BrowserRandom)
+
+    /** ShipRepairDrone::repairBeams: how far out each wave is. */
+    internal val hsWaves = ArrayList<Any?>()
 
     override fun onInit() {
         offImage = game.getImg("img/ship/drones/${type.droneImage}_base.png")
@@ -88,8 +91,12 @@ class HullRepairDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false)
             return
         }
 
-        val duration = 0.2f
+        // Each wave climbs 0.02 of its way per 1/60 s; a new one starts once the last is a quarter of the way out.
+        val duration = 0.25f / 1.2f
         animationProgress = (animationProgress + dt / duration).rem(1f)
+        for (i in hsWaves.indices) hsWaves[i] = (hsWaves[i] as Double) + 1.2 * dt
+        if (hsWaves.isNotEmpty() && (hsWaves[0] as Double) >= 1.0) hsWaves.removeAt(0)
+        if (hsWaves.isEmpty() || (hsWaves.last() as Double) >= 0.25) hsWaves.add(0.6 * dt)
 
         stopTimer -= dt
 

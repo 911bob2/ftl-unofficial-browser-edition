@@ -12,20 +12,22 @@ import xyz.znix.xftl.sys.ResourceContext
  * official iPad version of FTL), so this is a stub that keeps the engine's
  * resource-management invariants intact.
  */
-class Cursor(
+class Cursor @JvmOverloads constructor(
     context: ResourceContext,
     df: Datafile,
     val mainFile: FTLFile,
     val overlayFile: FTLFile?,
     /** The 32px frame of a strip image (the door cursor), or -1 for the whole image. */
-    val frame: Int = -1
+    val frame: Int = -1,
+    /** A key of the shell's own instead of the files' ("none": no pointer). */
+    keyOverride: String? = null
 ) : INativeResource {
     /**
      * What the browser shell draws: MouseControl's render (0x4e6240) draws the image at the
      * mouse with no offset, then the overlay (the armed weapon's numbered crosshair) at the
      * same place. Format: main[,overlay][#frame].
      */
-    val key: String = mainFile.name + (overlayFile?.let { "," + it.name } ?: "") + (if (frame >= 0) "#$frame" else "")
+    val key: String = keyOverride ?: (mainFile.name + (overlayFile?.let { "," + it.name } ?: "") + (if (frame >= 0) "#$frame" else ""))
 
     override var freed: Boolean = false
         private set

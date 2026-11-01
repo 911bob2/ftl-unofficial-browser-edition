@@ -32,7 +32,7 @@ object BrowserWarningDiagnostics {
     }
 
     fun run(main: MainGame, container: GameContainer, graphics: Graphics): String {
-        val profile = BrowserXml.write(main.profile.save())
+        val profile = BrowserXml.write(main.profile.snapshot())
         val storedProfile = BrowserFiles.getProfile()
         val run = BrowserFiles.getRun()
         val rng = BrowserRandom.snapshot()
@@ -56,13 +56,13 @@ object BrowserWarningDiagnostics {
             return state.shipUI.confirmationWindow ?: error("Pause action skipped confirmation")
         }
         try {
-            main.profile.load(SaveProfile.createBlank().save())
+            main.profile.restore(SaveProfile.createBlank().snapshot())
             var state = start(main, container)
             state.browserProgress.collectScrap(123)
             main.writeRunSave()
             val checkpoint = BrowserFiles.getRun()
             val before = save(state)
-            val beforeProfile = BrowserXml.write(main.profile.save())
+            val beforeProfile = BrowserXml.write(main.profile.snapshot())
             for (restart in listOf(true, false)) {
                 val warning = pauseAction(state, restart)
                 check(warning.messageKey == "confirm_end_game") { "BrowserWarningDiagnostics.kt:68" }
@@ -74,12 +74,13 @@ object BrowserWarningDiagnostics {
                 click(warning, false)
                 check(state.shipUI.diagnosticWindow == "PauseWindow") { "BrowserWarningDiagnostics.kt:75" }
                 check(save(state) == before && BrowserFiles.getRun() == checkpoint) { "BrowserWarningDiagnostics.kt:76" }
-                check(BrowserXml.write(main.profile.save()) == beforeProfile) { "BrowserWarningDiagnostics.kt:77" }
+                check(BrowserXml.write(main.profile.snapshot()) == beforeProfile) { "BrowserWarningDiagnostics.kt:77" }
                 state.shipUI.escapePressed()
                 val escapeWarning = pauseAction(state, restart)
                 escapeWarning.onTextInput(Input.KEY_ESCAPE, '\u0000')
-                check(state.shipUI.diagnosticWindow == "PauseWindow" && main.currentState === state) { "BrowserWarningDiagnostics.kt:81" }
-                state.shipUI.escapePressed()
+                // Escape closes the whole pause menu, NO only the prompt (native vz-hangar-esc, vx-restart-esc).
+                check(state.shipUI.diagnosticWindow == "game" && main.currentState === state) { "BrowserWarningDiagnostics.kt:81" }
+                check(save(state) == before && BrowserFiles.getRun() == checkpoint) { "BrowserWarningDiagnostics.kt:82" }
             }
             val oldProgress = state.browserProgress
             val oldScore = oldProgress.score
@@ -88,14 +89,14 @@ object BrowserWarningDiagnostics {
             check(main.currentState is InGameState && main.currentState !== state) { "BrowserWarningDiagnostics.kt:88" }
             check(main.profile.browserHighScores().single().score == oldScore) { "BrowserWarningDiagnostics.kt:89" }
             check(main.profile.browserVictories == 0 && oldProgress.finished) { "BrowserWarningDiagnostics.kt:90" }
-            val profileAfter = BrowserXml.write(main.profile.save())
+            val profileAfter = BrowserXml.write(main.profile.snapshot())
             oldProgress.finishAbandoned(); oldProgress.finish(GameOverWindow.Outcome.WIN)
-            check(BrowserXml.write(main.profile.save()) == profileAfter) { "BrowserWarningDiagnostics.kt:93" }
+            check(BrowserXml.write(main.profile.snapshot()) == profileAfter) { "BrowserWarningDiagnostics.kt:93" }
             main.loadSavedGame(BrowserXml.parse(save(state)))
             state = main.currentState as InGameState
             check(state.browserProgress.finished) { "BrowserWarningDiagnostics.kt:96" }
             state.browserProgress.finishAbandoned()
-            check(BrowserXml.write(main.profile.save()) == profileAfter) { "BrowserWarningDiagnostics.kt:98" }
+            check(BrowserXml.write(main.profile.snapshot()) == profileAfter) { "BrowserWarningDiagnostics.kt:98" }
 
             state = start(main, container)
             main.writeRunSave()
@@ -106,7 +107,7 @@ object BrowserWarningDiagnostics {
             state = start(main, container)
             main.quitGame()
             val saved = BrowserFiles.getRun()
-            val savedProfile = BrowserXml.write(main.profile.save())
+            val savedProfile = BrowserXml.write(main.profile.snapshot())
             var menu = titleStart()
             check(menu.confirmationWindow!!.messageKey == "confirm_new_game") { "BrowserWarningDiagnostics.kt:111" }
             click(menu.confirmationWindow!!, false)
@@ -115,7 +116,7 @@ object BrowserWarningDiagnostics {
             check(menu.confirmationWindow == null && BrowserFiles.getRun() == saved) { "BrowserWarningDiagnostics.kt:115" }
             menu = titleStart(); click(menu.confirmationWindow!!, true)
             check(main.currentState is xyz.znix.xftl.hangar.SelectShipState && !main.hasRunSave()) { "BrowserWarningDiagnostics.kt:117" }
-            check(BrowserXml.write(main.profile.save()) == savedProfile) { "BrowserWarningDiagnostics.kt:118" }
+            check(BrowserXml.write(main.profile.snapshot()) == savedProfile) { "BrowserWarningDiagnostics.kt:118" }
             main.switchToMainMenu(); titleStart()
             check(main.currentState is xyz.znix.xftl.hangar.SelectShipState) { "BrowserWarningDiagnostics.kt:120" }
 
@@ -156,7 +157,7 @@ object BrowserWarningDiagnostics {
             state.shipUI.openJumpMap(); check(!state.shipUI.isWindowOpen) { "BrowserWarningDiagnostics.kt:156" }
             return "PASS restart/hangar/title warnings, right/outside click and keyboard rejection, No/Escape exact run/profile/checkpoint preservation, once-only abandonment scores after restore, Save+Quit retention, empty-save New Game, living boarders and pointer/hotkey jump warnings before map, Cancel fuel/crew/state preservation, accepted map without jump and dead/not-ready negatives"
         } finally {
-            main.profile.load(BrowserXml.parse(profile))
+            main.profile.restore(BrowserXml.parse(profile))
             BrowserFiles.hydrate(run, storedProfile)
             BrowserRandom.restore(rng)
             main.switchToMainMenu()

@@ -7,7 +7,7 @@ export async function createAssetProvider({api,accountId,fetchBytes,onProgress=(
  if(config.accountId&&config.accountId!==accountId)throw Error('The active account changed. Reload before using this account’s game files.');
  if(config.assetSource==='server'){
   const manifest=await api('/assets/manifest');
-  return {source:'server',manifest,...await createAssetCache(manifest,fetchBytes),dispose(){}};
+  return {source:'server',manifest,...await createAssetCache(manifest,fetchBytes,onProgress),dispose(){}};
  }
  const record=await getLocalAsset(accountId);
  if(!record||record.index.assetVersion!==config.assetVersion||record.index.parserVersion!==1)throw Object.assign(Error('Upload a matching ftl.dat in Local game files before launching FTL or running engine tests.'),{code:'LOCAL_ASSETS_REQUIRED'});
@@ -17,7 +17,8 @@ export async function createAssetProvider({api,accountId,fetchBytes,onProgress=(
  return {
   source:'local',manifest,
   fetchBoot(){return bootPromise??=(async()=>{
-   const support=await fetchBytes(config.resourcesUrl);
+   onProgress('Loading engine resources…',{done:0,total:config.resourcesBytes});
+   const support=await fetchBytes(config.resourcesUrl,{length:config.resourcesBytes,onProgress:done=>onProgress('Loading engine resources…',{done,total:config.resourcesBytes})});
    if(support.byteLength!==config.resourcesBytes||await sha256(support)!==config.resourcesHash)throw Error('Engine resources changed. Reload and retry.');
    return workerTask('boot',{file:record.file,index:record.index,support},onProgress,signal);
   })().catch(e=>{bootPromise=null;throw e;});},

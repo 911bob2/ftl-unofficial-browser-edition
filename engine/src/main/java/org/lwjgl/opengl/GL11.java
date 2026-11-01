@@ -1,6 +1,7 @@
 package org.lwjgl.opengl;
 
 import android.opengl.GLES30;
+import xyz.znix.xftl.rendering.DrawQueue;
 
 import java.nio.ByteBuffer;
 import java.nio.Buffer;
@@ -24,6 +25,9 @@ public class GL11 {
     public static final int GL_DEPTH_TEST = 0x0B71;
     public static final int GL_STENCIL_TEST = 0x0B90;
     public static final int GL_NEVER = 0x0200;
+    public static final int GL_ALWAYS = 0x0207;
+    public static final int GL_ONE = 1;
+    public static final int GL_SCISSOR_TEST = 0x0C11;
     public static final int GL_EQUAL = 0x0202;
     public static final int GL_KEEP = 0x1E00;
     public static final int GL_REPLACE = 0x1E01;
@@ -53,17 +57,17 @@ public class GL11 {
     public static final int GL_STATIC_DRAW = 0x88E4;
 
     // ---- state ----
-    public static void glEnable(int cap) { GLES30.glEnable(cap); }
+    public static void glEnable(int cap) { DrawQueue.drain(); GLES30.glEnable(cap); }
 
-    public static void glDisable(int cap) { GLES30.glDisable(cap); }
+    public static void glDisable(int cap) { DrawQueue.drain(); GLES30.glDisable(cap); }
 
     public static void glClearColor(float r, float g, float b, float a) { GLES30.glClearColor(r, g, b, a); }
 
-    public static void glClear(int mask) { GLES30.glClear(mask); }
+    public static void glClear(int mask) { DrawQueue.drain(); GLES30.glClear(mask); }
 
-    public static void glViewport(int x, int y, int w, int h) { GLES30.glViewport(x, y, w, h); }
+    public static void glViewport(int x, int y, int w, int h) { DrawQueue.drain(); GLES30.glViewport(x, y, w, h); }
 
-    public static void glBlendFunc(int sf, int df) { GLES30.glBlendFunc(sf, df); }
+    public static void glBlendFunc(int sf, int df) { DrawQueue.drain(); GLES30.glBlendFunc(sf, df); }
 
     public static int glGetError() { return GLES30.glGetError(); }
 
@@ -81,19 +85,22 @@ public class GL11 {
     }
 
     public static void glDeleteTextures(int id) {
+        DrawQueue.drain();
         int[] ids = new int[]{id};
         GLES30.glDeleteTextures(1, ids, 0);
     }
 
-    public static void glBindTexture(int target, int id) { GLES30.glBindTexture(target, id); }
+    public static void glBindTexture(int target, int id) { DrawQueue.drain(); GLES30.glBindTexture(target, id); }
 
     public static void glTexParameteri(int target, int pname, int param) {
+        DrawQueue.drain();
         GLES30.glTexParameteri(target, pname, param);
     }
 
     public static void glTexImage2D(
             int target, int level, int internalformat, int width, int height, int border,
             int format, int type, ByteBuffer data) {
+        DrawQueue.drain();
         Buffer b = (data != null && data.remaining() == 0) ? null : data;
         GLES30.glTexImage2D(target, level, internalformat, width, height, border, format, type, b);
     }
@@ -101,15 +108,20 @@ public class GL11 {
     public static void glTexSubImage2D(
             int target, int level, int x, int y, int width, int height,
             int format, int type, ByteBuffer data) {
+        DrawQueue.drain();
         GLES30.glTexSubImage2D(target, level, x, y, width, height, format, type, data);
     }
 
     // ---- stencil ----
-    public static void glStencilFunc(int func, int ref, int mask) { GLES30.glStencilFunc(func, ref, mask); }
+    public static void glStencilFunc(int func, int ref, int mask) { DrawQueue.drain(); GLES30.glStencilFunc(func, ref, mask); }
 
-    public static void glStencilOp(int sfail, int dpfail, int dppass) { GLES30.glStencilOp(sfail, dpfail, dppass); }
+    public static void glStencilOp(int sfail, int dpfail, int dppass) { DrawQueue.drain(); GLES30.glStencilOp(sfail, dpfail, dppass); }
 
-    public static void glStencilMask(int mask) { GLES30.glStencilMask(mask); }
+    public static void glStencilMask(int mask) { DrawQueue.drain(); GLES30.glStencilMask(mask); }
+
+    public static void glColorMask(boolean r, boolean g, boolean b, boolean a) { DrawQueue.drain(); GLES30.glColorMask(r, g, b, a); }
+
+    public static void glScissor(int x, int y, int w, int h) { DrawQueue.drain(); GLES30.glScissor(x, y, w, h); }
 
     // ---- drawing ----
     public static void glDrawArrays(int mode, int first, int count) { GLES30.glDrawArrays(mode, first, count); }

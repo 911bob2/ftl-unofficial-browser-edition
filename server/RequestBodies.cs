@@ -6,9 +6,10 @@ namespace Ftl.Server;
 // API writes are received completely, within a per-route size, before they queue for the shared write gate.
 // Only saves and diagnostic batches carry large bodies; every other write is a small JSON document.
 public static class RequestBodies {
-    public const long SaveLimit = 20L * 1024 * 1024, DiagnosticLimit = 4L * 1024 * 1024, DefaultLimit = 64 * 1024;
+    public const long SaveLimit = 24L * 1024 * 1024, DiagnosticLimit = 4L * 1024 * 1024, DefaultLimit = 64 * 1024;
     public static long Limit(HttpRequest r) {
-        if (HttpMethods.IsPut(r.Method) && r.Path.Equals("/api/saves/current", StringComparison.OrdinalIgnoreCase)) return SaveLimit;
+        // A save (16 MiB of run XML and 4 MiB of profile XML, escaped in JSON); /api/saves/current and /api/profiles too, so a page of the old site gets its 410 rather than 413.
+        if (HttpMethods.IsPut(r.Method) && (r.Path.StartsWithSegments("/api/saves", StringComparison.OrdinalIgnoreCase) || r.Path.StartsWithSegments("/api/profiles", StringComparison.OrdinalIgnoreCase))) return SaveLimit;
         if (HttpMethods.IsPost(r.Method) && r.Path.StartsWithSegments("/api/debug/sessions", StringComparison.OrdinalIgnoreCase, out var rest)
             && rest.Value is { } tail && tail.EndsWith("/batches", StringComparison.OrdinalIgnoreCase)) return DiagnosticLimit;
         return DefaultLimit;

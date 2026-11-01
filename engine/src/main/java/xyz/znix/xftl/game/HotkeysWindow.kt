@@ -40,7 +40,7 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
     private val closeWidth = maxOf(buttonFont.measure(closeLabel) + 6, 0x67)
 
     /** Settings' hotkey pages, in the original's order (read from the live game). */
-    private val pages: List<List<String>> = listOf(
+    private val vanillaPages: List<List<String>> = listOf(
         (1..8).map { "crew$it" } + listOf(
             "crew_all", "loadPositions", "savePositions", "lockdown", "pause", "jump", "ship_info",
             "ship_inv", "store", "ship_crew", "options", "increase_font", "decrease_font"
@@ -54,6 +54,10 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
         (1..8).map { "power_$it" } + (1..8).map { "un_power_$it" },
     )
 
+    /** Hyperspace adds its hotkeys to the pages (Settings::ResetHotkeys hook, hs.render.HsHotkeys). */
+    private val pages: List<List<String>> =
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsHotkeys.pages(vanillaPages) else vanillaPages
+
     private val hotkeys = game.hotkeyManager.groups.flatMap { it.hotkeys }.associateBy { it.uiName }
 
     private inner class ControlBox(val name: String, val x: Int, val y: Int) {
@@ -64,7 +68,7 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
         fun contains(lx: Int, ly: Int) = lx > x && lx < x + 105 && ly > y && ly < y + 25
 
         fun keyText(): String {
-            if (hotkey == null) return NATIVE_ONLY_KEYS[name] ?: UNBOUND
+            if (hotkey == null) return UNBOUND
             val button = game.reverseHotkeyBindings[hotkey] ?: return UNBOUND
             return game.translator[button.text].uppercase()
         }
@@ -73,9 +77,13 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
     private val boxes: List<List<ControlBox>> = pages.mapIndexed { page, names ->
         var split = (names.size + 1) / 2
         if (page == 1) split--
+        var top = 150
+        // Hyperspace's ControlsScreen::OnInit hook re-lays pages 0-2 from (480, 130), 12 / 10 / 12 per column
+        val hsSplit = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsHotkeys.perColumn(page) else null
+        if (hsSplit != null) { split = hsSplit; top = xyz.znix.xftl.hs.render.HsHotkeys.ORIGIN_Y }
         names.mapIndexed { i, name ->
             val right = i >= split
-            ControlBox(name, 480 + if (right) 440 else 0, 150 + (if (right) i - split else i) * 40)
+            ControlBox(name, 480 + if (right) 440 else 0, top + (if (right) i - split else i) * 40)
         }
     }
 
@@ -161,9 +169,9 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
     }
 
     private fun drawTextButton(g: Graphics, x: Int, y: Int, w: Int, label: String, hovered: Boolean) {
-        g.colour = if (hovered) Constants.TEXT_BUTTON_HOVER else Constants.TEXT_BUTTON_NORMAL
+        g.colour = if (hovered) xyz.znix.xftl.hs.render.HsColors.tbSelected() else xyz.znix.xftl.hs.render.HsColors.tbActive()
         Buttons.drawChamfer(g, x, y, w, 32, 4)
-        buttonFont.printButtonLabel(x, y, w, 32, label, Constants.TEXT_BUTTON_TEXT)
+        buttonFont.printButtonLabel(x, y, w, 32, label, xyz.znix.xftl.hs.render.HsColors.tbText())
     }
 
     private fun tabAt(lx: Int, ly: Int) =
@@ -265,8 +273,6 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
             "artillery", "weapons", "drones"
         )
 
-        /** Native hotkeys the port does not implement keep their default keys on show. */
-        private val NATIVE_ONLY_KEYS = mapOf("increase_font" to "-", "decrease_font" to "=")
         private const val UNBOUND = "----"
         private val FRAME_TEXT = Colour(25, 49, 51)
         private val HOVER_OUTLINE = Colour(255, 255, 50)

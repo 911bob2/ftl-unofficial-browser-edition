@@ -15,7 +15,7 @@ object BrowserImpactAchievementDiagnostics {
         val profile = main.profile
         fun earned(id: String) = profile.getAchievement(main.gameContent.achievements[id]) != null
         fun reset(ship: String = "PLAYER_SHIP_HARD"): InGameState {
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             main.startDiagnosticGame(ship, Difficulty.NORMAL)
             repeat(90) {
                 main.update(container, .05f)
@@ -87,6 +87,8 @@ object BrowserImpactAchievementDiagnostics {
         fun stepBeam(state: InGameState, weapon: BeamBlueprint.BeamInstance) {
             state.browserAchievements.advanceTime(.05f)
             weapon.update(.05f, 0f, false)
+            // The released beam is a world projectile, advanced by the space loop.
+            xyz.znix.xftl.weapons.ProjectileRuntime.advanceFrame(state, .05f)
         }
         fun finishBeam(state: InGameState, weapon: BeamBlueprint.BeamInstance) {
             repeat(180) { if (weapon.isFiring) stepBeam(state, weapon) }
@@ -188,8 +190,8 @@ object BrowserImpactAchievementDiagnostics {
         repeat(180) { if (separated.count { it.health == 0f } < 2) stepBeam(state, weapon) }
         check(separated.count { it.health == 0f } == 2 && !earned("ACH_SLUG_BIO")) { "Fixture did not stop after two kills" }
         val legacyBeam = state.saveGameState()
-        legacyBeam.rootElement.getChild("playerShip").getChild("weapons").getChildren("weapon")
-            .forEach { it.removeChild("browserCrewKills") }
+        legacyBeam.rootElement.getChild("playerShip").getChild("projectiles").getChildren("projectile")
+            .forEach { it.removeAttribute("beamKills") }
         state = reload(state)
         weapon = state.player.hardpoints[0].weapon as BeamBlueprint.BeamInstance
         finishBeam(state, weapon)
@@ -215,7 +217,7 @@ object BrowserImpactAchievementDiagnostics {
         state.debugFlags.noDmg.set = false
         enemy.engines!!.damagedEnergyLevels = enemy.engines!!.energyLevels
         enemy.piloting!!.damagedEnergyLevels = enemy.piloting!!.energyLevels
-        enemy.superShield = 0; enemy.health = 1
+        enemy.superShield = 0; enemy.health = 1; clearShields(enemy) // (Multiverse's shard has no piercing.)
         enemy.projectiles.add(VengeanceShardProjectile(enemy.rooms.first()).also {
             it.setInitialPath(it.target.pixelCentre, it.target.pixelCentre)
         })
@@ -239,7 +241,7 @@ object BrowserImpactAchievementDiagnostics {
         state = reset(); enemy = spawn(state)
         enemy.engines!!.damagedEnergyLevels = enemy.engines!!.energyLevels
         enemy.piloting!!.damagedEnergyLevels = enemy.piloting!!.energyLevels
-        enemy.superShield = 0; enemy.health = 1
+        enemy.superShield = 0; enemy.health = 1; clearShields(enemy)
         VengeanceShardProjectile(enemy.rooms.first()).also {
             it.setInitialPath(it.target.pixelCentre, it.target.pixelCentre); it.update(.05f, enemy)
         }

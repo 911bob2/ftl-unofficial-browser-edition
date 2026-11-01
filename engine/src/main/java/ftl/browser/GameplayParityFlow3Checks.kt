@@ -20,7 +20,7 @@ internal object GameplayParityFlow3Checks {
         try {
             // First: a run that ended earlier in this fixture leaves the sound manager in its game-over state.
             val continueSounds = continueEnginesOff(main, container)
-            val power = startPower(main, container)
+            val power = BrowserGameplayParityDiagnostics.vanillaOnly("power") { startPower(main, container) }
             val fade = jumpFade()
             val fuel = jumpFuel(main, container)
             val jumping = jumpingFlag(main, container)
@@ -29,7 +29,7 @@ internal object GameplayParityFlow3Checks {
             val battery = batteryJump(main, container)
             val wait = noFuelWait(main, container)
             val gameOver = gameOverWhileJumping(main, container)
-            val pausedGameOver = gameOverWhilePaused(main, container)
+            val pausedGameOver = BrowserGameplayParityDiagnostics.vanillaOnly("pausedGameOver") { gameOverWhilePaused(main, container) }
             return "flow3 ok: $power, $fade, $fuel, $jumping, $hold, $shields, $battery, $wait, $gameOver, $continueSounds, $pausedGameOver"
         } finally {
             BrowserRandom.restore(rng)

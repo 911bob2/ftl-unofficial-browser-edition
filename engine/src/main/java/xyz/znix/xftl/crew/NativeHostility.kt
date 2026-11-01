@@ -12,5 +12,5 @@ import xyz.znix.xftl.Ship
  * crewmember whose owner is not this ship.
  */
 fun Ship.containsMindControlledEnemy(): Boolean {
-    return crew.any { it is LivingCrew && it.mindControlledBy != null && it.ownerShip != this }
+    return crew.any { it is LivingCrew && it.isMindControlled && it.ownerShip != this }
 }

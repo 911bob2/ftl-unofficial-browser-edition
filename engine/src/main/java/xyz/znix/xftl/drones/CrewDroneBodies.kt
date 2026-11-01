@@ -29,7 +29,17 @@ internal object CrewDroneBodies {
                 NativeRandom.next31()
             }
 
-            else -> {}
+            else -> return
         }
+        // HS 1b05a07 CustomDrones.cpp CrewDrone::constructor passes nullptr for a custom definition,
+        // discarding RepairDrone's already-created animation. CrewMember then constructs another one
+        // (native 1.6.9 0x47a400 -> 0x479840 -> TimerHelper::Start), before HS Initialize replaces it.
+        if (blueprint.type == DroneBlueprint.DroneType.REPAIR &&
+            xyz.znix.xftl.hs.weapons.HsDrones.hasCustomDefinition(blueprint.name)) NativeRandom.next31()
+
+        // Hyperspace: the body's race (a <drones> crewBlueprint, else the CrewDrone type) re-creates its animation.
+        val race = xyz.znix.xftl.hs.weapons.HsDrones.customRace(blueprint.name)
+            ?: if (blueprint.type == DroneBlueprint.DroneType.REPAIR) "repair" else "battle"
+        xyz.znix.xftl.crew.NativeCrewFactory.hsInitializeDraw(race)
     }
 }

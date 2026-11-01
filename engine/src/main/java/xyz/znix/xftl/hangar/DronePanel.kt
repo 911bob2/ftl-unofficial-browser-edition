@@ -50,7 +50,7 @@ class DronePanel(val editor: ShipEditor) : UIObject {
         val imageDisabled = editor.state.getImg("img/upgradeUI/Equipment/box_drones_off.png")
 
         override fun draw(g: Graphics) {
-            val drone = editor.ship.drones.getOrNull(slot)?.let { editor.state.blueprints[it] as DroneBlueprint }
+            val drone = editor.ship.drones.getOrNull(slot)?.let { editor.state.blueprints.getOrNull(it) as? DroneBlueprint }
 
             val hovered = editor.isHovered(this) && !isDisabled
 

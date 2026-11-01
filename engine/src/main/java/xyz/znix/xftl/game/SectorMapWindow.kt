@@ -62,8 +62,37 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
 
     private val nextSectorNameBoxes = ArrayList<Rectangle>()
 
+    // Touch layout: a finger picks the nearest sector on every press and move; the pick stays after it lifts, drawn
+    // like a hovered sector, and only the Jump button goes there.
+    private var touchFingerDown = false
+    private var touchSelected: GameMap.SectorInfo? = null
+    private var touchJumpButton: Button? = null
+
+    /** StarMap::potentialSectorChoice (+0xa2c): the sector under the mouse for its name tooltip, or null. */
+    private var potentialSector: GameMap.SectorInfo? = null
+
+    /** The tooltip StarMap::MouseMove set (MouseControl::SetTooltip + InstantTooltip): the sector's name. */
+    private var sectorTooltipText = ""
+    private val sectorTooltip = object : xyz.znix.xftl.rendering.StandardTooltip(game) {
+        override fun getText(): String = sectorTooltipText
+    }
+
     init {
         buttons += closeButton
+
+        if (TouchMode.enabled) {
+            val font = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 63)
+            val text = game.translator["button_jump"]
+            val width = maxOf(font.measure(text) + 6, 103)
+            // Left of the Close button, on its own copy of Close's tab.
+            touchJumpButton = object : Buttons.BasicButton(
+                game, ConstPoint(size.x - 272 + 103 - width, size.y + 7), ConstPoint(width, 32), text,
+                4, titleFont, 25, { touchSelected?.let(selectedCallback) }
+            ) {
+                override val nativeFont = font
+                override val disabled: Boolean get() = touchSelected == null
+            }.also { buttons += it }
+        }
 
         // Figure out which sectors are possible to access
         updateAccessibleSectors(null)
@@ -72,7 +101,9 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
     override fun draw(g: Graphics) {
         // Subtract out the glow, so 0,0 is at the top-left pixel (if you got rid
         // of the bevel).
-        backgroundImage.draw(position.x - 7, position.y - 7)
+        // Hyperspace infinite mode (Infinite.cpp ResourceControl::RenderImageString hook): the wider box at x 268.
+        if (game.gameMap.hsInfinite) game.getImg("img/map/sector_box_infinite.png").draw(if (TouchMode.enabled) position.x - 97 else 268, position.y - 7)
+        else backgroundImage.draw(position.x - 7, position.y - 7)
 
         // Draw the window title
         titleFont.drawString(
@@ -85,13 +116,14 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
         // of the window, plus 6 pixels of glow on the button outline.
         closeButtonOutline.draw(position.x + size.x - 149 - 6, position.y + size.y)
         closeButton.draw(g)
+        touchJumpButton?.let {
+            closeButtonOutline.draw(position.x + size.x - 295, position.y + size.y)
+            it.draw(g)
+        }
 
-        val sectors = game.gameMap.sectors
-
-        for (column in sectors) {
-            for (sector in column) {
-                drawSector(g, sector)
-            }
+        // StarMap::sectors (infinite mode drops the columns 4 levels behind)
+        for (sector in game.gameMap.hsVisibleSectors()) {
+            drawSector(g, sector)
         }
 
         // Draw the labels naming the next sectors
@@ -101,6 +133,42 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
         }
 
         drawLegend(g)
+
+        if (sectorTooltipText.isNotEmpty()) g.tooltip = sectorTooltip
+    }
+
+    /**
+     * StarMap::GetPotentialSectorChoiceName (1.6.14 0x5eee90): for a sector that is neither visited nor a neighbour of
+     * the current sector (0x5ea530) its kind (`sector_civilian`, `sector_hostile`, `sector_nebula`, `sector_unknown`);
+     * empty otherwise (the description's name it reads first is dropped: the next sectors have their name boxes).
+     * Native 1.6.14 capture (.build/wp5-ship/native/out/sector4): a far sector shows "Unidentified Nebula Sector",
+     * a neighbour, the current sector and a name box show no tooltip.
+     * Hyperspace SECTOR_SCANNER (Augments.cpp): a sector more than one column ahead that lies within the augment's
+     * value of jumps shows its description's name instead.
+     */
+    private fun potentialSectorName(sector: GameMap.SectorInfo?): String {
+        sector ?: return ""
+        if (xyz.znix.xftl.hs.HS.active && game.player.hasAugment(SECTOR_SCANNER) &&
+            sector.columnNumber - currentSector.columnNumber > 1 &&
+            sectorReachable(currentSector, sector, game.player.getAugmentValue(SECTOR_SCANNER).toInt()))
+            return game.translator[sector.descriptionName]
+        if (sector === currentSector || visitedSectors.contains(sector) || currentSector.nextSectors.contains(sector)) return ""
+        val key = when {
+            sector.hsType == xyz.znix.xftl.hs.sector.HsSectorMap.TYPE_UNKNOWN -> "sector_unknown"
+            else -> when (sector.sectorClass) {
+                GameMap.SectorClass.CIVILIAN -> "sector_civilian"
+                GameMap.SectorClass.HOSTILE -> "sector_hostile"
+                GameMap.SectorClass.NEBULA -> "sector_nebula"
+            }
+        }
+        return game.translator[key]
+    }
+
+    /** Hyperspace SectorReachable(start, destination, range): within [range] jumps along the neighbours. */
+    private fun sectorReachable(start: GameMap.SectorInfo, destination: GameMap.SectorInfo, range: Int): Boolean {
+        if (range < 0) return false
+        if (start === destination) return true
+        return start.nextSectors.any { sectorReachable(it, destination, range - 1) }
     }
 
     /**
@@ -154,7 +222,7 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
         out.y += (4 - sectorsInColumn) * SECTOR_Y_SPACING / 2
 
         // And space them out appropriately
-        out.x += info.columnNumber * SECTOR_X_SPACING
+        out.x += (info.columnNumber - game.gameMap.hsInfinitePushes) * SECTOR_X_SPACING
         out.y += info.columnIndex * SECTOR_Y_SPACING
     }
 
@@ -164,10 +232,14 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
 
         getSectorPos(info, pos)
 
-        var colour = when (info.sectorClass) {
-            GameMap.SectorClass.CIVILIAN -> Constants.SECTOR_CIVILIAN
-            GameMap.SectorClass.HOSTILE -> Constants.SECTOR_HOSTILE
-            GameMap.SectorClass.NEBULA -> Constants.SECTOR_NEBULA
+        var colour = when {
+            // Hyperspace sector type 4 (a sector list other than CIVILIAN, HOSTILE or NEBULA): grey (oracle hg-scan)
+            xyz.znix.xftl.hs.HS.active && info.hsType == xyz.znix.xftl.hs.sector.HsSectorMap.TYPE_UNKNOWN -> SECTOR_UNKNOWN
+            else -> when (info.sectorClass) {
+                GameMap.SectorClass.CIVILIAN -> Constants.SECTOR_CIVILIAN
+                GameMap.SectorClass.HOSTILE -> Constants.SECTOR_HOSTILE
+                GameMap.SectorClass.NEBULA -> Constants.SECTOR_NEBULA
+            }
         }
         var branchColour = Constants.SECTOR_BRANCH
 
@@ -237,6 +309,12 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
                 else -> Unit // Don't draw the box if the other beacon is hovered
             }
         }
+        else if (potentialSector === info) {
+            // Any other sector the mouse is on (a far one, the current one) gets the hover box too (native capture)
+            pos.x += SECTOR_RADIUS
+            pos.y += SECTOR_RADIUS
+            drawTargetBox(g, pos, true)
+        }
     }
 
     private fun drawSectorCircle(g: Graphics, x: Int, y: Int, outer: Colour, inner: Colour) {
@@ -273,7 +351,7 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
             pos.y += 27
         }
 
-        val name = game.translator[sector.type.shortTextId]
+        val name = game.translator[sector.displayShortName]
         val text = "%d. %s".format(index + 1, name)
 
         val textOffset = 6
@@ -303,6 +381,11 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
     override fun updateUI(x: Int, y: Int) {
         super.updateUI(x, y)
 
+        if (TouchMode.enabled) {
+            if (touchFingerDown) touchPick(x, y)
+            return
+        }
+
         val p = scaleWindowPoint(x, y)
 
         val pos = Point(0, 0)
@@ -317,32 +400,57 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
             else -> nextSectors
         }
 
-        // Check if the sector icons are hovered
-        for (sector in clickable) {
+        // StarMap::MouseMove (0x5fb210) on the sector map: the name of the sector the previous move chose becomes the
+        // tooltip, then the choice is redone: the nearest sector of the whole map whose centre is less than 10 px away
+        // (Point::RelativeDistance 0x5a47a0, truncated), or the next sector whose name box holds the mouse.
+        sectorTooltipText = potentialSectorName(potentialSector)
+        var best: GameMap.SectorInfo? = null
+        var bestDistance = 10
+        for (column in game.gameMap.sectors) for (sector in column) {
             getSectorPos(sector, pos)
-
-            // Add in a small margin to make the selection feel a bit more reliable
-            val margin = 5
-
-            // Check if we're hovering over this beacon?
-            if (p.x !in pos.x - margin..pos.x + SECTOR_RADIUS * 2 + margin)
-                continue
-            if (p.y !in pos.y - margin..pos.y + SECTOR_RADIUS * 2 + margin)
-                continue
-
-            hoveredSector = sector
+            val dx = p.x - (pos.x + SECTOR_RADIUS); val dy = p.y - (pos.y + SECTOR_RADIUS)
+            val d = kotlin.math.sqrt((dx * dx + dy * dy).toFloat()).toInt()
+            if (d < bestDistance) { best = sector; bestDistance = d }
         }
-
-        // Check if one of the name boxes is hovered
-        for ((i, rect) in nextSectorNameBoxes.withIndex()) {
-            if (!rect.contains(p.x.f, p.y.f))
-                continue
-
-            hoveredSector = nextSectors[i]
-        }
+        for ((i, rect) in nextSectorNameBoxes.withIndex()) if (rect.contains(p.x.f, p.y.f)) best = nextSectors[i]
+        potentialSector = best
+        // The hovered sector is StarMap::MouseMove's choice (above) when it is one that can be picked: the native
+        // capture (.build/wp5-ship/native/out/sector4) selects a next sector 9 px from its centre, not 10.
+        hoveredSector = potentialSector?.takeIf { it in clickable }
 
         if (oldHovered != hoveredSector) {
             updateAccessibleSectors(hoveredSector)
+        }
+
+    }
+
+    /** The sector within 30 px of the finger, or the next sector whose name box holds it; elsewhere the pick stays. */
+    private fun touchPick(x: Int, y: Int) {
+        if (buttons.any { !it.disabled && it.contains(x, y) }) return
+
+        val pos = Point(0, 0)
+        var best: GameMap.SectorInfo? = null
+        var bestDistSq = TOUCH_PICK_DIST * TOUCH_PICK_DIST
+        for (column in game.gameMap.sectors) for (sector in column) {
+            getSectorPos(sector, pos)
+            val dx = x - (pos.x + SECTOR_RADIUS)
+            val dy = y - (pos.y + SECTOR_RADIUS)
+            val distSq = dx * dx + dy * dy
+            if (distSq < bestDistSq) {
+                best = sector
+                bestDistSq = distSq
+            }
+        }
+        for ((i, rect) in nextSectorNameBoxes.withIndex()) if (rect.contains(x.f, y.f)) best = nextSectors[i]
+        val picked = best ?: return
+
+        potentialSector = picked
+        sectorTooltipText = potentialSectorName(picked)
+
+        if ((game.debugFlags.anyJump.set || picked in nextSectors) && picked !== touchSelected) {
+            touchSelected = picked
+            hoveredSector = picked
+            updateAccessibleSectors(picked)
         }
     }
 
@@ -353,7 +461,19 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
         return hoveredSector
     }
 
+    override fun mouseReleased(button: Int, x: Int, y: Int) {
+        if (button == xyz.znix.xftl.sys.Input.MOUSE_LEFT_BUTTON) touchFingerDown = false
+        super.mouseReleased(button, x, y)
+    }
+
     override fun mouseClick(button: Int, x: Int, y: Int) {
+        if (TouchMode.enabled) {
+            if (button != xyz.znix.xftl.sys.Input.MOUSE_LEFT_BUTTON) return
+            touchFingerDown = true
+            super.mouseClick(button, x, y)
+            touchPick(x, y)
+            return
+        }
         if (!tapArmGate(button, x, y))
             return
 
@@ -444,6 +564,9 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
         const val SECTOR_X_SPACING = 66
 
         const val SECTOR_RADIUS = 7
+        const val SECTOR_SCANNER = "SECTOR_SCANNER"
+        private const val TOUCH_PICK_DIST = 30
+        private val SECTOR_UNKNOWN = Colour(66, 66, 66)
 
         // The height of the little window at the bottom that says what
         // each of the sector colours mean.

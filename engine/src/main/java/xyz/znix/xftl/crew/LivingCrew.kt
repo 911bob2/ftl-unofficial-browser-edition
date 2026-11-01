@@ -50,8 +50,12 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         if (delta == 0f)
             return
         mindControlHealthBoost = healthBoost
+        onHealthBoostChanged(delta)
         health = if (delta > 0f) health + delta else min(health, maxHealth)
     }
+
+    /** Hyperspace's CrewMember::SetHealthBoost keeps its own health maximum (health.second) up to date. */
+    protected open fun onHealthBoostChanged(delta: Float) {}
 
     /** Restores a saved boost; the saved health already includes it. */
     fun restoreMindControlHealthBoost(healthBoost: Float) {
@@ -63,6 +67,13 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
     // A placeholder until the creator sets the real one: making a crew member draws nothing from the generation
     // stream by itself (ShipManager 0x4a24a0 draws the name, timer and colours, which the callers make).
     var info: LivingCrewInfo = LivingCrewInfo(room.ship.sys, blueprint, "", 0)
+        set(value) {
+            field = value
+            onInfoAssigned()
+        }
+
+    /** Called when the creator (or a save) sets [info]. */
+    protected open fun onInfoAssigned() {}
 
     /**
      * The ship that 'owns' this crewmember, or null if they were
@@ -78,7 +89,7 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
             // standing on, it is at war with that ship - fighting its crew
             // and sabotaging its systems. Without this the mind-controlled
             // crew just stands around, too loyal to wreck anything.
-            if (mindControlledBy != null)
+            if (isMindControlled)
                 return mode == SlotType.INTRUDER
 
             // Event-spawned boarders have no owner ship, and are hostile
@@ -100,13 +111,14 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
     var mindControlledBy: MindControl? = null
 
     /**
-     * The position the player saved this crewmember to, for the
-     * return-to-stations button.
-     *
-     * This is only set for player crew, and is in the ship room (not
-     * ship pixel) coordinate systetm.
+     * Hyperspace: CrewMember::bMindControlled (+0x53d) as CrewMember::SetMindControl sets it. Under HS the mind
+     * system keeps its own list (MindSystem::controlledCrew) and MV's mind-control weapons set the flag from Lua with no
+     * system at all, so the flag is the crew member's own; [mindControlledBy] stays null there. Always false in vanilla.
      */
-    var savedPosition: ConstPoint? = null
+    @JvmField var hsMindControlled = false
+
+    /** CrewMember::bMindControlled: controlled by a mind system (vanilla) or flagged by SetMindControl (Hyperspace). */
+    val isMindControlled: Boolean get() = mindControlledBy != null || hsMindControlled
 
     private var mindControlAnimation: FTLAnimation? = null
 
@@ -121,8 +133,17 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
 
     private var skillIndicatorTimer = 0f
 
+    /**
+     * CrewMember::levelUp (an AnimationTracker of [LEVEL_UP_TIME]) and lastLevelUp: CrewMember::
+     * IncreaseSkill starts it, plays levelup and sets lastLevelUp when a skill reaches its half or its full
+     * experience; OnRenderHealth draws the skill's icon growing and fading out over the crew while it runs.
+     */
+    @JvmField var levelUpTime = 0f
+    @JvmField var levelUpRunning = false
+    @JvmField var lastLevelUp: Skill? = null
+
     override val playerControllable: Boolean
-        get() = mindControlledBy == null && ownerShip?.isPlayerShip == true
+        get() = !isMindControlled && ownerShip?.isPlayerShip == true
 
     override val showRedOutline: Boolean get() = ownerShip?.isPlayerShip != true
 
@@ -131,7 +152,7 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
     // If a crewmember is mind controlled, you have vision of it whether
     // it belongs to the player or not.
     override val providesPlayerVision: Boolean
-        get() = ownerShip?.isPlayerShip == true || mindControlledBy != null
+        get() = ownerShip?.isPlayerShip == true || isMindControlled
 
     // Mantis Pheromones (CREW_STIMS): +value movement speed for this
     // crewmember's home-ship crew, applying both on their own ship and
@@ -159,7 +180,7 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
                 else -> SlotType.INTRUDER
             }
 
-            if (mindControlledBy != null) {
+            if (isMindControlled) {
                 side = side.other
             }
 
@@ -176,7 +197,17 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         // Update the mind-control status now, so it applies for
         // the rest of the update cycle.
         val controller = mindControlledBy
-        if (controller?.isControlling(this) != true) {
+        if (xyz.znix.xftl.hs.HS.active) {
+            // Hyperspace: the mind system's own loop (MindSystem::OnLoop, CustomSystems.cpp) releases its crew and sets
+            // the boosts of the ones it holds; a crew member that is not mind controlled has none.
+            mindControlledBy = null
+            if (!hsMindControlled) {
+                mindControlAnimation = null
+                setMindControlBoost(0f, 1f)
+            } else {
+                mindControlAnimation?.update(dt)
+            }
+        } else if (controller?.isControlling(this) != true) {
             mindControlledBy = null
             mindControlAnimation = null
             setMindControlBoost(0f, 1f)
@@ -188,6 +219,19 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         super.update(dt)
         if (ownerShip === game.player && !game.isCurrentlyLoadingSave)
             game.mainGame?.profile?.updateCrewRecords(info)
+
+        // AnimationTracker::Update of levelUp (CrewMember::OnLoop): game time; at its end it is done and stopped
+        // (AnimationTracker::Stop(false) puts current_time back to 0; oracle sw4-skill: 0, not running, done).
+        // Hyperspace scripts reach it as CrewMember.levelUp (their writes taken first, the result handed back)
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdaptersSweepUi.pullLevelUp(this)
+        if (levelUpRunning) {
+            levelUpTime += dt
+            if (levelUpTime >= LEVEL_UP_TIME) {
+                levelUpTime = 0f
+                levelUpRunning = false
+            }
+        }
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdaptersSweepUi.pushLevelUp(this)
 
         // Countdown how long the experience indicator stays on this
         // crewmember's crew box after their last point of experience.
@@ -202,8 +246,9 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
 
     override fun drawForeground(g: Graphics) {
         super.drawForeground(g)
+        drawLevelUp()
 
-        if (mindControlledBy == null)
+        if (!isMindControlled || stunTime > 0f)
             return
 
         // Draw the mind-control animation
@@ -229,6 +274,32 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         info.drawImage(x0, y0, x1, y1, baseFrame, alpha, true)
     }
 
+    /**
+     * CrewMember::OnRenderHealth's level-up (Hyperspace's rewrite, CustomCrew.cpp, as the original): for the player's crew
+     * while levelUp runs, the skill's large icon (GetSkillIcon(skill, true): img/icons/s_<skill>_overlay.png) in the
+     * skill's colour now (GetCurrentSkillColor) at p x 192 px, centred 14 px above the crew's middle, alpha
+     * 1 - 2.4p, and the same icon at its own size 16 px left and 30 px above the middle at alpha 2.4p.
+     */
+    private fun drawLevelUp() {
+        val skill = lastLevelUp ?: return
+        if (!levelUpRunning || currentAction == Action.DYING || ownerShip?.isPlayerShip != true) return
+        val icon = game.getImgIfExists("img/icons/s_${skill.xmlName}_overlay.png") ?: return
+        val p = levelUpTime / LEVEL_UP_TIME
+        val c = when (getSkillLevel(skill)) {
+            SkillLevel.MAX -> Constants.SYS_ENERGY_REPAIR
+            SkillLevel.PARTIAL -> Constants.SYS_ENERGY_ACTIVE
+            else -> Colour.white
+        }
+        val x = screenX + 17f
+        val y = screenY + 17f
+        val fade = (1f - p * 2.4f).coerceIn(0f, 1f)
+        if (fade > 0f) icon.draw(x - p * 96f, y - p * 96f - 14f, p * 192f, p * 192f, Colour(c.r, c.g, c.b, c.a * fade))
+        val shown = (p * 2.4f).coerceIn(0f, 1f)
+        if (shown > 0f) icon.draw(x - 16f, y - 30f, Colour(c.r, c.g, c.b, c.a * shown))
+    }
+
+    override fun cloneReadyNow(): Boolean = ownerShip?.clonebay != null
+
     override fun onStartedDying() {
         super.onStartedDying()
         if (ownerShip?.isPlayerShip == true) game.browserAchievements.record(ftl.browser.BrowserAchievementProgress.Action.LOST_CREW)
@@ -238,11 +309,17 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         super.onFinishedDying()
 
         val clonebay = ownerShip?.clonebay ?: return
+        // Hyperspace CrewMember::CheckSkills: NO_CLONE races (and crew whose death timer ran out) are never cloned;
+        // nor is a crew member killed (Lua Kill) before its first loop set clone_ready
+        if (xyz.znix.xftl.hs.HS.active && (!hsCloneReady || xyz.znix.xftl.hs.crew.HsCrewEffects.cloneBlocked(this))) return
         clonebay.addDeadCrew(this)
     }
 
     override fun onCloned() {
         super.onCloned()
+
+        // Hyperspace CrewMember::Clone (CustomCrew.cpp): a race with cloneLoseSkills false takes its own path, no loss
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.crew.HsCrewEffects.cloneKeepsSkills(this)) return
 
         // CrewMember::Restart's clone arrival (0x47be80) deducts a tenth of
         // each skill's maximum (rounded down, at least one action).
@@ -317,8 +394,12 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         if (ship != null && ship.isPlayerShip) {
             val crossedMilestone = (oldProgress < 0.5f && newProgress >= 0.5f) ||
                     (oldProgress < 1f && newProgress >= 1f)
-            if (crossedMilestone)
+            if (crossedMilestone) {
                 ship.sys.sounds.getSampleOrWarn("levelup")?.play()
+                levelUpTime = 0f
+                levelUpRunning = true
+                lastLevelUp = skill
+            }
         }
     }
 
@@ -350,8 +431,7 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         }
         for ((name, value) in browserStrandedAugments) elem.addContent(Element("browserStrandedAugment").setAttribute("name", name).setAttribute("value", value.toString()))
         info.saveToXML(elem, false)
-
-        savedPosition?.let { SaveUtil.addPoint(elem, "savedPos", it) }
+        if (hsMindControlled) elem.setAttribute("hsMindControlled", "true")
     }
 
     override fun loadFromXML(elem: Element, refs: RefLoader) {
@@ -361,10 +441,7 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         browserStrandedAugments.clear()
         for (augment in elem.getChildren("browserStrandedAugment")) browserStrandedAugments[augment.getAttributeValue("name")] = augment.getAttributeValue("value").toFloat()
         info = LivingCrewInfo.loadFromXMLWithRace(elem, blueprint, game)
-
-        if (elem.getChild("savedPos") != null) {
-            savedPosition = SaveUtil.getPoint(elem, "savedPos")
-        }
+        hsMindControlled = elem.getAttributeValue("hsMindControlled") == "true"
     }
 
     companion object {
@@ -376,6 +453,9 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
          * on a crewmember's crew box after they last gained experience.
          */
         const val SKILL_INDICATOR_TIME = 4f
+
+        /** The levelUp AnimationTracker's length (CrewMember constructor; oracle sw4-skill levelUp.time). */
+        const val LEVEL_UP_TIME = 2f
     }
 }
 
@@ -388,7 +468,7 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
 class LivingCrewInfo(
     private val game: InGameState,
 
-    val race: CrewBlueprint,
+    race: CrewBlueprint,
 
     name: String,
 
@@ -401,10 +481,20 @@ class LivingCrewInfo(
     var colour: Int
 ) {
     /**
+     * The colour index of each layer (CrewBlueprint colorChoices) when layers other than the largest have a choice
+     * (Hyperspace races; CrewMember::CycleColorLayer moves every layer), or null while [colour] picks every layer.
+     */
+    @JvmField var hsLayerColours: IntArray? = null
+
+    /**
      * The player facing name of this crew, eg 'Slocknog' or some
      * other name that's selected by the player, by an event or
      * from the default list of names.
      */
+    /** The race; only Hyperspace's race transformation changes it. */
+    var race: CrewBlueprint = race
+        internal set
+
     var name: String = name
         set(value) {
             if (field == value)
@@ -416,6 +506,12 @@ class LivingCrewInfo(
 
     var shortName: String = findShortName()
         private set
+
+    /** Hyperspace CrewMember::SetName: forced, the short name is the whole name, else ShortenName's. */
+    fun hsSetName(value: String, force: Boolean) {
+        name = value
+        shortName = if (force) value else findShortName()
+    }
 
     /**
      * The crew's skills. 0 means no skill, 1 means fully yellow (max level).
@@ -432,7 +528,21 @@ class LivingCrewInfo(
     @Suppress("ConvertTwoComparisonsToRangeCheck") // Intention is clearer like this
     val isFemale: Boolean get() = colour >= race.baseNumberOfColours && race.baseNumberOfColours > 0
 
-    private val portraitImage: Image = game.animations["${race.name}_portrait"].spriteAt(game, 0)
+    /**
+     * The race whose animations and sprite sheet draw this crew: under Hyperspace the race's `<animSheet>` (Outer
+     * Expansion's aea_cult_wizard_s04 is drawn with aea_cult_wizard's), as the crew member's own animations are.
+     */
+    private val sheetRace: String
+        get() = if (!xyz.znix.xftl.hs.HS.active) race.name
+        else xyz.znix.xftl.hs.crew.CustomCrewManager.definitionOrNull(race.name)?.animSheet?.get(if (isFemale) 0 else 1)
+            ?.ifEmpty { null } ?: race.name
+
+    private val portraitImage: Image
+        get() = (if (xyz.znix.xftl.hs.HS.active) (game.animations.getOrNull("${race.name}_portrait")
+            ?: game.animations.getOrNull("${sheetRace}_portrait"))?.spriteAt(game, 0)
+            ?: game.animations.sheet(sheetRace)?.let { xyz.znix.xftl.AnimationSpec(it, "${race.name} sheet portrait", 0, 0, 1, 1f).spriteAt(game, 0) }
+            ?: game.animations.crewStrip("${race.name}_portrait").spriteAt(game, 0)
+        else game.animations.crewStrip("${race.name}_portrait").spriteAt(game, 0))
 
     /**
      * Draw this crew's portrait, without having to construct the crewmember instance.
@@ -471,7 +581,11 @@ class LivingCrewInfo(
 
         val baseImagePath = when {
             isFemale -> "img/people/female_base.png"
-            else -> game.animations["${baseAnimationName}_portrait"].sheet.sheetPath
+            // Hyperspace races without a portrait animation: their sheet (see AbstractCrew.buildPortraitAnim).
+            xyz.znix.xftl.hs.HS.active && game.animations.getOrNull("${baseAnimationName}_portrait") == null ->
+                game.animations.getOrNull("${sheetRace}_portrait")?.sheet?.sheetPath ?: game.animations.sheet(sheetRace)?.sheetPath
+                    ?: return
+            else -> game.animations.getOrNull("${baseAnimationName}_portrait")?.sheet?.sheetPath ?: return
         }
         val fullBaseImage = game.getImg(baseImagePath)
 
@@ -486,7 +600,8 @@ class LivingCrewInfo(
             val layer = game.getImg(path)
 
             val colours = race.colourFilters[index]
-            val filter = colours[effectiveColour % colours.size]
+            val chosen = hsLayerColours?.takeIf { it.size == race.colourFilters.size }?.get(index)
+            val filter = colours[(chosen ?: effectiveColour) % colours.size]
 
             layer.draw(x0, y0, x1, y1, texX0.f, texY0.f, texX1.f, texY1.f, alpha, filter)
         }
@@ -553,8 +668,11 @@ class LivingCrewInfo(
         }
 
         // ShortenName measures with freetype::measurePrintLines (0x595dc0, font 6): the glyph extents, not the
-        // trailing advance, so "Matthieu" (49px) stays whole.
-        val font = game.getFont(PlayerShipUI.CREW_NAME_FONT)
+        // trailing advance, so "Matthieu" (49px) stays whole. A name of bytes up to 0xD1 takes font 6 with
+        // ignoreLanguage, the English glyphs in Japanese and Chinese too.
+        val font = game.getFont(PlayerShipUI.CREW_NAME_FONT).let {
+            if (xyz.znix.xftl.rendering.NativeFonts.nameIgnoresLanguage(name)) xyz.znix.xftl.rendering.NativeFonts.english(it) else it
+        }
         return game.nameManager.shorten(name) { font.getExtentWidth(it) }
     }
 
@@ -564,6 +682,7 @@ class LivingCrewInfo(
         }
         SaveUtil.addAttr(elem, "selectedName", name)
         SaveUtil.addAttrInt(elem, "colour", colour)
+        hsLayerColours?.let { elem.setAttribute("hsLayerColours", it.joinToString(",")) }
         elem.addContent(browserCounters.save())
 
         for ((skill, value) in skills) {
@@ -627,7 +746,7 @@ class LivingCrewInfo(
         fun generateWithName(race: CrewBlueprint, game: InGameState, name: String): LivingCrewInfo {
             val factory = game.crewFactory
             val colours = factory.drawColours(race)
-            return LivingCrewInfo(game, race, name, factory.colourIndex(race, colours, true))
+            return factory.layered(LivingCrewInfo(game, race, name, factory.colourIndex(race, colours, true)), colours)
         }
 
         fun loadFromXML(elem: Element, game: InGameState): LivingCrewInfo {
@@ -640,6 +759,9 @@ class LivingCrewInfo(
             val name = SaveUtil.getAttr(elem, "selectedName")
             val colour = SaveUtil.getAttrInt(elem, "colour")
             val info = LivingCrewInfo(game, race, name, colour)
+            elem.getAttributeValue("hsLayerColours")?.let { v ->
+                info.hsLayerColours = v.split(',').mapNotNull { it.trim().toIntOrNull() }.toIntArray()
+            }
             info.browserCounters.load(elem.getChild("browserCrewCounters"))
 
             // Skills are omitted if they're set to zero, which is what the default is anyway.
@@ -686,8 +808,14 @@ enum class Skill(
      * (0x485df0) gives humans smaller skill maxima (26, 26, 100, 116, 32, 14)
      * than the table every other race keeps (0x8847a0, 30, 30, 110, 130, 36, 16).
      */
-    fun actionsPerLevel(race: CrewBlueprint): Int =
-        if (race.name == "human") HUMAN_MAXIMA[ordinal] / 2 else actionsPerLevel
+    fun actionsPerLevel(race: CrewBlueprint): Int {
+        // Hyperspace (CrewMember_Extend::Initialize, CrewBlueprint::RandomSkills) sets each defined race's maximum
+        // to twice its <skills> requirement, the vanilla table's values by default.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.CustomCrewManager.definitionOrNull(race.name)?.let {
+            return it.skillsDef.skills.getValue(xyz.znix.xftl.hs.crew.SkillsDefinition.ORDER[ordinal]).requirement
+        }
+        return if (race.name == "human") HUMAN_MAXIMA[ordinal] / 2 else actionsPerLevel
+    }
 
     fun amountPerAction(race: CrewBlueprint): Float = 1f / (actionsPerLevel(race) * 2f)
 

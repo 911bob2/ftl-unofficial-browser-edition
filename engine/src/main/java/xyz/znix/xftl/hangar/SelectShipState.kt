@@ -38,7 +38,10 @@ class SelectShipState(
     companion object {
         // ShipBuilder's family order table (0x0087b660: ids 0,3,4,7,2,5,6,1,9,8),
         // which the arrows cycle through and the ship list lays out.
-        private val NATIVE_ORDER = listOf("PLAYER_SHIP_HARD", "PLAYER_SHIP_CIRCLE", "PLAYER_SHIP_FED",
+        /** The pointer's place when no finger is down: over nothing. */
+        private const val LIFTED = -10000
+
+        val NATIVE_ORDER = listOf("PLAYER_SHIP_HARD", "PLAYER_SHIP_CIRCLE", "PLAYER_SHIP_FED",
             "PLAYER_SHIP_ENERGY", "PLAYER_SHIP_MANTIS", "PLAYER_SHIP_JELLY", "PLAYER_SHIP_ROCK",
             "PLAYER_SHIP_STEALTH", "PLAYER_SHIP_ANAEROBIC", "PLAYER_SHIP_CRYSTAL")
     }
@@ -57,7 +60,7 @@ class SelectShipState(
     val screenSize = Point(0, 0)
 
     val blueprints: BlueprintManager = main.getHangarBlueprints(advancedEdition)
-    val translator: Translator = previous?.translator ?: Translator(datafile, "en")
+    val translator: Translator = previous?.translator ?: Translator(datafile, xyz.znix.xftl.Languages.current)
     val animations: Animations = previous?.animations ?: Animations(datafile)
 
     val roomImageMeta: RoomImageMeta = previous?.roomImageMeta ?: RoomImageMeta.loadFromResource()
@@ -65,7 +68,8 @@ class SelectShipState(
     val windowRenderer: WindowRenderer
 
     val shipFamilies: ShipFamily.FamilyTable
-    val hangarFamilies get() = shipFamilies.families.sortedBy { NATIVE_ORDER.indexOf(it.ships.first()) }
+    val hangarFamilies get() = if (xyz.znix.xftl.hs.HS.active) shipFamilies.families // already in Hyperspace's order
+        else shipFamilies.families.sortedBy { NATIVE_ORDER.indexOf(it.ships.first()) }
     val ships: List<LazyShipBlueprint>
     // Native List keeps AE-only silhouettes visible even with default content.
     val catalogBlueprints = main.getHangarBlueprints(true)
@@ -84,6 +88,8 @@ class SelectShipState(
     val selectedDifficulty get() = startGameButton.selected
     val isShipListVisible get() = shipListVisible
     val isShipListTutorialOpen get() = shipListVisible && shipList.isTutorialOpen
+    val shipListPage get() = shipList.diagnosticPage
+    val shipListCards get() = shipList.diagnosticCards
 
     var isShipEdited = false
         private set
@@ -96,6 +102,11 @@ class SelectShipState(
     private lateinit var editor: ShipEditor
 
     private val startGameButton: StartGameButton
+
+    /** Hyperspace's seed field (Seeds.cpp); null in vanilla. */
+    val seedBox: xyz.znix.xftl.hs.render.HsSeedBox? by lazy {
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsSeedBox(this) else null
+    }
 
     private val uiProvider: UIProvider = ShipSelectUIProvider()
     private val shipSelector: WidgetContainer
@@ -137,9 +148,15 @@ class SelectShipState(
 
     val missingImage = getImgOrNull("img/nullResource.png") ?: error("Missing nullResource.png")
 
+    private val touchBackground = if (HangarLayout.touch) getImgOrNull("img/ipad/customizeUI/custom_background.png") else null
+    val hasTouchBackground get() = touchBackground != null
+
     /** The hangar backdrop; vanilla art that is exactly the game's size, so
      *  it can be drawn 1:1 behind the ship-selection UI. */
-    private val hangarBackground = getImg("img/customizeUI/custom_background.png")
+    private val hangarBackground = touchBackground ?: getImg("img/customizeUI/custom_background.png")
+
+    /** The touch layout's controls are in a 1024x768 block in the middle of the canvas. */
+    private val blockX get() = if (HangarLayout.touch) xyz.znix.xftl.game.TouchMode.hudX else 0
 
     init {
         startGameButton = StartGameButton(this)
@@ -156,7 +173,10 @@ class SelectShipState(
         // TODO de-duplicate with InGameState
         val builder = com.pocketwormhole.android.SafeXML.builder()
         try {
-            shipFamilies = previous?.shipFamilies ?: ShipFamily.FamilyTable(builder.build(XftlResources.open("assets/data/xftl_ships.xml")))
+            shipFamilies = previous?.shipFamilies ?: ShipFamily.FamilyTable(builder.build(XftlResources.open("assets/data/xftl_ships.xml"))).let {
+                // Hyperspace: the hangar entries of <ships> (vanilla first unless hideFirstShipPage).
+                if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsHangar.familyTable(it, NATIVE_ORDER) else it
+            }
         } catch (e: IOException) {
             throw RuntimeException("Failed to load ship data", e);
         } catch (e: JDOMException) {
@@ -167,7 +187,10 @@ class SelectShipState(
         ships = blueprints.blueprints.values
             .asSequence()
             .filterIsInstance(LazyShipBlueprint::class.java)
-            .filter { it.name.startsWith("PLAYER_SHIP_") && it.name != "PLAYER_SHIP_EASY" && it.name != "PLAYER_SHIP_TUTORIAL" }
+            .filter { it.hasLayout }
+            // Hyperspace: the hangar layouts of <ships> count whatever their name (MV's ELITE_SHIP_*).
+            .filter { (it.name.startsWith("PLAYER_SHIP_") || (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsHangar.variantOf(it.name) != null)) &&
+                it.name != "PLAYER_SHIP_EASY" && it.name != "PLAYER_SHIP_TUTORIAL" }
             .sortedBy { it.name }
             .sortedBy { ship -> familyNames.indexOfFirst { ship.name.startsWith(it) } }
             .toList()
@@ -191,7 +214,7 @@ class SelectShipState(
             roomButton.children.filterIsInstance<Label>().firstOrNull()?.text = if (roomsVisible) translator["ship_hiderooms_button"] else "SHOW ROOMS"
         }
 
-        shipList = ShipList(this) {
+        shipList = ShipList(this, HangarLayout.touch) {
             shipListVisible = false
             if (it != null) {
                 selectShip(it.real)
@@ -212,17 +235,36 @@ class SelectShipState(
         if (ownsResources) resourceContext.freeAll()
     }
 
+    // The first hangar on a new profile, in the touch layout: laid out for the 1280x720 frame, moved to the block's middle.
+    private var welcome: xyz.znix.xftl.game.NativeChoiceBox? = null
+    private val welcomeDx get() = xyz.znix.xftl.game.TouchMode.HUD_W / 2 - 640
+    private val welcomeDy get() = xyz.znix.xftl.game.TouchMode.HUD_H / 2 - 360
+
     override fun render(container: GameContainer, g: Graphics) {
         g.clear(Colour.darkGray)
 
-        // The hangar art (1280x720, matching the game area exactly).
-        hangarBackground.draw(0f, 0f)
-        presentation.drawBackgroundAnimations()
+        val touch = HangarLayout.touch
+        // The hangar art (1280x720, matching the game area exactly). The touch art covers the canvas.
+        if (touch) {
+            xyz.znix.xftl.game.TouchArt.cover(g, hangarBackground.width, hangarBackground.height, container.width, container.height) {
+                hangarBackground.draw(0f, 0f)
+                presentation.drawBackgroundAnimations()
+            }
+            g.pushTransform()
+            g.translate(blockX.f, 0f)
+        } else {
+            hangarBackground.draw(0f, 0f)
+            presentation.drawBackgroundAnimations()
+        }
 
         screenSize.x = container.width
         screenSize.y = container.height
 
-        startGameButton.draw(g)
+        // On touch the ship can reach down to these: they go over it instead.
+        if (!touch) {
+            startGameButton.draw(g)
+            seedBox?.draw(g)
+        }
 
         // File-based ship editing is outside the browser game scope.
 
@@ -230,7 +272,7 @@ class SelectShipState(
         // Original ShipManager applies the layout's tile offset before the
         // hangar's fixed (365,30) translation. Hull padding is not a centering box.
         // ShipBuilder::OnRender translates by (365,30) plus the layout's shift.
-        shipOffset.x = 365 + currentBlueprint.layoutShift.x + currentBlueprint.roomOffset.x * Constants.ROOM_SIZE
+        shipOffset.x = HangarLayout.pick(365, 377) + currentBlueprint.layoutShift.x + currentBlueprint.roomOffset.x * Constants.ROOM_SIZE
         shipOffset.y = 30 + currentBlueprint.layoutShift.y + currentBlueprint.roomOffset.y * Constants.ROOM_SIZE
         g.translate(shipOffset.x.f, shipOffset.y.f)
         // The hangar shows a real ShipManager: without powered sensors only crewed rooms
@@ -251,22 +293,44 @@ class SelectShipState(
         editor.editorWidth = container.width - shipOffset.x
         editor.editorHeight = container.height - shipOffset.y
         g.popTransform()
+        if (touch) startGameButton.draw(g)
         presentation.draw(g)
+        if (touch) seedBox?.draw(g)
 
         if (shipListVisible) {
             shipList.draw(container, g)
         }
+        welcome?.let {
+            g.pushTransform()
+            g.translate(welcomeDx.f, welcomeDy.f)
+            it.draw(g)
+            g.popTransform()
+        }
+        if (touch) g.popTransform()
     }
 
     override fun update(container: GameContainer, delta: Float) {
         screenSize.x = container.width
         screenSize.y = container.height
         val input = container.input
-        mousePos.x = input.mouseX
-        mousePos.y = input.mouseY
+        // A finger only hovers while it is down.
+        if (HangarLayout.touch && !input.isMouseButtonDown(Input.MOUSE_LEFT_BUTTON)) {
+            mousePos.x = LIFTED
+            mousePos.y = LIFTED
+        } else {
+            mousePos.x = input.mouseX - blockX
+            mousePos.y = input.mouseY
+        }
+
+        if (HangarLayout.touch && main.consumeFirstRunHangar()) {
+            welcome = xyz.znix.xftl.game.NativeChoiceBox(::getFont, windowRenderer, translator["welcome_hangar_ipad"],
+                listOf(xyz.znix.xftl.game.NativeChoiceBox.Choice(translator["continue"])))
+        }
+        welcome?.mouseMove(mousePos.x - welcomeDx, mousePos.y - welcomeDy)
 
         shipSelector.updateMouse(mousePos.x - shipSelectorPos.x, mousePos.y - shipSelectorPos.y)
         presentation.update(delta)
+        seedBox?.update(delta)
         startGameButton.updateHover(!shipListVisible && !presentation.isEditing && !presentation.isCustomizing)
         if(shipListVisible)shipList.update()
         if(!musicStarted) {
@@ -277,13 +341,22 @@ class SelectShipState(
         (sounds as? xyz.znix.xftl.game.RealSoundManager)?.let { it.updateLoopedSounds(false); it.updateMusic(delta) }
     }
 
-    override fun mouseClicked(button: Int, x: Int, y: Int, clickCount: Int) {
+    override fun mouseClicked(button: Int, canvasX: Int, y: Int, clickCount: Int) {
+        val x = canvasX - blockX
         mousePos.x = x
         mousePos.y = y
+        welcome?.let {
+            if (button == Input.MOUSE_LEFT_BUTTON && it.click(x - welcomeDx, y - welcomeDy) != null) welcome = null
+            return
+        }
         if (shipListVisible) {
             shipList.mouseClicked(button, x, y)
             return
         }
+
+        // ShipBuilder::MouseClick hook (Seeds.cpp): a click starts or stops the seed field and an active field keeps it.
+        if (!presentation.isEditing && !presentation.isCustomizing && button == Input.MOUSE_LEFT_BUTTON &&
+            seedBox?.click(x, y) == true) return
 
         if (presentation.click(button,x,y)) return
 
@@ -346,12 +419,19 @@ class SelectShipState(
     }
 
     override fun keyPressed(key: Int, c: Char) {
+        welcome?.let {
+            if (it.key(c) != null) welcome = null
+            return
+        }
         if (shipListVisible) {
             if (key == Input.KEY_ESCAPE)
                 shipListVisible = false
             else shipList.keyPressed(c)
             return
         }
+
+        // CApp::OnTextInput / OnTextEvent and ShipBuilder::OnKeyDown hooks (Seeds.cpp): an active seed field takes the keys.
+        if (seedBox?.key(key, c) == true) return
 
         val input=main.gameContainer.input
         val shortcut=listOf(Input.KEY_LCTRL,Input.KEY_RCTRL,Input.KEY_LALT,Input.KEY_RALT,Input.KEY_LSUPER,Input.KEY_RSUPER).any { input.isKeyDown(it) }
@@ -367,7 +447,8 @@ class SelectShipState(
         return missingImage
     }
 
-    fun getImgOrNull(path: String): Image? {
+    fun getImgOrNull(original: String): Image? {
+        val path = xyz.znix.xftl.Languages.localImage(datafile, original)
         images[path]?.let { return it }
 
         val file = datafile.getOrNull(path) ?: return null
@@ -390,6 +471,8 @@ class SelectShipState(
     fun startGame(selected: Difficulty) {
         if (!isSelectedUnlocked) return
         presentation.commit()
+        // StarMap::NewGame hook (Seeds.cpp): the typed seed, if any, seeds the run.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.sector.HsSeeds.requestedSeed = seedBox?.seedOrNull()
         val editedShip = if (isShipEdited) editor.ship else null
         main.startNewGame(RunConfiguration(currentBlueprint.name, selected, advancedEdition,
             presentation.shipName, presentation.crew.map { it.copy() }), editedShip)
@@ -427,6 +510,9 @@ class SelectShipState(
     /** ShipBuilder::OnLoop enables Random Ship only with more than one unlocked family. */
     val unlockedFamilyCount get() = hangarFamilies.count { family -> family.ships.firstOrNull()?.let { isShipUnlocked(it) } == true }
 
+    /** The touch ship list shows the tapped ship in the hangar at once. */
+    fun previewShip(ship: LazyShipBlueprint) { if (ship.name != selectedShipId) selectShip(ship.real) }
+
     fun selectRandomShip(random: kotlin.random.Random) { selectShip(ships.filter { isShipUnlocked(it.name) }.random(random).real) }
     fun setRoomsVisible(visible: Boolean) { roomsVisible=visible }
     fun openShipList() { presentation.commit(); shipListVisible=true; shipList.open() }
@@ -451,10 +537,15 @@ class SelectShipState(
     }
 
     private fun selectShip(blueprint: ShipBlueprint) {
+        // Hyperspace: the native hangar builds the shown ship, whose crew draw space ids (HsHangarIds)
+        xyz.znix.xftl.hs.crew.HsHangarIds.shown(blueprint)
         val preview = EditableShip.fromBlueprint(blueprint)
         for (room in preview.rooms) {
             val system = room.system ?: continue
-            if (system.startingPower == 0 || !blueprints.blueprints.containsKey(system.type)) room.system = null
+            if (system.startingPower == 0 || !blueprints.blueprints.containsKey(system.type)) {
+                if (xyz.znix.xftl.hs.HS.active && system.startingPower == 0 && blueprints.blueprints.containsKey(system.type) && system.type != "artillery") preview.uninstalled[room] = system
+                room.system = null
+            }
         }
         editor = ShipEditor(this, preview)
         presentation.select()
@@ -469,7 +560,10 @@ class SelectShipState(
             // A family may only list variants that exist as blueprints - e.g.
             // there's no Crystal or Lanius type C (GitHub issue #108).
             val variantExists = family?.ships?.getOrNull(idx)?.let { shipId ->
-                ships.any { it.name == shipId }
+                ships.any { it.name == shipId } &&
+                    // Hyperspace SwitchShip: a custom variant needs its a/b/c flag and must be unlocked.
+                    (!xyz.znix.xftl.hs.HS.active || !xyz.znix.xftl.hs.ship.HsHangar.isCustomLayout(shipId) ||
+                        xyz.znix.xftl.hs.ship.HsHangar.isCustomLayoutUnlocked(shipId))
             } == true
 
             if (idx == typeId) {

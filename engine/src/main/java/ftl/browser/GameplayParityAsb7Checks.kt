@@ -108,7 +108,8 @@ internal object GameplayParityAsb7Checks {
 
         val env = exit.getEnvironment(state)
         if (difficulty == Difficulty.EASY) {
-            check(env !is AsbEnvironment && exit.environmentType == Beacon.EnvironmentType.NORMAL) {
+            // The map may put the exit in a nebula cloud (a nebula scene); only the ASB is excluded.
+            check(env !is AsbEnvironment && exit.environmentType != Beacon.EnvironmentType.PDS && !exit.environmentType.isDangerous) {
                 "The easy exit has the ${env::class.simpleName} scene"
             }
             check(env.diagnosticHasFleet && !env.isDangerous) { "The easy exit: fleet ${env.diagnosticHasFleet}, dangerous ${env.isDangerous}" }

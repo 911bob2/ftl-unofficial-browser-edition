@@ -61,9 +61,26 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         for (hp in ship.hardpoints) {
             val weapon = hp.weapon ?: continue
             weapon.bindToWeaponsSystem(this)
-            weapon.update(dt, chargeTime, !ship.opponentCloakActive)
+            var weaponChargeTime = chargeTime
+            if (xyz.znix.xftl.hs.HS.luaActive) {
+                // Hyperspace ProjectileFactory::SetCooldownModifier (InternalEvents.cpp): WEAPON_COOLDOWN_MOD may
+                // replace this frame's modifier (1 - manning bonus); a pre-empt keeps the weapon's previous one.
+                val base = 1f - manningChargeSub
+                val m = xyz.znix.xftl.hs.weapons.HsWeaponsLua.cooldownMod(weapon, base, false)
+                if (m != null) weapon.hsCooldownMod = m
+                if (weapon.hsCooldownMod != base)
+                    weaponChargeTime = chargeTime * base / weapon.hsCooldownMod.coerceAtLeast(1e-4f)
+            }
+            weapon.hsLuaHackLevel = null // WeaponSystem::OnLoop: SetHacked(the system's hack level) every frame
+            weapon.update(dt, weaponChargeTime, !ship.opponentCloakActive)
 
             if (!weapon.hasEnoughMissiles)
+                setWeaponPower(weapon, false)
+
+            // Hyperspace WeaponSystem::OnLoop (after super): an enemy weapon past its <shotLimit> with nothing
+            // left to fire is depowered.
+            if (xyz.znix.xftl.hs.HS.active && !ship.isPlayerShip && weapon.isPowered && !weapon.isFiring &&
+                xyz.znix.xftl.hs.weapons.HsWeapons.hitShotLimit(weapon))
                 setWeaponPower(weapon, false)
 
             // Update the weapon slide
@@ -150,12 +167,14 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
                 // We start in ship space - x and y are relative to the hull
 
+                // Ship::shipImage's corner is where the mounts draw from, ahead of the mount's own rotation.
+                g.translate(ship.hsHullShiftX.f, ship.hsHullShiftY.f)
                 translateHardpoint(g, hp)
 
                 // We are now in image space - any given XY value here will line up to the pixel
                 // with the same XY on the launcher image.
 
-                g.translate(-anim.mountPoint.x.f, -anim.mountPoint.y.f)
+                g.translate(-anim.mountPoint.x.f - weapon.hsMountShiftX, -anim.mountPoint.y.f - weapon.hsMountShiftY)
 
                 weapon.render(g)
 
@@ -191,6 +210,7 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         // is equal to hp.position.
         val startPos = Point(0, 0)
         startPos += firePoint
+        startPos += ConstPoint(weapon.hsFireShiftX, weapon.hsFireShiftY)
         startPos -= anim.mountPoint
 
         // Convert from hardpoint-space to ship-space.
@@ -304,6 +324,7 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             check(weapon is IRoomTargetingWeapon)
 
             targets[weaponId] = SelectedTarget.RoomAim(room, weapon, weaponId)
+            weapon.asWeaponInstance().hsLastAim = targets[weaponId]
         }
 
         fun targetBeam(weaponId: Int, beam: SelectedTarget.BeamAim) {
@@ -311,10 +332,12 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             require(weapon == beam.weapon)
 
             targets[weaponId] = beam
+            beam.weapon.asWeaponInstance().hsLastAim = beam
         }
 
+        /** Also ClearAiming: the weapon's lastTargets go too (HS oracle hs-gaps aim2: a manual shot leaves none). */
         fun unTarget(weaponId: Int) {
-            targets.remove(weaponId)
+            targets.remove(weaponId)?.weapon?.asWeaponInstance()?.hsLastAim = null
         }
 
         fun reindex() {
@@ -347,7 +370,11 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         fun update() {
             // Un-target all unpowered weapons
             val enemy = ship.sys.getEnemyOf(ship)
-            selectedTargets.targets.values.removeIf { !it.weapon.isPowered || (it.targetShip !== ship && it.targetShip !== enemy) }
+            selectedTargets.targets.values.removeIf {
+                val drop = !it.weapon.isPowered || (it.targetShip !== ship && it.targetShip !== enemy)
+                if (drop) it.weapon.asWeaponInstance().hsLastAim = null
+                drop
+            }
         }
 
         fun fireChargedWeapons() {
@@ -362,6 +389,8 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
                 if (!weapon.isCharged || weapon.isFiring)
                     continue
                 if (!weapon.isPowered || !weapon.hasEnoughMissiles || isHackActive) continue
+                // Hyperspace ProjectileFactory::FireNextShot: no new volley past the <shotLimit>.
+                if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.weapons.HsWeapons.hitShotLimit(weapon)) continue
 
                 if (fired == null)
                     fired = ArrayList()
@@ -381,6 +410,14 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
                 // Autofire remembers where this weapon was aimed so it can
                 // fire here again when it recharges.
                 if (!isAutofire(tgt.weaponNumber)) unTarget(tgt.weaponNumber)
+                // Hyperspace ProjectileFactory::GetProjectile: ClearAiming once the shot limit is reached.
+                else if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.weapons.HsWeapons.hitShotLimit(tgt.weapon.asWeaponInstance()))
+                    unTarget(tgt.weaponNumber)
+                // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Gameplay/CustomWeapons.cpp
+                // (ProjectileFactory::Fire): a player weapon with a negative cooldown (cooldown.second < 0, the
+                // preemptive weapons) is untargeted once it has fired, autofire or not.
+                else if (xyz.znix.xftl.hs.HS.active && ship.isPlayerShip && tgt.weapon.asWeaponInstance().chargeTime < 0f)
+                    unTarget(tgt.weaponNumber)
             }
 
             // WeaponBox::OnLoop (0x509dd0): a player weapon that has just charged

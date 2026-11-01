@@ -1,0 +1,42 @@
+{
+ "ftlman": "0.7.4",
+ "files": {
+  "README.txt": "eac1cf9154225dd15441c67158956985f8888487f016640bdcf4ecc971e58cfc",
+  "audio/waves/base.ogg": "9d38bb9873afa2879958d7ef5cc426917dee2a28e7195eb64df90af2daa2baa6",
+  "audio/waves/f1_tone.wav": "2eeb55e08e1a51af2003fabdfc8572539de6c3f0fa1c182a5b3d3a4806b84db5",
+  "audio/waves/new.ogg": "c20a801421d28528b8683dbceffc370c86d47a3950525603fe0dbf8a44c77d9a",
+  "data/Text_Misc.xml": "3ecd9b1f97833dc73ad3b44b52877cd4e48c1442b9676f2ddac9434a2e1cdeb1",
+  "data/animations.xml": "e1fb67071e716ee7428cdd3fc4b60cdc7ed7f72014c5081630a71f8a2c267dcf",
+  "data/backslash.xml": "c5a1c182c87ac852d7d4621a27899d9d002b02dd501be9355d1fc4f58e9ccc7f",
+  "data/blueprints.xml": "b6668e7e44655954e3bd50e9c1ddab666df8311ac7f8f186866383089eaf8cb8",
+  "data/clobbered.xml": "2d51d0ed8443c0fa16cdb6898b72a283dd35b66fe830b6bcd47cc9241fb2cb81",
+  "data/events.xml": "8f821e160441884c3cbe48a49d64ed1b366cde3e8faa01b4df4c6a6fc9f29186",
+  "data/new_events.xml": "f7690164ece18498454c9ba17352f0b85da205f8c79c6cec2934e73662b7d245",
+  "data/notes.txt": "a4d18c3ee8dc9383089c3959464a97ad0f9e79d26fe3e27e70de7a170a661b2e",
+  "data/odd.raw.xml": "2e3ff83ab6c5ba10ce9c042e5110f5b52dd4734a5111f5f436bf4c034b476f29",
+  "data/plain.txt": "b426df25816fe2469e0f058f78860620479140eddf569cb09e500d8c84ca4fa1",
+  "data/rawc.xml": "38e404f6a007c785a1c8531c4d9e51663bc5886e606eb05b00805f959fcc9fba",
+  "data/utf16.txt": "05b0c0d24d2538e6e1ef0142489238cd8653067347148123e9ab3e70631d19c8",
+  "data/utf16.xml": "bf780aae8ebbccc38d00513e1702ad582b47a2b944473c4603923cf2edcbe721",
+  "fonts/f.font": "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
+  "img/base.png": "57a742d86424f5c3e67dbad18e87b70a008bb5599ede2edbdd111f620d6c0532",
+  "img/new.png": "e9113d7a8f6a0275b35c7672709206d9e94d6842554eee1617d4d09369065df5",
+  "img/zz_filler.bin": "30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58"
+ },
+ "text": {
+  "README.txt": "top-level\r\nfile\r\n",
+  "audio/waves/f1_tone.wav": "RIFFD\u0003\u0000\u0000WAVEfmt \u0010\u0000\u0000\u0000\u0001\u0000\u0001\u0000@\u001f\u0000\u0000@\u001f\u0000\u0000\u0001\u0000\b\u0000data \u0003\u0000\u0000��������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������",
+  "data/Text_Misc.xml": "<FTL>\n<text name=\"a\">A</text>\n\n<text name=\"b\">B</text></FTL>",
+  "data/animations.xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<FTL>\n\n<animSheet name=\"s\" w=\"10\" h=\"10\" fw=\"1\" fh=\"1\">x.png</animSheet>\n\n\n\n<!-- Appended by ftlman 0.7.4 -->\n\n<animSheet name=\"f1_sheet\" w=\"1\" h=\"1\" fw=\"1\" fh=\"1\">y.png</animSheet>\n</FTL>\n",
+  "data/backslash.xml": "<b/>",
+  "data/blueprints.xml": "<FTL>\n\n<weaponBlueprint cost=\"10\" name=\"F1_LASER_1\"><type>LASER</type><damage>3</damage><desc>R&amp;D &lt;1></desc></weaponBlueprint>\n\n<blueprintList name=\"F1_LIST\"><name>F1_LASER_1</name><name>F1_ITEM_3</name></blueprintList>\n\n\n\n\n<f1Item name=\"F1_ITEM_3\"><type>LASER</type><damage>5</damage></f1Item>\n</FTL>",
+  "data/clobbered.xml": "<x>unchanged &bogus;</x>",
+  "data/events.xml": "<event name=\"F1_START\"><text>Hello</text></event>\n<event name=\"F1_OTHER\"><text>Other</text></event>\n\n<event name=\"F1_NEW\"><text>New &amp; shiny</text></event>",
+  "data/new_events.xml": "<FTL>\n\n\n<event name=\"N1\"><text>t</text><choice/></event>\n<event closed=\"yes\" name=\"N2\"><text>unclosed</text></event></FTL>",
+  "data/notes.txt": "line one\r\nline two\r\nline three\r\n",
+  "data/plain.txt": "replaced\r\n",
+  "data/rawc.xml": "<FTL><raw keep=\"as is\"/><appended/></FTL>",
+  "data/utf16.txt": "wide\r\ntext\r\n",
+  "data/utf16.xml": "<FTL><e t=\"é\">v</e></FTL>"
+ }
+}

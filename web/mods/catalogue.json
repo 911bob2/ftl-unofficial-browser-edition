@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "about": "Pinned mod files the Mods panel offers. Metadata only: no mod file is in Git or the image. The server offers a file only when an operator placed it in FTL_MODS_DIR and its SHA-256 matches (docs/MODS.md).",
+  "files": [
+    {
+      "id": "hyperspace-1.23.2",
+      "mod": "hyperspace",
+      "title": "Hyperspace",
+      "version": "1.23.2",
+      "file": "Hyperspace.ftl",
+      "size": 9950190,
+      "sha256": "fa8205d5be603a4f01e1fc081097d1cb24b5a13588e403e65e6ff3a4f5173fa8",
+      "policy": "hyperspace",
+      "license": "GPL-3.0-or-later",
+      "licenseNotice": "Hyperspace-NOTICE.md",
+      "page": "https://github.com/FTL-Hyperspace/FTL-Hyperspace/releases/tag/v1.23.2",
+      "source": {"repository": "https://github.com/FTL-Hyperspace/FTL-Hyperspace", "tag": "v1.23.2", "commit": "db570d728321a5a2c70add0988153373fd4ec08a"},
+      "upstream": {"url": "https://github.com/FTL-Hyperspace/FTL-Hyperspace/releases/download/v1.23.2/FTL.Hyperspace.1.23.2-Windows.zip", "archive": "FTL.Hyperspace.1.23.2-Windows.zip", "size": 15171493, "sha256": "4f3a87bd9e6dd2efc9fa1505e77bcd05bb31ed711ffe88c6167d4cde50dd7a8b", "entry": "Hyperspace.ftl"},
+      "credits": "TheSwiftTiger, Amyseni (Winderps), ih8ih8sn0w, Admiral Billy, laszlogasd, mathchamp93, Mr. Doom, Chrono Vortex, Pepson, ranhai, sillysandvich, The Dumb Dino, ZeroFreed; art SaltyFriedRice",
+      "sources": ["server", "local"]
+    },
+    {
+      "id": "multiverse-assets-5.5",
+      "mod": "multiverse",
+      "title": "Multiverse Assets",
+      "version": "5.5",
+      "file": "Multiverse.5.5.-.Assets.Patch.above.Data.zip",
+      "size": 711632934,
+      "sha256": "0b7a1ba4e04838b0b4e46b0c3a1624ecce4fc405a8ae5d7bb35267a0f30843cf",
+      "policy": "multiverse",
+      "page": "https://ftlmultiverse.boards.net/thread/155/multiverse-base-version-stars-stripes",
+      "mega": "https://mega.nz/file/20whHQIR#uukk8Vzibfq-q8pdeXEmkh0--8HPktyRTzt-LYjf2vk",
+      "credits": "Chrono Vortex, Laythe, PDTM, Moreorlesser, SquishyBoi, Maddie Doktor, R4V3-0N, localresources, Lucca, Foo757, Pepson (FTL: Multiverse team)",
+      "sources": ["mega", "local"]
+    },
+    {
+      "id": "multiverse-data-5.5.1",
+      "mod": "multiverse",
+      "title": "Multiverse Data",
+      "version": "5.5.1",
+      "file": "Multiverse.5.5.1.-.Data.zip",
+      "size": 3785718,
+      "sha256": "487f7e198bb12818e655597a55b71a4d7ed1cd5a41f8d31cc270c801b72c68b0",
+      "policy": "multiverse",
+      "page": "https://ftlmultiverse.boards.net/thread/155/multiverse-base-version-stars-stripes",
+      "mega": "https://mega.nz/file/r9ohUJrI#oLoTFsimTrmnpvQWTcaagRnm07TA1lcDUJW12-Lnfgg",
+      "credits": "Chrono Vortex, Laythe, PDTM, Moreorlesser, SquishyBoi, Maddie Doktor, R4V3-0N, localresources, Lucca, Foo757, Pepson (FTL: Multiverse team)",
+      "sources": ["mega", "local"]
+    }
+  ],
+  "presets": [
+    {"id": "multiverse", "title": "Multiverse 5.5.1", "description": "Hyperspace 1.23.2, Multiverse 5.5 Assets and Multiverse 5.5.1 Data, in that order.", "files": ["hyperspace-1.23.2", "multiverse-assets-5.5", "multiverse-data-5.5.1"]},
+    {"id": "hyperspace", "title": "Hyperspace only", "description": "Hyperspace 1.23.2 alone (near-vanilla content with Hyperspace's rules).", "files": ["hyperspace-1.23.2"]}
+  ]
+}

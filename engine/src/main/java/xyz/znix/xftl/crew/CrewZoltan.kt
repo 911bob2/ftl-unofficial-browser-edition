@@ -63,7 +63,7 @@ object ZoltanEnergySource : EnergySource {
         // Note: mind-controlled zoltan provide power to their owner ship,
         // not to whoever currently controls them. Hence check ownerShip
         // rather than the current mode.
-        return system.room!!.crew.count { it is CrewZoltan && it.ownerShip == system.room!!.ship }
+        return system.room!!.crew.sumOf { if ((it as? LivingCrew)?.ownerShip == system.room!!.ship) it.bonusSystemPower else 0 }
     }
 
     override fun drawSystemPowerBar(g: Graphics, system: AbstractSystem, x: Int, y: Int, width: Int, height: Int) {

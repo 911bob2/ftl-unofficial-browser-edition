@@ -65,8 +65,11 @@ class ShipGib(val ship: ShipBlueprint, node: Element) {
         private var moveY = 0f
         private var angle = 0f
 
+        /** ExplosionAnimation::position[i]: the gib's place in the ship box (its layout offset plus the drift). */
+        val position: xyz.znix.xftl.math.ConstFPoint get() = xyz.znix.xftl.math.ConstFPoint(offset.x + moveX, offset.y + moveY)
+
         /** [hullOffset] is where the hull image is drawn, [imageOffset] the layout's img offset within it. */
-        fun draw(g: Graphics, hullOffset: IPoint, imageOffset: IPoint) {
+        fun draw(g: Graphics, hullOffset: IPoint, imageOffset: IPoint, mounted: ((Graphics) -> Unit)? = null) {
             val cx = img.width / 2f
             val cy = img.height / 2f
             g.pushTransform()
@@ -76,6 +79,14 @@ class ShipGib(val ship: ShipBlueprint, node: Element) {
             )
             g.rotate(0f, 0f, angle)
             g.translate(imageOffset.x - cx, imageOffset.y - cy)
+            if (mounted != null) {
+                // Hyperspace ExplosionAnimation::OnRender: what is mounted on the gib is drawn in ship space, moved
+                // with the gib (the gib image's origin sits at hullOffset + offset in ship space until it drifts)
+                g.pushTransform()
+                g.translate(-(hullOffset.x + offset.x).toFloat(), -(hullOffset.y + offset.y).toFloat())
+                mounted(g)
+                g.popTransform()
+            }
             img.draw(0f, 0f)
             g.popTransform()
         }

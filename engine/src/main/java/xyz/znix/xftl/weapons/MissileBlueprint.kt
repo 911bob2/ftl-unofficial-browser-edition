@@ -35,23 +35,39 @@ class MissileBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         override val launchAdvance: Int get() = 16
     }
 
-    inner class MissileProjectile(room: Room) : AbstractWeaponProjectile(this@MissileBlueprint, room) {
-        private val spr = target.ship.sys.animations[projectile!!].spriteAt(ship.sys, 0)
+    inner class MissileProjectile(room: Room) : MissileBody(this@MissileBlueprint, room)
+}
 
-        override val defaultSpeed: Int get() = 35
+/**
+ * The native Missile body (1.6.14 constructor 0x451900): Targetable type 1, speed 35, the base Projectile OnUpdate,
+ * rendered at heading + 90 with the hit point at the front. SpaceManager::CreateMissile (HS CustomDamage.cpp) uses
+ * it with any weapon blueprint and calls Initialize itself ([initialize] false).
+ */
+open class MissileBody(type: AbstractWeaponBlueprint, room: Room, initialize: Boolean = true) :
+    AbstractWeaponProjectile(type, room) {
+    private val spr = type.projectile?.let { target.ship.sys.animations.getOrNull(it) }?.spriteAt(ship.sys, 0)
 
-        override val isMissileForDD: Boolean get() = true
+    override val defaultSpeed: Int get() = 35
 
-        override fun renderPreTranslated(g: Graphics) {
-            g.rotate(0f, 0f, 90f)
+    override val isMissileForDD: Boolean get() = targetableType == 1 || targetableType == 2
+    override val isLaserForDD: Boolean get() = targetableType == 4
+    override val nativeType: Int get() = 3
 
-            // Hitbox for missiles is at the front of the projectile
-            spr.draw(-spr.width.f / 2, 0f)
-        }
+    init {
+        targetableType = 1
+        if (initialize) { if (xyz.znix.xftl.hs.HS.active) hsInitialize(type, defaultSpeed) else nativeApplyBlueprint(type) }
+    }
 
-        override fun saveToXML(elem: Element, refs: ObjectRefs) {
-            super.saveToXML(elem, refs)
-            SaveUtil.addRoomRef(elem, "target", refs, target)
-        }
+    override fun renderPreTranslated(g: Graphics) {
+        val spr = hsFlightSpec?.let { s -> s.spriteAt(ship.sys, (flightTrackerOrNull?.currentFrame ?: 0).coerceIn(0, s.length - 1)) } ?: spr ?: return
+        g.rotate(0f, 0f, 90f)
+
+        // Hitbox for missiles is at the front of the projectile
+        spr.draw(-spr.width.f / 2, 0f)
+    }
+
+    override fun saveToXML(elem: Element, refs: ObjectRefs) {
+        super.saveToXML(elem, refs)
+        SaveUtil.addRoomRef(elem, "target", refs, target)
     }
 }

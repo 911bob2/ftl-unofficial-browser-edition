@@ -24,7 +24,6 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
 
     private val sunImage = game.getImg("img/stars/planet_sun1.png")
     private val glowImage = game.getImg("img/stars/planet_sun2.png")
-    private val flareImage = game.getImg("img/stars/planet_sun_flare.png")
 
     private val warningSound = game.sounds.getSample("environWarning")
     private val flareSound = game.sounds.getSample("solarFlare")
@@ -40,14 +39,16 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
     val showWarning: Boolean get() = (nextFlareTime - time) < 5f
 
     init {
-        prepareNextFlare()
+        // SpaceManager::SetSun (native 1.6.9 0x416fb0) starts TimerHelper on the generation stream.
+        prepareNextFlare(ftl.browser.NativeRandom)
     }
 
     override fun renderBackground(gc: GameContainer, g: Graphics) {
         val ps = pauseShade(game)
 
         // This draws the normal background with all its adjustments
-        realBackground.draw(0f, 0f, ps)
+        if (hsBackdrop) realBackground.draw(0f, 0f, ps)
+        if (!hsForeground) return
 
         // The sun and its glows are SpaceManager's foreground, drawn at the jump's planet scale.
         g.pushTransform()
@@ -88,7 +89,7 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
         }
     }
 
-    override fun renderOverlay(gc: GameContainer, g: Graphics) {
+    override fun nativeFlashOpacity(): Float {
         // Find how long it's been since/until the middle of this flare
         val timeFromLast = time - lastFlareTime
         val timeToNext = nextFlareTime - time
@@ -97,19 +98,16 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
         // The flare is 1sec long in total, 0.5sec on either side.
         val progress = 1 - flareTimer / 0.5f
         if (progress < 0)
-            return
+            return 0f
 
         // The alpha is the cube of how far we are from the flare
-        val alpha = progress.pow(3)
-
-        val filter = Colour(Constants.SOLAR_FLARE_FILTER)
-        filter.a = alpha
-        flareImage.draw(
-            -360f, -640f,
-            flareImage.width * 4f, flareImage.height * 4f,
-            filter
-        )
+        return progress.pow(3)
     }
+
+    override val flashFilter: Colour get() = Constants.SOLAR_FLARE_FILTER
+
+    override fun sceneBackdrop() = realBackground
+    override val drawsPlanet: Boolean get() = false
 
     override fun update(dt: Float) {
         super.update(dt)
@@ -145,8 +143,10 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
         return min + changing * (max - min)
     }
 
-    private fun prepareNextFlare() {
-        nextFlareTime = time + (28f..34f).random(ftl.browser.BrowserRandom)
+    private fun prepareNextFlare(random: Random = ftl.browser.BrowserRandom) {
+        // TimerHelper::ResetMinMax(28000, 34000), Start(-1): millisecond resolution, upper bound excluded.
+        // Later flares follow real-time frames and use the engine's combat stream.
+        nextFlareTime = time + (28000 + random.nextInt(6000)) / 1000f
         hasPlayedSound = false
         hasPlayedWarning = false
     }

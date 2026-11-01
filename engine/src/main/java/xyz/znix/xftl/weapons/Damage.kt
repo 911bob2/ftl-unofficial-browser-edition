@@ -22,8 +22,14 @@ class Damage() {
         this.stunDuration = type.stun.toFloat()
 
         this.lockdown = type.browserLockdown
+        this.hsShieldPiercing = type.shieldPiercing
         this.noSysDamage = type.noSysDamage
         this.noCrewDamage = type.noPersonnelDamage
+        type.hsLuaDamage?.let { d ->
+            hullDamage = d.hullDamage; ionDamage = d.ionDamage; pureSysDamage = d.pureSysDamage; pureCrewDamage = d.pureCrewDamage
+            emptyRoomBonus = d.emptyRoomBonus; fireChance = d.fireChance; breachChance = d.breachChance; stunChance = d.stunChance
+            stunDuration = d.stunDuration; lockdown = d.lockdown; hsShieldPiercing = d.hsShieldPiercing
+        }
     }
 
     /**
@@ -87,6 +93,16 @@ class Damage() {
 
     var lockdown: Boolean = false
 
+    // Hyperspace scripts read and write these Damage fields, which the engine keeps elsewhere (the weapon's
+    // shield piercing) or does not use; they only carry the values a script set.
+    @JvmField var hsShieldPiercing: Int = 0
+    @JvmField var hsSelfId: Int = -1
+    /** Hyperspace Damage::ownerId: -1 for weapon damage (the oracle's projectile hits); set by scripts/abilities. */
+    @JvmField var hsOwnerId: Int = -1
+    /** Hyperspace Damage::bFriendlyFire as scripts see it: true for weapon damage (oracle), else what a script set. */
+    @JvmField var hsFriendlyFire: Boolean = true
+    @JvmField var hsCrystalShard: Boolean = false
+
     /**
      * The ship whose weapon dealt this damage (Damage.ownerId, native struct offset 0x24), or null for damage that
      * belongs to nobody (a hazard). ShipManager::DamageCrew (0x49cf80) skips every crew member whose own ship is
@@ -149,8 +165,12 @@ class Damage() {
     /**
      * Returns an identical copy of this object.
      */
-    fun copy(): Damage {
-        val result = Damage()
+    fun copy(): Damage = Damage().also { it.copyFrom(this) }
+
+    /** Native member assignment copies into the same struct, preserving Lua pointers to Projectile.damage. */
+    fun copyFrom(source: Damage) {
+        val result = this
+        with(source) {
 
         result.hullDamage = hullDamage
         result.ionDamage = ionDamage
@@ -170,7 +190,13 @@ class Damage() {
         result.ownerShip = ownerShip
         result.friendlyFire = friendlyFire
 
-        return result
+        result.hsShieldPiercing = hsShieldPiercing
+        result.hsSelfId = hsSelfId
+        result.hsOwnerId = hsOwnerId
+        result.hsFriendlyFire = hsFriendlyFire
+        result.hsCrystalShard = hsCrystalShard
+
+        }
     }
 
     companion object {

@@ -25,9 +25,23 @@ class Oxygen(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             // The UI is wrong, the refill rates are 1,4,7
             // Note we add 2, since for level 1 we have to offset the
             // drain rate, then also refill at a rate equal to the drain rate.
-            val multiplier = 2 + (powerSupplied - 1) * REFILL_SCALING
+            var multiplier = 2 + (powerSupplied - 1) * REFILL_SCALING
+            // Hyperspace oxygenRefillFix (OxygenSystem::GetRefillSpeed): from power 2 the refill is (power - 1) * 3.
+            if (xyz.znix.xftl.hs.HS.active && powerSupplied >= 2 && xyz.znix.xftl.hs.HS.cfg().oxygenRefillFix) multiplier -= 1
             return multiplier * ROOM_DRAIN_RATE
         }
+
+    /** Hyperspace Lua: OxygenSystem::max_oxygen (100, the constructor's value; nothing in FTL reads it back). */
+    @JvmField var hsMaxOxygen = 100f
+
+    /** Hyperspace Lua: OxygenSystem::fTotalOxygen, the rooms' mean oxygen as a fraction, set by each OnLoop. */
+    @JvmField var hsTotalOxygen = 1f
+
+    override fun update(dt: Float) {
+        super.update(dt)
+        val rooms = ship.rooms
+        if (xyz.znix.xftl.hs.HS.active && rooms.isNotEmpty()) hsTotalOxygen = rooms.sumOf { it.oxygen.coerceIn(0f, 1f).toDouble() }.toFloat() / rooms.size
+    }
 
     // Nothing to serialise
     override fun saveSystem(elem: Element, refs: ObjectRefs) = Unit

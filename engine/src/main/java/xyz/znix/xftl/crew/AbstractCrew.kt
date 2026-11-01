@@ -1,5 +1,6 @@
 package xyz.znix.xftl.crew
 
+import xyz.znix.xftl.hs.crew.random32
 import org.jdom2.Element
 import xyz.znix.xftl.*
 import xyz.znix.xftl.Constants.*
@@ -21,10 +22,18 @@ import kotlin.math.*
 import kotlin.random.Random
 
 abstract class AbstractCrew(
-    val blueprint: CrewBlueprint,
+    blueprint: CrewBlueprint,
     private val anims: Animations,
     initialRoom: Room
 ) : ISerialReferencable {
+
+    /** The race. Only Hyperspace's race transformation ([hsSetRace]) changes it. */
+    var blueprint: CrewBlueprint = blueprint
+        private set
+
+    /** Hyperspace's CrewMember_Extend for this crew member (HS sessions only). */
+    @JvmField
+    var hsExtend: xyz.znix.xftl.hs.crew.CrewExtend? = null
 
     protected val game: InGameState get() = room.ship.sys
 
@@ -50,6 +59,9 @@ abstract class AbstractCrew(
 
     val codename: String get() = blueprint.name
 
+    /** Hyperspace: CrewMember::species (a drone pawn's CrewDrone type string can differ from its blueprint). */
+    open val hsSpecies: String get() = codename
+
     /**
      * The race whose animation strips this crewmember uses. The native
      * CrewAnimation constructor (0x483d70) swaps "ghost" for "human".
@@ -61,8 +73,10 @@ abstract class AbstractCrew(
 
     var icon: FTLAnimation
     open val backImg: Image? = initialRoom.ship.sys.getImgIfExists("img/people/${codename}_color.png")
-    val portraitAnim: AnimationSpec
-    val portraitImage: Image
+    var portraitAnim: AnimationSpec
+        private set
+    var portraitImage: Image
+        private set
 
     // This is used to avoid restarting the walking animation unless necessary.
     private var walkDirection: Direction? = null
@@ -88,6 +102,10 @@ abstract class AbstractCrew(
     private val pixelPositionCentre = Point(0, 0)
 
     fun getPixelPositionCentre(): IPoint = pixelPositionCentre
+
+    /** CrewMember::x / y: the centre in ship pixels, unrounded (Hyperspace Lua). */
+    val hsCentreX: Float get() = pixelSpaceX + ROOM_SIZE / 2
+    val hsCentreY: Float get() = pixelSpaceY + ROOM_SIZE / 2
 
     /**
      * If this crewmember is exactly aligned with a cell, this is non-null.
@@ -150,7 +168,7 @@ abstract class AbstractCrew(
     /** Native per-pawn boarding goal. Unknown older history must not earn. */
     var browserTargetsDestroyed: Int? = 0
     var stunTime: Float = 0f
-        private set
+        internal set
     fun stun(seconds: Float) { stunTime = max(stunTime, seconds); currentAction = Action.IDLE }
     open val maxHealth: Float get() = baseMaxHealth
 
@@ -188,6 +206,96 @@ abstract class AbstractCrew(
     open val suffocationMultiplier: Float get() = 1f
     open val fireDamageMult: Float get() = 1f
     open val playerControllable: Boolean get() = false
+
+    /** CrewMember::savedPosition; shared with crew drones. Optional savedPos keeps older saves compatible. */
+    var savedPosition: ConstPoint? = null
+
+    /** HS GPL 1b05a07 CustomCrew.cpp GetSavedPosition: uncontrolled crew report finalGoal, not savedPosition. */
+    var hsFinalGoal: ConstPoint? = null
+
+    fun getReportedStation(): ConstPoint? =
+        if (xyz.znix.xftl.hs.HS.active && !playerControllable) hsFinalGoal else savedPosition
+
+    /** The player may order this crew member to move (Hyperspace IsControlledByPlayer(1): also needs CAN_MOVE). */
+    open val canBeOrderedToMove: Boolean get() = playerControllable
+
+    /** The crew AI leaves this crew member alone (Hyperspace IsControlledByPlayer(-1): also NO_AI or rooted). */
+    open val skippedByCrewAI: Boolean get() = playerControllable
+
+    /** Set by Hyperspace crew while rooted (CAN_MOVE false) during their own update: MoveToRoom is refused. */
+    @JvmField var hsMoveLock = false
+
+    /**
+     * CrewMember::bFrozen / bFrozenLocation (CrewMember::SetFrozen; Hyperspace freezes unpowered crew
+     * drones and Lua may freeze anyone): while frozen, CrewMember::OnLoop skips UpdateRepair, so the crew
+     * member neither repairs, fights fires nor sabotages. It still walks (oracle sweep-crew2-fx sw2_frozen: a frozen
+     * crew member walks to its new room like an unfrozen one). Unfreezing a frozen crew member sets bFrozenLocation.
+     */
+    @JvmField var hsFrozen = false
+
+    /** The crew animation is in its teleport state (status 6): teleporting, or arriving from the clone bay. */
+    val hsAnimTeleport: Boolean get() = teleportingTo != null || cloneAnimationTimer > 0f
+
+    /** CrewMember::clone_ready: see [update]; read by LivingCrew's death when Hyperspace is active. */
+    @JvmField var hsCloneReady = false
+
+    /** Seconds the finished death animation has held its last frame (see the dying branch of update). */
+    private var deathLinger = 0f
+    protected open fun cloneReadyNow(): Boolean = false
+
+    /** Lua SetPath: the exact finish point (pixel top-left) once the route's cell is reached; held there after. */
+    @JvmField var hsExactGoal: IPoint? = null
+    @JvmField var hsHoldPoint = false
+
+    /** Nesting of [update] (HsCrewMember adds its own part); Lua single steps asked for meanwhile run after it. */
+    @JvmField var hsUpdateDepth = 0
+    /** Updates run so far (marks Lua read-backs that last until this crew member's next update). */
+    @JvmField var hsUpdates = 0
+    private val hsPendingSteps = ArrayList<() -> Unit>()
+
+    /**
+     * A single step asked for from Lua (CrewMember::OnLoop / UpdateMovement / UpdateHealth / UpdateRepair): at once,
+     * or, when it comes from inside this crew member's own update, right after that update in the same frame.
+     */
+    fun hsLuaStep(step: () -> Unit) {
+        if (hsUpdateDepth > 0) hsPendingSteps += step else step()
+    }
+
+    protected fun hsRunPendingSteps() {
+        while (hsPendingSteps.isNotEmpty()) {
+            val steps = ArrayList(hsPendingSteps)
+            hsPendingSteps.clear()
+            for (st in steps) st()
+        }
+    }
+
+    /** CrewMember::UpdateMovement: one step along the current walk (nothing when standing). */
+    fun hsMovementStep(dt: Float) {
+        val next = nextTargetPos ?: return
+        if (stunTime > 0f || health <= 0f || isTeleporting) return
+        hsUpdateDepth++
+        try { stepMovement(next, dt) } finally { hsUpdateDepth-- }
+    }
+
+    /**
+     * CrewMember::UpdateHealth as HS rewrites it (CustomCrew.cpp): one frame of fire damage, suffocation, the medbay
+     * (fMedbay [medbay]) and, for HS crew, the heal amounts.
+     */
+    open fun hsHealthStep(dt: Float, medbay: Float) {
+        val fires = room.fires.count { it != null }
+        if (fires > 0) dealDamage(FireDamage(fires * 2.128f * dt * fireDamageMult))
+        if (room.oxygen <= Oxygen.OXYGEN_CRITICAL_LEVEL) dealDamage(SuffocationDamage(6.4f * dt * suffocationMultiplier))
+        var rate = medbay
+        if (rate > 1f) rate = (rate - 1f) * 1.5f
+        if (rate != 0f) dealDamage(MedbayHealing(-rate * 0.4f * 16f * dt))
+    }
+    @JvmField var hsFrozenLocation = false
+
+    fun hsSetFrozen(frozen: Boolean) {
+        if (!frozen) { if (hsFrozen) { hsFrozenLocation = true; hsFrozen = false; return } }
+        else if (!hsFrozen) { hsFrozenLocation = false; hsFrozen = true; return }
+        hsFrozen = frozen
+    }
     open val movementSpeed: Float get() = BASE_MOVEMENT_SPEED
 
     /**
@@ -210,6 +318,7 @@ abstract class AbstractCrew(
     var pathingTarget: RoomPoint? = null
         private set(value) {
             field = value
+            if (value != null) { hsExactGoal = null; hsHoldPoint = false }
 
             // CrewMember 0x480770: the route is planned once, when the goal is set (by updateMovement just below,
             // through nextStep), and then followed.
@@ -291,14 +400,26 @@ abstract class AbstractCrew(
     private var rockStompLatched: Boolean = false
 
     /** This race's projectile: the "crewLaser" frame (x=1, y=0) of its own base sheet (SetupStrips 0x480dc0). */
-    private val crewShotImage: Image? by lazy {
-        val laser = anims.getOrNull("crewLaser") ?: return@lazy null
-        val sheet = anims.sheet(animationRace) ?: return@lazy null
+    private var crewShotImageRace: String? = null
+    private var crewShotImageCache: Image? = null
+    private val crewShotImage: Image?
+        get() {
+            val race = animationRace
+            if (crewShotImageRace != race) {
+                crewShotImageRace = race
+                crewShotImageCache = buildCrewShotImage(race)
+            }
+            return crewShotImageCache
+        }
+
+    private fun buildCrewShotImage(race: String): Image? {
+        val laser = anims.getOrNull("crewLaser") ?: return null
+        val sheet = anims.sheet(race) ?: return null
         val rowFromBottom = laser.sheet.verticalCount - 1 - laser.y
         val row = sheet.verticalCount - 1 - rowFromBottom
         if (laser.x !in 0 until sheet.horizontalCount || row !in 0 until sheet.verticalCount)
-            return@lazy null
-        AnimationSpec(sheet, "crewLaser:$animationRace", laser.x, row, 1, 1f).spriteAt(game, 0)
+            return null
+        return AnimationSpec(sheet, "crewLaser:$race", laser.x, row, 1, 1f).spriteAt(game, 0)
     }
 
     /** CrewAnimation +0x9dc: laser races are tinted green (player crew) or red (enemy), everything else white. */
@@ -311,10 +432,40 @@ abstract class AbstractCrew(
     private var sharesHostileCell: Boolean = false
 
     private var doorAttackPos: IPoint? = null // Where to stand when attacking the door
+    private val phasedDoors = HashSet<Door>() // closed doors a phasing crew member already played the phase sound for
     private var doorToAttack: Door? = null
 
     private var teleportingTo: Room? = null
     private var teleportTimer: Float = 0f
+    /** Hyperspace: the teleport animation's time passed its length in an update, and the updates since (see update). */
+    private var hsTelePassed = false
+    private var hsTeleDone = 0
+
+    // The arrival half of a teleport is playing (the crew member already stands at [teleportingTo]).
+    private var teleportArriving = false
+
+    /**
+     * Hyperspace CrewMember_Extend::customTele (CustomCrew.cpp, teleportMove): the armed teleport's ship id (-1 none),
+     * room and slot (-1 any), and whether a teleport is playing (customTele.teleporting). Saved with the crew member.
+     */
+    @JvmField var hsTeleShip = -1
+    @JvmField var hsTeleRoom = 0
+    @JvmField var hsTeleSlot = 0
+    @JvmField var hsTeleporting = false
+
+    /** Hyperspace Lua CrewMember::Kill: dead at once on the next loop (bDead), without the dying animation. */
+    @JvmField var hsKilled = false
+    /** The ship loop's answer to CrewMember::bDead written by a script: dead at once, no dying animation. */
+    /** Hyperspace: CrewAnimation::baseStrip and colorStrip written by a script. */
+    @JvmField var hsBaseStrip: xyz.znix.xftl.hs.lua.LuaTexture? = null
+    @JvmField var hsColorStrip: xyz.znix.xftl.hs.lua.LuaTexture? = null
+
+    fun hsKillNow() { health = 0f; hsKilled = true }
+
+    /** A teleport is playing its leaving half (CrewAnimation status 6, not reversed). */
+    val isTeleportLeaving: Boolean get() = teleportingTo != null && !teleportArriving
+    /** A teleport is playing (CrewAnimation status 6). */
+    val isTeleporting: Boolean get() = teleportingTo != null
 
     private var cloneAnimationTimer: Float = 0f
 
@@ -337,6 +488,7 @@ abstract class AbstractCrew(
 
     /** The healing sparkles animation, created on first use. */
     private var healingAnimation: FTLAnimation? = null
+    private var stunAnimation: FTLAnimation? = null
 
     /**
      * Set by [markBeingHealed] this frame, and adopted into
@@ -386,7 +538,7 @@ abstract class AbstractCrew(
      * [LoopHandle.continueLoopPlayerOnly], thuds are only audible on the
      * player's own ship.
      */
-    private fun continueRepairSound(dt: Float) {
+    protected open fun continueRepairSound(dt: Float) {
         if (this is CrewRock) {
             val frame = icon.frame
             val stepped = frame != lastRepairFrame
@@ -405,6 +557,10 @@ abstract class AbstractCrew(
     }
 
     val screenX: Int get() = pixelPosition.x
+
+    /** CrewMember::PositionShift: how far a crew member sharing a cell with an enemy is displaced vertically. */
+    val hsPositionShift: Int get() = screenY - 3 - pixelPosition.y
+
     val screenY: Int
         get() {
             val base = pixelPosition.y
@@ -444,16 +600,7 @@ abstract class AbstractCrew(
         }
 
     init {
-        // Since the portrait doesn't have a background colour frame, use the top-left frame.
-        // Drones need to use the correct image, though!
-        val portrait = anims["${codename}_portrait"]
-        portraitAnim = if (backImg == null) {
-            portrait
-        } else {
-            val name = "$codename synthetic portrait animation"
-            AnimationSpec(portrait.sheet, name, 0, 0, 1, 1f)
-        }
-
+        portraitAnim = buildPortraitAnim()
         icon = portraitAnim.startLooping(game)
         portraitImage = portraitAnim.spriteAt(game, 0)
 
@@ -461,7 +608,73 @@ abstract class AbstractCrew(
         updateAnimation()
     }
 
+    private fun buildPortraitAnim(): AnimationSpec {
+        // Since the portrait doesn't have a background colour frame, use the top-left frame.
+        // Drones need to use the correct image, though!
+        // Hyperspace races drawn with another race's sheet (animBase) use that race's portrait.
+        val portrait = if (xyz.znix.xftl.hs.HS.active) {
+            // Hyperspace races may ship no portrait animation (MV's snowman_chaos, spawned by a weapon): the
+            // original draws the crew from its sheet regardless, so use the sheet's first frame.
+            anims.getOrNull("${codename}_portrait") ?: anims.getOrNull("${animationRace}_portrait")
+                ?: anims.sheet(animationRace)?.let { AnimationSpec(it, "$codename sheet portrait", 0, 0, 1, 1f) }
+                ?: anims.crewStrip("${animationRace}_portrait")
+        } else if (animationRace == codename) anims.crewStrip("${codename}_portrait")
+        else anims.getOrNull("${codename}_portrait") ?: anims.crewStrip("${animationRace}_portrait")
+        return if (backImg == null || portrait.blank) {
+            portrait
+        } else {
+            val name = "$codename synthetic portrait animation"
+            AnimationSpec(portrait.sheet, name, 0, 0, 1, 1f)
+        }
+    }
+
+    /**
+     * Hyperspace's CrewMember_Extend::TransformRace: this crew member becomes [race] in place. The portrait and the
+     * current animation follow the new race.
+     */
+    fun hsSetRace(race: CrewBlueprint) {
+        blueprint = race
+        portraitAnim = buildPortraitAnim()
+        portraitImage = portraitAnim.spriteAt(game, 0)
+        walkDirection = null
+        shootPoseIcon = null
+        updateAnimation()
+    }
+
+    /** CrewExtraCondition::SHOOTING: the shooting animation (state 7) is playing. */
+    val hsShooting: Boolean get() = currentAction.isAttackAction && !isPunching
+
+    /** Hyperspace RANGED_DAMAGE_MULTIPLIER: scales the damage a crew shot banks (CrewAnimation::OnUpdateEffects). */
+    open val rangedDamageMult: Float get() = 1f
+
+    /** Hyperspace SABOTAGE_SPEED_MULTIPLIER (ShipSystem::PartialDamage during CrewMember::UpdateRepair). */
+    open val sabotageSpeedMult: Float get() = 1f
+
+    /** The ion intruder stands in the sabotage state for its pulse only: its repair step does nothing. */
+    open val sabotageDamagesSystem: Boolean get() = true
+
+    /** The shot and punch timers (CrewAnimation +0x89c / +0x8b0): minimum and span in ms. */
+    protected open val shotTimerMinMs: Int get() = CrewAim.SHOT_TIMER_MIN_MS
+    protected open val shotTimerSpanMs: Int get() = CrewAim.SHOT_TIMER_SPAN_MS
+    protected open val punchTimerMinMs: Int get() = CrewAim.PUNCH_TIMER_MIN_MS
+    protected open val punchTimerSpanMs: Int get() = CrewAim.PUNCH_TIMER_SPAN_MS
+
+    /** CrewMember::IsTelepathic (vtable 46): reveals its room and the rooms next to it. */
+    open val isTelepathic: Boolean get() = this is CrewSlug
+
+    /** Counts for the lifeform scanner (ShipObject::HasEquipment("slug")). */
+    open val detectsLifeforms: Boolean get() = this is CrewSlug
+
+    /** The system power this crew member gives its owner's system in its room (Zoltan: 1). */
+    open val bonusSystemPower: Int get() = if (this is CrewZoltan) 1 else 0
+
     open fun update(dt: Float) {
+        hsUpdateDepth++
+        hsUpdates++
+        try {
+        // CrewMember::OnLoop: every loop of a living crew member sets clone_ready from its own ship having
+        // a clone bay; one killed before its first loop is not cloned (oracle sweep-crew4-clone sw4_clone0)
+        if (health > 0f && currentAction != Action.DYING) hsCloneReady = cloneReadyNow()
         icon.update(dt)
 
         // Adopt whatever the medbay (or another healer) requested earlier
@@ -471,6 +684,7 @@ abstract class AbstractCrew(
         isBeingHealed = healingRequestedThisFrame
         healingRequestedThisFrame = false
         healingAnimation?.update(dt)
+        stunAnimation?.update(dt)
 
         // If we're moving we shouldn't be vertically offset to match
         // the enemy, if not this will be updated later on.
@@ -484,18 +698,29 @@ abstract class AbstractCrew(
             room.ship.updateCrewReservedSlots()
         }
 
+        // Hyperspace: CrewMember::OnLoop runs UpdateHealth (fire, suffocation, the medbay, heal amounts) only while
+        // the crew animation is not in its teleport state (status 6: teleporting, arriving from the clone bay;
+        // oracle sweep-crew4-clone: a clone arriving in a room without air keeps 100 until the animation ends)
+        val hsNoHealth = xyz.znix.xftl.hs.HS.active && hsAnimTeleport
         // The ShipManager crew loop (0x4aa670) suffocates crew at 5% O2 or below.
-        if (room.oxygen <= Oxygen.OXYGEN_CRITICAL_LEVEL) {
+        if (room.oxygen <= Oxygen.OXYGEN_CRITICAL_LEVEL && !hsNoHealth) {
             dealDamage(SuffocationDamage(6.4f * dt * suffocationMultiplier))
         }
 
         val fires = room.fires.count { it != null }
-        dealDamage(FireDamage(fires * 2.128f * dt * fireDamageMult))
+        if (!hsNoHealth) dealDamage(FireDamage(fires * 2.128f * dt * fireDamageMult))
 
         if (health == 0f) {
+            // CrewMember::Kill (Lua) marks the crew member dead at once (bDead): no dying animation.
+            if (hsKilled) {
+                hsKilled = false
+                onFinishedDying()
+                return
+            }
             // Zoltan crew deal damage when their animation starts, so
             // we need to call out when that happens.
             if (currentAction != Action.DYING) {
+                deathLinger = 0f
                 onStartedDying()
             }
 
@@ -507,8 +732,17 @@ abstract class AbstractCrew(
             // For crew with dying animations, play that before removing them.
             currentAction = Action.DYING
 
-            if (icon.isStopped)
+            if (icon.isStopped) {
+                // CrewAnimation::Dead -> Animation::Done: the death animation's
+                // fadeOut (1 s, Animation::SetFadeOut) runs down after its last frame, which is drawn at that opacity
+                // (Animation::OnRender), and only then is the crew member dead (bDead). Native 1.6.14 crew
+                // probe: health 0 to bDead 1.76 s, the human death animation 0.75 s; HS oracle sweep-crew4-clone 1.75 s
+                if (deathLinger < 1f) {
+                    deathLinger += dt
+                    if (deathLinger < 1f) return
+                }
                 onFinishedDying()
+            }
 
             return
         }
@@ -528,18 +762,62 @@ abstract class AbstractCrew(
 
         if (teleportingTo != null) {
             currentAction = Action.TELEPORTING
+            // Hyperspace (1.6.9 CrewAnimation::TeleportArrived, CheckForTeleport): the animation tracker is
+            // done in the update its time passes the length (strictly), and the crew loop acts on that the update after;
+            // the departure one update later still (oracle sweep-crew4-tele, frame by frame: the arrival ends in the
+            // first update that starts past 0.5 s, the departure one update after it)
+            if (xyz.znix.xftl.hs.HS.active && hsTelePassed) hsTeleDone++
             teleportTimer += dt
+            if (xyz.znix.xftl.hs.HS.active && teleportTimer > TELEPORT_ANIMATION_TIME) hsTelePassed = true
+            val teleEnded = if (xyz.znix.xftl.hs.HS.active) hsTeleDone >= (if (teleportArriving) 1 else 2)
+            else teleportTimer >= TELEPORT_ANIMATION_TIME
+            // CrewMember::StartTeleport without a destination (Lua): the departure animation plays and the crew
+            // member stays gone in place (currentShipId -1, oracle sweep-crew2-fx sw2_tele)
+            if (hsTeleLimbo) {
+                if (teleportTimer > TELEPORT_ANIMATION_TIME) teleportTimer = TELEPORT_ANIMATION_TIME
+                // CheckForTeleport sets currentShipId -1 once the animation has played, and
+                // ShipManager::UpdateCrewMembers drops the crew member from vCrewList: it stays allocated, in no
+                // list and no longer updated (oracle sweep-crew4-tele)
+                if (teleEnded && this in room.ship.crew) removeFromShip()
+                return
+            }
 
             // Run a timer matching the duration of the teleport animation, then:
             // 1. When the animation has fully played, move
             //    to the enemy ship and play it backwards.
             // 2. When that's done, the teleporting is finished.
-            if (teleportTimer < TELEPORT_ANIMATION_TIME)
+            if (!teleEnded)
                 return
-            teleportTimer = 0f
+            teleportTimer = 0f; hsTelePassed = false; hsTeleDone = 0
 
+            // CrewMember_Extend::InitiateTeleport to room -1 (CompleteShip::CheckTeleportMovement): a random room of
+            // the armed ship, drawn when the departure ends
+            if (!teleportArriving && hsTeleShip != -1 && hsTeleRoom == -1) {
+                val target = if (hsTeleShip == 0) room.ship.sys.player else room.ship.sys.enemy
+                if (target != null && target.rooms.isNotEmpty()) {
+                    hsTeleRoom = xyz.znix.xftl.hs.crew.HsCrew.random32() % target.rooms.size
+                    teleportingTo = target.rooms[hsTeleRoom]
+                }
+            }
             val destination = teleportingTo!!
-            if (destination.ship != room.ship) {
+            if (!teleportArriving && destination.ship == room.ship) {
+                // Hyperspace teleportMove within the ship (CompleteShip::CheckTeleportMovement, AddCrewMember into the
+                // armed room): the armed slot when it is free for our side, else a free slot of the room.
+                nextTargetPos = null
+                pathingTarget = null
+                val wanted = if (hsTeleSlot in 0 until destination.cellCount) destination.slotToPoint(hsTeleSlot) else null
+                val target = if (wanted != null && destination.isSlotFree(wanted, mode, this)) RoomPoint(destination, wanted)
+                else room.ship.findSpaceForCrew(destination, mode)
+                teleportArriving = true
+                jumpTo(target)
+                currentAction = Action.TELEPORTING
+                updateAnimation()
+                hsTeleShip = -1
+                onMidTeleport()
+                room.ship.sys.updatePlayerCrew()
+                return
+            }
+            if (!teleportArriving) {
                 // Step 1
 
                 // Clear out any movement, as the pathfinding system
@@ -559,11 +837,18 @@ abstract class AbstractCrew(
                 // Set the current room to *somewhere* on the enemy ship, so
                 // the mode is then correct.
                 room = destination
+                teleportArriving = true
 
                 // Change the room over, preserving our current position if possible.
 
                 val roomPosition = standingPosition
-                if (roomPosition != null && destination.containsRelative(roomPosition)
+                // Hyperspace teleportMoveOtherShip: the armed slot of the armed room when it is free.
+                val armed = if (hsTeleShip != -1 && hsTeleSlot in 0 until destination.cellCount) destination.slotToPoint(hsTeleSlot) else null
+                if (armed != null && destination.isSlotFree(armed, mode)) {
+                    val newPosition = RoomPoint(destination, armed)
+                    pixelSpaceX = newPosition.offsetX.f
+                    pixelSpaceY = newPosition.offsetY.f
+                } else if (roomPosition != null && destination.containsRelative(roomPosition)
                     && destination.isSlotFree(roomPosition, mode)
                 ) {
                     // The corresponding position in this new room is free
@@ -595,6 +880,7 @@ abstract class AbstractCrew(
 
                 updateAnimation()
 
+                hsTeleShip = -1
                 onMidTeleport()
 
                 // Fix the UI, since we removed ourselves from the player list while teleporting
@@ -602,6 +888,8 @@ abstract class AbstractCrew(
             } else {
                 // Step 2 - we're done
                 teleportingTo = null
+                teleportArriving = false
+                hsTeleporting = false
             }
 
             // When the teleportation finishes, immediately continue with
@@ -640,83 +928,13 @@ abstract class AbstractCrew(
             return
         }
 
+        // Lua SetPath: the route ends on its exact finish point (CrewMember::SetPath keeps x/y_destination)
+        if (this.nextTargetPos == null && pathingTarget == null && hsExactGoal != null) {
+            this.nextTargetPos = hsExactGoal; hsExactGoal = null; hsHoldPoint = true
+        }
         val nextTargetPos = this.nextTargetPos // Avoid mutability errors
         if (nextTargetPos != null) {
-            currentAction = Action.MOVING
-
-            val deltaX = nextTargetPos.x - pixelSpaceX
-            val deltaY = nextTargetPos.y - pixelSpaceY
-
-            val distance = sqrt(deltaX * deltaX + deltaY * deltaY)
-            if (distance > 0.001f) {
-                val directionX = deltaX / distance
-                val directionY = deltaY / distance
-
-                // Move closer towards our position
-                val movement = min(distance, dt * movementSpeed * augmentSpeedMult)
-                pixelSpaceX += directionX * movement
-                pixelSpaceY += directionY * movement
-            }
-
-            // Check if we've switched room. Use our centre position, so
-            // we switch room when we appear half-way across.
-            // We must do this before updating our movement - if we're running
-            // with a very high delta-time (for example, if we were stopped in
-            // a debugger) then we'd be marked as being in the wrong room when
-            // updateMovement was called.
-            @Suppress("FoldInitializerAndIfToElvis")
-            if (!room.containsShipSpace(pixelPositionCentre)) {
-                val newRoom = room.ship.rooms.firstOrNull { it.containsShipSpace(pixelPositionCentre) }
-
-                if (newRoom == null) {
-                    throw IllegalStateException("Crewmember '$this' on ship '${room.ship.name}' walked into roomless position $pixelPosition")
-                }
-
-                room = newRoom
-
-                // We should never be aligned to the grid while walking through
-                // a door so we shouldn't have a roomPosition set, but check for
-                // that just in case - if so, we need to update the room.
-                positionChanged()
-            }
-
-            // Check if we've now reached our destination. If we're
-            // very close, snap to the exact position.
-            val newDistance = sqrt((nextTargetPos.x - pixelSpaceX).pow(2) + (nextTargetPos.y - pixelSpaceY).pow(2))
-            if (newDistance < 0.01f) {
-                pixelSpaceX = nextTargetPos.x.f
-                pixelSpaceY = nextTargetPos.y.f
-
-                this.nextTargetPos = null
-
-                if (doorAttackPos == pixelPosition && doorToAttack!!.isLockedFor(this)) {
-                    // Switch to attacking the door
-                    currentAction = Action.ATTACKING_DOOR
-                } else {
-                    // Calculate the next movement
-                    updateMovement()
-                }
-            }
-
-            // Check if a door needs to be held open for us.
-            for (door in room.doors) {
-                var centreX = door.offsetX
-                var centreY = door.offsetY
-
-                if (door.isVertical) {
-                    centreY += ROOM_SIZE / 2
-                } else {
-                    centreX += ROOM_SIZE / 2
-                }
-
-                val distSq = pixelPositionCentre.distToSq(centreX, centreY)
-
-                if (distSq < DOOR_OPEN_DISTANCE.pow(2)) {
-                    door.crewRequestOpen(this)
-                    break
-                }
-            }
-
+            stepMovement(nextTargetPos, dt)
             return
         }
 
@@ -724,6 +942,11 @@ abstract class AbstractCrew(
         // This probably shouldn't happen, but check just in case.
         val roomPosition = this.roomPosition
         if (roomPosition == null) {
+            // standing on the exact end point of a Lua SetPath route (the native crew member stays there)
+            if (hsHoldPoint) {
+                currentAction = Action.IDLE
+                return
+            }
             this.nextTargetPos = pixelPositionCentre.divideTruncate(ROOM_SIZE.f) * ROOM_SIZE
             return
         }
@@ -736,7 +959,9 @@ abstract class AbstractCrew(
         sharesHostileCell = room.crew.any { it.mode != mode && it.standingPosition == roomPosition }
 
         // Check if any enemies are in the room
-        val hostiles = room.crew.filter { it.mode != mode && it.currentAction != Action.DYING }
+        val hostiles = room.crew.filter {
+            it.mode != mode && it.currentAction != Action.DYING && (!xyz.znix.xftl.hs.HS.active || xyz.znix.xftl.hs.crew.HsCrewEffects.validTarget(it))
+        }
         if (hostiles.isNotEmpty() && canFight) {
             // Check if someone is standing in the same cell as us
             val sameCell = hostiles.firstOrNull { it.standingPosition == roomPosition }
@@ -783,12 +1008,20 @@ abstract class AbstractCrew(
                 updateShooting(Action.FIGHTING, dt) {
                     // The damage, (rand%4001 + 3000) / 1000, is rolled when the shot arrives (0x4881c0) and dealt to
                     // whoever we're fighting then; a shot that can't be fired banks 0.1.
-                    fireCrewShot({ pendingShotDamage = rollShotDamage() }, { pendingShotDamage = 0.1f })
+                    fireCrewShot({ pendingShotDamage = rollShotDamage() * rangedDamageMult },
+                        { pendingShotDamage = 0.1f * rangedDamageMult })
                 }
             }
 
             return
         }
+
+        // Frozen (CrewMember::SetFrozen): OnLoop skips its UpdateRepair, but CrewAI::UpdateCrewMember
+        // still starts a repair, fire or breach for a crew member without one, and StartRepair
+        // runs one UpdateRepair: the work started holds (animation status 2 or 4) with no more progress
+        // (oracle sweep-crew4-base sw4_rep_frozen)
+        if (hsFrozen && (currentAction == Action.REPAIRING || currentAction == Action.REPAIRING_BREACH ||
+                currentAction == Action.FIRE_FIGHTING || currentAction == Action.SABOTAGE)) return
 
         val system = room.system
         val latched = system != null && sabotagingSystem === system
@@ -808,7 +1041,7 @@ abstract class AbstractCrew(
 
             // Sabotage doesn't deal damage in bursts - it's constant 8% damage/second.
             // Note this is the same for any crew, regardless of the attack damage multiplier.
-            val brokenLevel = system.attack(dt * 0.08f)
+            val brokenLevel = sabotageDamagesSystem && system.attack(dt * 0.08f * sabotageSpeedMult)
 
             if (brokenLevel) {
                 onSabotagedSystem(system)
@@ -905,17 +1138,140 @@ abstract class AbstractCrew(
 
         // Nothing else is being done
         currentAction = Action.IDLE
+        } finally {
+            hsUpdateDepth--
+            if (hsUpdateDepth == 0) hsRunPendingSteps()
+        }
     }
 
+    /** One step of walking towards [nextTargetPos] (CrewMember::UpdateMovement). */
+    private fun stepMovement(nextTargetPos: IPoint, dt: Float) {
+            currentAction = Action.MOVING
+
+            val deltaX = nextTargetPos.x - pixelSpaceX
+            val deltaY = nextTargetPos.y - pixelSpaceY
+
+            val distance = sqrt(deltaX * deltaX + deltaY * deltaY)
+            if (distance > 0.001f) {
+                val directionX = deltaX / distance
+                val directionY = deltaY / distance
+
+                // Move closer towards our position
+                val movement = min(distance, dt * movementSpeed * augmentSpeedMult)
+                pixelSpaceX += directionX * movement
+                pixelSpaceY += directionY * movement
+            }
+
+            // Check if we've switched room. Use our centre position, so
+            // we switch room when we appear half-way across.
+            // We must do this before updating our movement - if we're running
+            // with a very high delta-time (for example, if we were stopped in
+            // a debugger) then we'd be marked as being in the wrong room when
+            // updateMovement was called.
+            @Suppress("FoldInitializerAndIfToElvis")
+            if (!room.containsShipSpace(pixelPositionCentre)) {
+                val newRoom = room.ship.rooms.firstOrNull { it.containsShipSpace(pixelPositionCentre) }
+
+                if (newRoom == null) {
+                    throw IllegalStateException("Crewmember '$this' on ship '${room.ship.name}' walked into roomless position $pixelPosition")
+                }
+
+                room = newRoom
+
+                // We should never be aligned to the grid while walking through
+                // a door so we shouldn't have a roomPosition set, but check for
+                // that just in case - if so, we need to update the room.
+                positionChanged()
+            }
+
+            // Check if we've now reached our destination. If we're
+            // very close, snap to the exact position.
+            val newDistance = sqrt((nextTargetPos.x - pixelSpaceX).pow(2) + (nextTargetPos.y - pixelSpaceY).pow(2))
+            if (newDistance < 0.01f) {
+                pixelSpaceX = nextTargetPos.x.f
+                pixelSpaceY = nextTargetPos.y.f
+
+                this.nextTargetPos = null
+
+                if (doorAttackPos == pixelPosition && doorToAttack!!.isLockedFor(this)) {
+                    // Switch to attacking the door
+                    currentAction = Action.ATTACKING_DOOR
+                } else {
+                    // Calculate the next movement
+                    updateMovement()
+                }
+            }
+
+            // Check if a door needs to be held open for us.
+            for (door in room.doors) {
+                var centreX = door.offsetX
+                var centreY = door.offsetY
+
+                if (door.isVertical) {
+                    centreY += ROOM_SIZE / 2
+                } else {
+                    centreX += ROOM_SIZE / 2
+                }
+
+                val distSq = pixelPositionCentre.distToSq(centreX, centreY)
+
+                if (distSq < DOOR_OPEN_DISTANCE.pow(2)) {
+                    // CrewMember::GetNewGoal (CustomCrew.cpp): a crew member that phases never opens the door; it plays
+                    // "phase" once when the door it walks through is closed
+                    if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.crew.HsCrewEffects.phases(this)) {
+                        if (!door.open && !phasedDoors.contains(door)) {
+                            phasedDoors.add(door)
+                            game.sounds.getSampleOrWarn("phase")?.play()
+                        }
+                    } else {
+                        door.crewRequestOpen(this)
+                    }
+                    break
+                }
+            }
+    }
+
+    /** Hyperspace Lua CrewMember::OnRender(outlineOnly): 1 draws the outline alone (0: outline and body, oracle sw3-crewr). */
+    @JvmField var hsRenderPart = 0
+
     open fun draw(g: Graphics) {
+        if (icon.spec.blank) return
+
         val sprite = computeSpriteDraw()
 
-        drawBackground(sprite.frame, sprite.x0, sprite.y0, sprite.x1, sprite.y1, sprite.opacity)
+        if (hsRenderPart != 2) drawBackground(sprite.frame, sprite.x0, sprite.y0, sprite.x1, sprite.y1, sprite.opacity)
+        if (hsRenderPart == 1) return
+
+        // Hyperspace (CrewAnimation::OnRender): an active temporary power may hide the body and draws strips over it
+        val strips = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewRender.strips(this) else null
 
         // Draw the actual image
         // This is moved into its own function so that living crew with layered
         // rendering can apply their different colour filters.
-        drawImage(sprite.x0, sprite.y0, sprite.x1, sprite.y1, sprite.frame, sprite.opacity)
+        val luaBase = hsBaseStrip
+        if (luaBase != null) {
+            // CrewAnimation::baseStrip / colorStrip a script set: the same frame from those sheets.
+            val f = sprite.frame
+            for (t in arrayOf(luaBase, hsColorStrip)) {
+                if (t == null) continue
+                xyz.znix.xftl.hs.lua.LuaGraphics.resolve(t)
+                t.image?.draw(sprite.x0, sprite.y0, sprite.x1, sprite.y1,
+                    f.textureOffsetX.f, f.textureOffsetY.f, (f.textureOffsetX + f.width).f, (f.textureOffsetY + f.height).f, sprite.opacity, Colour.white)
+            }
+        } else if (strips == null || strips.baseVisible)
+            drawImage(sprite.x0, sprite.y0, sprite.x1, sprite.y1, sprite.frame, sprite.opacity)
+        if (strips != null) {
+            val f = sprite.frame
+            for (sheet in strips.sheets) {
+                val strip = game.getImg("img/people/$sheet.png")
+                strip.draw(
+                    sprite.x0, sprite.y0, sprite.x1, sprite.y1,
+                    f.textureOffsetX.f, f.textureOffsetY.f, (f.textureOffsetX + f.width).f, (f.textureOffsetY + f.height).f,
+                    sprite.opacity, Colour.white
+                )
+            }
+        }
+        if (xyz.znix.xftl.hs.HS.active && currentAction != Action.DYING) xyz.znix.xftl.hs.crew.HsCrewRender.drawBody(this)
     }
 
     /**
@@ -982,7 +1338,7 @@ abstract class AbstractCrew(
 
             // The player fades out, and stretches upwards while teleporting.
             val progress = teleportTimer / TELEPORT_ANIMATION_TIME
-            if (room.ship != teleportingTo?.ship) {
+            if (!teleportArriving) {
                 // Teleporting up
                 opacity *= 1 - progress
                 stretch = icon.frame * TELEPORT_IMAGE_STRETCH
@@ -993,6 +1349,9 @@ abstract class AbstractCrew(
             }
         }
 
+        // The death animation's fadeOut: its last frame fades out over the second before the crew member is dead.
+        if (currentAction == Action.DYING && deathLinger > 0f) opacity *= max(0f, 1f - deathLinger)
+
         if (currentAction == Action.CLONING) {
             // Cloning has the same animation as the 2nd half of teleporting.
             // Note here though that cloneAnimationTimer goes down rather than up.
@@ -1001,6 +1360,8 @@ abstract class AbstractCrew(
             stretch = icon.frame * TELEPORT_IMAGE_STRETCH
             opacity *= progress
         }
+
+        if (icon.spec.blank) opacity = 0f
 
         // Calculate the bounds of the image
         val height = cf.height * (stretch + 1)
@@ -1022,6 +1383,8 @@ abstract class AbstractCrew(
     )
 
     fun drawPortrait(x: Int, y: Int, backgroundHighlight: Boolean, scale: Float = 1f) {
+        if (portraitAnim.blank) return
+
         val x1 = x.f + portraitImage.width * scale
         val y1 = y.f + portraitImage.height * scale
 
@@ -1080,8 +1443,12 @@ abstract class AbstractCrew(
         if (currentAction == Action.DYING)
             return
 
-        // Draw the health bar
-        if (showHealthBar) {
+        // Hyperspace CrewMember::OnRenderHealth: power effect animations come before the health bar
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewRender.drawForeground(this)
+
+        // Draw the health bar (Hyperspace: inside the CREW_MEMBER_HEALTH render event)
+        val hsHealth = if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaCrewEvents.crewHealthPre(this) else 0
+        if (showHealthBar && hsHealth >= 0) {
             val healthBox = game.getImg("img/people/health_box.png")
             healthBox.draw(screenX - 1f, screenY.f)
 
@@ -1090,6 +1457,15 @@ abstract class AbstractCrew(
             val width = ceil(25f * health / maxHealth).toInt()
             g.colour = if (friendly) Colour.green else Colour.red
             g.fillRect(screenX + 4f, screenY + 3f, width.f, 3f)
+        }
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaCrewEvents.crewHealthPost(hsHealth)
+
+        // CrewMember::OnRender: a stunned crew member's icon in yellow, where a mind-controlled one shows its own.
+        if (stunTime > 0f) {
+            val stun = stunAnimation ?: STUN_ANIM.startLooping(game).also { stunAnimation = it }
+            val stunX = if (showHealthBar) screenX.f - 11 else screenX.f + 9
+            val stunY = if (showHealthBar) screenY.f - 3 else screenY.f
+            stun.draw(stunX, stunY, STUN_ICON_COLOUR)
         }
 
         // Draw the healing sparkles centred above the crewmember's head.
@@ -1100,7 +1476,7 @@ abstract class AbstractCrew(
 
             val anim = healingAnimation!!
             anim.draw(
-                screenX.f + (icon.currentFrame.width - anim.width) / 2f,
+                screenX.f + (icon.width - anim.width) / 2f,
                 screenY.f - anim.height / 2f
             )
         }
@@ -1171,8 +1547,19 @@ abstract class AbstractCrew(
     /** The damage a punch or an arriving shot banks (CrewAnimation +0x8cc): (rand%4001 + 3000) / 1000. */
     private fun rollShotDamage(): Float = (ftl.browser.BrowserRandom.nextInt(4001) + 3000) / 1000f
 
-    private fun rollShotTimer(): Float =
-        (CrewAim.SHOT_TIMER_MIN_MS + ftl.browser.BrowserRandom.nextInt(CrewAim.SHOT_TIMER_SPAN_MS)) / 1000f
+    /** The animation's shooting sound (CrewAnimation::GetShootingSound, vtable slot 9). */
+    protected open fun shootingSoundName(): String? {
+        val shotSound = when (this) {
+            is CrewMantis -> "mantisSpit"
+            is CrewRock, is CrewCrystal -> "rockThrow"
+            else -> "crewLaser"
+        }
+        return "$shotSound${(1..3).random(ftl.browser.BrowserRandom)}"
+    }
+
+    private fun rollShotTimer(): Float = (shotTimerMinMs + rollSpan(shotTimerSpanMs)) / 1000f
+
+    private fun rollSpan(span: Int): Int = if (span > 0) ftl.browser.BrowserRandom.nextInt(span) else 0
 
     /** CrewMember::OnLoop (0x482a80) -> CrewAnimation::SetDirection (0x47e550): aim at [point] this tick. */
     private fun setAim(point: IPoint, exact: Boolean) {
@@ -1211,12 +1598,7 @@ abstract class AbstractCrew(
 
         // The animation's shooting sound (vtable slot 9): Mantis mantisSpit1-3
         // (0x47f4e0), Rock and Crystal rockThrow1-3 (0x47f5e0), others crewLaser1-3 (0x47f3e0).
-        val shotSound = when (this) {
-            is CrewMantis -> "mantisSpit"
-            is CrewRock, is CrewCrystal -> "rockThrow"
-            else -> "crewLaser"
-        }
-        game.sounds.getSampleOrWarn("$shotSound${(1..3).random(ftl.browser.BrowserRandom)}")?.play()
+        shootingSoundName()?.let { game.sounds.getSampleOrWarn(it)?.play() }
 
         ship.spawnCrewShot(from, Point(aimX, aimY), room, crewShotImage, crewShotColour, onLanded)
     }
@@ -1231,8 +1613,9 @@ abstract class AbstractCrew(
         attackTimer = null
         currentAction = action
 
-        if (throwsOnShootFrame) {
-            val strip = anims["${animationRace}_shoot_${dirAsString(shootDirection())}"]
+        // Without a strip there is no throwing frame to wait for, so the shot timer decides.
+        val strip = if (throwsOnShootFrame) anims.getOrNull("${animationRace}_shoot_${dirAsString(shootDirection())}") else null
+        if (strip != null) {
             val total = strip.totalTime
             val frame = if (total > 0f) (shootStripTime / total * strip.length).toInt().coerceIn(0, strip.length - 1) else 0
             if (frame == CrewAim.THROW_FRAME) {
@@ -1364,7 +1747,7 @@ abstract class AbstractCrew(
             // A punch (CrewAnimation::OnUpdate 0x482420) restarts the punch timer, (rand%150 + 500) ms, and plays
             // the punch for twice that; the Ion intruder's door bashing keeps a 1.0..1.3 s cycle.
             attackTimer = if (action == Action.FIGHTING)
-                2f * (CrewAim.PUNCH_TIMER_MIN_MS + ftl.browser.BrowserRandom.nextInt(CrewAim.PUNCH_TIMER_SPAN_MS)) / 1000f
+                2f * (punchTimerMinMs + rollSpan(punchTimerSpanMs)) / 1000f
             else (1.0f..1.3f).random(ftl.browser.BrowserRandom)
             attackDuration = attackTimer!!
 
@@ -1484,8 +1867,8 @@ abstract class AbstractCrew(
             return ConstPoint(current.offsetX, current.offsetY)
         }
 
-        // Unless the door is locked, we can walk right through.
-        if (!door.isLockedFor(this)) {
+        // Unless the door is locked, we can walk right through (a phasing crew member also through a locked one).
+        if (!door.isLockedFor(this) || (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.crew.HsCrewEffects.phases(this))) {
             return ConstPoint(next.offsetX, next.offsetY)
         }
 
@@ -1563,13 +1946,14 @@ abstract class AbstractCrew(
                     return
                 walkDirection = direction
 
-                anims["${animationRace}_walk_${dirAsString(direction)}"].startLooping(game)
+                anims.crewStrip("${animationRace}_walk_${dirAsString(direction)}").startLooping(game)
             }
 
-            Action.MANNING -> anims["${animationRace}_type_${dirAsString(room.system!!.configuration.computerDirection!!)}"]
+            // A console without a facing (a blueprint slot with no direction) keeps the current animation.
+            Action.MANNING -> anims.crewStrip("${animationRace}_type_${dirAsString(room.system!!.configuration.computerDirection ?: return)}")
                 .startLooping(game)
 
-            Action.REPAIRING, Action.REPAIRING_BREACH -> anims["${animationRace}_repair"].startLooping(game)
+            Action.REPAIRING, Action.REPAIRING_BREACH -> anims.crewStrip("${animationRace}_repair").startLooping(game)
 
             Action.FIGHTING, Action.SABOTAGE, Action.ATTACKING_DOOR -> when {
                 // Punches face the shared cell: the crewmember stands at the top and the intruder at the bottom.
@@ -1581,11 +1965,12 @@ abstract class AbstractCrew(
                     val dir = when {
                         sharesHostileCell && mode == SlotType.INTRUDER -> Direction.UP
                         sharesHostileCell -> Direction.DOWN
-                        enemyToAttack == null -> Direction.UP
-                        else -> Direction.bestFit(pixelPosition, enemyToAttack!!.pixelPosition)
+                        // The enemy just left the cell. The game has punches only up and down.
+                        enemyToAttack == null || mode == SlotType.INTRUDER -> Direction.UP
+                        else -> Direction.DOWN
                     }
                     shootPoseIcon = null
-                    val punch = anims["${animationRace}_punch_${dirAsString(dir)}"].startSingle(game)
+                    val punch = anims.crewStrip("${animationRace}_punch_${dirAsString(dir)}").startSingle(game)
                     if (attackTimer != null)
                         punch.duration = attackDuration
                     punch
@@ -1594,7 +1979,7 @@ abstract class AbstractCrew(
                 // The Ion intruder's own animation keeps replaying its strip once per attack cycle.
                 !firesCrewShots -> {
                     shootPoseIcon = null
-                    val shoot = anims["${animationRace}_shoot_${dirAsString(shootDirection())}"].startSingle(game)
+                    val shoot = anims.crewStrip("${animationRace}_shoot_${dirAsString(shootDirection())}").startSingle(game)
                     if (attackTimer != null)
                         shoot.duration = attackDuration
                     shoot
@@ -1604,7 +1989,7 @@ abstract class AbstractCrew(
                 // hold one aim frame (CrewAnimation::OnRender 0x477f20). updateShooting drives both.
                 else -> {
                     val dir = shootDirection()
-                    val pose = anims["${animationRace}_shoot_${dirAsString(dir)}"].startSingle(game)
+                    val pose = anims.crewStrip("${animationRace}_shoot_${dirAsString(dir)}").startSingle(game)
                     pose.isPaused = true
                     shootPoseIcon = pose
                     shootPoseDirection = dir
@@ -1614,19 +1999,19 @@ abstract class AbstractCrew(
             }
 
             // Don't loop, we'll disappear when the animation finishes
-            Action.DYING -> anims[deathAnimationName].startSingle(game)
+            Action.DYING -> anims.crewStrip(deathAnimationName).startSingle(game)
 
             Action.TELEPORTING -> {
                 // If we're beaming back down on the destination ship, play it backwards.
-                val backwards = teleportingTo?.ship == room.ship
+                val backwards = teleportArriving
 
                 // Stop at the end, as it would look weird if we restarted for a moment.
-                anims["${animationRace}_teleport"].startSingle(game, 1f, backwards)
+                anims.crewStrip("${animationRace}_teleport").startSingle(game, 1f, backwards)
             }
 
             Action.CLONING -> {
                 // This just re-uses the teleport animation
-                anims["${animationRace}_teleport"].startSingle(game, 1f, true)
+                anims.crewStrip("${animationRace}_teleport").startSingle(game, 1f, true)
             }
 
             Action.FIRE_FIGHTING -> {
@@ -1645,7 +2030,7 @@ abstract class AbstractCrew(
                     Direction.bestFit(roomPosition!!, firePos)
                 }
 
-                anims["${animationRace}_fire_${dirAsString(direction)}"].startLooping(game)
+                anims.crewStrip("${animationRace}_fire_${dirAsString(direction)}").startLooping(game)
             }
         }
 
@@ -1680,13 +2065,43 @@ abstract class AbstractCrew(
         return false
     }
 
-    fun setTargetRoom(value: Room, pos: IPoint): Boolean {
+    /**
+     * The player's move order, ShipManager::CommandCrewMoveRoom (0x49ea80) = CrewMember::MoveToRoom(room, -1,
+     * false) (0x4809b0): nothing happens for a dead crew member, one whose slot (CrewMember +0x88, the slot it
+     * stands in or walks to) is already in that room, or one that is stunned while standing at its slot.
+     */
+    fun commandMoveRoom(value: Room): Boolean {
+        if (health <= 0f) return false
+        val slotRoom = pathingTarget?.room ?: standingPosition?.room ?: room
+        if (slotRoom == value) return false
+        if (stunTime > 0f && pathingTarget == null && nextTargetPos == null) return false
+        return setTargetRoom(value)
+    }
+
+    /** The slot this crew member stands in or walks to (CrewMember::currentSlot). */
+    val currentSlotPoint: RoomPoint get() = pathingTarget ?: standingPosition ?: findNearestRoomPos()
+
+    /**
+     * [setTargetRoom] to one slot that [vacating] may still hold: Hyperspace's tile movement swaps two crew
+     * (TileBasedCrewMovement.cpp: swapCrew->EmptySlot, then MoveToRoom(room, tile, true) for both) inside
+     * [Ship.deferCrewSlotUpdates], so the slot bookkeeping runs once both have their new goals.
+     */
+    fun setTargetSlot(value: Room, pos: IPoint, vacating: AbstractCrew?): Boolean = setTargetRoom(value, pos, vacating)
+
+    fun setTargetRoom(value: Room, pos: IPoint): Boolean = setTargetRoom(value, pos, null)
+
+    private fun setTargetRoom(value: Room, pos: IPoint, vacating: AbstractCrew?): Boolean {
+        // Hyperspace CrewMember::MoveToRoom hook: no moves from a rooted crew member's own loop.
+        if (hsMoveLock) return false
+
         // Check if the slot is free. We have to do this *before* checking
         // if we're already pathing to or in the slot.
         // This only matters if we're not marked as occupying this slot - this
         // should never be the case, but if two crew walk into the same
         // slot somehow it will happen while the conflict is being resolved.
-        if (!value.isSlotFree(pos, mode, this))
+        if (!value.isSlotFree(pos, mode, this) &&
+            (vacating == null || value.isObstructed(pos) || value.slotOccupier(pos, mode) !== vacating)
+        )
             return false
 
         // If we're already going to, or are at, this point then do nothing.
@@ -1707,6 +2122,20 @@ abstract class AbstractCrew(
     }
 
     fun jumpTo(newPoint: RoomPoint): Unit = jumpTo(newPoint.room, newPoint)
+
+    /**
+     * Hyperspace CrewSpawn::SpawnCrew: the new crew member stands with its centre at ([centreX], [centreY]) (ship
+     * pixels, inside [inRoom]) and walks to [slot] (MoveToRoom(slot, true)); [walk] false leaves it standing there.
+     */
+    fun hsPlaceAt(inRoom: Room, centreX: Float, centreY: Float, slot: RoomPoint, walk: Boolean) {
+        jumpTo(slot)
+        room = inRoom
+        pixelSpaceX = centreX - ROOM_SIZE / 2f
+        pixelSpaceY = centreY - ROOM_SIZE / 2f
+        currentAction = Action.IDLE
+        if (walk && !(slot.offsetX.f == pixelSpaceX && slot.offsetY.f == pixelSpaceY)) pathingTarget = RoomPoint(slot.room, slot)
+        else room.ship.updateCrewReservedSlots()
+    }
 
     /**
      * Set the room and position to the given values.
@@ -1762,6 +2191,16 @@ abstract class AbstractCrew(
         room.ship.sys.updatePlayerCrew()
     }
 
+    /** Hyperspace: a crew drone's kept body deploys again (NativeDrone.hsCrewActor); its last fight does not carry over. */
+    internal fun hsClearFight() {
+        enemyToAttack = null
+        attackTimer = null
+        isPunching = false
+        sharesHostileCell = false
+        doorRoute = null
+        pathingTarget = null
+    }
+
     open fun onStartedDying() {
         game.browserAchievements.crewStartedDying(this)
         // Death sounds: engi, mantis, rock, zoltan and crystal crew have
@@ -1773,7 +2212,12 @@ abstract class AbstractCrew(
         // Native: each CrewAnimation subclass's death sound (vtable slot
         // 10): Lanius use shrikeDeath (AnaerobicAnimation 0x768c80); the
         // Zoltan codename is "energy".
-        val deathSound = when (codename) {
+        deathSoundName()?.let { game.sounds.getSampleOrWarn(it)?.play() }
+    }
+
+    /** The animation's death sound (CrewAnimation::GetDeathSound, vtable slot 10). */
+    protected open fun deathSoundName(): String? {
+        return when (codename) {
             "engi" -> "engiDeath"
             "mantis" -> "mantisDeath"
             "rock" -> "rockDeath"
@@ -1785,11 +2229,24 @@ abstract class AbstractCrew(
             else
                 "death${(1..2).random(ftl.browser.BrowserRandom)}"
         }
-        game.sounds.getSampleOrWarn(deathSound)?.play()
     }
 
     open fun onFinishedDying() {
         removeFromShip()
+    }
+
+    /**
+     * CrewMember::Restart called on its own (Lua): full health (GetMaxHealth), alive, no fire, not
+     * suffocating, no repair or crew target, the crew animation restarted, and the crew member stands in its slot
+     * (the one it walks to, when walking) with its path cleared.
+     */
+    open fun hsRestart() {
+        health = maxHealth
+        val slot = currentSlotPoint
+        pathingTarget = null
+        nextTargetPos = null
+        jumpTo(slot)
+        if (currentAction != Action.TELEPORTING && currentAction != Action.CLONING) currentAction = Action.IDLE
     }
 
     open fun onCloned() {
@@ -1849,7 +2306,55 @@ abstract class AbstractCrew(
         require(room.ship != this.room.ship)
 
         teleportingTo = room
-        teleportTimer = 0f
+        teleportTimer = 0f; hsTelePassed = false; hsTeleDone = 0
+        teleportArriving = false
+        // Hyperspace CrewMember::StartTeleport hook: customTele.teleporting until the animation ends.
+        if (xyz.znix.xftl.hs.HS.active) hsTeleporting = true
+    }
+
+    /**
+     * Hyperspace teleportMove: CrewMember::StartTeleport towards [room] on either ship (the same ship included); the
+     * armed slot ([hsTeleSlot]) is taken on arrival when free.
+     */
+    /** Lua CrewMember::StartTeleport with no armed destination: see [update]. */
+    @JvmField var hsTeleLimbo = false
+
+    /** The departure animation of [hsTeleLimbo] has played: the crew member is between ships (currentShipId -1). */
+    val hsInTeleportLimbo: Boolean get() = hsTeleLimbo && (hsTeleDone >= 2 || this !in room.ship.crew)
+
+    fun hsStartTeleportInPlace() {
+        teleportingTo = room
+        teleportTimer = 0f; hsTelePassed = false; hsTeleDone = 0
+        teleportArriving = false
+        hsTeleporting = true
+        hsTeleLimbo = true
+        currentAction = Action.TELEPORTING
+    }
+
+    /** Lua CrewMember::StartTeleportArrive: [startTeleportArrive], the animation status set at once. */
+    fun hsStartTeleportArriveNow() {
+        startTeleportArrive()
+        currentAction = Action.TELEPORTING
+    }
+
+    /**
+     * CrewMember_Extend::InitiateTeleport(shipId, roomId, slotId) (CustomCrew.cpp, Lua): StartTeleport (the departure
+     * animation at once), then customTele armed with the destination. The departure is not interrupted by the
+     * teleport checks; a room of -1 becomes a random room of that ship when it ends.
+     */
+    fun hsInitiateTeleport(shipId: Int, roomId: Int, slotId: Int) {
+        val target = if (shipId == 0) room.ship.sys.player else if (shipId == 1) room.ship.sys.enemy else null
+        hsStartTeleportMove(target?.rooms?.getOrNull(roomId) ?: room)
+        hsTeleLimbo = false
+        currentAction = Action.TELEPORTING
+        hsTeleShip = shipId; hsTeleRoom = roomId; hsTeleSlot = slotId
+    }
+
+    fun hsStartTeleportMove(room: Room) {
+        teleportingTo = room
+        teleportTimer = 0f; hsTelePassed = false; hsTeleDone = 0
+        teleportArriving = false
+        hsTeleporting = true
     }
 
     /**
@@ -1858,7 +2363,8 @@ abstract class AbstractCrew(
      */
     fun startTeleportArrive() {
         teleportingTo = room
-        teleportTimer = 0f
+        teleportTimer = 0f; hsTelePassed = false; hsTeleDone = 0
+        teleportArriving = true
     }
 
     /**
@@ -1954,6 +2460,8 @@ abstract class AbstractCrew(
     open fun saveToXML(elem: Element, refs: ObjectRefs) {
         SaveUtil.addObjectId(elem, refs, this)
         elem.setAttribute("type", codename)
+        savedPosition?.let { SaveUtil.addPoint(elem, "savedPos", it) }
+        hsFinalGoal?.let { SaveUtil.addPoint(elem, "hsFinalGoal", it) }
 
         // We can't use the normal point serialisation since
         // it doesn't support floating-point values.
@@ -2003,7 +2511,23 @@ abstract class AbstractCrew(
             teleport.setAttribute("destRoom", teleportingTo!!.id.toString())
             teleport.setAttribute("destShip", refs[teleportingTo!!.ship])
             teleport.setAttribute("timer", teleportTimer.toString())
+            if (teleportArriving) teleport.setAttribute("arriving", "true")
             elem.addContent(teleport)
+        }
+        if (hsTeleShip != -1 || hsTeleporting || hsTeleRoom != 0 || hsTeleSlot != 0 || hsTeleLimbo) {
+            val tele = Element("hsCustomTele")
+            tele.setAttribute("ship", hsTeleShip.toString())
+            tele.setAttribute("room", hsTeleRoom.toString())
+            tele.setAttribute("slot", hsTeleSlot.toString())
+            tele.setAttribute("teleporting", hsTeleporting.toString())
+            if (hsTeleLimbo) tele.setAttribute("limbo", "true")
+            elem.addContent(tele)
+        }
+        if (hsFrozen || hsFrozenLocation) {
+            val frozen = Element("hsFrozen")
+            frozen.setAttribute("frozen", hsFrozen.toString())
+            frozen.setAttribute("location", hsFrozenLocation.toString())
+            elem.addContent(frozen)
         }
 
         if (currentAction == Action.CLONING) {
@@ -2025,18 +2549,28 @@ abstract class AbstractCrew(
 
     open fun loadFromXML(elem: Element, refs: RefLoader) {
         SaveUtil.registerObjectId(elem, refs, this)
+        savedPosition = elem.getChild("savedPos")?.let { SaveUtil.getPoint(elem, "savedPos") }
+        hsFinalGoal = elem.getChild("hsFinalGoal")?.let { SaveUtil.getPoint(elem, "hsFinalGoal") }
 
         // The 'type' property is already read by the class that spawns us,
         // we just need to check it.
         require(codename == elem.getAttributeValue("type")) { "Wrong crewmember type was spawned!" }
 
-        pixelSpaceX = SaveUtil.getAttrFloat(elem, "x")
-        pixelSpaceY = SaveUtil.getAttrFloat(elem, "y")
+        val savedX = SaveUtil.getAttrFloat(elem, "x")
+        val savedY = SaveUtil.getAttrFloat(elem, "y")
 
         // Correctly set what room we're in - as soon as we start setting
         // target positions and stuff like that, we'll be updating the
         // occupied cells which needs to know what room we're in.
-        room = room.ship.rooms.first { it.containsShipSpace(pixelPositionCentre) }
+        val centre = ConstPoint(savedX.toInt() + ROOM_SIZE / 2, savedY.toInt() + ROOM_SIZE / 2)
+        val savedRoom = room.ship.rooms.firstOrNull { it.containsShipSpace(centre) }
+        // A clone queue member that died aboard the other ship (a boarder) was saved with that ship's coordinates; it is
+        // in no room of the clone bay's ship until cloneFinished places it, so it keeps its spawn position there.
+        if (savedRoom != null) {
+            pixelSpaceX = savedX
+            pixelSpaceY = savedY
+            room = savedRoom
+        }
         positionChanged()
 
         health = SaveUtil.getAttrFloat(elem, "health")
@@ -2090,8 +2624,24 @@ abstract class AbstractCrew(
         if (teleport != null) {
             val roomId = teleport.getAttributeValue("destRoom").toInt()
             val shipRef = teleport.getAttributeValue("destShip")
-            refs.asyncResolve(Ship::class.java, shipRef) { teleportingTo = it!!.rooms[roomId] }
+            val arriving = teleport.getAttributeValue("arriving")
+            refs.asyncResolve(Ship::class.java, shipRef) {
+                teleportingTo = it!!.rooms[roomId]
+                // Older saves: the arrival half is the one on the destination ship.
+                teleportArriving = arriving?.toBoolean() ?: (it === room.ship)
+            }
             teleportTimer = teleport.getAttributeValue("timer").toFloat()
+        }
+        elem.getChild("hsCustomTele")?.let {
+            hsTeleShip = it.getAttributeValue("ship").toInt()
+            hsTeleRoom = it.getAttributeValue("room").toInt()
+            hsTeleSlot = it.getAttributeValue("slot").toInt()
+            hsTeleporting = it.getAttributeValue("teleporting").toBoolean()
+            hsTeleLimbo = it.getAttributeValue("limbo") == "true"
+        }
+        elem.getChild("hsFrozen")?.let {
+            hsFrozen = it.getAttributeValue("frozen").toBoolean()
+            hsFrozenLocation = it.getAttributeValue("location").toBoolean()
         }
 
         if (currentAction == Action.CLONING) {
@@ -2190,6 +2740,13 @@ abstract class AbstractCrew(
             Animations.SpriteSheetSpec("img/people/healing_strip11.png", 32, 32, 352, 32),
             "healing", 0, 0, 11, HEALING_ANIM_FRAME_TIME
         )
+
+        /** Hardcoded like the healing sparkles: 5 frames of 14x14, one second for the strip. */
+        private val STUN_ANIM = AnimationSpec(
+            Animations.SpriteSheetSpec("img/people/stun_strip5.png", 14, 14, 70, 14),
+            "stun", 0, 0, 5, 0.2f
+        )
+        private val STUN_ICON_COLOUR = xyz.znix.xftl.rendering.Colour(1f, 1f, 0f, 1f)
 
         const val TELEPORT_ANIMATION_TIME: Float = 0.5f
         const val TELEPORT_IMAGE_STRETCH: Float = 0.1f

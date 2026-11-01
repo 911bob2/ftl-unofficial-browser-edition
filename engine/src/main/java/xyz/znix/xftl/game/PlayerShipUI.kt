@@ -1,5 +1,8 @@
 package xyz.znix.xftl.game
 
+import xyz.znix.xftl.hs.HS
+import xyz.znix.xftl.hs.render.HsHullNumbers
+
 import org.jdom2.Element
 import org.newdawn.slick.geom.Rectangle
 import xyz.znix.xftl.*
@@ -35,13 +38,19 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     private val font = game.getFont("HL2", 2f)
     private val weaponNameText = game.getFont("JustinFont8")
     private val crewNameText = game.getFont(CREW_NAME_FONT)
-    private val weaponNumberFont = game.getFont("c&c")
+    private val crewNameEnglish = xyz.znix.xftl.rendering.NativeFonts.english(crewNameText)
+    // the slot numbers keep the English font in every language (GetFontData ignoreLanguage); 1.6.9, which
+    // Hyperspace runs on, prints them in the language's font 5 (its GetFontData has no such caller; oracle
+    // swl-mv, Japanese)
+    private val weaponNumberFont = game.getFont("c&c").let {
+        if (xyz.znix.xftl.hs.HS.active) it else xyz.znix.xftl.rendering.NativeFonts.english(it)
+    }
     private val numberFont = game.getFont("num_font")
     private val oxygenEvadeFont = game.getFont("JustinFont10")
+    // ShipStatus::RenderEvadeOxygen prints the percentages with font 10 ignoring the language
+    private val evadeNumberFont = xyz.znix.xftl.rendering.NativeFonts.english(oxygenEvadeFont)
     private val tooltipFont = game.getFont("JustinFont11Bold")
 
-    private val numberDeltaFont = game.getFont("HL2", 3f)
-    private val numberDeltaFontBg = game.getFont("HL1", 3f)
 
     private val powerUpSound = game.sounds.getSample("powerUpSystem")
     private val powerUpFailSound = game.sounds.getSample("powerUpFail")
@@ -85,7 +94,269 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
      * active (1 = normal size). Used by Ship.drawInterior.
      */
     fun crewEnlargeScale(crew: AbstractCrew): Float {
+        touch?.let { return it.crewScale(crew) }
         return if (roomSelectionMode && crew in selectedCrew) ENLARGED_CREW_SCALE else 1f
+    }
+
+    /** The touch layout's HUD and controls (TouchMode); null with the desktop HUD. */
+    val touch: TouchHud? = if (TouchMode.enabled) TouchHud(this, game) else null
+
+    internal val touchSelected: MutableList<AbstractCrew> get() = selectedCrew
+    internal val touchPotential: MutableList<AbstractCrew> get() = hoveredCrew
+    internal var touchSkillsCrew: AbstractCrew?
+        get() = skillsHoveredCrew
+        set(value) { skillsHoveredCrew = value }
+    internal val touchBoxCrew: List<LivingCrew> get() = hsVisibleCrew()
+    internal val touchControllableCrew: List<AbstractCrew>
+        get() {
+            val all = ArrayList(ship.friendlyCrew)
+            game.enemy?.let { all.addAll(it.intruders) }
+            return all
+        }
+    internal val touchIsTargeting: Boolean get() = game.clickEvent != null || beamTargeting != null
+    internal val touchArmedIsBeam: Boolean get() = beamTargeting != null ||
+        targetingSelectedWeapon?.let { ship.hardpoints.getOrNull(it)?.weapon is BeamBlueprint.BeamInstance } == true
+    internal val isEventOpen: Boolean get() = currentWindow is DialogueWindow
+    internal val touchEnginesWarningRed: Boolean get() = ftlButtonRed
+    internal val touchHullWarningRed: Boolean get() = hullWarning25.isFlashingHigh || hullWarning50.isFlashingHigh || hullWarning75.isFlashingHigh
+    internal val touchScrapRed: Boolean get() = insufficientScrapTimer != 0f && (insufficientScrapTimer / INSUFFICIENT_SCRAP_FLASH_TIME).toInt() % 2 == 0
+
+    internal fun touchClearPowerButtons() = hsPowerButtons.clear()
+    internal fun touchDrawCrewBox(g: Graphics, crew: LivingCrew, x: Int, y: Int) = drawCrewBox(g, crew, x, y)
+    internal fun touchChangePower(system: MainSystem, up: Boolean) = changeSystemPower(system, up)
+    internal val touchArmedSlot: Int? get() = targetingSelectedWeapon?.takeIf { game.clickEvent === selectWeaponClickEvent || beamTargeting != null }
+    internal val touchMaxChargeTime: Float get() = ship.hardpoints.mapNotNull { it.weapon?.chargeTime }.maxOrNull() ?: 1f
+    internal val touchArmedBeam: Boolean get() = beamTargeting != null ||
+        (game.clickEvent === selectWeaponClickEvent && touchArmedIsBeam) || touchArtilleryDrawsLine
+
+    /** An armed beam artillery takes its line in one drag, as a beam weapon does; a pinpoint beam or a room weapon takes a tap. */
+    private val touchArtilleryDrawsLine: Boolean get() {
+        val weapon = (game.clickEvent as? HsArtilleryRoomListener)?.art?.browserWeapon
+        return weapon is BeamBlueprint.BeamInstance && !xyz.znix.xftl.hs.weapons.HsWeapons.isPinpoint(weapon.type)
+    }
+
+    /** A tap on a weapon or drone: arm, then aim to fire by itself, then disarm (the same weapon again). */
+    internal fun touchSlotClick(system: AbstractSystem, slot: Int) {
+        if (system is Drones) {
+            droneHotkeyPressed(slot, false)
+            return
+        }
+        if (targetingSelectedWeapon == slot && game.clickEvent === selectWeaponClickEvent) {
+            if (targetingModifier) onJump() else targetingModifier = true
+            return
+        }
+        weaponHotkeyPressed(slot, false, false)
+    }
+
+    internal fun touchSlotPower(system: AbstractSystem, slot: Int, on: Boolean) {
+        if (system is Drones) droneHotkeyPressed(slot, !on)
+        else weaponHotkeyPressed(slot, !on)
+    }
+
+    internal fun touchClickRoom(room: Room) {
+        val event = game.clickEvent ?: return
+        game.clickEvent = null
+        event.roomClicked(room, game.mainGame.gameContainer)
+    }
+
+    internal fun touchCancelTargeting() = onJump()
+
+    internal fun touchMoveBeam(canvasX: Int, canvasY: Int) = updateBeamTargeting(canvasX, canvasY)
+
+    /** A second finger down: the placed line slides with the first one. */
+    internal fun touchSlideBeam(dx: Int, dy: Int) {
+        val beam = beamTargeting ?: return
+        val start = beam.startShipPoint as? Point ?: return
+        val target = beam.targetShip
+        val rooms = target.rooms
+        if (!beam.visible || rooms.isEmpty()) return
+        val endX = start.x + (beam.length * cos(beam.angle)).roundToInt()
+        val endY = start.y + (beam.length * sin(beam.angle)).roundToInt()
+        val moveX = TouchBeamSlide.clampAxis(dx, start.x, endX, (rooms.minOf { it.x } + target.offset.x) * ROOM_SIZE, (rooms.maxOf { it.x + it.width } + target.offset.x) * ROOM_SIZE)
+        val moveY = TouchBeamSlide.clampAxis(dy, start.y, endY, (rooms.minOf { it.y } + target.offset.y) * ROOM_SIZE, (rooms.maxOf { it.y + it.height } + target.offset.y) * ROOM_SIZE)
+        beamTargetingStartPos.x += moveX; beamTargetingStartPos.y += moveY
+        start.x += moveX; start.y += moveY
+        beam.updateHitRooms()
+    }
+
+    internal fun touchFireBeam(): Boolean {
+        val beam = beamTargeting ?: return false
+        if (!beam.visible || beam.hitRooms.isEmpty() || beam.targetShip.isDead) return false
+        targetBeamWeapon()
+        return true
+    }
+
+    /** Takes back the line being drawn; the weapon stays armed, waiting for a new press. */
+    internal fun touchAbortBeam() {
+        if (beamTargeting == null) return
+        if (hsArtilleryBeam != null) {
+            hsArtilleryBeam = null
+            onJump()
+            return
+        }
+        beamTargeting = null
+        game.clickEvent = selectWeaponClickEvent
+    }
+
+    /** The ship being aimed at has gone (it jumped away, or an event replaced it): so has the aim. */
+    internal fun touchDropBeamIfTargetGone() {
+        val beam = beamTargeting ?: return
+        if (beam.targetShip !== game.enemy) {
+            hsArtilleryBeam = null
+            onJump()
+        }
+    }
+
+    /** Where the crew member's centre is on the canvas. */
+    internal fun touchCrewCentre(crew: AbstractCrew): Point {
+        val p = crewScreenPos(crew, game.playerShipOffsetPoint)
+        val s = if (crew.room.ship == ship) game.playerShipRenderScale else (touch?.enemyScale ?: 1f)
+        return Point(p.x + (ROOM_SIZE / 2 * s).roundToInt(), p.y + (ROOM_SIZE / 2 * s).roundToInt())
+    }
+
+    /** The room's centre on the canvas. */
+    internal fun touchRoomCentre(room: Room): IPoint {
+        val px = (room.x + room.ship.offset.x) * ROOM_SIZE + room.width * ROOM_SIZE / 2
+        val py = (room.y + room.ship.offset.y) * ROOM_SIZE + room.height * ROOM_SIZE / 2
+        return if (room.ship === ship) game.playerShipRenderToScreen(px, py) else game.enemyShipRenderToScreen(px, py)
+    }
+
+    internal fun touchPowerButtonClick(x: Int, y: Int): Boolean = hsPowerButtonClick(x, y)
+
+    /** The lockdown button on a crystal's side panel, at the top of the panel beside its box at [boxY]. */
+    internal fun touchLockdownClick(crew: AbstractCrew?, boxX: Int, boxY: Int, x: Int, y: Int): Boolean {
+        val crystal = crew as? xyz.znix.xftl.crew.CrewCrystal ?: return false
+        if (xyz.znix.xftl.hs.HS.active) return false
+        if (x !in boxX + 97 until boxX + 97 + 64 || y !in boxY + 7 until boxY + 7 + 14) return false
+        return crystal.activateLockdown()
+    }
+
+    internal val touchStatusHull: ITooltipProvider get() = hullTooltip
+    internal val touchStatusShields: ITooltipProvider get() = shieldTooltip
+    internal val touchStatusFuel: ITooltipProvider get() = fuelTooltip
+    internal val touchStatusMissiles: ITooltipProvider get() = missileTooltip
+    internal val touchStatusDrones: ITooltipProvider get() = droneTooltip
+    internal val touchStatusEvade: ITooltipProvider get() = evasionTooltip
+    internal val touchStatusOxygen: ITooltipProvider get() = oxygenTooltip
+    internal val touchStatusScrap: ITooltipProvider get() = scrapTooltip
+    internal val touchStatusReactor: ITooltipProvider get() = reactorTooltip
+
+    /** Whether any crew member has a station to go back to. */
+    internal fun touchReturnToStations(): Boolean = ship.loadCrewPositions()
+
+    private var spaceMouseDx = 0
+    private var spaceMouseDy = 0
+
+    /** The hazard icons and DANGER! at the touch layout's spot, centred on [centreX] at the top of the screen. */
+    internal fun touchDrawHazards(g: Graphics, centreX: Int) {
+        spaceMouseDx = TouchMode.hudX + centreX - 690
+        spaceMouseDy = -72
+        g.pushTransform()
+        g.translate(centreX - 690f, -72f)
+        drawSpaceIcons(g)
+        g.popTransform()
+        spaceMouseDx = 0
+        spaceMouseDy = 0
+    }
+
+    internal fun touchMoveSelected(room: Room) {
+        for (crew in selectedCrew) {
+            if (!crew.canBeOrderedToMove) continue
+            if (crew.room.ship == room.ship) crew.commandMoveRoom(room)
+        }
+    }
+
+    internal fun touchHighlightRoom(room: Room?) { game.hoverRoomForTouch(room) }
+
+    internal fun touchRoomOnPlayer(canvasX: Int, canvasY: Int): Room? {
+        val p = Point(canvasX, canvasY)
+        game.convertScreenToPlayerShip(p)
+        ship.screenPosToShipPos(p)
+        return ship.shipToRoomPos(p)?.room
+    }
+
+    internal fun touchRoomOnEnemy(canvasX: Int, canvasY: Int): Room? {
+        val enemy = game.enemy ?: return null
+        val p = Point(canvasX, canvasY)
+        game.convertScreenToEnemyShip(p)
+        enemy.screenPosToShipPos(p)
+        return enemy.shipToRoomPos(p)?.room
+    }
+
+    private fun nearRoom(s: Ship, p: Point): Boolean = s.rooms.any { r ->
+        val x = (r.x + s.offset.x) * ROOM_SIZE
+        val y = (r.y + s.offset.y) * ROOM_SIZE
+        p.x > x - 40 && p.x < x + r.width * ROOM_SIZE + 40 && p.y > y - 40 && p.y < y + r.height * ROOM_SIZE + 40
+    }
+
+    internal fun touchNearPlayerRoom(canvasX: Int, canvasY: Int): Boolean {
+        val p = Point(canvasX, canvasY)
+        game.convertScreenToPlayerShip(p)
+        return nearRoom(ship, p)
+    }
+
+    internal fun touchNearEnemyRoom(canvasX: Int, canvasY: Int): Boolean {
+        val enemy = game.enemy ?: return false
+        val p = Point(canvasX, canvasY)
+        game.convertScreenToEnemyShip(p)
+        return nearRoom(enemy, p)
+    }
+
+    internal fun openUpgrades() = showShipWindow(ShipWindow.Tab.UPGRADES)
+    internal fun openStore() = showStoreWindow()
+
+    /** NOT ENOUGH POWER over the touch layout's reactor. */
+    internal fun touchDrawNoPower(g: Graphics, reactorTop: Int) {
+        noPowerWarning.placeNative(6, reactorTop - 73)
+        noPowerWarning.draw(g)
+    }
+
+    /** The ship button in a fight: IN DANGER under it, as a click on the desktop's disabled button shows. */
+    internal fun touchShipRefused() = inDangerWarning.startFor(WARNING_TIME)
+
+    internal fun touchDrawInDanger(g: Graphics) {
+        inDangerWarning.placeNative(647, 66)
+        inDangerWarning.draw(g)
+    }
+
+    /** Starts and stops the hull warnings as the status bar does, at the touch layout's spot. */
+    internal fun touchUpdateHullWarnings(newFraction: Float, g: Graphics) {
+        val lastFraction = lastHealth.f / ship.maxHealth
+        lastHealth = ship.health
+        if (newFraction < 0.25f) hullWarning25.startFor(5f)
+        else if (lastFraction > 0.50f && newFraction < 0.50f) hullWarning50.startFor(9f)
+        else if (lastFraction > 0.75f && newFraction < 0.75f) hullWarning75.startFor(9f)
+        if (newFraction > 0.25f) hullWarning25.stop()
+        if (newFraction !in 0.25f..0.5f) hullWarning50.stop()
+        if (newFraction !in 0.5f..0.75f) hullWarning75.stop()
+        for (w in listOf(hullWarning25, hullWarning50, hullWarning75)) {
+            w.linePoints = emptyList()
+            w.placeNative(366, 34)
+            w.draw(g)
+        }
+    }
+
+    internal fun touchUpdateShieldWarning(broken: Boolean, hasShields: Boolean, g: Graphics) {
+        if (!hasShields) return
+        if (broken) shieldsWarning.startFor(1f) else shieldsWarning.stop()
+        shieldsWarning.linePoints = emptyList()
+        shieldsWarning.placeNative(5, 63)
+        shieldsWarning.draw(g)
+    }
+
+    internal fun touchOxygenWarningRed(g: Graphics): Boolean {
+        oxygenWarning.linePoints = emptyList()
+        oxygenWarning.placeNative(222, 63)
+        oxygenWarning.draw(g)
+        return oxygenWarning.isFlashingHigh
+    }
+
+    /** The auto-pause reason of the running targeting mode (TouchHud). */
+    internal fun touchTargetingReason(): Int = when {
+        game.clickEvent is MindControlRoomListener -> 4
+        teleportMode == true -> 7
+        teleportMode == false -> 6
+        else -> 5
     }
 
     private fun updateRoomSelectionMode() {
@@ -145,15 +416,28 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // then scale up as far as it fits the screen.
         var px = 58
         for (system in ship.mainSystems) {
-            px += when {
-                system is Weapons -> 48 + ship.weaponSlots!! * 97
-                system is Drones -> 48 + ship.droneSlots!! * 97
-                system.insertButtonSpace -> 54
-                else -> 36
-            }
+            px += systemBoxAdvance(system)
         }
 
         systemsBarScale = 1.5f.coerceAtMost(1250f / px).coerceAtLeast(1f)
+    }
+
+    /**
+     * The bar's step from this system box to the next. Hyperspace (CreateSystemBoxes, CustomSystems.cpp): the armament
+     * slots plus ShipSystem_Extend::xOffset, which scripts may change (defaults 48 weapons/drones, 54 button systems, 36).
+     */
+    private fun systemBoxAdvance(system: MainSystem): Int {
+        val slots = when (system) {
+            is Weapons -> ship.weaponSlots!! * 97
+            is Drones -> ship.droneSlots!! * 97
+            else -> 0
+        }
+        if (xyz.znix.xftl.hs.HS.active) return slots + xyz.znix.xftl.hs.systems.HsSysExt.of(system).xOffset
+        return when {
+            system is Weapons || system is Drones -> 48 + slots
+            system.insertButtonSpace -> 54
+            else -> 36
+        }
     }
 
     private fun toBarSpace(x: Int, y: Int): Pair<Int, Int> = Pair(
@@ -326,6 +610,14 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
     private val buttons = ArrayList<Button>()
 
+    /** Diagnostics (round 14 UI probe): the open windows and the Hyperspace event queue. */
+    val diagnosticWindows: String get() = "window=${currentWindow?.javaClass?.simpleName} pause=${pauseWindow?.javaClass?.simpleName} queue=${xyz.znix.xftl.hs.events.HsEvents.eventQueue.joinToString(",") { it.event }}"
+
+    /** Diagnostics (round 14 UI probe): the HUD buttons as class@x,y,w,h/disabled/hovered/obstructed. */
+    val diagnosticButtons: String get() = buttons.joinToString(" ") {
+        "${it.javaClass.simpleName}@${it.pos.x},${it.pos.y},${it.size.x},${it.size.y}/${it.disabled}/${it.hovered}/${it.mouseObstructed}"
+    }
+
     /**
      * The currently shown window. When a window is shown, the main UI is darkened, buttons are locked
      * and all input is sent to the window.
@@ -347,6 +639,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             field = value
             value?.let { positionMenuWindow(it) }
         }
+
+    /** False while a confirmation prompt is open over the pause menu (Hyperspace's MenuScreen hook checks confirmDialog.bOpen). */
+    fun isPauseWindowOnTop(w: Window) = pauseWindow === w
 
     private fun positionMenuWindow(window: Window) {
         val container = game.mainGame?.gameContainer ?: return
@@ -410,7 +705,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     // SystemControl's NOT ENOUGH POWER (0x004c9380, drawn by 0x004c7530): left-aligned 6 px in and 73 px
     // over the top reactor bar, flashing for 2.31 s after a power-up the reactor can't supply.
     private val noPowerWarning =
-        WarningFlasher.atNative(game, 6, 0, "warning_no_power", false, GlowColour.WHITE, flash = true, centred = false)
+        WarningFlasher.atNative(game, 6, 0, if (TouchMode.enabled) "warning_no_power_ipad" else "warning_no_power", false, GlowColour.WHITE, flash = true, centred = false)
 
     // SystemBox's REQUIRES SYSTEM UPGRADE (0x004dad30): the shields box, 5 px right of it and 111 px over its
     // power button, for 2 s after a click on the last bar of an odd level (0x004da730).
@@ -431,6 +726,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     private val dronePowerWarning =
         WarningFlasher.atNative(game, 0, 0, "warning_no_system_power", false, GlowColour.WHITE, flash = false)
     private var weaponBoxXForWarnings: Int? = null
+
+    // Hyperspace (CustomWeapons.cpp, WeaponControl constructor): "warning_shot_limit" at (203, -25) from the weapon
+    // box, shown by SelectArmament for a powered weapon past its <shotLimit>. Built only in Hyperspace sessions.
+    private val shotLimitWarning: WarningFlasher? =
+        if (xyz.znix.xftl.hs.HS.active) WarningFlasher.atNative(game, 0, 0, "warning_shot_limit", false, GlowColour.WHITE, flash = false) else null
     private var droneBoxXForWarnings: Int? = null
 
     // CommandGui's IN DANGER (0x00532090): centred over the ship button, for 2 s after a click on it while
@@ -445,6 +745,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     private var jumpButtonRef: Buttons.JumpButton? = null
     internal val jumpButton: Buttons.JumpButton? get() = jumpButtonRef
     private var shipButtonRef: Buttons.ShipButton? = null
+    /** HsEventButtons.version the top bar was built for. */
+    private var hsEventButtonsVersion = 0
+    private var hsEventHideSig = 0
 
     /** The HUD warnings by name, for the parity checks. */
     internal val diagnosticWarnings: Map<String, WarningFlasher>
@@ -474,6 +777,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     private var lastHealth: Int = -1
 
     val isWindowOpen: Boolean get() = currentWindow != null || pauseWindow != null
+    val isGameOverOpen: Boolean get() = currentWindow is GameOverWindow
+
+    /** The arrival's event box, open but not shown until the fly-in is over (see InGameState's location switch). */
+    private val arrivalHidden: Boolean get() = game.isArrivalHold && currentWindow is DialogueWindow
 
     /**
      * CommandGui::RenderStatic (0x00535070) tints the whole scene by 0.15 while a
@@ -493,16 +800,20 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     private val tutorialVisuals get() = game.mainGame?.takeIf { it.currentState === game }?.tutorialAdapter?.visuals
     val tutorialWeaponFlashSlot: Int get() = tutorialVisuals?.weaponSlot ?: -1
     fun tutorialWeaponFlashAlpha(slot: Int): Float = tutorialVisuals?.weaponAlpha(slot) ?: 0f
-    val tutorialDialogueOpen: Boolean get() = currentWindow is DialogueWindow
+    /** An event box on screen (the arrival's, opened at the location switch, shows after the fly-in). */
+    val tutorialDialogueOpen: Boolean get() = currentWindow is DialogueWindow && !arrivalHidden
     val diagnosticDialogue: DialogueWindow? get() = currentWindow as? DialogueWindow
+    val hsDiagnosticWindow: Window? get() = currentWindow
     val tutorialOverlayOpen: Boolean get() = pauseWindow != null
     val pendingUpgradeActions: Set<ftl.browser.BrowserAchievementProgress.Action>
         get() = (currentWindow as? ShipWindow)?.pendingUpgradeActions ?: emptySet()
-    private val diagnosticActiveWindow: Window? get() = (pauseWindow ?: currentWindow).let {
+    // the arrival's box is not on screen until the fly-in is over (arrivalHidden)
+    private val diagnosticActiveWindow: Window? get() = (pauseWindow ?: currentWindow?.takeUnless { arrivalHidden }).let {
         (it as? OptionsWindow)?.diagnosticActiveWindow ?: it
     }
     val diagnosticNotice: String get() = ((pauseWindow ?: currentWindow) as? OptionsWindow)?.diagnosticNotice ?: "null"
-    val diagnosticWindow: String get() = diagnosticActiveWindow?.javaClass?.simpleName ?: "game"
+    val diagnosticWindow: String get() = if ((pauseWindow as? PauseWindow)?.helpOpen == true) "ControlsHelp"
+        else diagnosticActiveWindow?.javaClass?.simpleName ?: "game"
     val diagnosticPauseWindow: Window? get() = pauseWindow
     val diagnosticWindowBounds: String get() = diagnosticActiveWindow?.let {
         "{\"x\":${it.position.x},\"y\":${it.position.y},\"width\":${it.size.x},\"height\":${it.size.y},\"scale\":${it.renderScale}}"
@@ -536,6 +847,13 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             it.ownerSystem != null && (it.ownerSystem === ship.weapons || it.ownerSystem === ship.drones) && it.contains(bx, by)
         }
     }
+
+    /** Hyperspace Lua ArmamentBox::mouseHover / selected of player weapon box [slot]. */
+    fun hsWeaponBoxHovered(slot: Int): Boolean = armamentButton(ship.weapons, slot)?.hovered == true
+    fun hsWeaponBoxSelected(slot: Int): Boolean = targetingSelectedWeapon == slot
+
+    /** WeaponControl::armedSlot: the weapon slot being aimed, -1 for none. */
+    val hsArmedSlot: Int get() = targetingSelectedWeapon ?: -1
 
     private fun armamentButton(system: MainSystem?, slot: Int): WeaponDroneButton? =
         systemsBarButtons.filterIsInstance<WeaponDroneButton>().firstOrNull { it.ownerSystem === system && it.slotNumber == slot }
@@ -599,10 +917,35 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         updateButtons()
     }
 
-    private val lastResources = ResourceSet()
+    // ShipStatus::LinkShip (native 1.6.14 0x550330) caches the counters when linking a ship.
+    private val lastResources = ResourceSet().apply {
+        fuel = ship.fuelCount
+        missiles = ship.missilesCount
+        droneParts = ship.dronesCount
+        scrap = ship.scrap
+    }
     private val resourceDeltaAnimations = ArrayList<ResourceDeltaText>()
 
     private var crewSelectionRectangle: Pair<ConstPoint, Point>? = null
+
+    /**
+     * CrewControl's mouse points, as Hyperspace's Lua reads and writes them (firstMouse, currentMouse, worldFirstMouse,
+     * worldCurrentMouse). The constructor starts the screen points at (-1,-1) and the ship ones at
+     * Point() (INT_MIN + 1 twice); a left press on the game sets the first and current points ([mouseClick]), each frame
+     * the current ones to the mouse ([updateUI]). Ship points are the screen point less the player ship's position
+     * (CommandGui::GetWorldCoordinates).
+     */
+    @JvmField val hsFirstMouse = xyz.znix.xftl.hs.lua.PointValue(-1, -1)
+    @JvmField val hsCurrentMouse = xyz.znix.xftl.hs.lua.PointValue(-1, -1)
+    @JvmField val hsWorldFirstMouse = xyz.znix.xftl.hs.lua.PointValue(Int.MIN_VALUE + 1, Int.MIN_VALUE + 1)
+    @JvmField val hsWorldCurrentMouse = xyz.znix.xftl.hs.lua.PointValue(Int.MIN_VALUE + 1, Int.MIN_VALUE + 1)
+
+    /**
+     * DroneControl's boxes as its last OnLoop left them: DroneControl::OnLoop hands box i the drone
+     * system's i-th drone, and SelectArmament works on the box's drone, so a drone added since the last UI
+     * loop has no box yet and a script's SelectArmament for it does nothing (sweep-crew oracle o9-o11).
+     */
+    private var hsDroneBoxes: List<Drones.DroneInfo> = emptyList()
     private val isCrewSelectionPoint: Boolean
         get() = crewSelectionRectangle?.let { it.first.distToSq(it.second) < SELECTION_BOX_SIZE } ?: false
 
@@ -612,7 +955,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             field = value
 
             // Show the aiming-in-progress beam on the enemy ship
-            ship.weapons!!.selectedTargets.beamAiming = value
+            ship.weapons?.selectedTargets?.beamAiming = value
         }
     private val beamTargetingStartPos = Point(0, 0)
 
@@ -727,6 +1070,13 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         jumpButtonRef = jump
         nextPos += ConstPoint(step(74, 27), 0)
 
+        // Hyperspace event buttons move the ship, store and options buttons along (ShipStatus::OnLoop, HsEventButtons)
+        val hsButtons = if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsEventButtons.buttons().isNotEmpty())
+            xyz.znix.xftl.hs.render.HsEventButtons.layout(game, nextPos.x, game.currentBeacon?.hasStore == true) else null
+        hsEventButtonsVersion = xyz.znix.xftl.hs.render.HsEventButtons.version
+        hsEventHideSig = if (hsButtons != null) xyz.znix.xftl.hs.render.HsEventButtons.hideSignature(game) else 0
+        if (hsButtons != null) nextPos = ConstPoint(hsButtons.shipX, nextPos.y)
+
         val ship = Buttons.ShipButton(nextPos, game) {
             showShipWindow(ShipWindow.Tab.UPGRADES)
         }.apply { renderScale = buttonScale }
@@ -734,11 +1084,17 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         nextPos += ConstPoint(step(60, 17), 0)
 
         if (game.currentBeacon?.hasStore == true) {
+            if (hsButtons != null) nextPos = ConstPoint(hsButtons.storeX, nextPos.y)
             val store = Buttons.StoreButton(nextPos, game) {
                 showStoreWindow()
             }.apply { renderScale = buttonScale }
             nextPos += ConstPoint(step(88, 17), 0)
             buttons += store
+        }
+        if (hsButtons != null) {
+            nextPos = ConstPoint(hsButtons.optionsX, nextPos.y)
+            for ((def, at) in hsButtons.positions)
+                buttons += xyz.znix.xftl.hs.render.HsEventButtons.button(game, def, at) { !ship.disabled }
         }
 
         val settings = SimpleButton(
@@ -798,13 +1154,15 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     }
 
     fun mouseClick(button: Int, x: Int, y: Int, playerShipPosition: IPoint) {
+        // Hyperspace More Info button (CommandGui::LButtonDown hook; it does not take the click from the rest)
+        if (HS.active && button == Input.MOUSE_LEFT_BUTTON) xyz.znix.xftl.hs.render.HsMoreInfo.click(game)
         pauseWindow?.let { win ->
             win.mouseClick(button, x, y)
             return
         }
 
         currentWindow?.let { win ->
-            win.mouseClick(button, x, y)
+            if (!arrivalHidden) win.mouseClick(button, x, y)
             return
         }
 
@@ -826,6 +1184,18 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         if (popupClick(button, x, y))
             return
 
+        // CrewControl::LButton: CommandGui::LButtonDown reaches it past the focus windows and
+        // the top bar's buttons, ahead of the system and weapon bars, unless a teleport, mind control, hacking or weapon
+        // target is being picked
+        if (button == Input.MOUSE_LEFT_BUTTON && HS.active && game.clickEvent == null && buttons.none { it.contains(x, y) }) {
+            val w = screenToShipRender(x, y, playerShipPosition)
+            hsFirstMouse.x = x; hsFirstMouse.y = y
+            hsCurrentMouse.x = x; hsCurrentMouse.y = y
+            hsWorldFirstMouse.x = w.x; hsWorldFirstMouse.y = w.y
+        }
+
+        if (button == Input.MOUSE_RIGHT_BUTTON) hsCrewDragStart(x, y)
+
         // ArmamentControl's press (0x56ef40): only a filled weapon or drone slot can be dragged.
         if (button == Input.MOUSE_LEFT_BUTTON) {
             val slot = armamentButtonAt(x, y)
@@ -837,6 +1207,14 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 weaponDragMoved = false
                 return
             }
+        }
+
+        // Hyperspace SystemBox::MouseClick hook: SystemControl hands every left click to every box, hovered or not
+        // (oracle sweep-world-ex1: the example absorber's callback sees the click on a room); SYSTEM_BOX_MOUSE_CLICK
+        // runs for each box, a pre-empting callback cancels that box's own click.
+        if (HS.luaActive && button == Input.MOUSE_LEFT_BUTTON) {
+            val shift = isShiftDown()
+            for (btn in systemsBarButtons) if (btn is SystemPowerButton) btn.hsClickPreempted = btn.hsMouseClick(shift)
         }
 
         // System-strip buttons are in the scaled bar space on touch; hit
@@ -860,8 +1238,16 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             if (btn.mouseDown(button, x, y)) return
         }
 
-        // Check if we're clicking on a door
-        if (button == Input.MOUSE_LEFT_BUTTON) {
+        // Hyperspace crew power buttons (CrewBox::MouseClick, before the crew selection).
+        if (button == Input.MOUSE_LEFT_BUTTON && xyz.znix.xftl.hs.HS.active && hsPowerButtonClick(x, y)) return
+
+        // Check if we're clicking on a door. CrewControl::RButton (0x502b10) toggles the selected door on a right
+        // click too (when the doors work) and then orders no crew. A door is only selected while no crew is
+        // (native capture wp3-rclick: with a crew member selected the right click orders it to the room instead).
+        // Hyperspace's rightClickDoorOpening off drops the door first (TileBasedCrewMovement.cpp).
+        if (button == Input.MOUSE_LEFT_BUTTON || (button == Input.MOUSE_RIGHT_BUTTON && selectedCrew.isEmpty() &&
+                xyz.znix.xftl.hs.crew.HsTileMovement.rightClickOpensDoors())
+        ) {
             val doorPos = screenToShipRender(x, y, playerShipPosition)
             for (door in ship.doors) {
                 val hit = door.click(doorPos.x, doorPos.y)
@@ -869,6 +1255,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                     return
             }
         }
+
+        // Hyperspace background objects (the CombatControl::MouseClick hook)
+        if (HS.active && button == Input.MOUSE_LEFT_BUTTON)
+            xyz.znix.xftl.hs.render.HsBackgroundObjects.mouseClick(game, x, y, playerShipPosition)
 
         // Select players
         if (button == Input.MOUSE_LEFT_BUTTON) {
@@ -886,16 +1276,21 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 continue
 
             if (button == Input.MOUSE_RIGHT_BUTTON) {
+                // Hyperspace alternateCrewMovement: the tile step runs before the room order.
+                if (xyz.znix.xftl.hs.crew.HsTileMovement.enabled())
+                    xyz.znix.xftl.hs.crew.HsTileMovement.rButton(ship, room, roomPoint - room.position, selectedCrew)
+
                 for (crew in selectedCrew) {
                     // Skip mind-controlled crew that remained selected.
-                    if (!crew.playerControllable)
+                    if (!crew.canBeOrderedToMove)
                         continue
 
                     // Exclude crew that are boarding an enemy ship, as
                     // this could cause a crash.
                     if (crew.room.ship == ship)
-                        crew.setTargetRoom(room)
+                        crew.commandMoveRoom(room)
                 }
+                if (HS.active) xyz.znix.xftl.hs.crew.HsCustomTeleport.rButton(ship, room, if (xyz.znix.xftl.hs.crew.HsTileMovement.enabled()) room.pointToSlot(roomPoint - room.position) else -1, selectedCrew)
 
                 return
             }
@@ -903,6 +1298,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     }
 
     fun mouseUp(button: Int, x: Int, y: Int, playerShipPosition: IPoint) {
+        // Hyperspace CApp::OnRButtonUp -> SystemControl::RButtonUp (Input.cpp): the clone queue drops what it carries.
+        if (HS.active && button == Input.MOUSE_RIGHT_BUTTON) xyz.znix.xftl.hs.crew.HsCloneQueue.rButtonUp(ship)
+        if (button == Input.MOUSE_RIGHT_BUTTON) hsCrewDragging = null
         weaponDragSource?.let {
             if (button != Input.MOUSE_LEFT_BUTTON) return@let
             updateArmamentDrag(x, y)
@@ -924,7 +1322,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         currentWindow?.let { win ->
-            win.mouseReleased(button, x, y)
+            if (!arrivalHidden) win.mouseReleased(button, x, y)
             return
         }
 
@@ -996,7 +1394,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
                 // Crew boarding the enemy ship can't walk home.
                 if (crew.room.ship == ship)
-                    crew.setTargetRoom(room)
+                    crew.commandMoveRoom(room)
             }
 
             return true
@@ -1021,9 +1419,146 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         currentWindow?.let { win ->
-            win.mouseScroll(change)
+            if (!arrivalHidden) win.mouseScroll(change)
             return
         }
+
+        // CustomCommandGui::OnScrollWheel: the wheel turns the crew list page (down = next).
+        if (xyz.znix.xftl.hs.HS.active) {
+            val page = hsCrewPageNow()
+            val next = if (change < 0) page + 1 else if (change > 0) page - 1 else page
+            if (next in 0..hsCrewMaxPage() && next != page) {
+                hsCrewPage = next
+                updateButtons()
+            }
+        }
+    }
+
+    // ---- Hyperspace crew list paging (CustomCommandGui.cpp: CrewControl::UpdateCrewBoxes, OnRender, MouseMove, LButtonDown)
+
+    private var hsCrewPage = 0
+    private var lastCrewPage = 0
+
+    /**
+     * The crew the list shows (CrewControl::UpdateCrewBoxes hook): the player's crew in CrewMemberFactory order, then, while
+     * the player has MIND_ORDER, the enemy crew under the player's mind control (SetMindControl moves them to the factory's
+     * end). A right-drag reorder ([hsCrewOrder], MoveCrewMemberToSpot) keeps its order; crew that are new to the list come
+     * last, as the factory appends them. Vanilla: the player's crew as they are.
+     */
+    private fun hsBoxCrew(): List<LivingCrew> {
+        val own = game.playerCrew
+        if (!xyz.znix.xftl.hs.HS.active) return own
+        val all = ArrayList<LivingCrew>(own)
+        if (game.player?.hasAugment("MIND_ORDER") == true) {
+            for (s in listOfNotNull(game.player, game.enemy)) for (c in s.crew) {
+                if (c is LivingCrew && c.isMindControlled && c.health > 0f && c !in all &&
+                    xyz.znix.xftl.hs.crew.HsCrew.shipId(c) == 1) all += c
+            }
+        }
+        if (hsCrewOrder.isEmpty()) return all
+        hsCrewOrder.retainAll(all.toSet())
+        val known = hsCrewOrder.toSet()
+        return hsCrewOrder + all.filter { it !in known }
+    }
+
+    /** Some of the listed crew are enemies under the player's mind control (the ninth box). */
+    private fun hsHasMindCrew(list: List<LivingCrew>): Boolean = list.any { it.ownerShip !== game.player }
+
+    /** Eight boxes per page, nine on one page when a mind-controlled enemy makes the ninth; vanilla shows them all. */
+    private fun hsCrewMaxPage(): Int {
+        if (!xyz.znix.xftl.hs.HS.active) return 0
+        val list = hsBoxCrew()
+        if (hsHasMindCrew(list) && list.size <= 9) return 0
+        return (list.size - 1).coerceAtLeast(0) / HS_CREW_PAGE
+    }
+
+    private fun hsCrewPageNow(): Int {
+        hsCrewPage = hsCrewPage.coerceIn(0, hsCrewMaxPage())
+        return hsCrewPage
+    }
+
+    private fun hsVisibleCrew(): List<LivingCrew> {
+        val all = hsBoxCrew()
+        if (!xyz.znix.xftl.hs.HS.active) return all
+        val boxes = if (hsHasMindCrew(all) && all.size <= 9) 9 else HS_CREW_PAGE
+        return all.drop(hsCrewPageNow() * HS_CREW_PAGE).take(boxes)
+    }
+
+    /** The box position of [crew] on screen, or -1 when it is not in the visible page. */
+    private fun crewSlot(crew: AbstractCrew): Int {
+        if (!xyz.znix.xftl.hs.HS.active) return game.playerCrew.indexOf(crew)
+        return hsVisibleCrew().indexOf(crew)
+    }
+
+    private inner class CrewPageButton(private val base: String, pos: ConstPoint, private val down: Boolean) :
+        Button(game, pos, ConstPoint(game.getImg("${base}_on.png").width, game.getImg("${base}_on.png").height)) {
+        override val makesHoverNoise: Boolean get() = true
+
+        private fun applies() = if (down) hsCrewPageNow() < hsCrewMaxPage() else hsCrewPageNow() > 0
+
+        private val tooltip = object : StandardTooltip(game) {
+            override fun getText(): String = game.translator[if (down) "tooltip_crew_page_down" else "tooltip_crew_page_up"]
+        }
+
+        override fun contains(x: Int, y: Int): Boolean = applies() && super.contains(x, y)
+
+        override fun draw(g: Graphics) {
+            if (!applies()) return
+            game.getImg("${base}_${if (hovered) "select2" else "on"}.png").draw(pos.x, pos.y)
+            if (hovered) g.tooltip = tooltip
+        }
+
+        override fun click(button: Int) {
+            if (button != Input.MOUSE_LEFT_BUTTON || !applies()) return
+            hsCrewPage = hsCrewPageNow() + if (down) 1 else -1
+            updateButtons()
+        }
+    }
+
+    // ---- Hyperspace crew list reorder (CustomCommandGui.cpp: CrewControl::RButton / MouseMove, CApp::OnRButtonUp)
+
+    /** The crew member a right press picked up in the crew list; the box follows the mouse until the button comes up. */
+    private var hsCrewDragging: LivingCrew? = null
+
+    /** The list order after a right-drag reorder (CrewMemberFactory::crewMembers as MoveCrewMemberToSpot left it). */
+    private val hsCrewOrder = ArrayList<LivingCrew>()
+
+    /** CrewControl::RButton hook: a right press on a crew box (strict on every edge) picks that crew member up. */
+    private fun hsCrewDragStart(x: Int, y: Int) {
+        if (!xyz.znix.xftl.hs.HS.active) return
+        for ((index, crew) in hsVisibleCrew().withIndex()) {
+            val boxY = crewBaseY + index * CREW_BOX_SPACING
+            if (x > crewX && y > boxY && x < crewX + CREW_BOX_WIDTH && y < boxY + CREW_BOX_HEIGHT) hsCrewDragging = crew
+        }
+    }
+
+    /**
+     * CrewControl::MouseMove hook: the dragged crew member takes the place of the box under the mouse.
+     * CrewMemberFactory::MoveCrewMemberToSpot (CustomCrewManifest.cpp): the range between the two rotates by one, so the
+     * dragged member lands at the other's index and the ones between shift towards its old place.
+     */
+    private fun hsCrewDragUpdate(mouseX: Int, mouseY: Int) {
+        val dragging = hsCrewDragging ?: return
+        val visible = hsVisibleCrew()
+        if (visible.isEmpty() || game.input?.isMouseButtonDown(Input.MOUSE_RIGHT_BUTTON) != true) { hsCrewDragging = null; return }
+        // (mY - 155) / 30 truncates towards zero, then clamps to the boxes
+        val index = ((mouseY - crewBaseY) / CREW_BOX_SPACING).coerceIn(0, visible.size - 1)
+        val target = visible[index]
+        if (target === dragging) return
+        val all = ArrayList(hsBoxCrew())
+        val from = all.indexOf(dragging)
+        val to = all.indexOf(target)
+        if (from < 0 || to < 0) return
+        all.removeAt(from)
+        all.add(to, dragging)
+        hsCrewOrder.clear()
+        hsCrewOrder.addAll(all)
+    }
+
+    private fun hsCrewPageButtons() {
+        if (hsCrewMaxPage() == 0) return
+        buttons += CrewPageButton("img/statusUI/button_crew_down", ConstPoint(39, 140), true)
+        buttons += CrewPageButton("img/statusUI/button_crew_up", ConstPoint(55, 140), false)
     }
 
     fun crewScreenPos(crew: AbstractCrew, playerShipPosition: IPoint): IPoint {
@@ -1045,12 +1580,23 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
     fun isCrewHovered(crew: AbstractCrew, mouseX: Int, mouseY: Int, crewPos: IPoint): Boolean {
         // Check if the crewmember's box is being hovered
-        val index = game.playerCrew.indexOf(crew)
+        val index = crewSlot(crew)
         if (index != -1) {
             val boxY = crewBaseY + index * CREW_BOX_SPACING
             if (mouseX in crewX..crewX + CREW_BOX_WIDTH && mouseY in boxY..boxY + CREW_BOX_HEIGHT) {
                 skillsHoveredCrew = crew
                 return true
+            }
+            // Hyperspace power boxes stay expanded while the mouse is on their skill panel, where the power
+            // buttons are (not verified against the original's CrewBox::GetSelected).
+            if (xyz.znix.xftl.hs.HS.active && crew === hsLastSkillsHovered) {
+                val l = xyz.znix.xftl.hs.crew.HsCrewUi.layout(crew, crewX, boxY, CREW_BOX_HEIGHT)
+                if (l != null && l.buttons.isNotEmpty() && mouseX in crewX + CREW_BOX_WIDTH - 2 until crewX + CREW_BOX_WIDTH + 83 &&
+                    mouseY in boxY until boxY + 146 + l.skillOffset
+                ) {
+                    skillsHoveredCrew = crew
+                    return true
+                }
             }
         }
 
@@ -1060,18 +1606,41 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     }
 
     // Called by SlickGame, used for controlling boarders.
-    fun enemyRoomRightClicked(room: Room, enemyShip: Ship) {
+    fun enemyRoomRightClicked(room: Room, enemyShip: Ship) = enemyRoomRightClicked(room, enemyShip, null)
+
+    /** [tile]: the clicked cell of [room], for Hyperspace's tile movement (null: room order only). */
+    fun enemyRoomRightClicked(room: Room, enemyShip: Ship, tile: IPoint?) {
+        if (tile != null && xyz.znix.xftl.hs.crew.HsTileMovement.enabled())
+            xyz.znix.xftl.hs.crew.HsTileMovement.rButton(enemyShip, room, tile, selectedCrew)
+
         for (crew in selectedCrew) {
             // Skip mind-controlled crew that remained selected.
-            if (!crew.playerControllable)
+            if (!crew.canBeOrderedToMove)
                 continue
 
             if (crew.room.ship == enemyShip)
-                crew.setTargetRoom(room)
+                crew.commandMoveRoom(room)
         }
+        if (HS.active) xyz.znix.xftl.hs.crew.HsCustomTeleport.rButton(enemyShip, room, if (tile != null && xyz.znix.xftl.hs.crew.HsTileMovement.enabled()) room.pointToSlot(tile) else -1, selectedCrew)
     }
 
     fun weaponHotkeyPressed(id: Int, shiftPressed: Boolean, ctrlPressed: Boolean = false) {
+        if (pauseWindow != null || currentWindow != null || ship.weapons == null) return
+        // HS InternalEvents.cpp wraps SelectArmament, while Shift uses DeselectArmament.
+        if (shiftPressed || !xyz.znix.xftl.hs.HS.active) {
+            selectWeaponArmament(id, shiftPressed, ctrlPressed)
+            return
+        }
+        val slot = xyz.znix.xftl.hs.weapons.HsWeaponHooks.selectArmamentPre(id) ?: return
+        if (ship.hardpoints.getOrNull(slot)?.weapon == null) return
+        try {
+            selectWeaponArmament(slot, false, ctrlPressed)
+        } finally {
+            xyz.znix.xftl.hs.weapons.HsWeaponHooks.selectArmamentPost(slot)
+        }
+    }
+
+    private fun selectWeaponArmament(id: Int, shiftPressed: Boolean, ctrlPressed: Boolean) {
         if (pauseWindow != null) return
 
         if (currentWindow != null) return
@@ -1091,6 +1660,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         if (shiftPressed) {
             // Holding shift turns a weapon off
             if (weapon.isPowered && weapons.setWeaponPower(weapon, false)) {
+                weapon.hsUserPowered = false
                 powerDownSound.play()
             }
             return
@@ -1099,17 +1669,29 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         if (!weapon.isPowered) {
             // A weapon without missiles is accepted by the power manager but switched straight back off.
             if (weapons.setWeaponPower(weapon, true) && weapon.isPowered) {
+                weapon.hsUserPowered = true
                 powerUpSound.play()
             } else {
                 powerUpFailSound.play()
                 if (!weapon.hasEnoughMissiles) {
                     noMissilesWarning.startFor(WARNING_TIME)
                 } else {
-                    val required = weapon.type.power - weapons.powerManager.getForcedPower(id)
+                    val required = weapon.hsRequiredPower - weapons.powerManager.getForcedPower(id)
                     armamentPowerFailed(weapons, required, weaponPowerWarning)
                 }
             }
             return
+        }
+
+        // Hyperspace WeaponControl::SelectArmament: a powered weapon past its <shotLimit> shows the warning instead.
+        if (shotLimitWarning != null) {
+            shotLimitWarning.stop()
+            if (xyz.znix.xftl.hs.weapons.HsWeapons.hitShotLimit(weapon)) {
+                shotLimitWarning.startFor(WARNING_TIME)
+                noMissilesWarning.stop()
+                weaponPowerWarning.stop()
+                return
+            }
         }
 
         weapons.selectedTargets.unTarget(id)
@@ -1128,10 +1710,20 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             }
 
             // Desktop FTL applies the modifier when the aim is assigned.
-            weapon.autofireOverride = if (ctrlPressed || isCtrlDown()) !weapons.autofire else null
+            weapon.autofireOverride = if (targetingModifier || isCtrlDown()) !weapons.autofire else null
 
             if (weapon is IRoomTargetingWeapon) {
                 weapons.selectedTargets.targetRoom(id, room)
+            } else if (weapon is BeamBlueprint.BeamInstance && xyz.znix.xftl.hs.HS.active &&
+                xyz.znix.xftl.hs.weapons.HsWeapons.isPinpoint(weapon.type)) {
+                // Hyperspace pinpoint beam: one click aims it (NumTargetsRequired 1); Fire snaps the point to the
+                // clicked tile of the enemy ship, or a random slot of a room of the own ship.
+                val mousePos = ConstPoint(gc.input.mouseX, gc.input.mouseY)
+                val shipPos = Point(mousePos.x, mousePos.y)
+                game.convertScreenToEnemyShip(shipPos)
+                val click = if (room.ship == game.enemy) shipPos else null
+                beamTargeting = xyz.znix.xftl.hs.weapons.HsWeapons.pinpointAim(weapon, room, id, click)
+                targetBeamWeapon()
             } else if (weapon is BeamBlueprint.BeamInstance) {
                 val mousePos = ConstPoint(gc.input.mouseX, gc.input.mouseY)
                 val shipPos = Point(mousePos.x, mousePos.y)
@@ -1154,6 +1746,61 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         selectWeaponClickEvent = null
         beamTargeting = null
         game.clickEvent = null
+    }
+
+    /** The artillery whose beam the player is drawing (Hyperspace targetable artillery). */
+    private var hsArtilleryBeam: Artillery? = null
+
+    /**
+     * Hyperspace CombatControl::ArmArtillery: ClearAiming, then the artillery is the armed weapon (armed slot -1)
+     * and the next room click aims it as WeaponControl aims a weapon.
+     */
+    fun hsArmArtillery(art: Artillery) {
+        if (pauseWindow != null || currentWindow != null) return
+        beamTargeting = null
+        hsArtilleryBeam = null
+        targetingSelectedWeapon = null
+        xyz.znix.xftl.hs.systems.HsArtillery.clearAim(art)
+        game.clickEvent = HsArtilleryRoomListener(art)
+    }
+
+    /** The armed artillery (ArtilleryBox's button shows selected), if any. */
+    fun hsArmedArtillery(): Artillery? =
+        (game.clickEvent as? HsArtilleryRoomListener)?.art ?: hsArtilleryBeam?.takeIf { beamTargeting != null }
+
+    private inner class HsArtilleryRoomListener(val art: Artillery) : RoomClickCursor {
+        override fun roomClicked(room: Room, gc: GameContainer) {
+            if (room.ship != ship && room.ship != game.getEnemyOf(ship)) return
+            val weapon = art.browserWeapon
+            if (room.ship == ship && !weapon.canTargetOwnShip) return
+
+            if (weapon is IRoomTargetingWeapon) {
+                xyz.znix.xftl.hs.systems.HsArtillery.setAim(art, SelectedTarget.RoomAim(room, weapon, -1))
+            } else if (weapon is BeamBlueprint.BeamInstance && xyz.znix.xftl.hs.weapons.HsWeapons.isPinpoint(weapon.type)) {
+                val shipPos = Point(gc.input.mouseX, gc.input.mouseY)
+                game.convertScreenToEnemyShip(shipPos)
+                val click = if (room.ship == game.enemy) shipPos else null
+                xyz.znix.xftl.hs.systems.HsArtillery.setAim(art, xyz.znix.xftl.hs.weapons.HsWeapons.pinpointAim(weapon, room, -1, click))
+            } else if (weapon is BeamBlueprint.BeamInstance) {
+                val enemy = game.enemy ?: return
+                val mousePos = ConstPoint(gc.input.mouseX, gc.input.mouseY)
+                val shipPos = Point(mousePos.x, mousePos.y)
+                game.convertScreenToEnemyShip(shipPos)
+                beamTargeting = SelectedTarget.BeamAim(weapon, -1, enemy, shipPos)
+                beamTargetingStartPos.set(mousePos)
+                hsArtilleryBeam = art
+            }
+        }
+
+        override fun getCursor(): Cursor {
+            val room = game.hoveredRoom
+            val valid = room != null && (room.ship != ship || art.browserWeapon.canTargetOwnShip)
+            return game.getCursor(when {
+                valid -> "img/mouse/mouse_crosshairs.png"
+                xyz.znix.xftl.hs.systems.HsArtillery.autofire(ship) -> "img/mouse/mouse_crosshairs_valid2.png"
+                else -> "img/mouse/mouse_crosshairs_valid.png"
+            })
+        }
     }
 
     /** Desktop global autofire changes immediately; enabling it clears pending aim selection. */
@@ -1199,23 +1846,54 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         changeDronePower(slot, !powerDown)
     }
 
+    /** DroneControl::SelectArmament / DeselectArmament from Lua: the drone box click (toggle) and power-off. */
+    fun luaSelectDrone(index: Int) {
+        val slot = luaDroneBoxSlot(index) ?: return
+        changeDronePower(slot, ship.drones?.drones?.get(slot)?.powered != true)
+    }
+
+    fun luaDeselectDrone(index: Int) {
+        val slot = luaDroneBoxSlot(index) ?: return
+        changeDronePower(slot, false)
+    }
+
+    /** The drone system slot of the drone in DroneControl's box [index] ([hsDroneBoxes]), if it is still on the ship. */
+    private fun luaDroneBoxSlot(index: Int): Int? {
+        val drones = ship.drones ?: return null
+        val info = hsDroneBoxes.getOrNull(index) ?: return null
+        return drones.drones.indexOfFirst { it === info }.takeIf { it >= 0 }
+    }
+
     private fun changeDronePower(slot: Int, powered: Boolean) {
         val drones = ship.drones ?: return
         val info = drones.drones.getOrNull(slot) ?: return
-        if (drones.isHackActive && info.instance != null) return
-        val wasPowered = info.instance?.isPowered == true
-        val accepted = drones.setDronePower(slot, powered)
-        val nowPowered = info.instance?.isPowered == true
-        when {
-            wasPowered && !nowPowered -> powerDownSound.play()
-            !wasPowered && nowPowered -> powerUpSound.play()
-            !wasPowered && powered -> {
-                powerUpFailSound.play()
-                dronePowerFailed(drones, slot, info)
+        try {
+            if (drones.isHackActive && info.instance != null) return
+            val wasPowered = info.instance?.isPowered == true
+            val accepted = drones.setDronePower(slot, powered)
+            if (accepted) drones.hsUserPowered[slot] = powered
+            val nowPowered = info.instance?.isPowered == true
+            when {
+                wasPowered && !nowPowered -> powerDownSound.play()
+                !wasPowered && nowPowered -> powerUpSound.play()
+                !wasPowered && powered -> {
+                    powerUpFailSound.play()
+                    dronePowerFailed(drones, slot, info)
+                }
             }
+            ftl.browser.BrowserDebug.record("drone", "power.request",
+                "{\"slot\":$slot,\"type\":${ftl.browser.BrowserDebug.quote(info.type.name)},\"requested\":$powered,\"accepted\":$accepted,\"powered\":$nowPowered}")
+        } finally {
+            if (powered && xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsDroneControls.afterSelect(this, info)
         }
-        ftl.browser.BrowserDebug.record("drone", "power.request",
-            "{\"slot\":$slot,\"type\":${ftl.browser.BrowserDebug.quote(info.type.name)},\"requested\":$powered,\"accepted\":$accepted,\"powered\":$nowPowered}")
+    }
+
+    /** CrewControl::SelectPotentialCrew(false), then SelectCrew(false), native 1.6.9 0x4f2b90/0x4f2250. */
+    fun hsSelectDroneCrew(pawn: xyz.znix.xftl.drones.AbstractIndoorsDrone.Pawn) {
+        if (pawn.playerControllable && pawn.currentAction != AbstractCrew.Action.TELEPORTING && pawn !in hoveredCrew)
+            hoveredCrew += pawn
+        selectedCrew.clear()
+        selectedCrew += hoveredCrew
     }
 
     fun systemPowerHotkeyPressed(type: Class<*>, powerUp: Boolean) {
@@ -1269,6 +1947,14 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         val beam = beamTargeting ?: error("Called targetBeamWeapon without beam")
         beamTargeting = null
 
+        // Hyperspace targetable artillery: the drawn beam becomes the artillery's aim.
+        val hsArt = hsArtilleryBeam
+        hsArtilleryBeam = null
+        if (hsArt != null && beam.weapon === hsArt.browserWeapon) {
+            xyz.znix.xftl.hs.systems.HsArtillery.setAim(hsArt, beam)
+            return
+        }
+
         val weaponIndex = ship.hardpoints.indexOfFirst { it.weapon == beam.weapon }
         val weapons = ship.weapons!!
         beam.weapon.autofireOverride = if (targetingModifier || isCtrlDown()) !weapons.autofire else null
@@ -1284,6 +1970,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     fun updateAlways(dt: Float) {
         // Always called, whether or not the player is paused.
         // This is therefore only to be used for UI stuff.
+        touch?.update(dt)
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.systems.HsSystemBox.playerFrame(game)
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.systems.HsSystemBox.enemyFrame(game)
+        if (HS.luaActive) hsDroneBoxes = ship.drones?.drones?.filterNotNull() ?: emptyList()
         doorCursorTime += dt
         (currentWindow as? DialogueWindow)?.updateChoiceClock(dt)
         tutorialVisuals?.let { visuals ->
@@ -1314,13 +2004,28 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         width = gc.width
         height = gc.height
 
+        touch?.let {
+            prepareResourceMessages()
+            it.render(gc, g)
+            val sceneTint = Graphics.tint
+            Graphics.tint = statusTint
+            g.pushTransform()
+            g.translate(TouchMode.hudX.f, 0f)
+            for (anim in resourceDeltaAnimations) anim.draw(g)
+            g.popTransform()
+            Graphics.tint = sceneTint
+            if (currentWindow == null && game.playerHasTooManyCrew()) showShipWindow(ShipWindow.Tab.CREW, true)
+            return
+        }
+
         // Update the buttons if crew have been added or removed, as this
         // moves around the save/load position buttons.
         // We have to do this here since we can't safely call updateButtons
         // mid-way through drawing.
-        if (lastCrewCount != game.playerCrew.size) {
+        if (lastCrewCount != hsBoxCrew().size || lastCrewPage != hsCrewPageNow()) {
             updateButtons()
-            lastCrewCount = game.playerCrew.size
+            lastCrewCount = hsBoxCrew().size
+            lastCrewPage = hsCrewPageNow()
         }
 
         // The subsystems panel pops responsively (flush left vs right of
@@ -1336,7 +2041,13 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             updateButtons()
         }
 
-        drawTopBar(g)
+        // Hyperspace SHIP_STATUS render event around ShipStatus::OnRender
+        val luaStatus = if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP_STATUS) else 0
+        if (luaStatus >= 0) drawTopBar(g)
+        if (HS.active) xyz.znix.xftl.hs.render.HsMoreInfo.render(game, g)
+        // Hyperspace TriggeredEvents.cpp: ShipStatus::OnRender hook (triggered event boxes and warnings)
+        if (HS.active) xyz.znix.xftl.hs.events.HsTriggeredGui.render(game, g, gc.input.mouseX, gc.input.mouseY)
+        if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP_STATUS, luaStatus)
 
         // The systems strip draws in its own coordinate space, anchored to
         // the bottom-left, scaled up on touch so its buttons are easier to
@@ -1389,6 +2100,13 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // when they're updated.
         for (button in buttons) {
             val s = button.renderScale
+            if (HS.luaActive && button is Buttons.JumpButton) {
+                // Hyperspace FTL_BUTTON render event around FTLButton::OnRender
+                val luaFtl = xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_FTL_BUTTON)
+                if (luaFtl >= 0) drawButton(g, button, s)
+                xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_FTL_BUTTON, luaFtl)
+                continue
+            }
             if (s == 1f) {
                 button.draw(g)
                 continue
@@ -1405,7 +2123,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             g.popTransform()
         }
 
-        drawSpaceStatus(g)
+        // Hyperspace SPACE_STATUS render event around SpaceStatus::OnRender
+        val luaSpace = if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_SPACE_STATUS) else 0
+        if (luaSpace >= 0) drawSpaceStatus(g)
+        if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_SPACE_STATUS, luaSpace)
         if (g.tooltip == null && currentWindow == null && crewSelectionRectangle == null)
             crewTooltip.show(g)
         inDangerWarning.draw(g)
@@ -1428,11 +2149,16 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
     }
 
+    /** RenderReactorBar.cpp displayLevel: how many reactor bars show (27 and a "+N" text above 29 bars). */
+    private fun hsReactorDisplayLevel(maxPower: Int) = if (maxPower > 29) 27 else 29
+
     private fun drawSystems(g: Graphics) {
         // The power tree's wire goes under its energy bars, which are drawn after it.
         var totalPower = ship.purchasedReactorPower
         ship.backupBattery?.let { totalPower += it.contributedPower }
-        val fullPowerHeight = (totalPower - 1) * 9
+        // Hyperspace (RenderReactorBar.cpp): the mask stops at displayLevel (27 above 29 bars, else 29)
+        val maskedPower = if (xyz.znix.xftl.hs.HS.active) minOf(totalPower, hsReactorDisplayLevel(totalPower)) else totalPower
+        val fullPowerHeight = (maskedPower - 1) * 9
         val availablePowerHeight = (ship.powerAvailable - 1) * 9
 
         val powerTreeX = 86 - 53
@@ -1509,19 +2235,36 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 systemsBarButtons += system.makeExtraButtons(powerPos)
             }
 
-            powerX += when {
-                system is Weapons -> 48 + ship.weaponSlots!! * 97
-                system is Drones -> 48 + ship.droneSlots!! * 97
-                system.insertButtonSpace -> 54
-                else -> 36
-            }
+            powerX += systemBoxAdvance(system)
 
             // Don't draw the bar under the last item - since each item draws the
             // wire to the next item, this would result in a wire sticking out.
             if (i == ship.mainSystems.size - 1)
                 continue
+            // Hyperspace's SystemControl::RenderPowerBar draws the system wires only with more than seven system
+            // boxes (main systems and subsystems; oracle r2-ships: the Sylvan's seven boxes have none).
+            if (xyz.znix.xftl.hs.HS.active && ship.mainSystems.size + ship.subSystems.size <= 7)
+                continue
 
             val lastSystem = i == ship.mainSystems.size - 2
+            // The wire is part of the box: a script's SystemBox.location moves it too.
+            val movedBox = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystemBox.existing(system) else null
+            val shownWireX = wireX + (movedBox?.shiftX ?: 0)
+            val shownWireY = wireY + (movedBox?.shiftY ?: 0)
+
+            // Hyperspace RenderPowerBar (RenderReactorBar.cpp): a custom system, a script-set xOffset and the drone
+            // system get the stretched wire_custom (the box step minus the connector) and its connector, the cap before
+            // the last powered box; drawn once, at full alpha while power is spare, else at half
+            if (xyz.znix.xftl.hs.HS.active && (xyz.znix.xftl.ai.nativeSystemId(system) >= xyz.znix.xftl.hs.systems.HsSystems.SYS_CUSTOM_FIRST ||
+                    !xyz.znix.xftl.hs.systems.HsSysExt.of(system).usingDefaultOffset || system is Drones)) {
+                val connector = game.getImgIfExists(if (lastSystem) "img/wireUI/wire_custom_connector_cap.png" else "img/wireUI/wire_custom_connector.png")
+                val wire = game.getImgIfExists("img/wireUI/wire_custom.png")
+                val width = maxOf(0, systemBoxAdvance(system) - (connector?.width ?: 0))
+                val alpha = if (powerIsAvailable) 1f else 0.5f
+                wire?.draw(shownWireX.f, shownWireY.f, width.f, wire.height.f, Colour(1f, 1f, 1f, alpha))
+                connector?.draw((shownWireX + width).f, shownWireY.f, alpha)
+                continue
+            }
 
             val wireWidth = when {
                 // Remember that we'll only run this if this isn't the last system,
@@ -1543,9 +2286,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             }
 
             // The wire does indeed get drawn twice if power is available, the colours match vanilla.
-            image.draw(wireX.f, wireY.f, 0.5f)
+            image.draw(shownWireX.f, shownWireY.f, 0.5f)
             if (powerIsAvailable) {
-                image.draw(wireX.f, wireY.f)
+                image.draw(shownWireX.f, shownWireY.f)
             }
         }
 
@@ -1598,7 +2341,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                     override val tutorialPowerFlashAlpha: Float get() = tutorialVisuals?.weaponAlpha(i) ?: 0f
                     override val empty: Boolean get() = weapon == null
                     override val name: String get() = weapon!!.type.translateShort(game)
-                    override val requiredPower: Int get() = weapon!!.type.power
+                    override val requiredPower: Int get() = weapon!!.hsRequiredPower
                     override val chargeTime: Float get() = weapon!!.chargeTime
                     override val chargeProgress: Float get() = weapon!!.chargeProgress
                     override val zoltanPower: Int get() = ship.weapons!!.getWeaponForcedPower(i)
@@ -1621,6 +2364,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                     }
 
                     override fun draw(g: Graphics) {
+                        // Hyperspace: a script moved ArmamentBox::location.
+                        val moved = xyz.znix.xftl.hs.lua.LuaAdaptersArmament.boxWrites(ship, i)
+                        if (moved != null) { g.pushTransform(); g.translate(moved.dx.f, moved.dy.f) }
                         super.draw(g)
 
                         // WeaponBox::RenderBox1: missile weapons show Missile.png at the box
@@ -1638,6 +2384,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                         if (weapon != null && weapon.type.boost != null) {
                             drawChainIcon()
                         }
+
+                        // Hyperspace <showNumericalWeaponCooldown>: cooldown, boosted damage and shots left above the box.
+                        if (weapon != null && xyz.znix.xftl.hs.weapons.HsCooldownNumbers.enabled())
+                            xyz.znix.xftl.hs.weapons.HsCooldownNumbers.draw(game, g, weapon, i, isTargeted, isTargetAutofire, pos.x, pos.y, size.x)
+                        if (moved != null) g.popTransform()
                     }
 
                     private fun drawChargedShots() {
@@ -1753,9 +2504,15 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
     }
 
+    /** Hyperspace systemPositions subSystemOffset (default 1015) against the vanilla box x. */
+    private fun hsSubSystemShift(): Int = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystems.subSystemOffset() - 1015 else 0
+
+    /** SystemControl::sub_spacing: the extra room the subsystems label asks for ([drawSubSystems]). */
+    private var subSystemSpacing = 0
+
     private fun computeSubSysBox(gc: GameContainer): Pair<Int, Int> {
         if (!PlatformSpecific.INSTANCE.isTouchUi)
-            return Pair(gc.width - 252, gc.height - 47)
+            return Pair(gc.width - 252 + hsSubSystemShift(), gc.height - 47)
 
         val reactorBars = ship.purchasedReactorPower +
                 (ship.backupBattery?.contributedPower ?: 0)
@@ -1764,14 +2521,71 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         return Pair(boxX, boxY)
     }
 
+    /**
+     * Hyperspace SystemControl::OnRender, dynamic subsystem layout: box_subsystems4.png cut around the boxes (at least four
+     * places; missing ones step 36, 36, 51 from the last): the left edge and first pit at x + 7 (38 px), then per box the
+     * stretched column 10 over the gap beyond 26 px and a pit (columns 12..38, 26 px) at x + 19, the last one with the
+     * right edge (columns 135..end, 35 px). [frameX] moves SystemControl's 1280 px frame to the screen.
+     */
+    private fun drawHsSubSystemHolder(box: Image, layout: xyz.znix.xftl.hs.systems.HsSystemBox.Companion.SubLayout, frameX: Int, y: Float) {
+        val gaps = intArrayOf(0, 36, 36, 51)
+        val w = box.width.toFloat()
+        val h = box.height.toFloat()
+        val length = maxOf(4, layout.boxes.size)
+        var prev = layout.origin
+        fun blit(x: Float, sizeX: Float, from: Float, to: Float) = box.draw(x + frameX, y, x + frameX + sizeX, y + h, from, 0f, to, h)
+        for (i in 0 until length) {
+            val xPos = if (i < layout.boxes.size) layout.boxes[i].second else prev + gaps[i.coerceAtMost(3)]
+            if (i == 0) {
+                blit(xPos + 7f, 38f, 0f, 38f)
+            } else {
+                val gap = xPos - prev - 26
+                if (gap > 0) blit(prev + 45f, gap.toFloat(), 10f, 11f)
+                if (i == length - 1) blit(xPos + 19f, 35f, 135f, w) else blit(xPos + 19f, 26f, 12f, 38f)
+            }
+            prev = xPos
+        }
+    }
+
     private fun drawSubSystems(gc: GameContainer) {
         val (boxX, boxY) = computeSubSysBox(gc)
-
-        game.getImg("img/box_subsystems4.png").draw(boxX - 6, boxY - 6)
-
-        // Draw the subsystems label
         val label = game.translator["subsystems_label"]
-        font.drawString(boxX + 7f, boxY + 23f, label, UI_TEXT_COLOUR_1)
+
+        // SystemControl::CreateSystemBoxes: a label wider than 140px in font 62 (measurePrintLines,
+        // rounded) gives sub_spacing = a third of the excess. The box art is then drawn in four pieces with the 1px
+        // columns between its slots (x 43, 79, 122) stretched to sub_spacing + 1, and the i-th subsystem moves
+        // sub_spacing * i to the right.
+        // (the glyph extents, without the last glyph's trailing advance: native ru 155 px gives 5, fr 165 gives 8)
+        val labelWidth = font.getExtentWidth(label)
+        val spacing = if (labelWidth > 140) (labelWidth - 140) / 3 else 0
+        subSystemSpacing = spacing
+        val box = game.getImg("img/box_subsystems4.png")
+        // Hyperspace CreateSystemBoxes / SystemControl::OnRender (CustomSystems.cpp): the subsystem boxes of the ship,
+        // static (every one has a staticOffset) or the dynamic row, which redraws the holder art around them
+        val hsLayout = if (xyz.znix.xftl.hs.HS.active && !PlatformSpecific.INSTANCE.isTouchUi)
+            xyz.znix.xftl.hs.systems.HsSystemBox.subLayout(ship, spacing) else null
+        val frameX = gc.width - 1280
+        if (hsLayout != null && !hsLayout.static) {
+            drawHsSubSystemHolder(box, hsLayout, frameX, (boxY - 6).toFloat())
+        } else if (spacing <= 0) {
+            box.draw(boxX - 6, boxY - 6)
+        } else {
+            var x = (boxX - 6).toFloat()
+            val y = (boxY - 6).toFloat()
+            val h = box.height.toFloat()
+            for ((from, to) in listOf(0 to 43, 43 to 44, 44 to 79, 79 to 80, 80 to 122, 122 to 123, 123 to box.width)) {
+                val w = if (to - from == 1) (spacing + 1).toFloat() else (to - from).toFloat()
+                box.draw(x, y, x + w, y + h, from.toFloat(), 0f, to.toFloat(), h)
+                x += w
+            }
+        }
+
+        // The label is centred on the subsystem position + 87 + sub_spacing * 1.5 (Hyperspace's SystemControl::OnRender
+        // rewrite keeps this: easy_printCenter(62, sub_spacing * 1.5 + 87 + subSystemPosition.x, ...)), in
+        // COLOR_BUTTON_TEXT (25, 49, 51; oracle r2-ships) under Hyperspace.
+        val centreX = if (hsLayout != null) hsLayout.origin + 87f + frameX + spacing * 1.5f else boxX + 74f + spacing * 1.5f
+        font.drawString(NativeFonts.centredStart(centreX - font.getWidth(label) / 2f, 0f), boxY + 23f, label,
+            if (xyz.znix.xftl.hs.HS.active) TEXT_BUTTON_TEXT else UI_TEXT_COLOUR_1)
 
         // Add all the system buttons
         if (!updatingButtons) {
@@ -1787,10 +2601,23 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             buttons += sys.makeExtraButtons(powerPos)
         }
 
-        addSubSys(6, ship.piloting)
-        addSubSys(42, ship.sensors)
-        addSubSys(78, ship.doorsSystem)
-        addSubSys(129, ship.backupBattery)
+        // Hyperspace: each box's icon 19 px in from its SystemControl location (x, 251), the frame 382 px down
+        if (hsLayout != null) {
+            for ((sys, x) in hsLayout.boxes) {
+                val sub = sys as? SubSystem ?: continue
+                val powerPos = ConstPoint(x + 19 + frameX, boxY - 21)
+                buttons += SystemPowerButton(powerPos, sub)
+                buttons += sub.makeExtraButtons(powerPos)
+            }
+            return
+        }
+
+        // Hyperspace systemPositions: staticOffset of each subsystem (defaults 0, 36, 72, 123), from the box + 6
+        fun off(id: Int, vanilla: Int) = 6 + (if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystems.staticOffset(id) ?: (vanilla - 6) else vanilla - 6)
+        addSubSys(off(6, 6), ship.piloting)
+        addSubSys(off(7, 42) + subSystemSpacing, ship.sensors)
+        addSubSys(off(8, 78) + 2 * subSystemSpacing, ship.doorsSystem)
+        addSubSys(off(12, 129) + 3 * subSystemSpacing, ship.backupBattery)
     }
 
     /**
@@ -1809,11 +2636,13 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         var totalPower = ship.purchasedReactorPower
         ship.backupBattery?.let { totalPower += it.contributedPower }
+        val hsCap = if (xyz.znix.xftl.hs.HS.active) hsReactorDisplayLevel(totalPower) else Int.MAX_VALUE
         var nextPowerIdx = 0
         for (type in EnergySource.GLOBAL_TYPES) {
             val available = ship.powerAvailableTypes[type] ?: 0
 
             for (i in 0 until available) {
+                if (nextPowerIdx >= hsCap) break
                 val y = baseY - spacing * nextPowerIdx
                 type.drawReactorPowerBar(g, x, y, 28, barHeight)
 
@@ -1821,7 +2650,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             }
         }
 
-        while (nextPowerIdx < totalPower) {
+        while (nextPowerIdx < totalPower && nextPowerIdx < hsCap) {
             val y = baseY - spacing * nextPowerIdx
 
             // If this power is blocked (eg by an ion storm), show it as blue
@@ -1838,6 +2667,15 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             nextPowerIdx++
         }
 
+        // Hyperspace (RenderReactorBar.cpp): above 29 bars only 27 show, with "+N" for the unused power beyond them (green)
+        // or a white "+", font 62 centred at (26, 48) of the system control frame (oracle wp7r-fix: height - 336 + 48)
+        if (xyz.znix.xftl.hs.HS.active && totalPower > 29) {
+            val unused = ship.powerAvailable - ship.blockedReactorPower
+            val overflow = unused - 27
+            val text = if (overflow > 0) "+$overflow" else "+"
+            val colour = if (overflow > 0) Colour(100, 255, 100) else Colour.white
+            hsReactorFont.printCenter(26f, (height - 336 + 48).toFloat(), text, colour)
+        }
     }
 
     fun renderMenus(container: GameContainer, g: Graphics) {
@@ -1854,7 +2692,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             )
         }
 
-        currentWindow?.let { renderSingleMenu(container, g, it) }
+        currentWindow?.let { if (!arrivalHidden) renderSingleMenu(container, g, it) }
         pauseWindow?.let { renderSingleMenu(container, g, it) }
 
         // The touch UI's room-selection overlay. Uses the iPad port's own
@@ -1960,14 +2798,24 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         g.fillRect(0, 0, width, height)
     }
 
+    /** One HUD button at its touch scale (the loop in [render]). */
+    private fun drawButton(g: Graphics, button: Button, s: Float) {
+        if (s == 1f) { button.draw(g); return }
+        g.pushTransform()
+        g.translate(button.pos.x.f, button.pos.y.f)
+        g.scale(s, s)
+        g.translate(-button.pos.x.f, -button.pos.y.f)
+        button.draw(g)
+        g.popTransform()
+    }
+
     private fun drawTopBar(g: Graphics) {
         val sceneTint = Graphics.tint
         Graphics.tint = statusTint
         val isHullBoxRed = hullWarning25.isFlashingHigh || hullWarning50.isFlashingHigh || hullWarning75.isFlashingHigh
-        val hullBoxImage = when {
-            isHullBoxRed -> game.getImg("img/statusUI/top_hull_red.png")
-            else -> game.getImg("img/statusUI/top_hull.png")
-        }
+        val hullBoxPath = if (isHullBoxRed) "img/statusUI/top_hull_red.png" else "img/statusUI/top_hull.png"
+        // Hyperspace <hullNumbers>: ShipStatus::OnInit loads the boxes with a number field.
+        val hullBoxImage = game.getImg(if (HS.active) HsHullNumbers.imagePath(hullBoxPath) else hullBoxPath)
         hullBoxImage.draw(0f, 0f)
 
         val hullLabelImg = when {
@@ -1977,8 +2825,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         val hullText = game.translator["status_hull"]
         // ShipStatus's hull tab (0x005523a0): a 16px cap, the next column stretched
         // under the label, the 34px ramp, then the last column stretched to x=121,
-        // sized from the label's rounded width; the label is (25,49,51) at (9,9).
-        val textWidth = font.getAdvanceWidth(hullText).f
+        // sized from the label's rounded width (easy_measurePrintLines: the glyph extents, which take in a
+        // Chinese outlined glyph's border); the label is (25,49,51) at (9,9).
+        val textWidth = font.getExtentWidth(hullText).f
         fun slice(left: Float, width: Float, u0: Float, u1: Float) =
             hullLabelImg.draw(left, 0f, left + width, hullLabelImg.height.f, u0, 0f, u1, hullLabelImg.height.f)
         slice(0f, 16f, 0f, 16f)
@@ -1995,15 +2844,22 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         // TODO support ships with more or less health
 
-        val hpW = 12f * ship.health
-        val healthColour = when {
+        var hpW = 12f * ship.health
+        var healthColour = when {
             ship.health < 10 -> SHIP_HEALTH_LOW
             ship.health < 20 -> SHIP_HEALTH_MED
             else -> SHIP_HEALTH_HIGH
         }
+        if (HS.active) {
+            // Hyperspace's ShipStatus::RenderHealth: the bar is the hull fraction of 360 px (MV hulls are not 30),
+            // coloured by fraction under playerHpColorFix.
+            hpW = ship.health.toFloat() / ship.maxHealth.toFloat() * 360f
+            healthColour = HsHullNumbers.playerBarColour(ship.health, ship.maxHealth, healthColour)
+        }
         val mask = game.getImg("img/statusUI/top_hull_bar_mask.png")
         val hpH = mask.height.f
         mask.draw(11f, 0f, 11f + hpW, hpH, 0f, 0f, hpW, hpH, 1f, healthColour)
+        if (HS.active) HsHullNumbers.drawPlayer(game.content, ship.health)
 
         val lastFraction = lastHealth.f / ship.maxHealth
         val newFraction = ship.health.f / ship.maxHealth
@@ -2041,13 +2897,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         game.getImg(scrapPath).draw(374f + 8 - 5, 0f)
         numberFont.drawStringCentred(416f, 35f, 87f, ship.scrap.toString(), UI_SCRAP_TEXT_COLOUR)
 
-        val deltaScrap = ship.scrap - lastResources.scrap
-        if (deltaScrap != 0) {
-            lastResources.scrap = ship.scrap
-            val rdt = ResourceDeltaText(460f, 30f, deltaScrap)
-            rdt.x += VisualRandom.nextInt(-10, 10)
-            resourceDeltaAnimations.add(rdt)
-        }
+        prepareResourceMessages()
 
         if (mousePos.x in 383..505 && mousePos.y in 11..46) {
             g.tooltip = scrapTooltip
@@ -2073,6 +2923,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         if (ship.superShield != 0) {
+            // Hyperspace: augment super shields draw their own bar count and colour (CustomSuperShield.cpp).
+            if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.systems.HsSuperShield.drawPlayerBars(g, ship, shieldY + 34f + 2f)) {
+                // drawn
+            } else {
             // Draw the super-shield bar where the recharge
             // bar would normally go.
             g.colour = SYS_ENERGY_ACTIVE
@@ -2084,6 +2938,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
                 g.fillRect(x.f, shieldY + 34f + 2f, width.f, 6f)
                 x += width + 2
+            }
             }
         } else if (shields != null && shields.rechargeTimer != 0f) {
             // Draw the recharge bar
@@ -2141,7 +2996,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             name: String,
             x: Int,
             numAreaOffset: Int,
-            count: Int, delta: Int,
+            count: Int,
             redThreshold: Int,
             tooltip: ITooltipProvider
         ) {
@@ -2160,11 +3015,6 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             // The resource render (0x00555a40) prints every counter in the scrap colour, low or not.
             numberFont.drawString(areaStart + textInternalX, shieldY + 27f, count.toString(), UI_SCRAP_TEXT_COLOUR)
 
-            if (delta != 0) {
-                val rdt = ResourceDeltaText(x + 40f, 65f, delta)
-                resourceDeltaAnimations.add(rdt)
-            }
-
             if (mousePos.x in x + 7..x + 7 + 59 && mousePos.y in shieldY + 7..shieldY + 7 + 26) {
                 g.tooltip = tooltip
             }
@@ -2173,7 +3023,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         val shieldsEndX = 122
 
         // Draw the environmental hazard imminent warnings (eg 'ion pulse imminent')
-        when (val env = game.currentBeacon.getEnvironment(game)) {
+        for (env in game.currentBeacon.getEnvironment(game).layers) when (env) {
             is SunEnvironment -> {
                 if (env.showWarning)
                     sunWarning.draw(g)
@@ -2190,27 +3040,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             }
         }
 
-        val deltaFuel = ship.fuelCount - lastResources.fuel
-        val deltaMissiles = ship.missilesCount - lastResources.missiles
-        val deltaDrones = ship.dronesCount - lastResources.droneParts
-        lastResources.fuel = ship.fuelCount
-        lastResources.missiles = ship.missilesCount
-        lastResources.droneParts = ship.dronesCount
-
-        // Fuel shows as red when there's three or less left.
-        drawSmallCounter("fuel", shieldsEndX, 0, ship.fuelCount, deltaFuel, 3, fuelTooltip)
-
-        // Missiles only show as red when there's none left.
-        // Explosive Replicator procs queue a vanilla-style '0' flash
-        // (a consumed volley flashes its '-N' cost via the delta below).
-        while (ship.replicatorProcPopups > 0) {
-            ship.replicatorProcPopups--
-            resourceDeltaAnimations.add(ResourceDeltaText(shieldsEndX + 66f + 40f, 65f, 0))
-        }
-        drawSmallCounter("missiles", shieldsEndX + 66, 1, ship.missilesCount, deltaMissiles, 0, missileTooltip)
-
-        // Same for drones.
-        drawSmallCounter("drones", shieldsEndX + 66 + 70, -2, ship.dronesCount, deltaDrones, 0, droneTooltip)
+        // Fuel shows as red when there's three or less left; missiles/drones when empty.
+        drawSmallCounter("fuel", shieldsEndX, 0, ship.fuelCount, 3, fuelTooltip)
+        drawSmallCounter("missiles", shieldsEndX + 66, 1, ship.missilesCount, 0, missileTooltip)
+        drawSmallCounter("drones", shieldsEndX + 66 + 70, -2, ship.dronesCount, 0, droneTooltip)
 
         // Oxygen and evasion indicator
 
@@ -2244,10 +3077,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         // ShipStatus::RenderEvadeOxygen prints both in the UI text colour (235,245,229).
         // Evade
-        oxygenEvadeFont.drawStringLeftAligned(evadeTextRight, oxyY + 15f, "$evasion%", Constants.TEXT_BUTTON_NORMAL)
+        evadeNumberFont.drawStringLeftAligned(evadeTextRight, oxyY + 15f, "$evasion%", Constants.TEXT_BUTTON_NORMAL)
 
         // Oxygen
-        oxygenEvadeFont.drawStringLeftAligned(evadeTextRight, oxyY + 37f, "$avgOxygen%", Constants.TEXT_BUTTON_NORMAL)
+        evadeNumberFont.drawStringLeftAligned(evadeTextRight, oxyY + 37f, "$avgOxygen%", Constants.TEXT_BUTTON_NORMAL)
 
         if (mousePos.x in 8..98 && mousePos.y in oxyY..oxyY + 20) {
             g.tooltip = evasionTooltip
@@ -2259,20 +3092,32 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         Graphics.tint = sceneTint
 
         // Draw all the crew boxes
+        hsPowerButtons.clear()
         crewBaseY = oxyY + 59
-        for ((index, crew) in ship.sys.playerCrew.withIndex()) {
+        hsCrewDragUpdate(mousePos.x, mousePos.y)
+        val visibleCrew = hsVisibleCrew()
+        for ((index, crew) in visibleCrew.withIndex()) {
             val crewY = crewBaseY + index * CREW_BOX_SPACING
 
+            // CrewBox::OnRender hook: the dragged box is drawn centred on the mouse
+            if (crew === hsCrewDragging) {
+                g.pushTransform()
+                g.translate((mousePos.x - crewX - CREW_BOX_WIDTH / 2).toFloat(), (mousePos.y - crewY - CREW_BOX_HEIGHT / 2).toFloat())
+                drawCrewBox(g, crew, crewX, crewY)
+                g.popTransform()
+            } else
             drawCrewBox(g, crew, crewX, crewY)
         }
 
         // Add the save/restore crew position buttons
-        val lastCrewBoxY = crewBaseY + (ship.sys.playerCrew.size - 1).coerceAtLeast(0) * CREW_BOX_SPACING
+        val lastCrewBoxY = crewBaseY + (visibleCrew.size - 1).coerceAtLeast(0) * CREW_BOX_SPACING
         val crewSaveLoadY = lastCrewBoxY + 32
         if (updatingButtons) {
             val saveImg = ButtonImageSet.select2(game, "img/statusUI/button_station_assign")
             val loadImg = ButtonImageSet.select2(game, "img/statusUI/button_station_return")
             val base = game.getImg("img/statusUI/button_station_base.png")
+
+            if (xyz.znix.xftl.hs.HS.active) hsCrewPageButtons()
 
             buttons += object : Button(game, ConstPoint(19 + 5, crewSaveLoadY + 5), saveImg.normal.imageSize) {
                 val tooltip = HotkeyDelayedTooltip(game, "save_stations_tooltip", VanillaHotkeys.SAVE_CREW_POS)
@@ -2293,6 +3138,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                         return
 
                     saveCrewPositions()
+                    // CrewControl handles the click first: a click on either button also drops the selection.
+                    selectedCrew.clear()
                 }
             }
 
@@ -2315,6 +3162,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                         return
 
                     loadCrewPositions()
+                    selectedCrew.clear()
                 }
             }
         }
@@ -2331,7 +3179,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     private fun drawCrewBox(g: Graphics, crew: LivingCrew, x: Int, y: Int) {
         val clonebay = ship.clonebay
 
-        val isMindControlled = crew.mindControlledBy != null
+        val isMindControlled = crew.isMindControlled
         val isStunned = crew.stunTime > 0f
         val isFlashingHealth = false // TODO
         val isCloning = clonebay?.queue?.contains(crew) ?: false
@@ -2341,7 +3189,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             else
                 0f
 
+        // Hyperspace MIND_ORDER: an enemy under the player's control has a red box (fill 255,0,0 at a quarter, border
+        // 153,76,76: oracle sw2-mind pixels; the native CrewBox::OnRender branch is not decoded)
+        val hsEnemy = xyz.znix.xftl.hs.HS.active && crew.ownerShip !== game.player
         val colour = when {
+            hsEnemy -> HS_ENEMY_BOX_FILL
             isMindControlled -> CREW_BOX_MIND_CONTROLLED
             crew in selectedCrew -> CREW_BOX_SELECT
             isStunned -> CREW_BOX_STUNNED
@@ -2351,69 +3203,68 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             else -> CREW_BOX_NORMAL
         }
 
-        val drawSkills = crew == skillsHoveredCrew
+        // CrewBox::OnRender hook: the dragged box is drawn with mouseHover off (no skills panel)
+        val drawSkills = crew == skillsHoveredCrew && crew !== hsCrewDragging
 
         // CrewBox::constructor (0x00512750): a crew with a special power (CrewMember vtable +200, the crystal's
         // lockdown) gets a box 2 px wider behind and an outline 4 px further left, split 4 px in by a divider.
         val crystal = crew as? xyz.znix.xftl.crew.CrewCrystal
         val powerWidth = if (crystal != null) 4 else 0
+        // Hyperspace crew with powers: ability bars left of the box, power buttons above the skills.
+        val hsBox = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewUi.layout(crew, x, y, CREW_BOX_HEIGHT) else null
 
-        if (!drawSkills) {
+        if (hsBox != null) {
+            drawHsCrewBox(g, crew, x, y, colour, drawSkills, hsBox, if (hsEnemy) HS_ENEMY_BOX_BORDER else colour)
+        } else if (!drawSkills) {
             // Draw the semi-transparent background
             g.colour = Colour(colour.r, colour.g, colour.b, CREW_BOX_BG_ALPHA)
             g.fillRect(x - powerWidth / 2f, y.f, CREW_BOX_WIDTH + powerWidth / 2f, CREW_BOX_HEIGHT.f)
 
             // Draw the solid outline, via two unfilled rectangles.
-            g.colour = colour
+            g.colour = if (hsEnemy) HS_ENEMY_BOX_BORDER else colour
             g.drawRect(x.f - powerWidth, y.f, CREW_BOX_WIDTH + powerWidth - 1f, CREW_BOX_HEIGHT - 1f)
             g.drawRect(x + 1f - powerWidth, y + 1f, CREW_BOX_WIDTH + powerWidth - 3f, CREW_BOX_HEIGHT - 3f)
             if (crystal != null)
                 g.fillRect(x + 4f, y.f, 2f, CREW_BOX_HEIGHT.f)
 
+        } else {
+            // Draw the semi-transparent background
+            // The touch layout puts a crystal's lockdown button at the top of the panel, above the skills.
+            val buttonRow = if (touch != null && crystal != null) 24 else 0
+            g.colour = Colour(colour.r, colour.g, colour.b, 0.25f)
+            g.fillRect(x.f, y.f, 89f, CREW_BOX_HEIGHT.f)
+            g.fillRect(x + 89f, y.f, 80f, 146f + buttonRow)
+
+            // Draw the outline, which we do with line drawing by rectangles.
+            g.colour = if (hsEnemy) HS_ENEMY_BOX_BORDER else colour
+            g.fillRect(x.f, y.f, 2f, CREW_BOX_HEIGHT.f)
+            g.fillRect(x.f, y.f, 169f, 2f)
+            g.fillRect(x.f, y + 25f, 91f, 2f)
+            g.fillRect(x + 89f, y + 27f, 2f, 119f + buttonRow)
+            g.fillRect(x + 167f, y.f, 2f, 146f + buttonRow)
+            g.fillRect(x + 91f, y + 144f + buttonRow, 76f, 2f)
+
+            drawSkillBar(g, x + 93, y + buttonRow, crew, Skill.PILOTING)
+            drawSkillBar(g, x + 93, y + buttonRow, crew, Skill.ENGINES)
+            drawSkillBar(g, x + 93, y + buttonRow, crew, Skill.SHIELDS)
+            drawSkillBar(g, x + 93, y + buttonRow, crew, Skill.WEAPONS)
+            drawSkillBar(g, x + 93, y + buttonRow, crew, Skill.REPAIRS)
+            drawSkillBar(g, x + 93, y + buttonRow, crew, Skill.COMBAT)
+
+            if (buttonRow != 0) {
+                g.colour = if (crystal!!.lockdownReady && crystal.stunTime <= 0f) TEXT_BUTTON_NORMAL else TEXT_BUTTON_DISABLED
+                Buttons.drawChamfer(g, x + 97, y + 7, 64, 14, 2)
+                hsButtonFont.printButtonLabel(x + 97, y + 7, 64, 14, game.translator["button_lockdown"], TEXT_BUTTON_TEXT)
+            }
+        }
+
+        if (!drawSkills) {
             // Vanilla shows which skill a crewmember is currently gaining
             // experience in: the skill's icon, tinted green, with an up
             // arrow beside it - drawn to the right of their crew box. The
             // hovered crewmember's expanded skill panel already shows all
             // the skills, so skip the indicator there.
-            val trainedSkill = crew.lastTrainedSkill
-            if (trainedSkill != null) {
-                val iconX = x + CREW_BOX_WIDTH + 1
-                val icon = game.getImg(trainedSkill.iconPath)
-                icon.draw(iconX.f, y.f, SYS_ENERGY_ACTIVE)
-
-                // The arrow art points down; flip it to point up. It is
-                // green too, and sits flush against the icon's right edge.
-                val arrow = game.getImg("img/icons/arrow.png")
-                g.pushTransform()
-                g.translate(
-                    iconX + icon.width + arrow.width / 2f,
-                    y + CREW_BOX_HEIGHT / 2f
-                )
-                g.scale(1f, -1f)
-                arrow.draw(-arrow.width / 2f, -arrow.height / 2f, SYS_ENERGY_ACTIVE)
-                g.popTransform()
-            }
-        } else {
-            // Draw the semi-transparent background
-            g.colour = Colour(colour.r, colour.g, colour.b, 0.25f)
-            g.fillRect(x.f, y.f, 89f, CREW_BOX_HEIGHT.f)
-            g.fillRect(x + 89f, y.f, 80f, 146f)
-
-            // Draw the outline, which we do with line drawing by rectangles.
-            g.colour = colour
-            g.fillRect(x.f, y.f, 2f, CREW_BOX_HEIGHT.f)
-            g.fillRect(x.f, y.f, 169f, 2f)
-            g.fillRect(x.f, y + 25f, 91f, 2f)
-            g.fillRect(x + 89f, y + 27f, 2f, 119f)
-            g.fillRect(x + 167f, y.f, 2f, 146f)
-            g.fillRect(x + 91f, y + 144f, 76f, 2f)
-
-            drawSkillBar(g, x + 93, y, crew, Skill.PILOTING)
-            drawSkillBar(g, x + 93, y, crew, Skill.ENGINES)
-            drawSkillBar(g, x + 93, y, crew, Skill.SHIELDS)
-            drawSkillBar(g, x + 93, y, crew, Skill.WEAPONS)
-            drawSkillBar(g, x + 93, y, crew, Skill.REPAIRS)
-            drawSkillBar(g, x + 93, y, crew, Skill.COMBAT)
+            drawSkillUp(g, crew, x + CREW_BOX_WIDTH + 1, y)
         }
 
         // CrewBox::OnRender (0x00516aa0): the power's charge as a 4 px bar 1 px left of the box, rising from 3 px
@@ -2450,10 +3301,12 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         // Draw the crew portrait, mostly so you can see what race they are.
         // CrewBox::RenderIcon places it at (0,-2) from the box (measured against the original).
-        crew.drawPortrait(x, y - 2, true)
+        crew.drawPortrait(x + (hsBox?.crewPosDx ?: 0), y - 2, true)
 
         // Draw the crew name
-        crewNameText.drawString(x + 33f, y + 14f, crew.info.shortName, CREW_BOX_NAME_COLOUR)
+        val name = crew.info.shortName
+        (if (xyz.znix.xftl.rendering.NativeFonts.nameIgnoresLanguage(name)) crewNameEnglish else crewNameText)
+            .drawString(x + 33f, y + 14f, name, CREW_BOX_NAME_COLOUR)
 
         // If the crew is dying in a clonebay, draw the red overlay
         if (cloneDyingProgress > 0f) {
@@ -2476,7 +3329,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                             .replaceArg(crew.maxHealth.roundToInt(), 2),
                         game.translator["hotkey"].replace(
                             "\\1",
-                            game.getButtonNameForHotkey(VanillaHotkeys.SELECT_CREW.getOrNull(game.playerCrew.indexOf(crew)), "")
+                            game.getButtonNameForHotkey(VanillaHotkeys.SELECT_CREW.getOrNull(crewSlot(crew)), "")
                         )
                     )
 
@@ -2487,6 +3340,106 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 }
             }
         }
+    }
+
+    /** Power buttons drawn this frame (CrewBox::MouseClick hit test). */
+    private class HsPowerButtonHit(val x: Int, val y: Int, val crew: AbstractCrew, val power: xyz.znix.xftl.hs.crew.ActivatedPower)
+    private val hsPowerButtons = ArrayList<HsPowerButtonHit>()
+    private val hsReactorFont by lazy { xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 62) }
+    private val hsButtonFont by lazy { xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 61) }
+
+    /** Hyperspace CrewBox::GetSelected: the hovered power button's tooltip (text set while hovered). */
+    private val hsPowerTooltip = object : xyz.znix.xftl.rendering.DelayedTooltip(game) {
+        @JvmField var current = ""
+        override fun getText(): String = current
+    }
+
+    /** Hyperspace's CrewBox::OnRender for a crew member with powers (geometry from its CrewBox constructor hook). */
+    private fun drawHsCrewBox(
+        g: Graphics, crew: LivingCrew, x: Int, y: Int, colour: Colour, drawSkills: Boolean,
+        box: xyz.znix.xftl.hs.crew.HsCrewUi.BoxLayout, border: Colour = colour
+    ) {
+        val sx = x + box.startX
+        val w = CREW_BOX_WIDTH
+        val h = CREW_BOX_HEIGHT
+        // 2 px GL lines: a line on coordinate c covers c-1 and c.
+        fun hLine(x0: Int, x1: Int, yc: Int) = g.fillRect(x0.f, yc - 1f, (x1 - x0).f, 2f)
+        fun vLine(xc: Int, y0: Int, y1: Int) = g.fillRect(xc - 1f, y0.f, 2f, (y1 - y0).f)
+        if (!drawSkills) {
+            g.colour = Colour(colour.r, colour.g, colour.b, CREW_BOX_BG_ALPHA)
+            g.fillRect(sx.f, y.f, (w - box.startX - 1).f, h.f)
+            g.colour = border
+            hLine(sx, x + w, y + 1)
+            hLine(sx, x + w, y + h - 1)
+            vLine(sx + 1, y, y + h)
+            for (b in box.borders) vLine(x + b, y, y + h)
+            vLine(x + w - 1, y, y + h)
+        } else {
+            val skillX = x + w - 2
+            val skillW = 85
+            val skillH = 146 + box.skillOffset
+            g.colour = Colour(colour.r, colour.g, colour.b, 0.25f)
+            g.fillRect(sx.f, y.f, (w - box.startX + 82).f, h.f)
+            g.fillRect(x + w + 3f, y + h.f, 80f, (skillH - h).f)
+            g.colour = border
+            hLine(sx, skillX + skillW - 1, y + 1)
+            hLine(sx, x + w + 5, y + h - 1)
+            vLine(sx + 1, y, y + h)
+            for (b in box.borders) vLine(x + b, y, y + h)
+            vLine(x + w + 4, y + h, y + skillH)
+            hLine(x + w + 3, skillX + skillW, y + skillH - 1)
+            vLine(skillX + skillW - 1, y, y + skillH)
+
+            for ((i, p) in box.buttons.withIndex()) {
+                val bx = x + w + 11
+                val by = y + 7 + i * 24
+                val active = xyz.znix.xftl.hs.crew.HsCrewUi.buttonActive(crew, p)
+                val inside = mousePos.x in bx until bx + 64 && mousePos.y in by until by + 14
+                val hovered = active && inside
+                if (inside) {
+                    hsPowerTooltip.current = xyz.znix.xftl.hs.crew.HsCrewUi.powerTooltip(crew, p, { key -> game.translator[key] },
+                        game.getButtonNameForHotkey(VanillaHotkeys.LOCKDOWN_ACTIVATE, "")) { id ->
+                        (game.blueprintManager.getOrNull(xyz.znix.xftl.hs.systems.HsSystems.idToName(id)) as? xyz.znix.xftl.systems.SystemBlueprint)
+                            ?.translateTitle(game)
+                    }
+                    g.tooltip = hsPowerTooltip
+                }
+                g.colour = when {
+                    !active -> TEXT_BUTTON_DISABLED
+                    hovered -> TEXT_BUTTON_HOVER
+                    else -> TEXT_BUTTON_NORMAL
+                }
+                Buttons.drawChamfer(g, bx, by, 64, 14, 2)
+                val label = xyz.znix.xftl.hs.crew.HsCrewUi.buttonLabel(p) { key -> game.translator[key] }
+                hsButtonFont.printButtonLabel(bx, by, 64, 14, label, TEXT_BUTTON_TEXT)
+                hsPowerButtons += HsPowerButtonHit(bx, by, crew, p)
+            }
+            for (skill in Skill.entries) drawSkillBar(g, x + 93, y + box.skillOffset, crew, skill)
+        }
+        for (b in box.cooldownBars) {
+            val fill = xyz.znix.xftl.hs.crew.HsCrewUi.cooldownFill(b) ?: continue
+            val r = fill.first
+            val c = fill.second
+            g.colour = Colour(c.r, c.g, c.b, c.a)
+            g.fillRect(r[0].f, r[1].f, r[2].f, r[3].f)
+        }
+        for (b in box.chargesBars) {
+            val fill = xyz.znix.xftl.hs.crew.HsCrewUi.chargesFill(b) ?: continue
+            val c = fill.second
+            g.colour = Colour(c.r, c.g, c.b, c.a)
+            for (r in fill.first) g.fillRect(r[0].f, r[1].f, r[2].f, r[3].f)
+        }
+    }
+
+    /** CrewBox::MouseClick (Hyperspace): a click on an active, hovered power button uses the power. */
+    private fun hsPowerButtonClick(x: Int, y: Int): Boolean {
+        for (b in hsPowerButtons) {
+            if (x !in b.x until b.x + 64 || y !in b.y until b.y + 14) continue
+            if (!xyz.znix.xftl.hs.crew.HsCrewUi.buttonActive(b.crew, b.power)) continue
+            xyz.znix.xftl.hs.crew.HsCrewUi.clickButton(b.crew, b.power)
+            return true
+        }
+        return false
     }
 
     private fun drawSkillBar(
@@ -2525,8 +3478,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         // ArmamentControl's label strip (0x00571760): five slices of the 53px art
         // along the whole frame - cap, stretched label, ramp, stretched bottom edge
-        // and end cap - sized from the label's measured width.
-        val textWidth = font.getAdvanceWidth(name)
+        // and end cap - sized from the label's measured width (easy_measurePrintLines' glyph extents).
+        val textWidth = font.getExtentWidth(name)
         fun slice(left: Int, width: Int, u0: Float, u1: Float) =
             img.draw((x + left).f, textY.f, (x + left + width).f, textY + img.height.f, u0, 0f, u1, img.height.f)
         slice(18, 3, 0f, 3f)
@@ -2544,8 +3497,16 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         updateRoomSelectionMode()
         updatePowerPopup()
 
+        // Hyperspace GUI_MOUSE_MOVE (CommandGui::MouseMove hook): a pre-empting callback skips the original's hover
+        // update; the event box (ChoiceBox::MouseMove) and the confirmation windows have their own.
+        if (HS.luaActive && currentWindow !is DialogueWindow && xyz.znix.xftl.hs.lua.LuaEvents.guiMouseMove(x, y)) return
 
         mousePos.set(x, y)
+        // Hyperspace More Info button hover (CommandGui::MouseMove hook: not under the pause menu or game over)
+        if (HS.active) xyz.znix.xftl.hs.render.HsMoreInfo.mouseMove(game, null, x, y, pauseWindow != null || currentWindow is GameOverWindow)
+        // Hyperspace event buttons created, cleared or loaded: rebuild the top bar (ShipStatus::OnLoop lays it out)
+        if (HS.active && !updatingButtons && (xyz.znix.xftl.hs.render.HsEventButtons.version != hsEventButtonsVersion ||
+                xyz.znix.xftl.hs.render.HsEventButtons.buttons().isNotEmpty() && xyz.znix.xftl.hs.render.HsEventButtons.hideSignature(game) != hsEventHideSig)) updateButtons()
 
         // The HUD under a focus window shows no hover (the original's STORE button is
         // idle while its store is open): CommandGui::MouseMove (0x535e00) gives the open
@@ -2556,6 +3517,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             for (door in ship.doors) door.clearMouseHover()
             hoveredCrew.clear()
             skillsHoveredCrew = null
+            if (HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.mouseMove(game, -1, -1, playerShipPosition, false)
         }
 
         pauseWindow?.let { win ->
@@ -2568,6 +3530,18 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             positionMenuWindow(win)
             win.updateUI(x, y)
             return
+        }
+
+        // The touch layout's HUD has no hover: the finger goes to TouchHud.
+        if (touch != null) return
+
+        // CrewControl::MouseMove: CommandGui::MouseMove (every frame) hands it the mouse while
+        // no focus window has it; the current points follow it, a script's write lasts until the next frame (oracle
+        // sw5-cc: currentMouse.y written, read back as the mouse's)
+        if (HS.active) {
+            val w = screenToShipRender(x, y, playerShipPosition)
+            hsCurrentMouse.x = x; hsCurrentMouse.y = y
+            hsWorldCurrentMouse.x = w.x; hsWorldCurrentMouse.y = w.y
         }
 
         for (button in systemsBarButtons) {
@@ -2595,6 +3569,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         for (door in ship.doors) {
             door.updateMouseHover(x - playerShipPosition.x, y - playerShipPosition.y)
         }
+
+        // Hyperspace background objects (the CombatControl::MouseMove hook: the original took the mouse while a
+        // weapon, the teleporter, mind control or hacking is being aimed)
+        if (HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.mouseMove(game, x, y, playerShipPosition,
+            game.clickEvent != null || beamTargeting != null)
     }
 
     fun showEventDialogue(event: Event, seed: Int) {
@@ -2604,6 +3583,64 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     /** Show an event the sector or the game already created. */
     fun showEventDialogue(event: xyz.znix.xftl.sector.CreatedEvent) {
         openDialogueWindow { close -> DialogueWindow(game, ship, event, close) }
+    }
+
+    /**
+     * The skill-up indicator beside a crew box (CrewMember::RenderSkillUpAnimation, also Lua's): the skill being trained,
+     * tinted green, with an up arrow flush against its right edge, at [iconX], [y].
+     */
+    fun drawSkillUp(g: Graphics, crew: LivingCrew, iconX: Int, y: Int) {
+        val trainedSkill = crew.lastTrainedSkill ?: return
+        val icon = game.getImg(trainedSkill.iconPath)
+        icon.draw(iconX.f, y.f, SYS_ENERGY_ACTIVE)
+
+        // The arrow art points down; flip it to point up. It is
+        // green too, and sits flush against the icon's right edge.
+        val arrow = game.getImg("img/icons/arrow.png")
+        g.pushTransform()
+        g.translate(
+            iconX + icon.width + arrow.width / 2f,
+            y + CREW_BOX_HEIGHT / 2f
+        )
+        g.scale(1f, -1f)
+        arrow.draw(-arrow.width / 2f, -arrow.height / 2f, SYS_ENERGY_ACTIVE)
+        g.popTransform()
+    }
+
+    val diagnosticShipWindow: String get() = (currentWindow as? ShipWindow)?.diagnosticState ?: "null"
+
+    /** Diagnostics only (render probes): drop the open window without its effects. */
+    fun diagnosticCloseWindow() { currentWindow = null }
+
+    /** Hyperspace Lua CrewControl::selectedCrew / potentialSelectedCrew (the live lists). */
+    val luaSelectedCrew: MutableList<AbstractCrew> get() = selectedCrew
+    val luaHoveredCrew: MutableList<AbstractCrew> get() = hoveredCrew
+
+    /** Diagnostics: replace the crew selection. */
+    fun diagnosticSelectCrew(crew: List<AbstractCrew>) { selectedCrew.clear(); selectedCrew += crew }
+
+    /** Diagnostics: the crew hover tooltip of [target] at [point] (ship render pixels). */
+    fun diagnosticCrewTooltip(target: Ship, point: IPoint): String = crewTooltipText(target, point)
+
+    /** Hyperspace: an event choice box is open (ChoiceBox::bOpen). */
+    fun hsChoiceBoxOpen(): Boolean = currentWindow is DialogueWindow
+
+    /** Diagnostics: the HS name of the open choice box event. */
+    fun hsOpenEventName(): String? = (currentWindow as? DialogueWindow)?.hsOpenEvent
+
+    /** Hyperspace: events HS loads with no window open show in a new one (UpdateLocation). */
+    val hsHost = object : xyz.znix.xftl.hs.events.HsFlow.Host {
+        override fun hsUpdateLocation(event: xyz.znix.xftl.sector.CreatedEvent) = showEventDialogue(event)
+    }
+
+    /** Hyperspace: arrival at a beacon whose event is cleared (CreateLocation's revisit path). */
+    fun showHsRevisit(beacon: xyz.znix.xftl.sector.Beacon) {
+        openDialogueWindow { close -> DialogueWindow(game, ship, beacon, close) }
+    }
+
+    /** [arrival]: the beacon's own event on arrival (Hyperspace runs CreateLocation's hooks for it). */
+    fun showEventDialogue(event: xyz.znix.xftl.sector.CreatedEvent, arrival: Boolean) {
+        openDialogueWindow { close -> DialogueWindow(game, ship, event, arrival, close) }
     }
 
     private fun openEventDialogue(event: Event?, seed: Int) {
@@ -2647,7 +3684,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
     private fun eventDialogueClosed() {
         currentWindow = null
-        if (ship.cargoBlueprints.drop(4).any { it != null } && !game.isInDanger) showShipWindow(ShipWindow.Tab.EQUIPMENT, true)
+        if (ship.hasOverflow() && !game.isInDanger) showShipWindow(ShipWindow.Tab.EQUIPMENT, true)
 
         // The beacon's event has fully resolved (rewards, ships, stores) -
         // save so a process kill resumes after the event, not before it.
@@ -2673,6 +3710,31 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
     }
 
+    /**
+     * Hyperspace Lua Equipment adders: Equipment::Open as soon as an item lands in the over-capacity box (the event
+     * window's own path, [eventDialogueClosed], opens it once the event closes); an open ship window turns to the tab.
+     */
+    fun hsOpenEquipmentForOverflow() {
+        if (!ship.hasOverflow() || currentWindow is DialogueWindow) return
+        val w = currentWindow
+        if (w is ShipWindow) w.selectTutorialEquipment() else showShipWindow(ShipWindow.Tab.EQUIPMENT, true)
+    }
+
+    /** The key a weapon or drone box shows: its slot hotkey's key text (printable keys upper case), "" while unbound. */
+    fun armamentHotkeyLabel(weapon: Boolean, slot: Int): String {
+        val name = (if (weapon) "hotkey_weapon" else "hotkey_drone") + (slot + 1)
+        val hk = game.hotkeyManager.groups.flatMap { it.hotkeys }.firstOrNull { it.uiName == name } ?: return (slot + 1).toString()
+        val b = game.reverseHotkeyBindings[hk] ?: return ""
+        val sdl = xyz.znix.xftl.hs.lua.LuaEvents.sdlKey(b.keyID)
+        return if (sdl in 33..126) sdl.toChar().uppercaseChar().toString() else game.translator[b.text].uppercase()
+    }
+
+    /** Hyperspace `<removeStore>`: an open store window closes and the store button goes. */
+    fun hsRemoveStore() {
+        if (currentWindow is StoreWindow) currentWindow = null
+        updateButtons()
+    }
+
     private fun showStoreWindow() {
         if (game.isInDanger)
             return
@@ -2681,6 +3743,15 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         storeAlreadyOpened = true
 
+        currentWindow = StoreWindow(game, ship, store) {
+            currentWindow = null
+        }
+    }
+
+    /** CommandGui::CreateNewStore (the HS console's STORE): the new store opens at once, enemy or not. */
+    fun hsOpenNewStore() {
+        val store = game.currentBeacon.getStore(game) ?: return
+        storeAlreadyOpened = true
         currentWindow = StoreWindow(game, ship, store) {
             currentWindow = null
         }
@@ -2697,7 +3768,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 pauseWindow = null
                 action()
             }
-        }, cancel = { if (game.mainGame.currentState === game) pauseWindow = previous }).also {
+        }, cancel = { if (game.mainGame.currentState === game) pauseWindow = previous },
+            // CommandGui::KeyDown (0x534820): Escape with the menu open closes MenuScreen, prompt and all; NO
+            // returns to the menu (MenuScreen::MouseClick 0x511d10). Captures vz-hangar-esc, vx-restart-esc.
+            escape = { if (game.mainGame.currentState === game) pauseWindow = null }).also {
             it.backdrop = previous
             it.centre(game.mainGame.gameContainer.width, game.mainGame.gameContainer.height)
         }
@@ -2728,7 +3802,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         currentWindow?.let { win ->
-            win.escapePressed()
+            if (!arrivalHidden) win.escapePressed()
             return
         }
 
@@ -2759,6 +3833,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         weaponBoxXForWarnings?.let { x ->
             noMissilesWarning.placeNative(x + 203, weaponBoxY - 25)
             noMissilesWarning.draw(g)
+            shotLimitWarning?.let { it.placeNative(x + 203, weaponBoxY - 25); it.draw(g) }
             weaponPowerWarning.placeNative(x + 220, weaponBoxY - 45)
             weaponPowerWarning.draw(g)
         }
@@ -2825,9 +3900,20 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         val boss = game.enemy?.boss as? FlagshipBoss
         powerSurgeWarning.loopWhile(boss?.incomingFire == true)
         powerSurgeWarning.draw(g)
+        drawSpaceIcons(g)
+    }
 
+    private fun drawSpaceIcons(g: Graphics) {
         val beacon = game.currentBeacon
+        val mouseX = mousePos.x - spaceMouseDx
+        val mouseY = mousePos.y - spaceMouseDy
         val env = beacon.getEnvironment(game)
+        // Hyperspace CustomSpaceStatus.cpp: every hazard of the scene, the neutral ASB, the per-target fleet tooltips.
+        if (HS.active) {
+            val target = env.layers.firstNotNullOfOrNull { it as? xyz.znix.xftl.environment.AsbEnvironment }?.pdsTarget ?: 0
+            xyz.znix.xftl.hs.sector.HsSpaceStatus.render(game, g, env, target, beacon.isOvertaken, mouseX, mouseY)?.let { g.tooltip = it }
+            return
+        }
         var allies = false
         val icons: List<Pair<String, String>> = when (env.type) {
             Beacon.EnvironmentType.ASTEROID -> listOf("danger_asteroids" to "asteroids")
@@ -2855,14 +3941,26 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         for ((i, icon) in icons.withIndex()) {
             game.getImg("img/warnings/${icon.first}.png").draw(660 + 72 * i, 72)
             val left = 655 + 72 * i
-            if (mousePos.x > left && mousePos.x < left + 70 && mousePos.y > 69 && mousePos.y < 69 + 73) {
+            if (mouseX > left && mouseX < left + 70 && mouseY > 69 && mouseY < 69 + 73) {
                 g.tooltip = hazardTooltips.getOrPut(icon.second) { FixedDelayedTooltip(game, "tooltip_" + icon.second) }
             }
         }
 
+        drawSpaceWarningText(allies, if (icons.size > 1) 36 else 0)
+    }
+
+    /**
+     * SpaceStatus::RenderWarningText (0x501210, effect 9 = the allied ASB, [allies]): warning_pds_allies on the green
+     * glow or warning_environment_danger on the red one, in font 52 centred at (690 + [textOffset], 72 + 51).
+     * Hyperspace exposes it to Lua (CommandGui.spaceStatus:RenderWarningText).
+     */
+    fun drawSpaceWarningText(allies: Boolean, textOffset: Int) {
         val text = game.translator[if (allies) "warning_pds_allies" else "warning_environment_danger"]
+        // MV empties warning_environment_danger; the original then draws neither text nor glow (oracle r2-ships,
+        // MV's environments/icons.lua calls this at every atmosphere beacon).
+        if (xyz.znix.xftl.hs.HS.active && text.isEmpty()) return
         val font = dangerFont.font
-        val centreX = 690 + if (icons.size > 1) 36 else 0
+        val centreX = 690 + textOffset
         UIUtils.drawStringWithGlow(
             game, font, text, centreX - font.getWidth(text) / 2, 123 + dangerFont.spec.baseline,
             if (allies) GlowColour.GREEN else GlowColour.RED, 1f
@@ -2908,8 +4006,16 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 continue
             if (!crew.room.playerHasVision && !crew.providesPlayerVision)
                 continue
+            // Hyperspace (CustomCrew.cpp ShipManager::GetTooltip): insertNewlineForMultipleCrewTooltips puts a
+            // blank line between crew members; advancedCrewTooltips rewrites each member's text.
             if (out.isNotEmpty())
-                out.append(" \n")
+                out.append(xyz.znix.xftl.hs.crew.HsCrewTooltips.separator())
+            if (xyz.znix.xftl.hs.crew.HsCrewTooltips.advanced()) {
+                out.append(xyz.znix.xftl.hs.crew.HsCrewTooltips.text(game, crew))
+                if ((crew as? LivingCrew)?.isMindControlled == true)
+                    out.append(" \n").append(game.translator["mind_controlled_tooltip"])
+                continue
+            }
             val name = (crew as? LivingCrew)?.info?.name ?: ""
             if (name.isNotEmpty())
                 out.append(name).append(" \n")
@@ -2921,7 +4027,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                         .replaceArg(crew.maxHealth.toInt(), 2)
                 )
             }
-            if ((crew as? LivingCrew)?.mindControlledBy != null)
+            if ((crew as? LivingCrew)?.isMindControlled == true)
                 out.append(" \n").append(game.translator["mind_controlled_tooltip"])
         }
         return out.toString()
@@ -2980,6 +4086,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
         if (!ship.isFtlReady || !ship.canChargeFTL)
             return
+        // Hyperspace <noJump> enemy: the FTL button is inactive (CommandGui::OnLoop hook).
+        if (xyz.znix.xftl.hs.ship.HsShipState.enemyNoJump(game, ship))
+            return
 
         if (isWindowOpen) return
         // Native ShipManager::CountPlayerCrew excludes dead crew and drones,
@@ -3002,6 +4111,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     private fun openJumpMapConfirmed() {
         if (!ship.isFtlReady || !ship.canChargeFTL) return
 
+        // Hyperspace StarMap::Open: the jump events load first; one that opens a choice box keeps the map closed.
+        if (game.eventManager.hs != null && xyz.znix.xftl.hs.events.HsFlow.openStarMap(game, hsHost, ::hsChoiceBoxOpen))
+            return
+
         currentWindow = JumpWindow(game, ::openSectorMap) {
             if (it != null) {
                 // Reset stuff after jumping
@@ -3019,27 +4132,31 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     }
 
     fun openSectorMap() {
-        currentWindow = SectorMapWindow(game) { sectorInfo ->
-            currentWindow = null
+        currentWindow = SectorMapWindow(game, ::sectorChosen)
+    }
 
-            // Null just means the window was closed
-            if (sectorInfo == null)
-                return@SectorMapWindow
+    /** The sector map's choice (null: the window was closed). Diagnostics choose through it too. */
+    fun sectorChosen(sectorInfo: xyz.znix.xftl.sector.GameMap.SectorInfo?) {
+        currentWindow = null
 
-            val sector = game.gameMap.generateSector(sectorInfo, game)
+        // Null just means the window was closed
+        if (sectorInfo == null)
+            return
 
-            // Jump via the proper jump path (GitHub issue #63): the jump-out
-            // animation plays, then arrival at the new sector's start beacon
-            // runs setCurrentBeacon - which handles the sector music switch,
-            // the arrival chime, spawning whatever's at the beacon, etc.
-            // The run-save is written by the existing jump-out completion /
-            // immediate-switch fallback sites, same as normal beacon jumps.
-            game.beginJumpOut(sector.startBeacon)
+        game.gameMap.hsSelectSector(sectorInfo) // Hyperspace infinite mode: StarMap::SelectNewSector pushes a column
+        val sector = game.gameMap.generateSector(sectorInfo, game)
 
-            // In case we were at a store
-            // TODO move this into an on-jump handler function
-            updateButtons()
-        }
+        // Jump via the proper jump path (GitHub issue #63): the jump-out
+        // animation plays, then arrival at the new sector's start beacon
+        // runs setCurrentBeacon - which handles the sector music switch,
+        // the arrival chime, spawning whatever's at the beacon, etc.
+        // The run-save is written by the existing jump-out completion /
+        // immediate-switch fallback sites, same as normal beacon jumps.
+        game.beginJumpOut(sector.startBeacon)
+
+        // In case we were at a store
+        // TODO move this into an on-jump handler function
+        updateButtons()
     }
 
     fun openAllDoors() {
@@ -3088,12 +4205,23 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             it.hotkeyPressed(key)
             return
         }
+        // CommandGui::KeyDown steps the event font size before any window takes the key, the event
+        // box included (EventFontSize).
+        when (key.id) {
+            VanillaHotkeys.INCREASE_FONT -> { EventFontSize.increase(); return }
+            VanillaHotkeys.DECREASE_FONT -> { EventFontSize.decrease(); return }
+        }
         currentWindow?.let {
-            it.hotkeyPressed(key)
+            if (!arrivalHidden) it.hotkeyPressed(key)
             return
         }
 
+        // SystemControl::KeyDown: every box gets the key (SYSTEM_BOX_KEY_DOWN); a pre-empted box ignores its hotkeys.
+        val hsKeyBlocked = if (xyz.znix.xftl.hs.HS.luaActive) hsSystemBoxKeyDown(key, input) else null
+
         for (system in ship.mainSystems) {
+            if (hsKeyBlocked != null && system in hsKeyBlocked)
+                continue
             if (key.id == "sys_power_${system.codename}") {
                 val powerUp: Boolean = !input.isKeyDown(Input.KEY_LSHIFT) && !input.isKeyDown(Input.KEY_RSHIFT)
                 changeSystemPower(system, powerUp)
@@ -3104,6 +4232,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         for (system in ship.systems) {
+            if (hsKeyBlocked != null && system in hsKeyBlocked)
+                continue
             system.hotkeyPressed(key)
         }
 
@@ -3112,7 +4242,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             if (key.id != id)
                 continue
 
-            val crew = game.playerCrew.getOrNull(index) ?: continue
+            val crew = (if (xyz.znix.xftl.hs.HS.active) hsVisibleCrew().getOrNull(index) else game.playerCrew.getOrNull(index)) ?: continue
             if (!crew.playerControllable)
                 continue
 
@@ -3137,7 +4267,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 selectedCrew += game.playerCrew.filter { it.playerControllable }
             }
 
-            VanillaHotkeys.LOCKDOWN_ACTIVATE -> selectedCrew.filterIsInstance<xyz.znix.xftl.crew.CrewCrystal>().forEach { it.activateLockdown() }
+            // Hyperspace replaces the lockdown hotkey with its crew powers (CrewControl::KeyDown hook).
+            VanillaHotkeys.LOCKDOWN_ACTIVATE -> if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewUi.lockdownHotkey(selectedCrew)
+            else selectedCrew.filterIsInstance<xyz.znix.xftl.crew.CrewCrystal>().forEach { it.activateLockdown() }
 
             VanillaHotkeys.SAVE_CREW_POS -> saveCrewPositions()
             VanillaHotkeys.LOAD_CREW_POS -> loadCrewPositions()
@@ -3154,6 +4286,19 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 ship.clonebay?.let { changeSystemPower(it, false) }
             }
         }
+    }
+
+    /** SYSTEM_BOX_KEY_DOWN for each box of the bar; the systems whose box pre-empted the key. */
+    private fun hsSystemBoxKeyDown(key: Hotkey, input: Input): Set<AbstractSystem>? {
+        val glfwKey = game.reverseHotkeyBindings[key]?.keyID ?: return null
+        val shift = input.isKeyDown(Input.KEY_LSHIFT) || input.isKeyDown(Input.KEY_RSHIFT)
+        var blocked: HashSet<AbstractSystem>? = null
+        for (system in ship.systems) {
+            val box = xyz.znix.xftl.hs.systems.HsSystemBox.existing(system) ?: continue
+            if (xyz.znix.xftl.hs.systems.HsSystemBox.keyDown(box, glfwKey, shift))
+                (blocked ?: HashSet<AbstractSystem>().also { blocked = it }).add(system)
+        }
+        return blocked
     }
 
     /**
@@ -3186,8 +4331,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
     }
 
+    private var hsLastSkillsHovered: AbstractCrew? = null
+
     private fun updateHoveredCrew(mouseX: Int, mouseY: Int, playerShipPosition: IPoint) {
         hoveredCrew.clear()
+        hsLastSkillsHovered = skillsHoveredCrew
         skillsHoveredCrew = null
 
         // Allow for smart-casting
@@ -3205,6 +4353,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // Mind-controlled crew are then filtered out in the for loop.
         val controllableCrew = ArrayList(ship.friendlyCrew)
         game.enemy?.let { controllableCrew.addAll(it.intruders) }
+        // Hyperspace MIND_ORDER: the mind-controlled enemies on their own ship take orders too (_HS_GetControllable)
+        if (xyz.znix.xftl.hs.HS.active) for (c in hsBoxCrew()) if (c !in controllableCrew) controllableCrew += c
 
         for (crew in controllableCrew) {
             // Skip drones, mind controlled crew and the like which the
@@ -3232,7 +4382,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // CrewControl's mouse move (0x5052c0) also selects the crew whose box in the crew list
         // the rectangle overlaps (CrewBox test 0x5122a0, strict on every edge).
         if (rect != null) {
-            for ((index, crew) in game.playerCrew.withIndex()) {
+            for ((index, crew) in hsVisibleCrew().withIndex()) {
                 if (!crew.playerControllable || crew in hoveredCrew)
                     continue
                 val boxY = crewBaseY + index * CREW_BOX_SPACING
@@ -3299,6 +4449,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         // Use the hacking/teleport/mind control cursor
         (game.clickEvent as? RoomClickCursor)?.getCursor()?.let { return it }
+        // Hyperspace: the temporal arming cursor (MouseControl::OnRender, g_iTemporal).
+        (game.clickEvent as? xyz.znix.xftl.hs.systems.TemporalRoomListener)?.let {
+            return game.getCursor(it.cursorPath(game.hoveredRoom != null))
+        }
 
         targetingSelectedWeapon?.let { id ->
             // MouseControl's valid flag: an own-ship room is only a target for a weapon that
@@ -3314,9 +4468,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 autofire -> "img/mouse/mouse_crosshairs_valid2.png"
                 else -> "img/mouse/mouse_crosshairs_valid.png"
             }
+            // Hyperspace (AdditionalWeaponSlots.cpp MouseControl::OnRender): slots past ten use the fallback cursor.
+            val slotName = if (xyz.znix.xftl.hs.HS.active && id >= 10) "fallback" else "${id + 1}"
             val overlayName = when {
-                autofire -> "img/mouse/mouse_crosshairs3_${id + 1}.png"
-                else -> "img/mouse/mouse_crosshairs2_${id + 1}.png"
+                autofire -> "img/mouse/mouse_crosshairs3_$slotName.png"
+                else -> "img/mouse/mouse_crosshairs2_$slotName.png"
             }
             return game.getCursor("$baseName,$overlayName")
         }
@@ -3350,15 +4506,19 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
     fun onTextInput(key: Int, c: Char): Boolean {
         pauseWindow?.let { return it.onTextInput(key, c) }
-        currentWindow?.let { return it.onTextInput(key, c) }
+        currentWindow?.let { return !arrivalHidden && it.onTextInput(key, c) }
 
         return false
     }
 
-    // WeaponControl::CreateAutofireButton (00568c70), relative to its frame.
+    // WeaponControl::CreateAutofireButton (00568c70), relative to its frame: as wide as the label's extents
+    // (easy_measurePrintLines 62, rounded) plus 8.
     private fun autofireButtonPos(weaponBoxX: Int): ConstPoint {
-        val slots = ship.weaponSlots ?: return ConstPoint(1125, 600)
-        val barX = weaponBoxX + slots * 97 + 20 - font.getWidth(game.translator["button_autofire"]) - 8
+        var slots = ship.weaponSlots ?: return ConstPoint(1125, 600)
+        // Hyperspace AdditionalWeaponSlots leaves the autofire button where four slots put it (its move is commented
+        // out, AdditionalWeaponSlots.cpp 375; oracle sw2-switch s1: six slots, the button under the fourth)
+        if (xyz.znix.xftl.hs.HS.active) slots = minOf(slots, 4)
+        val barX = weaponBoxX + slots * 97 + 20 - font.getExtentWidth(game.translator["button_autofire"]) - 8
         val barY = weaponBoxY + 63
 
         if (!PlatformSpecific.INSTANCE.isTouchUi)
@@ -3368,9 +4528,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         return ConstPoint(screenX, screenY)
     }
 
-    private inner class AutofireButton(pos: ConstPoint) : Button(game, pos, ConstPoint(font.getWidth(game.translator["button_autofire"]) + 8, 24)) {
+    private inner class AutofireButton(pos: ConstPoint) : Button(game, pos, ConstPoint(font.getExtentWidth(game.translator["button_autofire"]) + 8, 24)) {
         private val label = game.translator["button_autofire"]
-        private val textWidth = font.getWidth(label)
+        private val textWidth = font.getExtentWidth(label)
+        private val labelFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 62)
 
         private val tooltip = object : StandardTooltip(game) {
             override fun getText(): String {
@@ -3391,8 +4552,14 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             img.draw(x + 6f, y, x + 6f + textWidth - 3f, y + 50f, 17f, 0f, 18f, 50f)
             img.draw(x + size.x - 5f, y, x + size.x + 14f, y + 50f, 18f, 0f, 37f, 50f)
             val idle = if (ship.weapons?.autofire == true) TEXT_BUTTON_SELECTED else TEXT_BUTTON_DISABLED
-            val fill = if (hovered) Colour.lerp(idle, Colour.white, 0.5f) else idle
-            Buttons.drawTextButton(g, pos.x, pos.y, size.x, size.y, 4, label, font, fill)
+            // Hyperspace: WeaponControl::SetAutofiring's colours (HsColors, <colors><textButtons>)
+            val fill = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsColors.autofire(ship.weapons?.autofire == true, hovered)
+                else if (hovered) Colour.lerp(idle, Colour.white, 0.5f) else idle
+            // WeaponControl::OnLanguageChange: a TextButton in font 62, so the label sits by the font's
+            // measured line height, not by its glyphs (Polish AUTOM. OSTRZAŁ, whose Ł descends)
+            g.colour = fill
+            Buttons.drawChamfer(g, pos.x, pos.y, size.x, size.y, 4)
+            labelFont.printButtonLabel(pos.x, pos.y, size.x, size.y, label, xyz.znix.xftl.hs.render.HsColors.tbText())
 
             if (hovered)
                 g.tooltip = tooltip
@@ -3479,7 +4646,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // Move these out to save a few allocations
         // (it's probably well into paranoid territory, but why not)
         private val nameLines by lazy { weaponNameText.wrapString(name, if (ownerSystem is Weapons) 55 else 58) }
-        private val weaponNumberString = (slotNumber + 1).toString()
+        // ArmamentBox: the box shows its hotkey's key (Settings::GetHotkeyName of weapon1-4 / drone1-3, by default 1-4
+        // and 5-7; oracle sw3-drone d1: the drone boxes read 5 and 6), the slot number where no hotkey exists
+        private val weaponNumberString: String get() = armamentHotkeyLabel(ownerSystem is Weapons, slotNumber)
 
         override fun draw(g: Graphics) {
             if (hovered) {
@@ -3552,9 +4721,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             g.lineWidth = 1f
 
             // Draw the weapon/drone number itself
-            val weaponNumberWidth = weaponNumberFont.getWidth(weaponNumberString)
+            // It is printed from the left at a set offset by the box's 1-based number (ArmamentControl counts
+            // them): 5 px for 1, 3 for 4 and 7, else 4, whatever the label and its font.
+            val numberOffset = when (slotNumber + 1) { 1 -> 5; 4, 7 -> 3; else -> 4 }
             weaponNumberFont.drawString(
-                (numBoxX + 2 + 1 + (8 - weaponNumberWidth) / 2).f,
+                (numBoxX + numberOffset).f,
                 pos.y + size.y - 4f,
                 weaponNumberString,
                 mainColour
@@ -3562,11 +4733,15 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
             // Draw the item name, which is split across
             // multiple lines to fit in the box.
-            var lineY = pos.y + 15
-            for (line in nameLines) {
-                weaponNameText.drawString(pos.x + 26f, lineY.f, line, mainColour)
+            // Hyperspace: ArmamentBox::nameOffset, nameWidth and xOffset written by a script.
+            val written = if (ownerSystem is Weapons) xyz.znix.xftl.hs.lua.LuaAdaptersArmament.boxWrites(ship, slotNumber) else null
+            var lineY = pos.y + 15 + (written?.nameDy ?: 0)
+            val nameX = pos.x + 26f + (written?.nameDx ?: 0)
+            for (line in if (written != null && written.nameWidth != 55) weaponNameText.wrapString(name, written.nameWidth) else nameLines) {
+                weaponNameText.drawString(nameX, lineY.f, line, mainColour)
                 lineY += 15
             }
+            val barDx = written?.barDx ?: 0
 
             for (bar in 0 until requiredPower) {
                 val y = pos.y + size.y - 11 - bar * 8
@@ -3576,18 +4751,18 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 val flash = tutorialPowerFlashAlpha
                 if (flash > 0f) {
                     g.colour = Colour(1f, 0f, 0f, flash)
-                    g.fillRect((pos.x + 4).f, y.f, 16f, 7f)
+                    g.fillRect((pos.x + 4 + barDx).f, y.f, 16f, 7f)
                 }
 
                 if (zoltanPower > bar) {
                     g.colour = WEAPONS_ITEM_ENERGY_ZOLTAN
                 } else if (droneCooldownProgress != null) {
                     g.colour = WEAPONS_ITEM_DRONE_COOLDOWN
-                    g.drawRect((pos.x + 4).f, y.f, (16 - 1).f, (7 - 1).f)
+                    g.drawRect((pos.x + 4 + barDx).f, y.f, (16 - 1).f, (7 - 1).f)
                     continue
                 } else if (!isPowered) {
                     g.colour = WEAPONS_ITEM_ENERGY_UNPOWERED
-                    g.drawRect((pos.x + 4).f, y.f, (16 - 1).f, (7 - 1).f)
+                    g.drawRect((pos.x + 4 + barDx).f, y.f, (16 - 1).f, (7 - 1).f)
                     continue
                 } else if (isBeingHacked) {
                     g.colour = SYSTEM_HACKED
@@ -3598,7 +4773,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 } else {
                     g.colour = WEAPONS_ITEM_ENERGY_POWERED
                 }
-                g.fillRect((pos.x + 4).f, y.f, 16f, 7f)
+                g.fillRect((pos.x + 4 + barDx).f, y.f, 16f, 7f)
             }
 
             drawHackingSparks()
@@ -3643,7 +4818,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     /**
      * This is the button that adjusts a system's power.
      */
-    private inner class SystemPowerButton(pos: IPoint, val system: AbstractSystem) :
+    private inner class SystemPowerButton(pos: IPoint, private val ownSystem: AbstractSystem) :
         Button(game, pos, ConstPoint(26, 26)) {
 
         // Subsystems can't be clicked, so don't play their hover noise.
@@ -3651,10 +4826,41 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // to activate any hovering-related stuff for something you can't click.
         override val disabled: Boolean get() = system !is MainSystem
 
-        private val tooltip = system.createTooltip()
+        private val tooltip = ownSystem.createTooltip()
+
+        /** Hyperspace's Lua SystemBox for this button (null without HS Lua); see HsSystemBox. */
+        private val hsBoxMade = xyz.znix.xftl.hs.systems.HsSystemBox.of(ownSystem, pos)
+        // the current box (CreateSystemBoxes may have replaced it since this button was made)
+        private val hsBox: xyz.znix.xftl.hs.systems.HsSystemBox? get() = xyz.znix.xftl.hs.systems.HsSystemBox.existing(ownSystem) ?: hsBoxMade
+        val system: AbstractSystem get() = hsBox?.shown ?: ownSystem
+        private var hsLastX = Int.MIN_VALUE
+        private var hsLastY = Int.MIN_VALUE
+        private var hsMovePreempted = false
+        /** This box's SYSTEM_BOX_MOUSE_CLICK of the current click was pre-empted. */
+        var hsClickPreempted = false
+
+        fun hsMouseClick(shift: Boolean): Boolean = hsBox?.let { xyz.znix.xftl.hs.systems.HsSystemBox.mouseClick(it, shift) } == true
+
+        override fun update(x: Int, y: Int, blockHover: Boolean) {
+            val box = hsBox
+            if (box != null) {
+                // SystemControl::MouseMove reaches every box on each move; a pre-empted move skips SystemBox's own.
+                if (x != hsLastX || y != hsLastY) {
+                    hsLastX = x; hsLastY = y
+                    hsMovePreempted = xyz.znix.xftl.hs.systems.HsSystemBox.mouseMove(box, x, y)
+                }
+                if (hsMovePreempted) return
+                super.update(x - box.shiftX, y - box.shiftY, blockHover)
+                return
+            }
+            super.update(x, y, blockHover)
+        }
 
         override fun draw(g: Graphics) {
-            system.drawIconAndPower(game, g, true, true, hovered, pos.x, pos.y)
+            xyz.znix.xftl.hs.systems.HsSystemBox.render(hsBox, g, false) {
+                val box = hsBox
+                system.drawIconAndPower(game, g, true, true, hovered, pos.x + (box?.shiftX ?: 0), pos.y + (box?.shiftY ?: 0))
+            }
 
             if (rawHovered) {
                 g.tooltip = tooltip
@@ -3662,9 +4868,13 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         override fun click(button: Int) {
+            val system = this.system
             // You can't adjust the power of subsystems
             if (system !is MainSystem)
                 return
+
+            // SYSTEM_BOX_MOUSE_CLICK(box, shift) ran in mouseClick for every box: a pre-empted click does nothing.
+            if (button == Input.MOUSE_LEFT_BUTTON && hsClickPreempted) { hsClickPreempted = false; return }
 
             if (button == Input.MOUSE_LEFT_BUTTON) {
                 // Touch UI: tapping a system opens the iPad-style power
@@ -3745,27 +4955,60 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
     }
 
+    /**
+     * ShipStatus::RenderResources (native 1.6.14 0x555a40; HS 1.6.9 0x53f1b0) creates
+     * messages in fuel/missiles/drones/scrap order, once per render after a counter changes.
+     * Kept separate so diagnostics that elide graphics can still perform this native render work.
+     */
+    fun prepareResourceMessages() {
+        val fuel = ship.fuelCount
+        val missiles = ship.missilesCount
+        val drones = ship.dronesCount
+        val scrap = ship.scrap
+        if (fuel != lastResources.fuel)
+            resourceDeltaAnimations.add(ResourceDeltaText(180f, 104f, fuel - lastResources.fuel))
+        // The native replicator flag coalesces with a changed missile count into one message.
+        if (missiles != lastResources.missiles || ship.replicatorProcPopups > 0)
+            resourceDeltaAnimations.add(ResourceDeltaText(247f, 104f, missiles - lastResources.missiles))
+        ship.replicatorProcPopups = 0
+        if (drones != lastResources.droneParts)
+            resourceDeltaAnimations.add(ResourceDeltaText(314f, 104f, drones - lastResources.droneParts))
+        if (scrap != lastResources.scrap)
+            resourceDeltaAnimations.add(ResourceDeltaText(465f, 70f, scrap - lastResources.scrap))
+        lastResources.fuel = fuel
+        lastResources.missiles = missiles
+        lastResources.droneParts = drones
+        lastResources.scrap = scrap
+    }
+
+    /**
+     * DamageMessage(1 s, amount, x, y, signed) (HS) as ShipStatus::RenderResources
+     * makes it: images, not text. The sign (numbers/Text_plus.png, Text_minus.png; none for 0) at (-50, -46) from the
+     * point, the digits of the amount (numbers/Text_<d>_L.png, a zero amount its 0) from (-32, -46) 16 px apart, all white;
+     * the point moves by random32() % 21 - 10 in x (even a zero (replicator) message makes that draw) and, signed, sinks
+     * 10 px over the second (OnRender: progress x 10). Oracle sw5-pow r0.
+     */
     private inner class ResourceDeltaText(var x: Float, var y: Float, amount: Int) {
         private var age: Float = 0f
-
-        private val text: String = when {
-            amount > 0 -> "+$amount"
-            else -> amount.toString()
-        }
+        private val parts = ArrayList<Pair<Image, Float>>()
 
         val finished: Boolean get() = age >= 1f
 
         init {
-            x -= numberDeltaFont.getWidth(text) / 2f
-            y += numberDeltaFont.baselineToTop * numberDeltaFont.scale
+            if (amount > 0) parts += game.getImg("img/numbers/Text_plus.png") to -50f
+            else if (amount < 0) parts += game.getImg("img/numbers/Text_minus.png") to -50f
+            kotlin.math.abs(amount).toString().forEachIndexed { i, c ->
+                parts += game.getImg("img/numbers/Text_${c}_L.png") to (-32f + 16f * i)
+            }
+            x += ftl.browser.NativeRandom.nextInt(21) - 10
         }
 
         fun draw(g: Graphics) {
-            numberDeltaFont.drawStringPaired(numberDeltaFontBg, x, y, text, Colour.black, Colour.white)
+            for ((image, dx) in parts) image.draw(x + dx, y - 46f)
         }
 
         fun update(dt: Float) {
-            y += 15f * dt
+            y += 10f * dt
             age += dt
         }
     }
@@ -3812,5 +5055,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // CrewBox's power bar colour (runtime DAT_00915d00), as captured from the original.
         private val LOCKDOWN_CHARGE = Colour(133, 231, 237)
         private const val CREW_BOX_SPACING = 30
+        private const val HS_CREW_PAGE = 8
+        private val HS_ENEMY_BOX_FILL = Colour(255, 0, 0)
+        private val HS_ENEMY_BOX_BORDER = Colour(153, 76, 76)
     }
 }

@@ -12,6 +12,8 @@ import java.io.File
 import java.io.InputStream
 
 const val HEADER_SIZE = 16
+/** The image FTL draws in place of one it cannot load. */
+const val NULL_RESOURCE = "img/nullResource.png"
 const val ENTRY_SIZE = 20
 interface IVanillaDatafile {
     fun getAllFiles(): List<VanillaDatafile.Entry>
@@ -36,9 +38,19 @@ open class Datafile {
     fun getOrNull(name: String): FTLFile? = if(BrowserFiles.contains(name)) FTLFile(name) else null
     fun read(file: FTLFile): ByteArray = BrowserFiles.read(file.name)
     fun readString(file: FTLFile) = String(read(file), Charsets.UTF_8).replace("\r\n", "\n")
-    fun parseXML(file: FTLFile): Document = BrowserXml.parse(readString(file))
+    fun parseXML(file: FTLFile): Document = xyz.znix.xftl.hs.HsLoad.parseXml(file.name, readString(file))
     fun open(file: FTLFile): InputStream = ByteArrayInputStream(read(file))
-    open fun readImage(context: ResourceContext, file: FTLFile): Image = StagedImageLoad(context, file.name, read(file)).finish()
+    /**
+     * As in FTL, a file that cannot be read as an image (not a PNG, an interlaced PNG) loads as
+     * `img/nullResource.png`, the image shown for a missing file, and the log says "Error! Could not parse file".
+     */
+    open fun readImage(context: ResourceContext, file: FTLFile): Image = try {
+        StagedImageLoad(context, file.name, read(file)).finish()
+    } catch (e: Exception) {
+        if (file.name == NULL_RESOURCE || getOrNull(NULL_RESOURCE) == null) throw e
+        println("Error! Could not parse file: ${file.name} ($e)")
+        StagedImageLoad(context, NULL_RESOURCE, read(get(NULL_RESOURCE))).finish()
+    }
     fun getAllFiles() = BrowserFiles.names().map { FTLFile(it) }
     companion object { fun loadWithMods(v: VanillaDatafile) = Datafile() }
 }

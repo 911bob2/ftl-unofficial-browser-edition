@@ -21,7 +21,8 @@ object AIUtils {
             is Engines, is Drones, is Piloting -> 4
             is Medbay -> if (ai.medbayBusy) 1 else 2
             is Teleporter -> if (ai.teleporterIdle) 3 else 1
-            is Cloaking, is MindControl, is Hacking -> 5
+            // CrewAI::PrioritizeTask hook (TemporalSystem.cpp): the temporal system counts as hacking.
+            is Cloaking, is MindControl, is Hacking, is xyz.znix.xftl.hs.systems.Temporal -> 5
             is Sensors, is BackupBattery -> 6
             is Doors -> 7
             else -> 8
@@ -82,6 +83,13 @@ object AIUtils {
         // A hacked medbay is, unsurprisingly, dangerous
         val medbay = room.system as? Medbay
         if (medbay?.isHackActive == true) {
+            return true
+        }
+
+        // Hyperspace CrewAI::DangerRating hook (StatBoost.cpp): a room the native check calls safe is still
+        // dangerous to a crew member below the dangerRating health fraction of a stat boost applying there.
+        if (xyz.znix.xftl.hs.HS.active &&
+            xyz.znix.xftl.hs.crew.HsCrew.ex(crew).calculateDangerRating(healthFraction, room.id) == 0) {
             return true
         }
 

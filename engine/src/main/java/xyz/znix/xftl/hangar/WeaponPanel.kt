@@ -49,7 +49,7 @@ class WeaponPanel(val editor: ShipEditor) : UIObject {
 
         override fun draw(g: Graphics) {
             val weapon = editor.ship.weapons.getOrNull(slot)
-                ?.let { editor.state.blueprints[it] as AbstractWeaponBlueprint }
+                ?.let { editor.state.blueprints.getOrNull(it) as? AbstractWeaponBlueprint }
 
             val hovered = editor.isHovered(this) && !isDisabled
 

@@ -38,7 +38,7 @@ object TextureLoader {
 
         val max = GL11.glGetInteger(GL11.GL_MAX_TEXTURE_SIZE)
         if (imageData.texWidth > max || imageData.texHeight > max) {
-            throw IOException("Attempt to allocate a texture to big for the current hardware")
+            throw IOException("Attempt to allocate a texture to big for the current hardware: ${imageData.texWidth}x${imageData.texHeight} > $max")
         }
 
         val srcPixelFormat = if (hasAlpha) GL11.GL_RGBA else GL11.GL_RGB

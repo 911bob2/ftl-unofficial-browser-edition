@@ -80,15 +80,25 @@ internal object GameplayParityAsb6Checks {
     private fun start(main: MainGame, container: GameContainer): InGameState =
         BrowserGameplayParityDiagnostics.fresh(main, container)
 
+    /** All of a start beacon's neighbours can be in a nebula or an ion storm; every new game is a new map. */
+    private fun startWithOpenNeighbour(main: MainGame, container: GameContainer): InGameState {
+        repeat(30) {
+            val state = start(main, container)
+            if (state.currentBeacon.neighbours.any { !it.isMapNebula }) return state
+        }
+        error("No start beacon with a neighbour in open space in 30 games")
+    }
+
     /**
      * A beacon the map flashes is taken by the very jump into it: the fleet is there on arrival, the fleet's
      * event is its event, and the ASB is on the player. The flashing set is the set that jump overtakes.
      */
     private fun flashedDestination(main: MainGame, container: GameContainer): String {
-        val state = start(main, container)
+        val state = startWithOpenNeighbour(main, container)
         val from = state.currentBeacon
         val sector = from.sector
-        val dest = from.neighbours.firstOrNull { d -> placeZone(sector) { flashing(sector, from, d) } }
+        // A nebula beacon the fleet takes keeps its nebula and has no ASB: the check needs one in open space.
+        val dest = from.neighbours.firstOrNull { d -> !d.isMapNebula && placeZone(sector) { flashing(sector, from, d) } }
         checkNotNull(dest) { "No zone position flashes a neighbour" }
 
         val before = sector.beacons.associateWith { it.isOvertaken }

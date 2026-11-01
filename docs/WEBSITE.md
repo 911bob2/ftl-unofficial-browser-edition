@@ -10,6 +10,20 @@ The full banner appears on sign-in and Play; utility screens use the compact
 header and gameplay keeps only its toolbar and canvas. Existing URLs, account
 permissions, game controls and save behavior are preserved.
 
+## Isolated FTL preview
+
+In the `codex/ftl-website-ui` worktree, run `npm ci`, `npm run build:web`, then
+`docker build -t ftl-browser-native:ftl-website-ui .` and
+`./tools/StartFtlPreview.ps1`. The preview is http://localhost:8086, container
+`ftl-website-preview`, with separate data under `.build/ftl-website/preview-data/`.
+Initial sign-in details are in its ignored `bootstrap-credentials.txt`; the
+normal first-sign-in password change is required. Existing accounts/saves and
+the 8080/VM deployments are not used by the preview. Run the same script after
+rebuilding to retain preview data; it checks container ownership before replacing it.
+
+Asset provenance is recorded in `web/ftl/README.md`; license notices are available
+at `/Licenses`. Browser screenshot/test evidence stays under ignored `.build/`.
+
 ## Account permissions
 
 | Role | Play, cloud saves, local tests | Server game assets | Server tests | Users administration |
@@ -27,14 +41,14 @@ users (see below).
 Users includes search, filters, sorting, a details drawer, security actions and
 per-account errors. Temporary credentials appear only in a dismissible panel.
 Role changes, disablement, password resets and revocation invalidate the account's
-sessions and play leases. Losing administrator access cancels owned server jobs.
+sessions (save locks stay; they never expire). Losing administrator access cancels owned server jobs.
 Self-disablement, self-demotion and self-deletion are forbidden. Transactional
 checks preserve the final enabled administrator and reject stale account versions.
 
 Deletion requires the exact username and first disables access. Cleanup intent
 is persisted in Settings, so failed or interrupted cleanup retries after restart.
 The account remains **Deletion pending** until saves, snapshots, diagnostics,
-sessions, leases, job state and Identity records are removed. Minimal security
+sessions, job state and Identity records are removed. Minimal security
 audit records remain. Remote browser caches and operational backups are not erased.
 
 ## First visit, registration and local-only mode
@@ -78,7 +92,7 @@ directory, so restarts keep sessions. A password change, role change, disablemen
 revocation still ends them, and Sign out clears the cookie.
 
 **Account deletion.** **Account** offers a permanent, irreversible deletion that
-needs the current password, can export a save backup first and uses the same
+needs the current password, can download a backup of every save first and uses the same
 deletion pipeline as an administrator (the account is signed out at once and shows
 as deletion pending until its data is removed). The final enabled administrator
 cannot delete their own account.
@@ -87,26 +101,24 @@ cannot delete their own account.
 visitors read exactly what an External user reads, through `/api/public/game/config`
 and `/api/public/game/resources` (engine metadata and the engine resource bundle);
 saves, private assets and every other API still need sign-in. The visitor's own
-`ftl.dat` is cached in this browser as before. Saves are kept in IndexedDB (current
-save plus ten history entries, committed in one transaction with a revision
-counter) with a copy in localStorage for when IndexedDB is cleared, blocked or the
-tab closes before its commit finishes; the higher revision wins on load and the
-other store is repaired. Cookies are not used for saves: about 4 KB each and sent
-with every request. The browser is asked for persistent storage when the game is
-launched and the Saves panel shows whether it was granted. **Saves** offers a local
-backup (the same JSON as a cloud backup), import and recovery snapshots; **Logs**
-records device-local diagnostics. Local navigation is Play, Saves, Logs and About.
+`ftl.dat` is cached in this browser as before. Saves use the same device store and
+screens as an account ([saves](SAVES.md), "Browser client") without the network: no
+recovery snapshots, and the tab rule for locks. Cookies are not used for saves. The
+browser is asked for persistent storage when the game is launched and the Saves panel
+shows whether it was granted. **Saves** offers a backup of each save and import;
+**Logs** records device-local diagnostics. Local navigation is Play, Saves, Logs and
+About.
 
-**Enable cloud saves** (header, local mode) leads to register or sign in. If a local
-save exists, a dialog moves it into the account: with no cloud save it is uploaded,
-read back and removed from the browser; with an existing cloud save the visitor
-chooses which one to keep after being offered a backup of either. Nothing is
-overwritten without that choice, and the Saves page keeps a card for moving the
-browser save later. The cached `ftl.dat` is copied to the new account.
+**Enable cloud saves** (header, local mode) leads to register or sign in; the local
+saves then move into the account as saves of their own (nothing is replaced) and
+upload, each with its own unlocks. A plain sign-in leaves
+them in the browser and the Saves page offers to move them. The cached `ftl.dat` is
+copied to the new account.
 
-**Saving from code.** `window.ftlSaveDurably()` captures the engine and resolves
-after the cloud write or the local IndexedDB commit has finished (`{saved, backend,
-revision}`); it throws when the save could not be stored.
+**Saving from code.** `window.ftlSaveDurably()` captures the engine, resolves once the
+save is in this browser's device store and tries the upload (`{saved, backend:
+'device', id, synced}`); it throws when this browser could not store the save.
+`window.ftlSyncNow()` runs one sync pass (`{online, error, lastSync}`).
 
 ## External users: choose your ftl.dat
 
@@ -143,6 +155,16 @@ import checks use metadata rather than the restricted manifest.
 - `/api/game/resources` serves only the reviewed engine bundle to playable accounts.
 - Every private `/api/assets` operation requires Admin or Normal.
 - Every `/api/tests` operation requires Admin, including availability and polling.
+- `/api/mods/files/{id}` serves operator-placed Hyperspace files to every playable role and never Multiverse; see
+  `docs/MODS.md`.
+- `/api/saves` (save model 3, [SAVES.md](SAVES.md)): up to 30 saves per account, each holding its unlocks and run, with
+  revisions, per-save locks (`X-FTL-Instance` per tab, `X-FTL-Device` per browser) and snapshots. Saves lists every
+  save with its mods badge, status, lock line, Play and a ⋯ menu (Rename, Download backup, Recovery snapshots, Advanced:
+  mods, Delete); the Play page names the save Launch FTL uses ("Save: Save 2 · No mods") with a Change link. Play,
+  Saves and Mods re-read their data whenever they become visible (tab switch, focus, `visibilitychange`), after every
+  action and when another tab of the browser changes saves or mods (`BroadcastChannel` `ftl-saves`, the `storage`
+  event of `ftl-mods-enabled:*`); no reload is needed. Questions use the page's own dialogs, never
+  `prompt`/`confirm`/`alert`.
 - Account administration mutations require the current `version`; role changes
   use `PATCH /api/admin/users/{id}/role`. Deletion uses `DELETE` with
   `confirmUsername` and `version`. The details endpoint reports the live data removed.
@@ -152,8 +174,9 @@ import checks use metadata rather than the restricted manifest.
 Authentication is server-validated before the initial Razor shell is displayed.
 Client session checks distinguish signed-out, required password change and
 retryable connection failure. Optional account tools cannot turn a valid session
-into a sign-in screen. Game and diagnostics modules load when needed. Navigation
-retains pending-save recovery, revision checks and lease protection.
+into a sign-in screen. Game and diagnostics modules load when needed. Saves are in
+this browser before anything is sent, so navigation and connection failures lose
+nothing; revisions and per-save locks protect the account's copy.
 
 ## Verification and recovery
 

@@ -10,6 +10,7 @@ import xyz.znix.xftl.math.IPoint
 import xyz.znix.xftl.rendering.Colour
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.systems.Drones
+import xyz.znix.xftl.sys.Input
 import xyz.znix.xftl.sys.PlatformSpecific
 import xyz.znix.xftl.ui.ImageView
 import xyz.znix.xftl.ui.Label
@@ -73,6 +74,133 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     private val overCapacityBoxes = ArrayList<OverCapacityBox>()
     private val cargoSlots = HashMap<Button, Int>()
 
+    // Hyperspace (CustomEquipment.cpp): the augment and cargo pages, the augment index each shown box stands for, the
+    // dummy boxes of a missing weapon or drone system, and the paging arrows.
+    private val hsUi: Boolean get() = ship.hs != null && xyz.znix.xftl.hs.HS.active
+    private var hsAugPage = 0
+    private var hsCargoPage = 0
+    private val augmentIndex = HashMap<Button, Int>()
+    private val hsDummies = ArrayList<Triple<Int, Int, String>>()
+    private var hsAugPageCount = 1
+    private var hsCargoPageCount = 1
+
+    // Touch layout: a tap selects a box (shown like a hovered box, with its info). Pressing the selected box again and
+    // moving over 9 px picks the item up, with the item's middle following the finger from where it was; that middle is
+    // what the drop looks at. The selection is kept as the box's place, since the boxes are remade when the ship changes.
+    private var touchSelectedPos: IPoint? = null
+    private var touchCandidate: Buttons.DragDropBlueprintButton? = null
+    private var touchStart: IPoint = ConstPoint.ZERO
+    private var touchDragOrigin: IPoint = ConstPoint.ZERO
+    private var touchInfoX = Int.MAX_VALUE
+
+    /** The store's sell tab: selling the selected item, in place of dragging it to a drop box. */
+    private val touchSell by lazy {
+        TouchGetBox(
+            game, game.translator["button_sell"],
+            { touchSelectedButton()?.blueprint?.let { (it.cost ?: 0) / 2 } },
+            { touchSelectedButton()?.let { !hsLocked(it.blueprint) } == true },
+            ::touchSellSelected
+        )
+    }
+
+    private fun touchSelectedButton(): Buttons.DragDropBlueprintButton? {
+        val selected = touchSelectedPos ?: return null
+        return buttons.firstOrNull {
+            it is Buttons.DragDropBlueprintButton && it.blueprint != null &&
+                it.basePos.x == selected.x && it.basePos.y == selected.y
+        } as Buttons.DragDropBlueprintButton?
+    }
+
+    private fun touchSellSelected() {
+        val selected = touchSelectedButton() ?: return
+        val sell = sellButton ?: return
+        selected.callback()
+        if (draggingBlueprint == null) return
+        dropBlueprint(sell)
+        touchSelectedPos = null
+    }
+
+    private fun touchPress(button: Int, x: Int, y: Int) {
+        touchCandidate = null
+        if (button != Input.MOUSE_LEFT_BUTTON) return
+        if (sellUI && touchSell.press(x, y)) return
+
+        for (btn in ArrayList(buttons)) {
+            if (btn !is Buttons.DragDropBlueprintButton) btn.mouseDown(button, x, y)
+        }
+
+        val box = buttons.lastOrNull { it is Buttons.DragDropBlueprintButton && it.contains(x, y) } as Buttons.DragDropBlueprintButton?
+        when {
+            // The info column takes touches without touching the selection.
+            box == null && sellUI && x >= touchInfoX -> Unit
+            box == null || box.blueprint == null -> touchSelectedPos = null
+            touchSelectedButton() === box -> {
+                touchCandidate = box
+                touchStart = ConstPoint(x, y)
+            }
+            else -> touchSelectedPos = box.basePos
+        }
+    }
+
+    private fun touchMove(x: Int, y: Int) {
+        val candidate = touchCandidate
+        if (candidate != null) {
+            val dx = x - touchStart.x
+            val dy = y - touchStart.y
+            if (dx * dx + dy * dy > TOUCH_DRAG_DIST * TOUCH_DRAG_DIST) {
+                touchCandidate = null
+                candidate.callback() // A locked augment stays where it is.
+                touchDragOrigin = candidate.pos + touchGrabPoint(candidate)
+            }
+        }
+
+        val dragging = draggingBlueprint
+        if (dragging != null) {
+            val hitX = touchDragOrigin.x + x - touchStart.x
+            val hitY = touchDragOrigin.y + y - touchStart.y
+            // Augments are drawn from their corner, everything else from its middle.
+            dragging.dragPosition = if (dragging.blueprint is AugmentBlueprint) {
+                val grab = touchGrabPoint(dragging)
+                ConstPoint(hitX - grab.x, hitY - grab.y)
+            } else {
+                ConstPoint(hitX, hitY)
+            }
+            for (button in buttons) button.update(hitX, hitY)
+            return
+        }
+
+        val selected = touchSelectedButton()
+        for (button in buttons) {
+            when {
+                button !is Buttons.DragDropBlueprintButton -> button.update(x, y)
+                button === selected -> button.update(button.pos.x + 1, button.pos.y + 1)
+                else -> button.update(-1, -1)
+            }
+        }
+        if (sellUI) touchSell.updateHover(x, y)
+    }
+
+    private fun touchGrabPoint(box: Buttons.DragDropBlueprintButton): IPoint =
+        if (box.blueprint is AugmentBlueprint) ConstPoint(117, 20) else ConstPoint(50, 33)
+
+    private fun touchRelease() {
+        touchCandidate = null
+        val dragging = draggingBlueprint ?: return
+        val item = dragging.blueprint
+        val from = dragging.basePos
+        val to = buttons.firstOrNull { it is Buttons.DragDropBlueprintButton && it.hovered }?.basePos
+        dropBlueprint()
+
+        // The selection follows the item to the box it landed in.
+        val landed = to != null && buttons.any {
+            it is Buttons.DragDropBlueprintButton && it.blueprint === item && it.basePos.x == to.x && it.basePos.y == to.y
+        }
+        touchSelectedPos = if (landed) to else from
+    }
+
+    /** Where the over-capacity box goes: the touch layout has no room left of the window, so it uses the info column. */
+    private val overBoxPos: ConstPoint get() = if (TouchMode.enabled) ConstPoint(621, 330) else ConstPoint(-275 - 7, 100)
+
     private var draggingBlueprint: Buttons.DragDropBlueprintButton? = null
         set(value) {
             field = value
@@ -119,8 +247,21 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
                 Constants.SECTOR_CUTOUT_TEXT
             )
         }
+        if (hsUi) {
+            // CustomEquipment::OnRender: the missing system's dummy boxes at the configured opacity, and the page counters.
+            if (ship.weapons == null) missingSystemFont.drawString(position.x + 108f, position.y + 117f, game.translator["equipment_no_system"], Constants.SECTOR_CUTOUT_TEXT)
+            for ((x, y, img) in hsDummies) game.getImg(img).draw(position.x + x, position.y + y, Colour(1f, 1f, 1f, xyz.znix.xftl.hs.HS.cfg().dummyEquipmentSlotsOpacity))
+            if (hsAugPageCount > 1) {
+                val t = "${hsAugPage + 1}/$hsAugPageCount"
+                sectionFont.drawString(position.x + 575f - sectionFont.getWidth(t), position.y + 280f, t, Constants.JUMP_DISABLED_TEXT)
+            }
+            if (hsCargoPageCount > 1) {
+                val t = "${hsCargoPage + 1}/$hsCargoPageCount"
+                sectionFont.drawString(position.x + 281f - sectionFont.getWidth(t), position.y + 280f, t, Constants.JUMP_DISABLED_TEXT)
+            }
+        }
 
-        if (sellUI && ship.cargoBlueprints.drop(4).any { it != null }) sectionFont.drawString(position.x - 250f, position.y + 280f, "OVER CAPACITY", Constants.JUMP_DISABLED_TEXT)
+        if (sellUI && ship.cargoBlueprints.drop(4).any { it != null }) sectionFont.drawString(position.x + (if (TouchMode.enabled) 646f else -250f), position.y + (if (TouchMode.enabled) 360f else 280f), "OVER CAPACITY", Constants.JUMP_DISABLED_TEXT)
         for (button in buttons) {
             button.draw(g)
         }
@@ -128,7 +269,10 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
 
 
     /** EquipmentBox for an augment (box_augment art, name in font 13); also the over-capacity augment box. */
-    private fun augmentButton(buttonPos: IPoint, augment: Blueprint?): Buttons.DragDropBlueprintButton {
+    /** CustomAugments.cpp `locked`: such an augment is not moved, and shows a padlock beside its box. */
+    private fun hsLocked(bp: Blueprint?): Boolean = hsUi && bp is AugmentBlueprint && xyz.znix.xftl.hs.ship.HsAugments.isLocked(bp.name)
+
+    private fun augmentButton(buttonPos: IPoint, augment: Blueprint?, overBox: Boolean = false): Buttons.DragDropBlueprintButton {
         val size = ConstPoint(235, 40)
         // Use a separate variable so we can use the button in its callback.
         lateinit var button: Buttons.DragDropBlueprintButton
@@ -136,9 +280,10 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             buttonPos, game, null, size,
             { it is AugmentBlueprint },
             augment,
-            { draggingBlueprint = button }
+            { if (!hsLocked(button.blueprint)) draggingBlueprint = button }
         ) {
             override fun draw(g: Graphics) {
+                if (hsLocked(blueprint) && dragPosition == null) game.getImg("img/upgradeUI/Equipment/aug_lock.png").draw(pos.x - (if (overBox) 36 else 24), pos.y + 7)
                 // EquipmentBox::OnRender (0x00540150): the box_augment art, 'off' while
                 // empty (or while its augment is dragged away), 'selected' variants on hover.
                 val filled = blueprint != null && dragPosition == null
@@ -190,6 +335,10 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         return button
     }
 
+    /** Diagnostics (WP2 probe): the paging state of the Hyperspace equipment screen. */
+    val diagnosticState: String get() = "{\"augPage\":$hsAugPage,\"augPages\":$hsAugPageCount,\"cargoPage\":$hsCargoPage,\"cargoPages\":$hsCargoPageCount," +
+        "\"over\":${xyz.znix.xftl.hs.ship.HsEquipment.overCount(ship)},\"buttons\":${buttons.size}}"
+
     fun drawDrag(g: Graphics) {
         // Draw the dragged bit of equipment above everything else
         draggingBlueprint?.drawDrag(g)
@@ -205,11 +354,19 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         // Draw the weapons
         // Note: I think all the playable ships have weaponSlots set?
         weaponButtons.clear()
-        for (i in 0 until ship.weaponSlots!!) {
+        hsDummies.clear()
+        val hsNoWeapons = hsUi && ship.weapons == null
+        val weaponSlotCount = ship.weaponSlots ?: 4
+        if (hsNoWeapons) {
+            // CustomEquipment::OnRender: without a weapon system the boxes are not drawn, only (showDummyEquipmentSlots) faintly.
+            if (xyz.znix.xftl.hs.HS.cfg().showDummyEquipmentSlots)
+                for (i in 0 until weaponSlotCount) hsDummies += Triple(slotX(weaponSlotCount, i), 70, "img/upgradeUI/Equipment/box_weapons_off.png")
+        }
+        for (i in 0 until (if (hsNoWeapons) 0 else weaponSlotCount)) {
             val weapon = ship.hardpoints[i].weapon
 
             val images = ButtonImageSet.selected(game, "img/upgradeUI/Equipment/box_weapons", true)
-            val buttonPos = ConstPoint(slotX(ship.weaponSlots!!, i), 70)
+            val buttonPos = ConstPoint(slotX(weaponSlotCount, i), 70)
 
             // Use a separate variable so we can use the button in its callback.
             lateinit var button: Buttons.DragDropBlueprintButton
@@ -227,6 +384,10 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         // Draw the drones
         droneButtons.clear()
         val droneSystem = ship.drones
+        if (droneSystem == null && hsUi && xyz.znix.xftl.hs.HS.cfg().showDummyEquipmentSlots) {
+            val n = ship.droneSlots ?: 2
+            for (i in 0 until n) hsDummies += Triple(slotX(n, i), 180, "img/upgradeUI/Equipment/box_drones_off.png")
+        }
         if (droneSystem != null) {
             val images = ButtonImageSet.selected(game, "img/upgradeUI/Equipment/box_drones", true)
 
@@ -244,12 +405,19 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             }
         }
 
-        // Draw the augments area
+        // Draw the augments area. ShipInfo::augList is a std::map: Equipment fills the boxes in blueprint-name order,
+        // whatever order the augments came in (oracle sw2-ship q1, HS leaves the native Equipment boxes alone).
+        if (ship.augments.zipWithNext().any { (a, b) -> a.name > b.name }) ship.augments.sortBy { it.name }
         augmentButtons.clear()
-        for (i in 0 until 3) {
-            val button = augmentButton(ConstPoint(323, 293 + i * 60), ship.augments.getOrNull(i))
+        augmentIndex.clear()
+        val augTotal = ship.augmentSlotCount
+        hsAugPageCount = xyz.znix.xftl.hs.render.HsUpgrades.pages(augTotal, 3)
+        hsAugPage = hsAugPage.coerceIn(0, hsAugPageCount - 1)
+        for (i in (if (hsUi) hsAugPage * 3 else 0) until (if (hsUi) minOf(augTotal, hsAugPage * 3 + 3) else 3)) {
+            val button = augmentButton(ConstPoint(323, 293 + (i % 3) * 60), ship.augments.getOrNull(i))
             buttons += button
             augmentButtons += button
+            augmentIndex[button] = i
         }
 
         // Equipment::SetPosition (0x539430): outside the store each overflow slot has its own over-capacity
@@ -269,14 +437,26 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             buttons += overCapacityBoxes
         }
 
-        // Draw the cargo area
-        for (i in 0 until 6) {
-            if (i >= 4 && (if (sellUI) ship.cargoBlueprints.drop(4).all { it == null } else !overCapacityShown(i))) continue
-            val blueprint = ship.cargoBlueprints[i]
+        // Draw the cargo area. [i] is the slot id (0-3 the first boxes, 4 and 5 the over-capacity boxes, 100 + n Hyperspace's
+        // extra cargo slot 4 + n); [ordinal] the box's place among the ordinary ones.
+        val cargoTotal = ship.cargoSlotCount
+        hsCargoPageCount = xyz.znix.xftl.hs.render.HsUpgrades.pages(cargoTotal, 4)
+        hsCargoPage = hsCargoPage.coerceIn(0, hsCargoPageCount - 1)
+        val cargoIds = ArrayList<Int>()
+        if (hsUi) {
+            for (j in hsCargoPage * 4 until minOf(cargoTotal, hsCargoPage * 4 + 4)) cargoIds += if (j < 4) j else 100 + (j - 4)
+        } else {
+            cargoIds += listOf(0, 1, 2, 3)
+        }
+        cargoIds += listOf(4, 5)
+        for (i in cargoIds) {
+            if (i in 4..5 && (if (sellUI) ship.cargoBlueprints.drop(4).all { it == null } else !overCapacityShown(i))) continue
+            val blueprint = slotGet(i)
+            val ordinal = if (i >= 100) i - 100 + 4 else i
 
             if (i == 5 && !sellUI) {
                 val box = overCapacityBoxes.last()
-                val augmentBox = augmentButton(ConstPoint(box.basePos.x + 19, box.basePos.y + box.bodySpaceOffset + 4), blueprint)
+                val augmentBox = augmentButton(ConstPoint(box.basePos.x + 19, box.basePos.y + box.bodySpaceOffset + 4), blueprint, true)
                 buttons += augmentBox
                 cargoButtons += augmentBox
                 cargoSlots[augmentBox] = i
@@ -295,9 +475,9 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             val itemBox = overCapacityBoxes.firstOrNull()
             val buttonPos = if (i == 4 && !sellUI && itemBox != null)
                 ConstPoint(itemBox.basePos.x + 80, itemBox.basePos.y + itemBox.bodySpaceOffset)
-            else if (i >= 4) ConstPoint(-250, 293 + 80 * (i - 4)) else ConstPoint(
-                23 + 130 * (i % 2),
-                293 + 80 * (i / 2)
+            else if (i in 4..5) (if (TouchMode.enabled) ConstPoint(646, 373 + 80 * (i - 4)) else ConstPoint(-250, 293 + 80 * (i - 4))) else ConstPoint(
+                23 + 130 * (ordinal % 2),
+                293 + 80 * ((ordinal % 4) / 2)
             )
 
             // Use a separate variable so we can use the button in it's callback.
@@ -347,7 +527,24 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
 
             sellBoxLocalPos = sellBoxPlacer?.invoke(sellButton!!.size) ?: ConstPoint(-275, 107)
 
-            buttons += sellButton!!
+            // The touch layout sells with a button instead, by the info box.
+            if (!TouchMode.enabled) buttons += sellButton!!
+        }
+
+        if (hsUi) {
+            // CustomEquipment's paging buttons (Button::OnInit images and locations, 7 px left for this panel's frame).
+            if (hsAugPageCount > 1) {
+                buttons += ArrowButton("img/statusUI/button_crew_up", ConstPoint(564, 339), false) { hsAugPage = (hsAugPage + hsAugPageCount - 1) % hsAugPageCount; updateButtons() }
+                buttons += ArrowButton("img/statusUI/button_crew_down", ConstPoint(564, 394), false) { hsAugPage = (hsAugPage + 1) % hsAugPageCount; updateButtons() }
+            }
+            if (hsCargoPageCount > 1) {
+                buttons += ArrowButton("img/upgradeUI/buttons_system_arrow", ConstPoint(9, 369), false) { hsCargoPage = (hsCargoPage + hsCargoPageCount - 1) % hsCargoPageCount; updateButtons() }
+                buttons += ArrowButton("img/upgradeUI/buttons_system_arrow", ConstPoint(271, 369), true) { hsCargoPage = (hsCargoPage + 1) % hsCargoPageCount; updateButtons() }
+            }
+            if (xyz.znix.xftl.hs.ship.HsEquipment.overCount(ship) > 1) {
+                buttons += ArrowButton("img/upgradeUI/Equipment/button_crew_arrow", ConstPoint(overBoxPos.x + 180, overBoxPos.y - 30), false) { xyz.znix.xftl.hs.ship.HsEquipment.turnOverPage(ship, false); updateButtons() }
+                buttons += ArrowButton("img/upgradeUI/Equipment/button_crew_arrow", ConstPoint(overBoxPos.x + 215, overBoxPos.y - 30), true) { xyz.znix.xftl.hs.ship.HsEquipment.turnOverPage(ship, true); updateButtons() }
+            }
         }
 
         for (button in buttons) {
@@ -361,6 +558,11 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     }
 
     fun updateUI(x: Int, y: Int) {
+        if (TouchMode.enabled) {
+            touchMove(x, y)
+            return
+        }
+
         for (button in buttons) {
             button.update(x, y)
         }
@@ -379,6 +581,11 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     fun buttonAt(x: Int, y: Int): Button? = buttons.firstOrNull { it.contains(x, y) }
 
     fun mouseClick(button: Int, x: Int, y: Int) {
+        if (TouchMode.enabled) {
+            touchPress(button, x, y)
+            return
+        }
+
         // Copied from Window.
         // Mouse clicking may change the buttons array (eg in the store
         // window when switching tabs), so copy it.
@@ -389,14 +596,32 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
 
     @Suppress("UNUSED_PARAMETER")
     fun mouseReleased(button: Int, x: Int, y: Int) {
+        if (TouchMode.enabled) {
+            if (button == Input.MOUSE_LEFT_BUTTON) touchRelease()
+            return
+        }
+
         if (draggingBlueprint != null)
             dropBlueprint()
+    }
+
+    /** CustomEquipment::OnScrollWheel: the wheel over the cargo or augment area turns that page ([change] < 0 = next page). */
+    fun mouseScroll(change: Int, mx: Int, my: Int) {
+        if (!hsUi || sellUI) return
+        val x = mx - position.x
+        val y = my - position.y
+        if (y < 264 || y >= 264 + 199) return
+        fun turn(page: Int, count: Int) = if (change < 0) (page + 1) % count else (page + count - 1) % count
+        if (x in 3 until 3 + 286 && hsCargoPageCount > 1) { hsCargoPage = turn(hsCargoPage, hsCargoPageCount); updateButtons() }
+        if (x in 293 until 293 + 290 && hsAugPageCount > 1) { hsAugPage = turn(hsAugPage, hsAugPageCount); updateButtons() }
     }
 
     fun getHoveredBlueprint(): Blueprint? {
         // Don't show anything while a blueprint is being dragged.
         if (draggingBlueprint != null)
             return null
+
+        if (TouchMode.enabled) return touchSelectedButton()?.blueprint
 
         val hoveredButton = buttons.firstOrNull { it.hovered }
         if (hoveredButton !is Buttons.DragDropBlueprintButton)
@@ -406,6 +631,22 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     }
 
     fun drawInfoPanel(infoPanel: InfoPanel) {
+        if (!TouchMode.enabled) {
+            drawHoveredInfo(infoPanel)
+            return
+        }
+
+        touchInfoX = infoPanel.position.x
+        infoPanel.touchBottom = 0
+        drawHoveredInfo(infoPanel)
+    }
+
+    /** The sell tab's SELL box, below the info [drawInfoPanel] just drew. */
+    fun drawTouchSell(g: Graphics, infoPanel: InfoPanel) {
+        if (getHoveredBlueprint() != null) touchSell.drawBelow(g, infoPanel) else touchSell.hide()
+    }
+
+    private fun drawHoveredInfo(infoPanel: InfoPanel) {
         val blueprint = getHoveredBlueprint() ?: return
         return when (blueprint) {
             is DroneBlueprint -> infoPanel.drawDrone(blueprint)
@@ -415,7 +656,7 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         }
     }
 
-    private fun dropBlueprint() {
+    private fun dropBlueprint(target: Button? = null) {
         val drag = draggingBlueprint!!
         drag.dragPosition = null
         draggingBlueprint = null
@@ -456,9 +697,10 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             }
 
             // Check the augments
-            for ((i, button) in augmentButtons.withIndex()) {
+            for (button in augmentButtons) {
                 if (button != target)
                     continue
+                val i = augmentIndex.getValue(button)
 
                 // Grab the augment here, in case the ordering changes
                 val aug = ship.augments.getOrNull(i)
@@ -485,8 +727,8 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
                 val i = cargoSlots.getValue(button)
 
                 return SlotAccess(
-                    { ship.cargoBlueprints[i] },
-                    { ship.cargoBlueprints[i] = it }
+                    { slotGet(i) },
+                    { slotSet(i, it) }
                 )
             }
 
@@ -506,7 +748,7 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         }
 
         // Find the blueprint the user is trying to drop the item into
-        val hovered = buttons.firstOrNull { it.hovered } ?: return
+        val hovered = target ?: buttons.firstOrNull { it.hovered } ?: return
         val weaponFrom = weaponButtons.indexOf(drag)
         val weaponTo = weaponButtons.indexOf(hovered)
         if (weaponFrom >= 0 && weaponTo >= 0) {
@@ -527,6 +769,9 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         // is a warning with no drop action, so the item stays where it was.
         if (isLeaveBehindBox(hovered))
             return
+
+        // A locked augment's box takes nothing (bBlocked).
+        if (hsLocked(dst.get())) return
 
         // Check if the blueprint will fit - the sell button is the exception
         // here, you can sell anything you can drag.
@@ -549,10 +794,34 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         dst.set(drag.blueprint)
         src.set(replacing)
 
+        // Equipment::MouseUp hook: the shown over-capacity page takes what its box holds now.
+        if (hsUi) xyz.znix.xftl.hs.ship.HsEquipment.syncOver(ship)
         ship.cargoUpdated()
     }
 
+    private fun slotGet(id: Int): Blueprint? = if (id >= 100) ship.cargoAt(id - 100 + 4) else ship.cargoBlueprints[id]
+    private fun slotSet(id: Int, item: Blueprint?) {
+        if (id >= 100) ship.setCargoAt(id - 100 + 4, item) else ship.cargoBlueprints[id] = item
+    }
+
     private fun overCapacityShown(slot: Int) = ship.cargoBlueprints[slot] != null || ship.overCapacityBoxShown[slot - 4]
+
+    /** A paging arrow (CustomEquipment's augment, cargo and over-capacity buttons): the `_on` image, `_select2` on hover. */
+    private inner class ArrowButton(private val base: String, pos: ConstPoint, private val mirrored: Boolean, private val action: () -> Unit) :
+        Button(game, pos, ConstPoint(game.getImg("${base}_on.png").width, game.getImg("${base}_on.png").height)) {
+        override val makesHoverNoise: Boolean get() = true
+
+        override fun draw(g: Graphics) {
+            val image = game.getImg("${base}_${if (hovered) "select2" else "on"}.png")
+            if (mirrored) {
+                g.pushTransform(); g.translate(pos.x + image.width.f, pos.y.f); g.scale(-1f, 1f); image.draw(0, 0); g.popTransform()
+            } else image.draw(pos.x, pos.y)
+        }
+
+        override fun click(button: Int) {
+            if (button == Input.MOUSE_LEFT_BUTTON) action()
+        }
+    }
 
     /** The over-capacity box (not the store's sell box): natively it has no drop action. */
     private fun isLeaveBehindBox(target: Button) = target in overCapacityBoxes
@@ -565,7 +834,7 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
      * the title, text2 after text1 and the gap. DropBox::CalcHeight (0x4e8270): body = text1 + gap + text2 - 20.
      */
     private inner class OverCapacityBox(titleKey: String, text1Key: String, private val gap: Int, text2Key: String) :
-        Button(game, ConstPoint(-275 - 7, 100), ConstPoint(272, overCapacityHeight(titleKey, text1Key, gap, text2Key))) {
+        Button(game, overBoxPos, ConstPoint(272, overCapacityHeight(titleKey, text1Key, gap, text2Key))) {
 
         override val makesHoverNoise: Boolean get() = false
 
@@ -623,6 +892,11 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         val titleExtra = if ('\n' in game.translator[titleKey]) 24 else 0
         val body = textLines(game.translator[text1Key]) * 24 + gap + textLines(game.translator[text2Key]) * 24 - 20
         return 94 + titleExtra + body
+    }
+
+    private companion object {
+        /** How far a finger moves on a selected box before the item comes up with it. */
+        const val TOUCH_DRAG_DIST = 9
     }
 
     class SellDropBox private constructor(

@@ -7,7 +7,8 @@ import {chromium,firefox} from 'playwright';
 const origin=process.env.LAUNCHER_ORIGIN??'http://localhost:8084',fixture=process.env.DEBUG_FIXTURE_DIR;
 assert.equal(origin,'http://localhost:8084');assert.ok(fixture?.includes('fixture-session-ui'),'Use the dedicated disposable session fixture');
 const credentials=new Map((await readFile(join(fixture,'bootstrap-credentials.txt'),'utf8')).trim().split(/\r?\n/).map(l=>l.split('\t'))),checks=[];
-for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge',chromium,{channel:'msedge'}],['Firefox',firefox,{}]]){
+const selected=(process.env.MENU_BROWSERS??'Chromium,Firefox').split(',');
+for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))){
  const browser=withOnboarding(await type.launch({headless:true,...options}),origin),page=await browser.newPage({viewport:{width:1366,height:900}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  try{
   await page.goto(origin);await page.waitForFunction(()=>document.body.dataset.sessionReady==='true');await page.evaluate(async initial=>{let token=async()=>(await(await fetch('/api/auth/csrf')).json()).token;const post=async(path,body)=>fetch('/api/auth/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-TOKEN':await token()},body:JSON.stringify(body)});const password='session-fixture-password-2026';let r=await post('login',{username:'user03',password});if(r.status===401)r=await post('login',{username:'user03',password:initial});if(!r.ok)throw Error('Session fixture login HTTP '+r.status);if((await(await fetch('/api/auth/me')).json()).mustChangePassword){if(!(await post('password',{currentPassword:initial,newPassword:password})).ok)throw Error('Fixture rotation');if(!(await post('login',{username:'user03',password})).ok)throw Error('Fixture relogin');}},credentials.get('user03'));

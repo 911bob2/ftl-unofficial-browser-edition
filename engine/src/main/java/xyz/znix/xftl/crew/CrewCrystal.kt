@@ -67,7 +67,8 @@ class CrewCrystal(blueprint: CrewBlueprint, animations: Animations, room: Room, 
     private fun fireLockdown(): Boolean {
         if (lockdownCharge != lockdownChargeMax) return false
         lockdownCharge = 0f
-        room.lockdown()
+        // the crystal's position is the shards' origin (CrystalAlien power 0x47ef40 -> Ship::LockdownRoom)
+        room.lockdown(hsCentreX, hsCentreY)
         game.sounds.getSampleOrWarn("lockdown${1 + ftl.browser.BrowserRandom.nextInt(2)}")?.play()
         return true
     }

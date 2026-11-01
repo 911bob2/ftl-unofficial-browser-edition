@@ -29,6 +29,10 @@ object VanillaSaveApplier {
             val beacon: Beacon = sector.beacons.getOrNull(index) ?: break
 
             beacon.visited = vb.visitCount > 0
+            // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Gameplay/World/StarMap.cpp (LoadGame:
+            // a visited location's spaceImage goes back through SwitchBackground)
+            if (xyz.znix.xftl.hs.HS.active && beacon.visited && game.eventManager.hasImageList(vb.spaceImage))
+                beacon.hsSpaceImage = vb.spaceImage
             if (vb.fleetPresence > 0) {
                 beacon.isOvertaken = true
             }

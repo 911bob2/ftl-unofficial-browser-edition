@@ -18,8 +18,8 @@ async function cacheFixture(page,matching=true){
  // Lightweight metadata fixture checks readiness and eviction, not DAT validation.
  await page.evaluate(async matching=>{const config=await(await fetch('/api/game/config')).json(),{persistLocalAsset}=await import('/web/local-assets.mjs');await persistLocalAsset(document.body.dataset.account,{file:new Blob(['readiness fixture']),index:{assetVersion:matching?config.assetVersion:'stale-fixture-version',parserVersion:1,size:17,audio:[]}});},matching);
 }
-const selected=(process.env.MENU_BROWSERS??'Chrome,Edge,Firefox').split(',');
-for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge',chromium,{channel:'msedge'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))){
+const selected=(process.env.MENU_BROWSERS??'Chromium,Firefox').split(',');
+for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))){
  const browser=withOnboarding(await type.launch({headless:true,...options}),origin),adminPage=await browser.newPage(),page=await browser.newPage({viewport:{width:1366,height:900}}),errors=[],traffic=[];
  page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.url().startsWith(origin))traffic.push({path:new URL(r.url()).pathname,method:r.method()});});
  const pass=text=>{checks.push(name+': '+text);console.log('PASS '+name+': '+text);};

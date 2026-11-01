@@ -8,11 +8,11 @@ import xyz.znix.xftl.sys.GameContainer
 /** Executed by the authenticated development diagnostics page against real assets. */
 object BrowserDiagnostics {
     fun achievementProbe(main: MainGame, container: GameContainer, graphics: Graphics): String {
-        val original = main.profile.save()
+        val original = main.profile.snapshot()
         val profile = main.profile
         val table = main.gameContent.achievements
         fun reset(ship: String = "PLAYER_SHIP_HARD"): InGameState {
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             return fresh(main, container, ship)
         }
         fun earned(id: String) = profile.getAchievement(table[id]) != null
@@ -119,7 +119,7 @@ object BrowserDiagnostics {
             state = reset(); state.player.scrap = 1000
             state.shipUI.hotkeyPressed(state.hotkeyManager.byID.getValue(VanillaHotkeys.SHIP_UPGRADES), container.input)
             main.render(container, graphics)
-            check(state.shipUI.diagnosticWindow == "ShipWindow") { "BrowserDiagnostics.kt:119" }
+            check(state.shipUI.diagnosticWindow == "ShipWindow") { "BrowserDiagnostics.kt:119 ${state.shipUI.diagnosticWindows}" }
             state.shipUI.mouseClick(xyz.znix.xftl.sys.Input.MOUSE_LEFT_BUTTON,
                 (container.width - 587) / 2 + 34, (container.height - 464) / 2 + 117, xyz.znix.xftl.math.ConstPoint.ZERO)
             check(BrowserAchievementProgress.Action.SYSTEM_UPGRADE in state.shipUI.pendingUpgradeActions) { "BrowserDiagnostics.kt:122" }
@@ -137,12 +137,14 @@ object BrowserDiagnostics {
             check(state.player.health == state.player.maxHealth) { "BrowserDiagnostics.kt:134" }
             check(state.browserAchievements.has(BrowserAchievementProgress.Action.STORE_REPAIR) && !state.browserAchievements.has(BrowserAchievementProgress.Action.STORE_PURCHASE)) { "Store repair counted as buying equipment" }
 
-            state = reset(); profile.collectBrowserScrap(9999, Difficulty.EASY)
+            // The lifetime totals count from where the opening left them (a mod's opening can give scrap).
+            state = reset(); val scrapBase = profile.browserLifetimeScrap; val shipsBase = profile.browserLifetimeShips
+            profile.collectBrowserScrap(9999 - scrapBase.toInt(), Difficulty.EASY)
             check(!earned("ACH_SCRAP")) { "BrowserDiagnostics.kt:138" }; state.browserProgress.collectScrap(1); check(earned("ACH_SCRAP")) { "BrowserDiagnostics.kt:138" }
-            repeat(999) { profile.defeatBrowserShip(Difficulty.EASY) }
+            repeat(999 - shipsBase.toInt()) { profile.defeatBrowserShip(Difficulty.EASY) }
             check(!earned("ACH_SHIPS")) { "BrowserDiagnostics.kt:140" }; state.browserProgress.defeatShip(); check(earned("ACH_SHIPS")) { "BrowserDiagnostics.kt:140" }
-            val run = state.saveGameState(); val savedProfile = BrowserXml.parse(BrowserXml.write(profile.save()))
-            repeat(3) { profile.load(savedProfile); main.loadSavedGame(run) }
+            val run = state.saveGameState(); val savedProfile = BrowserXml.parse(BrowserXml.write(profile.snapshot()))
+            repeat(3) { profile.restore(savedProfile); main.loadSavedGame(run) }
             check(profile.browserLifetimeScrap == 10000L && profile.browserLifetimeShips == 1000L) { "Reload counted lifetime records again" }
             check(earned("ACH_SCRAP") && earned("ACH_SHIPS")) { "BrowserDiagnostics.kt:144" }
             profile.achievementPopups = false; main.progressNotifications.update(0f)
@@ -160,7 +162,7 @@ object BrowserDiagnostics {
             val options = OptionsWindow(SettingsContext(main, container.input), {}, {})
             options.draw(graphics); options.mouseClick(xyz.znix.xftl.sys.Input.MOUSE_LEFT_BUTTON, 470, 162)
             check(!profile.achievementPopups) { "BrowserDiagnostics.kt:159" }
-            options.escapePressed(); val preferences = profile.save(); profile.load(preferences)
+            options.escapePressed(); val preferences = profile.snapshot(); profile.restore(preferences)
             check(!profile.achievementPopups && profile.pendingNotificationCount == 0) { "BrowserDiagnostics.kt:161" }
             main.progressNotifications.update(0f); check(!main.progressNotifications.active) { "BrowserDiagnostics.kt:162" }
             profile.deleteAchievement(table["ACH_SECTOR_8"])
@@ -172,22 +174,23 @@ object BrowserDiagnostics {
             BrowserImpactAchievementDiagnostics.run(main, container)
             BrowserCrewAchievementDiagnostics.run(main, container)
             return "PASS sector-five/eight positives and every disqualifying action after reload, ship/layout eligibility, Lanius scrap/oxygen thresholds, unknown-history exclusion, actual upgrade/Undo/pending autosave/reactor/store/repair actions, lifetime boundaries/reload idempotence, notification deduplication/timing, popup option and earning while disabled; live crew/system/power/drone/AE/fire/oxygen/ion/vision/lockdown achievements and persisted beacon hull minimum; travel, crew blue choices, crew victories, Rock hull victories, survivor and Crystal sector event/save/exit; combat destruction predicates with mid-volley, active-beam and target-reassignment restoration; dodge streaks, single-cloak avoidance, timed beam coverage, single-beam crew kills, Crystal shard and invasion with saved counters, zero-time projectile restoration and negative cases"
-        } finally { profile.load(original) }
+        } finally { profile.restore(original) }
     }
 
     private fun achievementStateProbe(main: MainGame, container: GameContainer) {
         val profile = main.profile
         fun reset(ship: String = "PLAYER_SHIP_HARD"): InGameState {
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             return fresh(main, container, ship).also { it.debugFlags.noEnemyFire.set = true }
         }
         fun earned(id: String) = profile.getAchievement(main.gameContent.achievements[id]) != null
-        fun spawn(state: InGameState, largeRoom: Boolean = false): xyz.znix.xftl.Ship {
+        fun spawn(state: InGameState, largeRoom: Boolean = false, noDrones: Boolean = false): xyz.znix.xftl.Ship {
             var seed = 71
             do {
                 state.debugSpawnShip(state.eventManager.getShip(if (largeRoom) "MANTIS_FIGHT" else "PIRATE"), Difficulty.NORMAL, 4, seed++)
                 check(seed < 150) { "No suitable crewed achievement fixture (large room: $largeRoom)" }
-            } while (state.enemy!!.isAutoScout || state.enemy!!.isAutomated || (largeRoom && state.enemy!!.rooms.none { it.cellCount >= 4 }))
+            } while (state.enemy!!.isAutoScout || state.enemy!!.isAutomated || (largeRoom && state.enemy!!.rooms.none { it.cellCount >= 4 }) ||
+                (noDrones && (state.enemy!!.drones != null || state.enemy!!.hacking != null)))
             return state.enemy!!
         }
         fun install(state: InGameState, type: String) {
@@ -266,7 +269,9 @@ object BrowserDiagnostics {
         install(state, "hacking"); install(state, "battery")
         state.player.dronesCount = 3
         state.debugFlags.showEverything.set = true
-        val enemy = spawn(state)
+        // noEnemyFire stops weapons only: an enemy's hacking probe (or drone) can lock and ionise the player's mind
+        // control during the 15 s flight, depending on the generated pirate.
+        val enemy = spawn(state, noDrones = true)
         state.debugFlags.noDmg.set = true; state.debugFlags.noCrewDamage.set = true
         val hacking = state.player.hacking!!; hacking.increasePower(); state.player.update(0f)
         hacking.selectTarget(enemy.weapons!!.room!!)
@@ -341,12 +346,12 @@ object BrowserDiagnostics {
     }
 
     fun unlockProbe(main: MainGame, container: GameContainer, graphics: Graphics): String {
-        val original = main.profile.save()
+        val original = main.profile.snapshot()
         val profile = main.profile
         val families = main.gameContent.shipFamilies
         val achievements = main.gameContent.achievements
         try {
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             profile.configureProgression(families, achievements)
             val allShips = families.families.flatMap { it.ships }
             check(allShips.filter(profile::isShipUnlocked) == listOf(ShipProgression.KESTREL)) { "Fresh profile exposes locked ships" }
@@ -377,14 +382,14 @@ object BrowserDiagnostics {
             catch (expected: IllegalArgumentException) { check(main.currentState === runBefore) { "BrowserDiagnostics.kt:374" } }
 
             // Threshold and chain tests start independently of the earlier milestones.
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             for (base in listOf("PLAYER_SHIP_FED", "PLAYER_SHIP_ENERGY", "PLAYER_SHIP_MANTIS"))
                 profile.unlockShip(families.byShipId[base]!!, Difficulty.NORMAL)
             check(!profile.isShipUnlocked(ShipProgression.LANIUS)) { "Lanius unlocked with fewer than five A layouts" }
             profile.unlockShip(families.byShipId["PLAYER_SHIP_JELLY"]!!, Difficulty.NORMAL)
             check(profile.isShipUnlocked(ShipProgression.LANIUS)) { "BrowserDiagnostics.kt:382" }
             check(!ShipProgression.existsInMode(ShipProgression.LANIUS, false, families)) { "BrowserDiagnostics.kt:383" }
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             profile.visitSector(ShipProgression.KESTREL, 4, true, Difficulty.NORMAL)
             val chain = listOf(ShipProgression.ENGI, "PLAYER_SHIP_FED", "PLAYER_SHIP_ENERGY", "PLAYER_SHIP_MANTIS", "PLAYER_SHIP_JELLY", "PLAYER_SHIP_ROCK", "PLAYER_SHIP_STEALTH")
             for (index in 0 until chain.lastIndex) {
@@ -402,17 +407,19 @@ object BrowserDiagnostics {
             profile.recordShipVictory(originals.first().ships[0], Difficulty.EASY)
             check(profile.getLayoutVictory(originals.first().ships[0])?.difficulty == Difficulty.HARD) { "BrowserDiagnostics.kt:400" }
             check(profile.getAchievement(achievements["ACH_UNLOCK_ALL"]) != null) { "All ship A layouts did not award the unlock-all achievement" }
-            val saved = BrowserXml.write(profile.save())
-            profile.load(BrowserXml.parse(saved))
+            val saved = BrowserXml.write(profile.snapshot())
+            profile.restore(BrowserXml.parse(saved))
             check(profile.isShipUnlocked(ShipProgression.CRYSTAL) && profile.getLayoutVictory(originals.first().ships[0])?.difficulty == Difficulty.HARD) { "BrowserDiagnostics.kt:404" }
             profile.recordShipVictory(originals.last().ships[1], Difficulty.EASY)
-            check(BrowserXml.write(profile.save()) == saved) { "Repeated victory changed completed progression" }
-            profile.load(SaveProfile.createBlank().save())
+            check(BrowserXml.write(profile.snapshot()) == saved) {
+                val now = BrowserXml.write(profile.snapshot()); val at = now.indices.firstOrNull { it >= saved.length || now[it] != saved[it] } ?: 0
+                "Repeated victory changed completed progression at $at: was ${saved.drop(maxOf(0, at - 80)).take(200)} now ${now.drop(maxOf(0, at - 80)).take(200)}" }
+            profile.restore(SaveProfile.createBlank().snapshot())
             for (questFamily in families.families.filter { it.unlockId != null }) {
                 profile.unlockShip(questFamily, Difficulty.NORMAL)
                 check(profile.isShipUnlocked(questFamily.ships.first()) && !profile.isShipUnlocked(questFamily.ships[1])) { "Quest availability for ${questFamily.ships.first()}" }
             }
-            profile.load(SaveProfile.createBlank().save())
+            profile.restore(SaveProfile.createBlank().snapshot())
             val consoleGame = fresh(main, container)
             consoleGame.debugConsole.execute("ship-unlock PLAYER_SHIP_CIRCLE HARD")
             check(profile.isShipUnlocked(ShipProgression.ENGI)) { "Console family unlock failed" }
@@ -426,7 +433,7 @@ object BrowserDiagnostics {
             main.switchToShipSelect()
             main.update(container, 0f); main.render(container, graphics)
             return "PASS fresh Kestrel-only availability, normal-start eligibility/mode guards, Kestrel-sector Engi, two-achievement B, AE/B-sector C, five-family Lanius, all quests/victory-chain successors, all eight A/B Crystal conditions, difficulty upgrades, idempotent profile restore and console-granted progression"
-        } finally { profile.load(original) }
+        } finally { profile.restore(original) }
     }
     fun droneProbe(main: MainGame, container: GameContainer, graphics: Graphics): String {
         var state = fresh(main, container, "PLAYER_SHIP_CIRCLE")
@@ -448,7 +455,7 @@ object BrowserDiagnostics {
         check(state.browserAchievements.has(BrowserAchievementProgress.Action.USED_DRONE) && !state.browserAchievements.has(BrowserAchievementProgress.Action.OFFENSIVE_DRONE)) { "Shield drone counted as an offensive deployment" }
         val deployed = drones.drones[0]!!.instance
         state.shipUI.droneHotkeyPressed(0, true)
-        check(deployed?.isPowered == false) { "BrowserDiagnostics.kt:448" }
+        check(deployed?.isPowered == false) { "BrowserDiagnostics.kt:448 ${deployed?.isPowered} ${state.shipUI.diagnosticWindows}" }
         val deployedParts = state.player.dronesCount
         state.shipUI.droneHotkeyPressed(0, false)
         check(deployed?.isPowered == true && drones.drones[0]!!.instance === deployed && state.player.dronesCount == deployedParts) { "Drone hotkey redeployed an existing drone" }
@@ -498,15 +505,18 @@ object BrowserDiagnostics {
         equip(1, "BATTLE")
         var battle = drones.drones[1]!!.instance as xyz.znix.xftl.drones.AntiPersonnelDrone
         var pawn = battle.pawn!!
-        check(pawn.maxHealth == 150f && pawn.health == 150f && pawn.attackDamageMult == 1.2f) { "BrowserDiagnostics.kt:498" }
-        check(!pawn.canRepair && !pawn.canManSystem && !pawn.canPunch && !pawn.playerControllable && pawn.canFight) { "BrowserDiagnostics.kt:499" }
+        // Hyperspace: the `battle` race's stats, which a mod may change (Multiverse: 175).
+        val battleHp = if (!xyz.znix.xftl.hs.HS.active) 150f else xyz.znix.xftl.hs.crew.CustomCrewManager.definitionOrNull("battle")?.maxHealth?.toFloat() ?: 150f
+        check(pawn.maxHealth == battleHp && pawn.health == battleHp && (xyz.znix.xftl.hs.HS.active || pawn.attackDamageMult == 1.2f)) { "BrowserDiagnostics.kt:498 ${pawn.maxHealth} ${pawn.health} ${pawn.attackDamageMult}" }
+        if (!xyz.znix.xftl.hs.HS.active) check(!pawn.canRepair && !pawn.canManSystem && !pawn.canPunch && !pawn.playerControllable && pawn.canFight) { "BrowserDiagnostics.kt:499" }
         val targetRoom = state.player.rooms.first { it != pawn.room && it.cellCount >= 2 }
         val intruder = (state.blueprintManager["rock"] as xyz.znix.xftl.crew.CrewBlueprint).spawn(targetRoom, xyz.znix.xftl.crew.AbstractCrew.SlotType.INTRUDER)
         intruder.jumpTo(state.player.findSpaceForCrew(targetRoom, intruder.mode))
         state.player.crew.add(intruder)
         state.player.rooms.forEach { it.update(0f) }
         repeat(40) { pawn.update(.05f) }
-        check(pawn.pathingTarget?.room == targetRoom || pawn.room == targetRoom) { "Battle drone failed to pursue a boarder" }
+        // A race with a <droneAI> gets its orders from the ship's crew AI (HsDroneAI), not from its own update.
+        if (!xyz.znix.xftl.hs.crew.HsDroneAI.custom(pawn)) check(pawn.pathingTarget?.room == targetRoom || pawn.room == targetRoom) { "Battle drone failed to pursue a boarder" }
         pawn.jumpTo(state.player.findSpaceForCrew(targetRoom, pawn.mode))
         state.player.rooms.forEach { it.update(0f) }
         // A crew laser deals its damage when it lands (0x4881c0), so the ship's crew shots fly too.
@@ -521,19 +531,37 @@ object BrowserDiagnostics {
         val health = intruder.health
         repeat(100) { pawn.update(.05f) }
         check(intruder.health == health) { "Unpowered battle drone kept fighting" }
+        // A powered drone's damage survives a save, with or without a mod's race. (An unpowered one is a different matter under
+        // Hyperspace: it returns at full health on redeploying, CrewDrone::SetDeployed.)
+        check(drones.setDronePower(1, true)) { "Battle drone did not power on again" }
+        battle = drones.drones[1]!!.instance as xyz.znix.xftl.drones.AntiPersonnelDrone
+        val before = battle.pawn!!
+        before.health = 73f
+        check(before.health == 73f && before.maxHealth > 73f && state.player.crew.contains(before)) { "Battle drone fixture: ${before.health} of ${before.maxHealth}" }
+        // (Multiverse's instant heal option restores damaged crew while the ship is safe: it would heal this one on the next update.)
+        val instantHeal = xyz.znix.xftl.hs.events.HsEvents.metaVariables["prof_instant_clone_heal"]
+        xyz.znix.xftl.hs.events.HsEvents.metaVariables["prof_instant_clone_heal"] = 0
+        main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
+        state = main.currentState as InGameState
+        drones = state.player.drones!!
+        battle = drones.drones[1]!!.instance as xyz.znix.xftl.drones.AntiPersonnelDrone
+        check(battle.pawn!!.health == 73f && battle.isPowered) { "A powered drone's damage was lost on restore: ${battle.pawn!!.health} of ${battle.pawn!!.maxHealth}" }
+        if (instantHeal != null) xyz.znix.xftl.hs.events.HsEvents.metaVariables["prof_instant_clone_heal"] = instantHeal else xyz.znix.xftl.hs.events.HsEvents.metaVariables.remove("prof_instant_clone_heal")
+        check(drones.setDronePower(1, false)) { "BrowserDiagnostics.kt:511" }
+        pawn = battle.pawn!!
         pawn.health = 73f
         main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
         state = main.currentState as InGameState
         drones = state.player.drones!!
         battle = drones.drones[1]!!.instance as xyz.znix.xftl.drones.AntiPersonnelDrone
-        check(battle.pawn!!.health == 73f && !battle.isPowered) { "BrowserDiagnostics.kt:520" }
+        check((xyz.znix.xftl.hs.HS.active || battle.pawn!!.health == 73f) && !battle.isPowered) { "BrowserDiagnostics.kt:520 ${battle.pawn!!.health} ${battle.pawn!!.maxHealth} ${battle.isPowered}" }
         battle.destroy()
         main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
         state = main.currentState as InGameState
         check(state.player.drones!!.drones[1]!!.cooldown == 10f) { "Drone destruction cooldown was lost on save" }
         val repair = xyz.znix.xftl.drones.RepairDrone(state.blueprintManager["REPAIR"] as xyz.znix.xftl.weapons.DroneBlueprint)
         repair.init(state.player)
-        check(repair.pawn!!.maxHealth == 25f && repair.pawn!!.movementSpeed == 40f) { "BrowserDiagnostics.kt:527" }
+        if (!xyz.znix.xftl.hs.HS.active) check(repair.pawn!!.maxHealth == 25f && repair.pawn!!.movementSpeed == 40f) { "BrowserDiagnostics.kt:527" }
         main.render(container, graphics)
         return "PASS shield cooldowns/cap/power/reset/save, physical drone hotkeys/right Shift/modal consumption, hacking-blueprint rejection without resource loss, anti-personnel deployment/pursuit/combat/power/save/destruction, repair-drone health/speed"
     }
@@ -596,7 +624,7 @@ object BrowserDiagnostics {
         weapons.onJump()
         check(weapons.selectedTargets.getTarget(2) == null) { "Weapon assertion 22: " + BrowserDebug.snapshot(main) }
         main.update(container, 0f)
-        val bindingsBefore = main.profile.save()
+        val bindingsBefore = main.profile.snapshot()
         val modifierAction = state.hotkeyManager.byID.getValue(VanillaHotkeys.WEAPON_AUTOFIRE_TARGET)
         try {
             main.profile.resetHotkeyToDefault(modifierAction); state.updateHotkeyBindings()
@@ -611,7 +639,7 @@ object BrowserDiagnostics {
             check(state.shipUI.isTargetingModifierDown()) { "Remapped autofire modifier was ignored" }
             main.profile.unbindKey(modifierAction); state.updateHotkeyBindings()
             check(!state.shipUI.isTargetingModifierDown()) { "Unbound autofire modifier still applied" }
-        } finally { BrowserEngine.resetInput(); main.profile.load(bindingsBefore); state.updateHotkeyBindings() }
+        } finally { BrowserEngine.resetInput(); main.profile.restore(bindingsBefore); state.updateHotkeyBindings() }
         val rng = BrowserRandom.snapshot()
         val wasLogging = BrowserDebug.enabled
         BrowserDebug.enabled = true
@@ -673,7 +701,7 @@ object BrowserDiagnostics {
 
     fun aeProbe(main: MainGame, container: GameContainer, graphics: Graphics): String {
         val hangarReport = BrowserHangarDiagnostics.run(main,container,graphics)
-        val profileBefore = BrowserXml.write(main.profile.save())
+        val profileBefore = BrowserXml.write(main.profile.snapshot())
         val runBefore = BrowserFiles.getRun()
         var credits = CreditsState(main, main::switchToMainMenu)
         main.setCurrentState(credits)
@@ -693,7 +721,7 @@ object BrowserDiagnostics {
         check(kotlin.math.abs(credits.scroll + 776f) < .01f) { "Credits failed to resume scrolling" }
         repeat((credits.endPosition / 560).toInt() + 2) { main.update(container, 10f); main.render(container, graphics) }
         check(main.currentState is MainMenuState) { "Completed credits did not return to the menu" }
-        check(BrowserXml.write(main.profile.save()) == profileBefore && BrowserFiles.getRun() == runBefore) { "Credits altered ordinary progress" }
+        check(BrowserXml.write(main.profile.snapshot()) == profileBefore && BrowserFiles.getRun() == runBefore) { "Credits altered ordinary progress" }
         main.switchToMainMenu()
         main.changeHangarMode(true, "PLAYER_SHIP_HARD_3", Difficulty.HARD)
         check((main.currentState as xyz.znix.xftl.hangar.SelectShipState).selectedShipId == "PLAYER_SHIP_HARD_3") { "BrowserDiagnostics.kt:687" }
@@ -715,7 +743,7 @@ object BrowserDiagnostics {
         check((main.currentState as InGameState).content.enableAdvancedEdition) { "Continue used the hangar mode" }
         check(!main.profile.lastAdvancedEdition) { "Continue overwrote the hangar preference" }
         val profile = SaveProfile.createBlank()
-        profile.load(main.profile.save())
+        profile.restore(main.profile.snapshot())
         check(!profile.lastAdvancedEdition) { "BrowserDiagnostics.kt:707" }
         main.changeHangarMode(false, "PLAYER_SHIP_HARD", Difficulty.NORMAL)
         fresh(main, container)
@@ -723,9 +751,9 @@ object BrowserDiagnostics {
         main.loadSavedGame(BrowserXml.parse(saved))
         check((main.currentState as InGameState).content.enableAdvancedEdition) { "BrowserDiagnostics.kt:712" }
         main.render(container, graphics)
-        val eligibilityProfile = main.profile.save()
+        val eligibilityProfile = main.profile.snapshot()
         try {
-            main.profile.load(SaveProfile.createBlank().save())
+            main.profile.restore(SaveProfile.createBlank().snapshot())
             main.changeHangarMode(false, "PLAYER_SHIP_HARD_2", Difficulty.NORMAL)
             val locked = main.currentState as xyz.znix.xftl.hangar.SelectShipState
             check(!locked.isSelectedUnlocked) { "BrowserDiagnostics.kt:719" }
@@ -741,8 +769,29 @@ object BrowserDiagnostics {
             quick.mouseClicked(0, 1170, 50, 1)
             val launched = main.currentState as? InGameState
             check(launched != null && launched.difficulty == Difficulty.EASY) { "Quick difficulty/Start required a draw" }
-        } finally { main.profile.load(eligibilityProfile) }
+        } finally { main.profile.restore(eligibilityProfile) }
         return "$hangarReport; repeated hangar AE switching, unavailable layout fallback, mode-specific blueprints, saved-run mode for Continue/restore, separate persistent hangar preference, quick difficulty/Start click without a draw, locked/off-target/right-click rejection and new runs in both modes"
+    }
+    /**
+     * Close what is open. A box can have options the player cannot pick, or be a menu that leads back to itself (Multiverse's
+     * tutorial offer, its storage menu): each time a box comes back, the next enabled option up from the last is taken.
+     */
+    internal fun closeBoxes(main: MainGame, container: GameContainer) {
+        var steps = 0
+        val seen = HashMap<String, Int>()
+        while (steps++ < 300) {
+            val box = (main.currentState as? InGameState)?.shipUI?.diagnosticDialogue ?: return
+            box.selectOption(wayOut(box, seen))
+            main.update(container, .05f)
+        }
+        error("A box stayed open: " + (main.currentState as InGameState).shipUI.diagnosticDialogue?.diagnosticState())
+    }
+    internal fun wayOut(box: DialogueWindow, seen: HashMap<String, Int>): Int {
+        val enabled = box.diagnosticEnabledOptions
+        val key = box.diagnosticState()
+        val visits = seen[key] ?: 0
+        seen[key] = visits + 1
+        return enabled[enabled.size - 1 - visits % enabled.size]
     }
     private fun dismiss(main: MainGame, container: GameContainer) {
         if ((main.currentState as InGameState).shipUI.isWindowOpen) {
@@ -755,12 +804,59 @@ object BrowserDiagnostics {
     private fun fresh(main: MainGame, container: GameContainer, ship: String = "PLAYER_SHIP_HARD", difficulty: Difficulty = Difficulty.NORMAL): InGameState {
         main.startDiagnosticGame(ship, difficulty)
         repeat(90) { main.update(container, .05f); dismiss(main, container) }
+        closeBoxes(main, container)
         val state = main.currentState as InGameState
         if (state.isPaused && !state.shipUI.isWindowOpen) state.toggleQuickPause()
         return state
     }
+    internal fun freshState(main: MainGame, container: GameContainer, ship: String, difficulty: Difficulty): InGameState = fresh(main, container, ship, difficulty)
+
+    /** `hsRuntimeProbe("arty <ship> [seconds]")`: what a spawned ship's artillery does, line by line, for tools/hs-oracle's arty session. */
+    fun artilleryTrace(main: MainGame, container: GameContainer, name: String, seconds: Int, stay: Boolean = false): String {
+        val state = fresh(main, container, "PLAYER_SHIP_HARD")
+        state.debugSpawnShip(state.eventManager.getShip(name), Difficulty.NORMAL, 0, 537)
+        state.debugFlags.noDmg.set = true
+        state.debugFlags.noCrewDamage.set = true
+        closeBoxes(main, container)
+        if (state.isPaused && !state.shipUI.isWindowOpen) state.toggleQuickPause()
+        val out = StringBuilder()
+        val enemy = state.enemy!!
+        val arty = enemy.systems.filterIsInstance<xyz.znix.xftl.systems.Artillery>()
+        fun dump(tag: String) {
+            out.append("$tag|ship|${enemy.name}|slots|${enemy.weaponSlots}|arty|${arty.size}|mounts|${enemy.hardpoints.size}\n")
+            for ((i, a) in arty.withIndex()) out.append("$tag|a$i|${a.browserWeapon.type.name}|type|${a.browserWeapon.type.javaClass.simpleName}|shots|${a.browserWeapon.hsNumShots}|mount|${a.browserMount.position.x}|${a.browserMount.position.y}|room|${a.room?.id}|power|${a.powerSupplied}|charge|${a.touchCharge}|until|${a.browserSecondsUntilShot}\n")
+        }
+        dump("start")
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>())
+        val last = FloatArray(arty.size)
+        var t = 0f
+        val dt = 1f / 30
+        for (frame in 0 until seconds * 30) {
+            if (stay) enemy.escapeTimer = null
+            main.update(container, dt)
+            dismiss(main, container)
+            if (state.isPaused && !state.shipUI.isWindowOpen) state.toggleQuickPause()
+            t += dt
+            for ((i, a) in arty.withIndex()) {
+                val c = a.touchCharge
+                if (c < last[i] - .1f) out.append("reset|$frame|$t|a$i|${last[i]}|$c|${a.browserWeapon.type.name}\n")
+                last[i] = c
+            }
+            for (ship in listOf(state.player, enemy)) for (p in ship.projectiles) if (seen.add(p) && p is xyz.znix.xftl.weapons.AbstractWeaponProjectile && p.hsOwnerId == 1)
+                out.append("fire|$frame|$t|${p.type.name}|cls|${p.javaClass.simpleName}|pos|${p.position.x}|${p.position.y}|room|${p.target.id}|on|${if (ship === state.player) 0 else 1}\n")
+            if (frame % 600 == 599) dump("s$frame")
+        }
+        return out.toString()
+    }
     fun encounterList(main: MainGame): String = main.gameContent.eventManager.getShips().map { it.name }.sorted().joinToString("\n")
     fun encounterProbe(main: MainGame, name: String, sector: Int, container: GameContainer, graphics: Graphics): String {
+        try {
+            return encounterRun(main, name, sector, container, graphics)
+        } catch (e: Throwable) {
+            throw IllegalStateException("${e::class.simpleName}: ${e.message} @ ${BrowserJsStack.of(e).lines().take(12).joinToString(" < ") { it.trim() }}")
+        }
+    }
+    private fun encounterRun(main: MainGame, name: String, sector: Int, container: GameContainer, graphics: Graphics): String {
         var state = fresh(main, container)
         state.debugSpawnShip(state.eventManager.getShip(name), Difficulty.NORMAL, sector, 537)
         state.debugFlags.noDmg.set = true
@@ -784,6 +880,39 @@ object BrowserDiagnostics {
     }
     fun mechanicsProbe(main: MainGame, container: GameContainer, graphics: Graphics): String {
         var state = fresh(main, container, "PLAYER_SHIP_CRYSTAL")
+        // Hyperspace makes every <crew> race a plain crew member (CrewMemberFactory::CreateCrewmember hook): the
+        // crystals' lockdown is then an HS power, checked with its save round trip instead.
+        if (state.player.crew.none { it is xyz.znix.xftl.crew.CrewCrystal } && xyz.znix.xftl.hs.HS.active) {
+            state = hsLockdownCheck(main, state)
+        } else {
+            state = vanillaLockdownCheck(main, state)
+        }
+        val rest = mechanicsRest(main, container, graphics, state)
+        val retreat = if (xyz.znix.xftl.hs.HS.active) "; ${flagshipRetreatCheck(main, container)}" else ""
+        return "$rest; ${BrowserMissingAnimDiagnostics.check(main, container, graphics)}; ${BrowserMissingNamesDiagnostics.check(main, container, graphics)}$retreat"
+    }
+
+    /** The Hyperspace crystal power: use it, save and load, the room stays locked and the cooldown runs. */
+    private fun hsLockdownCheck(main: MainGame, start: InGameState): InGameState {
+        var state = start
+        val crystal = state.player.crew.first { it.codename == "crystal" }
+        val power = xyz.znix.xftl.hs.crew.HsCrew.ex(crystal).crewPowers.first { it.enabled }
+        power.powerCooldown.first = power.powerCooldown.second
+        check(power.powerReady() == xyz.znix.xftl.hs.crew.PowerReadyState.READY) { "BrowserDiagnostics.kt hs ready" }
+        xyz.znix.xftl.hs.crew.HsCrewUi.clickButton(crystal, power)
+        repeat(8) { state.updateGameState(1f / 16f) }
+        check(crystal.room.doors.isNotEmpty() && crystal.room.doors.all { it.lockdownTimer > 0f }) { "BrowserDiagnostics.kt hs lockdown" }
+        main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
+        state = main.currentState as InGameState
+        val restored = state.player.crew.first { it.codename == "crystal" }
+        val rp = xyz.znix.xftl.hs.crew.HsCrew.ex(restored).crewPowers.first { it.enabled }
+        check(rp.powerCooldown.first < rp.powerCooldown.second) { "BrowserDiagnostics.kt hs cooldown restored" }
+        check(restored.room.doors.all { it.lockdownTimer > 0f }) { "BrowserDiagnostics.kt hs lockdown restored" }
+        return state
+    }
+
+    private fun vanillaLockdownCheck(main: MainGame, start: InGameState): InGameState {
+        var state = start
         val crystal = state.player.crew.filterIsInstance<xyz.znix.xftl.crew.CrewCrystal>().first()
         // A new ship's crystals start uncharged (no start-up simulation), as in the original; a jump charges them.
         crystal.resetLockdown()
@@ -798,6 +927,11 @@ object BrowserDiagnostics {
         check(restored.room.doors.all { it.lockdownTimer == 0f }) { "BrowserDiagnostics.kt:784" }
         restored.resetLockdown()
         check(restored.lockdownCooldown == 0f) { "BrowserDiagnostics.kt:786" }
+        return state
+    }
+
+    private fun mechanicsRest(main: MainGame, container: GameContainer, graphics: Graphics, start: InGameState): String {
+        var state = start
         val weapon = state.blueprintManager["LASER_BURST_3"] as xyz.znix.xftl.weapons.AbstractWeaponBlueprint
         while (state.player.cargoBlueprints.take(4).any { it == null }) state.player.addBlueprint(weapon, true)
         while (state.player.hardpoints.take(state.player.weaponSlots!!).any { it.weapon == null }) state.player.addBlueprint(weapon, true)
@@ -834,11 +968,16 @@ object BrowserDiagnostics {
             if (state.enemy?.systems?.any { it.ionTimer > 0f } == true) ionPulse = true
         }
         val pawn = (drones.drones[0]!!.instance as xyz.znix.xftl.drones.BoardingDrone).pawn!!
-        check(pawn.maxHealth == 125f && !pawn.canFight && pawn.canSabotage) { "BrowserDiagnostics.kt:824" }
+        // Hyperspace (DroneVTable.cpp): the ion drone takes its health from a `boarder_ion` race, else its species' race
+        // (`battle`: MV gives it 175), and fights only through `boarder_ion`.
+        val ionHp = if (!xyz.znix.xftl.hs.HS.active) 125f else (xyz.znix.xftl.hs.crew.CustomCrewManager.definitionOrNull("boarder_ion")
+            ?: xyz.znix.xftl.hs.crew.CustomCrewManager.definitionOrNull("battle"))?.maxHealth?.toFloat() ?: 125f
+        check(pawn.maxHealth == ionHp && !pawn.canFight && pawn.canSabotage) { "BrowserDiagnostics.kt:824 ${pawn.codename} hp ${pawn.maxHealth} (want $ionHp) fight ${pawn.canFight} sabotage ${pawn.canSabotage}" }
         check(ionPulse) { "Ion intruder did not ionize a system" }
         main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
         state = main.currentState as InGameState
-        check((state.player.drones!!.drones[0]!!.instance as xyz.znix.xftl.drones.BoardingDrone).pawn!!.maxHealth == 125f) { "BrowserDiagnostics.kt:828" }
+        check((state.player.drones!!.drones[0]!!.instance as xyz.znix.xftl.drones.BoardingDrone).pawn!!.maxHealth == ionHp) { val p = (state.player.drones!!.drones[0]!!.instance as xyz.znix.xftl.drones.BoardingDrone).pawn!!; val x = xyz.znix.xftl.hs.crew.HsCrew.ex(p)
+            "BrowserDiagnostics.kt:828 restored hp ${p.maxHealth} codename ${p.codename} species ${p.hsSpecies} ion ${x.isIonDrone} def ${x.definition()?.race} type ${state.player.drones!!.drones[0]!!.type.name} want $ionHp" }
         main.render(container, graphics)
         state.shipUI.showGameOverScreen(GameOverWindow.Outcome.LOOSE_HULL)
         BrowserEngine.save()
@@ -910,7 +1049,7 @@ object BrowserDiagnostics {
         val normalWin = state.content.achievements["ACH_WIN_NORMAL"]
         main.profile.unlockAchievement(normalWin, Difficulty.EASY)
         check(main.profile.getAchievement(normalWin)!!.difficulty == Difficulty.HARD) { "BrowserDiagnostics.kt:899" }
-        val loaded = SaveProfile.createBlank().also { it.load(BrowserXml.parse(BrowserXml.write(main.profile.save()))) }
+        val loaded = SaveProfile.createBlank().also { it.restore(BrowserXml.parse(BrowserXml.write(main.profile.snapshot()))) }
         check(loaded.browserGamesPlayed == main.profile.browserGamesPlayed && loaded.browserVictories == 1) { "BrowserDiagnostics.kt:901" }
         check(loaded.browserHighScores() == main.profile.browserHighScores()) { "BrowserDiagnostics.kt:902" }
         check(loaded.getAchievement(normalWin)!!.difficulty == Difficulty.HARD) { "BrowserDiagnostics.kt:903" }
@@ -943,15 +1082,22 @@ object BrowserDiagnostics {
             // can legitimately lose the base before it reaches the flagship.
             val path = if (column == 7) emptyList() else sector.findShortestPath(state.currentBeacon, sector.finishBeacon)!!
             for (beacon in path) {
+                // The probe always takes the first choice, and some events (the slavers' buyer) remove crew, which no
+                // protection flag covers: keep a spare so a run's draws do not decide whether the traversal survives.
+                if (state.playerCrew.size < 2) state.player.addCrewMember(xyz.znix.xftl.crew.LivingCrewInfo.generateRandom(state.blueprintManager["human"] as xyz.znix.xftl.crew.CrewBlueprint, state), false)
                 state.advanceFleet()
                 state.beginJumpOut(beacon)
                 repeat(90) { main.update(container, .05f); dismiss(main, container) }
                 main.render(container, graphics)
+                check(!state.browserRunEnded) { "Campaign traversal ended in sector ${column + 1}, beacon ${beacon.pos}, event ${beacon.createdEvent?.template?.debugId}: ${state.browserProgress.outcome}; crew=${state.playerCrew.map { it.blueprint.name + ":" + it.health }}" }
                 check(state.currentBeacon == beacon) { "Jump failed in sector ${column + 1}: outcome=${state.browserProgress.outcome}" }
                 jumps++
             }
             main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
             state = main.currentState as InGameState
+            // Diagnostic flags are not saved: restore protection before dismiss/arrival advances the run.
+            state.debugFlags.noDmg.set = true
+            state.debugFlags.noCrewDamage.set = true
             dismiss(main, container)
             if (state.isPaused && !state.shipUI.isWindowOpen) state.toggleQuickPause()
             if (column < 7) {
@@ -962,16 +1108,25 @@ object BrowserDiagnostics {
             }
         }
         var boss = state.currentBeacon.sector.bosses.first() as FlagshipBoss
+        var lastKill = ""
         for (phase in 1..3) {
+            // Fuel keeps the fight out of a stalemate (WorldManager::OnLoop: the player cannot jump): a flagship killed
+            // while its stalemate escape runs gives BOSS_STALEMATE and keeps its stage (BossShip::GetSubEvent, native vbs).
+            if (state.player.fuelCount < 3) state.player.fuelCount = 3
+            state.debugFlags.noDmg.set = true
+            state.debugFlags.noCrewDamage.set = true
             state.currentBeacon = boss.beacon
             repeat(90) { main.update(container, .05f); dismiss(main, container) }
             state.debugFlags.noDmg.set = true
             state.debugFlags.noCrewDamage.set = true
             val enemy = state.enemy!!
-            check(enemy.type.name.startsWith("BOSS_${phase}_")) { "Expected flagship phase $phase, found ${enemy.type.name}" }
+            check(enemy.type.name.startsWith("BOSS_${phase}_")) { "Expected flagship phase $phase, found ${enemy.type.name} ($lastKill)" }
             repeat(800) { state.updateGameState(.05f); if (it % 100 == 0) main.render(container, graphics) }
+            check(!state.browserRunEnded) { "Campaign fight ended during phase $phase: ${state.browserProgress.outcome}; crew=${state.playerCrew.map { it.blueprint.name + ":" + it.health }}" }
+            val escapeAtKill = enemy.escapeTimer
             enemy.health = 0
-            repeat(120) { state.updateGameState(.05f) }
+            repeat(if (phase == 3) 130 else 120) { state.updateGameState(.05f) } // the last wreck stays 6 s
+            lastKill = "phase $phase kill: escape timer $escapeAtKill, event ${boss.browserLastEvent}, stage ${boss.stage}, fuel ${state.player.fuelCount}"
             if (phase < 3) {
                 dismiss(main,container)
                 main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
@@ -981,7 +1136,7 @@ object BrowserDiagnostics {
                 boss.advanceFleet()
             }
         }
-        check(state.browserRunEnded && state.browserProgress.outcome == GameOverWindow.Outcome.WIN) { "Flagship did not reach victory" }
+        check(state.browserRunEnded && state.browserProgress.outcome == GameOverWindow.Outcome.WIN) { "Flagship did not reach victory: ended=${state.browserRunEnded}, outcome=${state.browserProgress.outcome}, paused=${state.isPaused}, enemyHull=${state.enemy?.health}; $lastKill" }
         for (id in listOf("ACH_SECTOR_5", "ACH_SECTOR_8", "ACH_WIN_EASY"))
             check(main.profile.getAchievement(state.content.achievements[id]) != null) { "Missing milestone $id" }
         if (state.difficulty != Difficulty.EASY) check(main.profile.getAchievement(state.content.achievements["ACH_WIN_NORMAL"]) != null) { "BrowserDiagnostics.kt:974" }
@@ -1049,8 +1204,27 @@ object BrowserDiagnostics {
         check(boss.browserBaseTurns == null) { "Base countdown did not reset after departure" }
         boss.debugTeleportTo(state.currentBeacon.sector.finishBeacon)
         repeat(4) { boss.advanceFleet() }
-        check(BrowserLastStand.checkDefeat(state,state.currentBeacon)) { "Base destruction did not end the run" }
-        check(state.browserProgress.outcome == GameOverWindow.Outcome.LOOSE_BASE_DESTROYED) { "BrowserDiagnostics.kt:1040" }
+        // CommandGui::CheckGameover: not while a jump flies or a box is open. The jump lands first, the run ends after.
+        // (The later cases of this scenario depend on the stream, so this one leaves it as it found it.)
+        val landingStream = NativeRandom.snapshot(); val landingRng = BrowserRandom.snapshot()
+        val lastJump = state.currentBeacon.neighbours.first { it !== boss.beacon }
+        state.beginJumpOut(lastJump)
+        check(!state.browserRunEnded) { "The base ended the run before the jump landed" }
+        var landing = 0
+        val boxes = ArrayList<String>()
+        val boxesSeen = HashMap<String, Int>()
+        while (!state.browserRunEnded && landing++ < 400) {
+            val box = state.shipUI.diagnosticDialogue
+            if (box != null) { boxes += box.diagnosticState(); check(!state.browserRunEnded) { "The run ended with a box open" }; box.selectOption(wayOut(box, boxesSeen)) }
+            main.update(container, .05f)
+        }
+        check(state.currentBeacon === lastJump) { "The run ended away from the jump's beacon" }
+        check(state.browserProgress.outcome == GameOverWindow.Outcome.LOOSE_BASE_DESTROYED) {
+            "Base destruction did not end the run: ended=${state.browserRunEnded} outcome=${state.browserProgress.outcome} steps=$landing " +
+                "${state.shipUI.diagnosticWindows} jumping=${state.isPlayerJumping} " +
+                "gone=${state.player.isGone} deathEvents=${xyz.znix.xftl.hs.events.HsEvents.deathEventQueue.map { it.event }} last=${boxes.takeLast(3)}"
+        }
+        NativeRandom.restore(landingStream); BrowserRandom.restore(landingRng)
         BrowserEngine.save(); check(BrowserFiles.getRun() == null) { "BrowserDiagnostics.kt:1041" }
         // A queued hack must not launch towards a ship removed before the next tick.
         BrowserEngine.diagnosticProgress("Combat: hacking cleanup")
@@ -1093,7 +1267,9 @@ object BrowserDiagnostics {
         check(state.player.fuelCount == waitFuel && state.player.ftlChargeProgress == .5f && state.browserProgress.beaconsVisited == waitVisits) { "Stationary wait reset player state" }
         state.currentBeacon.browserFleetThreatened = true
         BrowserLastStand.waitAtBeacon(state)
-        check(state.currentBeacon.isOvertaken && state.enemy != null && state.enemy !== friendlyShip && !state.browserCanWait()) { "Capture during wait did not spawn the fleet encounter" }
+        // Hyperspace without multiShipFix keeps the ship already here (InGameState.loadEventShip), and the fleet event makes it hostile.
+        val keepsShip = xyz.znix.xftl.hs.HS.active && !xyz.znix.xftl.hs.HS.cfg().multiShipFix
+        check(state.currentBeacon.isOvertaken && state.enemy != null && (keepsShip || state.enemy !== friendlyShip) && !state.browserCanWait()) { "Capture during wait did not spawn the fleet encounter: overtaken=${state.currentBeacon.isOvertaken} enemy=${state.enemy?.name} friendly=${state.enemy === friendlyShip} hostile=${state.browserCanWait()} fleetEvent=${state.currentBeacon.hasFleetEvent} ${state.shipUI.diagnosticWindows}" }
         dismiss(main,container)
         main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
         state = main.currentState as InGameState
@@ -1139,6 +1315,44 @@ object BrowserDiagnostics {
         }
         if (state.isPaused && !state.shipUI.isWindowOpen) state.toggleQuickPause()
     }
+    /**
+     * The flagship beaten at the base, with or without a save and load right after: the oracle's flagship-retreat
+     * sessions see it at the base, one step back after the player's next jump, still there after the second and at
+     * the base again after the third, either way.
+     */
+    private fun flagshipRetreat(main: MainGame, container: GameContainer, reload: Boolean): List<String> {
+        var state = fresh(main, container)
+        state.debugFlags.noDmg.set = true
+        state.debugFlags.noCrewDamage.set = true
+        val sector = state.gameMap.generateSector(state.gameMap.sectors[7].first(), state)
+        var boss = sector.bosses.first() as FlagshipBoss
+        boss.debugTeleportTo(sector.finishBeacon)
+        state.currentBeacon = sector.finishBeacon
+        repeat(90) { main.update(container, .05f); dismiss(main, container) }
+        state.enemy!!.health = 0
+        repeat(120) { state.updateGameState(.05f); dismiss(main, container) }
+        if (reload) {
+            main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
+            state = main.currentState as InGameState
+            boss = state.currentBeacon.sector.bosses.first() as FlagshipBoss
+        }
+        val base = boss.beacon
+        val route = ArrayList<String>()
+        fun at() = route.add(if (boss.beacon === base) "base" else "away")
+        at()
+        repeat(4) { boss.advanceFleet(); at() }
+        return route
+    }
+
+    fun flagshipRetreatCheck(main: MainGame, container: GameContainer): String {
+        val native = listOf("base", "away", "away", "base", "base")
+        val kept = flagshipRetreat(main, container, false)
+        check(kept == native) { "Flagship retreat: $kept" }
+        val loaded = flagshipRetreat(main, container, true)
+        check(loaded == native) { "Flagship retreat across a save: $loaded" }
+        return "flagship retreat with and without a reload"
+    }
+
     fun shipList(main: MainGame): String = main.gameContent.blueprintManager.blueprints.values
         .filterIsInstance<LazyShipBlueprint>().filter { it.name.startsWith("PLAYER_SHIP_") && it.name != "PLAYER_SHIP_EASY" && it.name != "PLAYER_SHIP_TUTORIAL" }
         .map { it.name }.sorted().joinToString("\n")

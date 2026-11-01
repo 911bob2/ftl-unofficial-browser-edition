@@ -17,7 +17,7 @@ import xyz.znix.xftl.sys.Input
 object BrowserTutorialEncounterDiagnostics {
     fun run(main: MainGame, container: GameContainer, graphics: Graphics) {
         val profile = main.profile
-        val profileXml = BrowserXml.write(profile.save())
+        val profileXml = BrowserXml.write(profile.snapshot())
         val storedProfile = BrowserFiles.getProfile()
         val run = BrowserFiles.getRun()
         val rng = BrowserRandom.snapshot()
@@ -334,7 +334,7 @@ object BrowserTutorialEncounterDiagnostics {
 
             main.endTutorialSession()
             check(!main.isTutorialRunning && !BrowserFiles.isTemporaryWrites()) { "BrowserTutorialEncounterDiagnostics.kt:335" }
-            check(main.profile === profile && BrowserXml.write(profile.save()) == profileXml) { "BrowserTutorialEncounterDiagnostics.kt:336" }
+            check(main.profile === profile && BrowserXml.write(profile.snapshot()) == profileXml) { "BrowserTutorialEncounterDiagnostics.kt:336" }
             check(BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialEncounterDiagnostics.kt:337" }
             check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == storedProfile) { "BrowserTutorialEncounterDiagnostics.kt:338" }
 
@@ -460,7 +460,7 @@ object BrowserTutorialEncounterDiagnostics {
             check(rejected && BrowserRandom.snapshot() == ordinaryRng) { "Ordinary state enter was not rejected" }
 
             check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == storedProfile) { "BrowserTutorialEncounterDiagnostics.kt:460" }
-            check(main.profile === profile && BrowserXml.write(profile.save()) == profileXml) { "BrowserTutorialEncounterDiagnostics.kt:461" }
+            check(main.profile === profile && BrowserXml.write(profile.snapshot()) == profileXml) { "BrowserTutorialEncounterDiagnostics.kt:461" }
             check(BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialEncounterDiagnostics.kt:462" }
             check(!BrowserFiles.isTemporaryWrites()) { "BrowserTutorialEncounterDiagnostics.kt:463" }
         } finally {

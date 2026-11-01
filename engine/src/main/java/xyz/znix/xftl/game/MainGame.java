@@ -82,6 +82,7 @@ public class MainGame implements Game {
         TutorialSession previous = new TutorialSession(this);
         SaveProfile temporary = SaveProfile.createBlank();
         temporary.load(previous.profile.save());
+        temporary.loadSettings(previous.profile.saveSettings());
         temporary.setAchievementPopups(false);
         ftl.browser.BrowserFiles.beginTemporaryWrites();
         tutorialSession = previous;
@@ -135,7 +136,7 @@ public class MainGame implements Game {
 
     @Override
     public void init(@NotNull GameContainer gc) throws SlickException {
-gameContainer = gc; profile = loadProfile(); loadDatafile(); switchToMainMenu();
+gameContainer = gc; profile = loadProfile(); loadDatafile(); if (LanguageSelectState.needed(this)) setCurrentState(new LanguageSelectState(this)); else switchToMainMenu();
     }
 
     @Override
@@ -162,7 +163,11 @@ gameContainer = gc; profile = loadProfile(); loadDatafile(); switchToMainMenu();
 
         // The hangar shows the saved choice; the game content follows it when a run starts (see selectHangarMode).
         boolean mode = profile.getLastAdvancedEdition();
+        // Hyperspace <forceDlc>: ShipBuilder::OnLoop sets the DLC setting every frame (CustomShipSelect.cpp).
+        if (xyz.znix.xftl.hs.HS.forceDlc()) mode = true;
         ftl.browser.BrowserFiles.enableAE = mode;
+        // Hyperspace ShipBuilder::Open: the space ids restart at 100 (SpaceId.cpp) and the hangar's ships draw them
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsHangarIds.open(getHangarBlueprints(mode));
         SelectShipState state = new SelectShipState(datafile, this, mode, null);
         setCurrentState(state);
     }
@@ -196,6 +201,7 @@ gameContainer = gc; profile = loadProfile(); loadDatafile(); switchToMainMenu();
      * hangar [from] hands its pictures and texts to the new one.
      */
     public void selectHangarMode(boolean enabled, String selectedShip, Difficulty difficulty, SelectShipState from) {
+        if (xyz.znix.xftl.hs.HS.forceDlc()) enabled = true;
         profile.setLastAdvancedEdition(enabled);
         profile.markDirty();
         ftl.browser.BrowserFiles.enableAE = enabled;
@@ -327,7 +333,8 @@ return false;
     }
 
     public void startNewGame(RunConfiguration config, EditableShip customised) {
-        if (!profile.isShipUnlocked(config.getShip()) || !ShipProgression.INSTANCE.existsInMode(config.getShip(), config.getAdvancedEdition(), content.shipFamilies))
+        boolean hsCustom = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsHangar.isCustomLayout(config.getShip());
+        if (!profile.isShipUnlocked(config.getShip()) || (!hsCustom && !ShipProgression.INSTANCE.existsInMode(config.getShip(), config.getAdvancedEdition(), content.shipFamilies)))
             throw new IllegalArgumentException("This ship layout is locked or unavailable in the selected edition");
         startConfiguredRun(config, customised);
     }
@@ -344,9 +351,18 @@ return false;
         useAdvancedEdition(config.getAdvancedEdition());
         // A new run replaces any saved one
         deleteRunSave();
-        InGameState inGameState = new InGameState(this, content, config.getShip(), config.getDifficulty(), customised, config.getCrew());
+        InGameState inGameState;
+        try {
+            inGameState = new InGameState(this, content, config.getShip(), config.getDifficulty(), customised, config.getCrew());
+        } catch (RuntimeException failure) {
+            // A run that failed to build must not stay visible to Lua as the world being created.
+            if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdapters.startingGame = null;
+            throw failure;
+        }
         inGameState.getPlayer().setDisplayName(config.getDisplayName());
         setCurrentState(inGameState);
+        // Hyperspace script.on_init(newGame = true): WorldManager::CreateNewGame hook, after the original
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.onInit(true);
     }
 
     public void restartGame() {
@@ -405,9 +421,28 @@ return false;
     }
 
     public void loadSavedGame(Document savedGame) {
+        try {
+            xyz.znix.xftl.hs.save.HsSave.verify(savedGame.getRootElement(), "run save");
+        } catch (RuntimeException e) {
+            throw new xyz.znix.xftl.savegame.RunLoadException(e);
+        }
         useAdvancedEdition(Boolean.parseBoolean(savedGame.getRootElement().getAttributeValue("enableAE")));
-        InGameState inGameState = new InGameState(this, content, savedGame);
+        String savedBrowserRng = savedGame.getRootElement().getAttributeValue("browserRngState");
+        String savedNativeRng = savedGame.getRootElement().getAttributeValue("browserNativeRngState");
+        // A save naming content these game files lack loads with that content dropped (MissingContent.dropped).
+        InGameState inGameState;
+        try {
+            inGameState = xyz.znix.xftl.savegame.MissingContent.load(savedGame, doc -> new InGameState(this, content, doc));
+        } catch (RuntimeException e) {
+            throw new xyz.znix.xftl.savegame.RunLoadException(e);
+        }
         setCurrentState(inGameState);
+        // Hyperspace script.on_init(newGame = false): ScoreKeeper::LoadGame hook, after the original
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.onInit(false);
+        // Loading is transparent to the random streams: whatever the load itself drew (constructors, the first update,
+        // load hooks, on_init scripts) is undone, so a reloaded run goes on exactly as the unsaved one would.
+        ftl.browser.BrowserRandom.restore(savedBrowserRng);
+        ftl.browser.NativeRandom.restore(savedNativeRng);
     }
 
     @Override
@@ -447,7 +482,20 @@ return false;
         g.loadIdentityMatrix();
 
         currentState.render(gc, g);
+        // Hyperspace: the HS-<version> label of MouseControl::OnRender (InGameState draws its own before the tooltip)
+        if (xyz.znix.xftl.hs.HS.active && !(currentState instanceof InGameState) && content != null)
+            xyz.znix.xftl.hs.render.HsOverlay.versionLabel(content);
+        // Hyperspace: PrintHelper::Render also runs in MouseControl::OnRender outside the game (menu, hangar)
+        if (xyz.znix.xftl.hs.HS.luaActive && !(currentState instanceof InGameState)) {
+            xyz.znix.xftl.hs.lua.LuaPrint.render();
+            // the MOUSE_CONTROL render event around MouseControl::OnRender, and a script's tooltip, in every state
+            int luaMouse = xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_MOUSE_CONTROL);
+            if (luaMouse >= 0) xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.renderTooltip(g);
+            xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_MOUSE_CONTROL, luaMouse);
+        }
         progressNotifications.render(g);
+
+        xyz.znix.xftl.rendering.DrawQueue.endFrame();
 
         // Check there aren't any mismatched pushTransform/popTransform calls.
         g.checkNoPushedTransforms();
@@ -504,6 +552,8 @@ return false;
     }
 
     public void setCurrentState(GameState currentState) {
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdapters.startingGame = null;
+        if (xyz.znix.xftl.hs.HS.active && currentState instanceof MainMenuState) xyz.znix.xftl.hs.lua.LuaEvents.runEnded();
         if (this.currentState != null) {
             this.currentState.shutdown();
         }
@@ -590,11 +640,27 @@ return null;
     }
 
     private SaveProfile loadProfile() {
-SaveProfile p = SaveProfile.createBlank(); String xml=ftl.browser.BrowserFiles.getProfile(); if(xml != null) p.load(ftl.browser.BrowserXml.parse(xml)); else newProfileWelcome = true; return p;
+SaveProfile p = SaveProfile.createBlank(); String xml=ftl.browser.BrowserFiles.getProfile(); if(xml != null) p.load(ftl.browser.BrowserXml.parse(xml)); else { newProfileWelcome = true; firstRunHangar = true; firstRunTip = true; if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSave.newProfile(); } String settings=ftl.browser.BrowserFiles.getSettings(); if(settings != null) p.loadSettings(ftl.browser.BrowserXml.parse(settings)); return p;
     }
 
     /** ScoreKeeper flags a profile created this session; the title shows "welcome" once. */
     private boolean newProfileWelcome;
+
+    /** A profile created this session: the touch layout's hangar welcome and first tip, once each. */
+    private boolean firstRunHangar;
+    private boolean firstRunTip;
+
+    public boolean consumeFirstRunHangar() {
+        boolean show = firstRunHangar;
+        firstRunHangar = false;
+        return show;
+    }
+
+    public boolean consumeFirstRunTip() {
+        boolean show = firstRunTip;
+        firstRunTip = false;
+        return show;
+    }
 
     public boolean consumeNewProfileWelcome() {
         boolean show = newProfileWelcome;
@@ -603,7 +669,7 @@ SaveProfile p = SaveProfile.createBlank(); String xml=ftl.browser.BrowserFiles.g
     }
 
     private void saveProfile() {
-ftl.browser.BrowserFiles.setProfile(ftl.browser.BrowserXml.write(profile.save())); profile.markSaveComplete();
+ftl.browser.BrowserFiles.setSettings(ftl.browser.BrowserXml.write(profile.saveSettings())); ftl.browser.BrowserFiles.setProfile(ftl.browser.BrowserXml.write(profile.save())); profile.markSaveComplete();
     }
 
     public static abstract class GameState extends InputAdapter {

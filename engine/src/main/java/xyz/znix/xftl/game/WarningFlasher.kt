@@ -17,6 +17,8 @@ class WarningFlasher(
     val warningWarning: Boolean = true,
     var linePoints: List<IPoint> = emptyList(),
     val colour: GlowColour = GlowColour.RED,
+    /** Hyperspace's warningMessage r g b: the text (and line) colour, the glow staying [colour]. */
+    val textColour: Colour? = null,
     val animated: Boolean = true,
     val alwaysOn: Boolean = false,
     /** Underline WARNING! across its width, as the original's WarningMessage does without a pointer line. */
@@ -39,6 +41,11 @@ class WarningFlasher(
     /** Swap the text, keeping the message's place and timer (the original re-inits it with another string). */
     fun setText(key: String) {
         textLines = game.translator[key].split("\n")
+    }
+
+    /** Hyperspace: a literal text (TriggeredEvents.cpp warningMessage without an id). */
+    fun setLiteral(text: String) {
+        textLines = text.split("\n")
     }
 
     /** Put the message's top at the original's [x], [y] for its current text (see [atNative]). */
@@ -92,7 +99,7 @@ class WarningFlasher(
 
         for ((index, line) in textLines.withIndex()) {
             val x = if (centred) centre.x - font.getWidth(line) / 2 else centre.x
-            UIUtils.drawStringWithGlow(game, font, line, x, topY + lineSpacing * index, colour, alpha)
+            UIUtils.drawStringWithGlow(game, font, line, x, topY + lineSpacing * index, colour, alpha, textColour)
         }
 
         if (warningWarning) {
@@ -100,16 +107,16 @@ class WarningFlasher(
             val spacing = if (linePoints.isEmpty()) 24 else 23
             val x = centre.x - font.getWidth(warningText) / 2
 
-            UIUtils.drawStringWithGlow(game, font, warningText, x, topY - spacing, colour, alpha)
+            UIUtils.drawStringWithGlow(game, font, warningText, x, topY - spacing, colour, alpha, textColour)
 
             if (underline) {
-                g.colour = Colour(this.colour.colour).also { it.a = alpha }
+                g.colour = Colour(textColour ?: this.colour.colour).also { it.a = alpha }
                 // 0x005d6490: the underline is 20 below the top of WARNING!, whose baseline is 16 below it.
                 g.fillRect(x.f, topY - spacing + 4f, font.getWidth(warningText).f, 2f)
             }
         }
 
-        g.colour = Colour(this.colour.colour).also { it.a = alpha }
+        g.colour = Colour(textColour ?: this.colour.colour).also { it.a = alpha }
         for (i in 0 until linePoints.size - 1) {
             val a = linePoints[i]
             val b = linePoints[i + 1]

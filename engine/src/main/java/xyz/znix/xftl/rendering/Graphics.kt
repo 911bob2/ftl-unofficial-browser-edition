@@ -186,10 +186,38 @@ class Graphics {
         imageRenderer.flush(image)
     }
 
+    /**
+     * An image section whose alpha runs from [alphaStart] at its left edge to [alphaEnd] at its right, like a line
+     * drawn with per-vertex colours.
+     */
+    fun drawImageAlphaRamp(
+        image: Image,
+        x: Float, y: Float, x2: Float, y2: Float,
+        srcX1: Float, srcY1: Float, srcX2: Float, srcY2: Float,
+        colour: Colour, alphaStart: Float, alphaEnd: Float
+    ) {
+        val r = colour.r; val gr = colour.g; val b = colour.b
+        imageRenderer.pushVert(x, y, srcX1, srcY1, r, gr, b, alphaStart)
+        imageRenderer.pushVert(x2, y2, srcX2, srcY2, r, gr, b, alphaEnd)
+        imageRenderer.pushVert(x2, y, srcX2, srcY1, r, gr, b, alphaEnd)
+        imageRenderer.pushVert(x, y, srcX1, srcY1, r, gr, b, alphaStart)
+        imageRenderer.pushVert(x, y2, srcX1, srcY2, r, gr, b, alphaStart)
+        imageRenderer.pushVert(x2, y2, srcX2, srcY2, r, gr, b, alphaEnd)
+        imageRenderer.imageFiltering = currentImageFiltering()
+        imageRenderer.flush(image)
+    }
+
     fun drawCustomQuads(fn: (BulkColourRenderer) -> Unit) {
         fn(quadRenderer)
         if (flushSuppression == 0)
             quadRenderer.flush()
+    }
+
+    /** Draws triangles (three vertices each) with per-vertex colours; [fn] pushes the vertices. */
+    fun drawCustomTriangles(fn: (BulkColourRenderer) -> Unit) {
+        fn(triangleRenderer)
+        if (flushSuppression == 0)
+            triangleRenderer.flush()
     }
 
     /**
@@ -241,6 +269,13 @@ class Graphics {
             triangleRenderer.flush()
             lineRenderer.flush()
         }
+    }
+
+    /** Draws everything queued now, whatever batching is open (before a GL state change that must not touch earlier draws). */
+    fun flushAll() {
+        quadRenderer.flush()
+        triangleRenderer.flush()
+        lineRenderer.flush()
     }
 
     fun pushTransform() {
@@ -315,7 +350,9 @@ class Graphics {
 
     fun clear(colour: Colour) {
         GL11.glClearColor(colour.r, colour.g, colour.b, colour.a)
-        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT)
+        // the stencil buffer too (FTL starts each frame with an empty one), so a mask a Lua script left behind does not leak
+        GL11.glStencilMask(0xff)
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT or GL11.GL_STENCIL_BUFFER_BIT)
 
         // In case something went horribly wrong last frame
         flushSuppression = 0

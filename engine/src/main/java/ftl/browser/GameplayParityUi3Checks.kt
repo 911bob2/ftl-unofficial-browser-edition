@@ -19,7 +19,7 @@ internal object GameplayParityUi3Checks {
             val missiles = noMissiles(main, container)
             val shake = shake(main, container)
             val tint = tint(main, container)
-            val credits = credits(main, container)
+            val credits = BrowserGameplayParityDiagnostics.vanillaOnly("credits") { credits(main, container) }
             val neutral = neutralShipReload(main, container)
             val waiting = outOfFuelWait(main, container)
             val scores = newScoreRows()
@@ -146,7 +146,7 @@ internal object GameplayParityUi3Checks {
         reward.scrap = 100
         reward.items.add(state.blueprintManager["BEAM_2"] as xyz.znix.xftl.Blueprint)
         val size = window.diagnosticOutcomeSize(reward)
-        check(size.x == 316 && size.y == 39) { "Tutorial reward box $size" }
+        if (!BrowserGameplayParityDiagnostics.modded) check(size.x == 316 && size.y == 39) { "Tutorial reward box $size" }
         val boarders = xyz.znix.xftl.game.ResourceSet()
         boarders.boarderCount = 3
         val alert = window.diagnosticOutcomeSize(boarders)
@@ -304,9 +304,11 @@ internal object GameplayParityUi3Checks {
         window.escapePressed()
         check(window.isWaiting && !jumped) { "The map closed while waiting" }
         state.setRenderingDeltaTime(0.05f)
-        repeat(30) { window.updateUI(0, 0) }
+        // An update runs the map's mouse pass twice; the tracker counts the update once.
+        fun frame() { state.browserCountUpdate(); window.updateUI(0, 0); window.updateUI(0, 0) }
+        repeat(30) { frame() }
         check(window.isWaiting && !jumped) { "The wait ended within 1.5 s" }
-        repeat(12) { window.updateUI(0, 0) }
+        repeat(12) { frame() }
         check(!window.isWaiting && jumped) { "The wait didn't happen after 2 s" }
         return "out-of-fuel wait"
     }

@@ -31,6 +31,8 @@ class HotkeyManager {
 
             groups += parseGroup(groupElem)
         }
+        // Hyperspace's extra hotkeys (CustomHotkeys.cpp: info, speed, console, drone4-6, temporal, aim_artillery)
+        if (xyz.znix.xftl.hs.HS.active) groups += xyz.znix.xftl.hs.render.HsHotkeys.group()
 
         byID = groups.flatMap { it.hotkeys }.associateBy { it.id }
         keyDevConsole = byID.getValue(VanillaHotkeys.DEV_CONSOLE)
@@ -78,8 +80,13 @@ class HotkeyManager {
             .associateBy { it.id }
 
         // Add the default mappings
+        val hs = xyz.znix.xftl.hs.HS.active
+        val dev = groups.firstOrNull { it.id == "development" }?.hotkeys ?: emptyList()
         for (hotkey in byId.values) {
-            reverse[hotkey] = hotkey.default ?: continue
+            val key = hotkey.default ?: continue
+            // Hyperspace: a development key gives up a default an HS hotkey takes (frame step on '.')
+            if (hs && hotkey in dev && !xyz.znix.xftl.hs.render.HsHotkeys.devKeyFree(hotkey, key, groups)) continue
+            reverse[hotkey] = key
         }
 
         // Add our custom mappings
@@ -162,6 +169,9 @@ class HotkeyButton(val id: String, val keyID: Int, val text: GameText) {
             HotkeyButton("semicolon", Input.KEY_SEMICOLON, GameText.literal(";")),
             HotkeyButton("apostrophe", Input.KEY_APOSTROPHE, GameText.literal("'")),
             HotkeyButton("comma", Input.KEY_COMMA, GameText.literal(",")),
+            // The event font size keys' defaults (Settings::ResetHotkeys: increase_font '-', decrease_font '=').
+            HotkeyButton("minus", Input.KEY_MINUS, GameText.literal("-")),
+            HotkeyButton("equals", Input.KEY_EQUALS, GameText.literal("=")),
             HotkeyButton("full_stop", Input.KEY_FULL_STOP, GameText.literal(".")),
             HotkeyButton("stroke", Input.KEY_STROKE, GameText.literal("/")),
             HotkeyButton("bar", Input.KEY_BAR, GameText.literal("|")),
@@ -247,6 +257,8 @@ object VanillaHotkeys {
     const val SHIP_CREW: String = "ship_crew"
     const val OPEN_STORE: String = "open_store"
     const val OPEN_OPTIONS: String = "open_options"
+    const val INCREASE_FONT: String = "increase_font"
+    const val DECREASE_FONT: String = "decrease_font"
 
     @JvmField
     val WEAPON_SLOTS: List<String> = listOf("weapon_slot_1", "weapon_slot_2", "weapon_slot_3", "weapon_slot_4")

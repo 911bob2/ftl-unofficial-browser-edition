@@ -8,7 +8,10 @@ class AnimationSpec(
     val name: String,
     val x: Int, val y: Int,
     val length: Int,
-    val time: Float
+    val time: Float,
+
+    /** The stand-in for a strip the race does not have, see [Animations.crewStrip]: it is never drawn. */
+    val blank: Boolean = false
 ) {
     val totalTime: Float get() = time * length
 

@@ -27,7 +27,9 @@ class GameOverWindow(private val game: InGameState, val outcome: Outcome) : Wind
     private val highScoreFont = NativeFonts.font(game::getFont, 7)
 
     private val title = game.translator[if (outcome == Outcome.WIN) "gameover_title_victory" else "gameover_title_gameover"]
-    private val body = game.translator[when (outcome) {
+    // Hyperspace GameOver::OpenText: a replaced game over text (a <win>/<lose> event, a <finalBoss>) is shown once
+    private val body = (if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.events.HsFinalBoss.takeGameOverText() else null)
+        ?: game.translator[when (outcome) {
         Outcome.WIN -> "gameover_win"
         Outcome.LOOSE_HULL -> "gameover_blowup"
         Outcome.LOOSE_CREW -> "gameover_crew"
@@ -91,9 +93,9 @@ class GameOverWindow(private val game: InGameState, val outcome: Outcome) : Wind
     private inner class GameOverButton(val label: String, pos: ConstPoint, width: Int, val cb: () -> Unit) :
         Button(game, pos, ConstPoint(width, 24)) {
         override fun draw(g: Graphics) {
-            g.colour = if (hovered) Constants.TEXT_BUTTON_HOVER else Constants.TEXT_BUTTON_NORMAL
+            g.colour = if (hovered) xyz.znix.xftl.hs.render.HsColors.tbSelected() else xyz.znix.xftl.hs.render.HsColors.tbActive()
             Buttons.drawChamfer(g, pos.x, pos.y, size.x, size.y, 4)
-            buttonFont.printButtonLabel(pos.x, pos.y, size.x, size.y, label, Constants.TEXT_BUTTON_TEXT)
+            buttonFont.printButtonLabel(pos.x, pos.y, size.x, size.y, label, xyz.znix.xftl.hs.render.HsColors.tbText())
         }
 
         override fun click(button: Int) {
@@ -132,7 +134,8 @@ class GameOverWindow(private val game: InGameState, val outcome: Outcome) : Wind
             return
         openTime += dt
         if (openTime >= VICTORY_MUSIC_TIME)
-            game.sounds.switchMusicList(listOf(game.sounds.getTrack("title")))
+            // Hyperspace (Credits.cpp's GameOver::OnLoop): the victory event's music instead of the title's
+            game.sounds.getTrackOrNull(xyz.znix.xftl.hs.render.HsCredits.creditsMusic())?.let { game.sounds.switchMusicList(listOf(it)) }
     }
 
     /** The statistics opened from here draw this game behind them without the window. */
@@ -150,6 +153,15 @@ class GameOverWindow(private val game: InGameState, val outcome: Outcome) : Wind
                 credits.render(g)
                 return
             }
+        }
+
+        // GameOver::OnRender hook (CustomShipSelect.cpp): the run's seed under the window.
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.sector.HsSeeds.enabled) {
+            val box = game.getImg("img/optionsUI/info_seed.png")
+            box.draw(640 - box.width / 2, 524)
+            xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 13)
+                .printCenter(640f, 540f, game.translator["menu_status_seed"], Constants.TEXT_BUTTON_NORMAL)
+            buttonFont.printCenter(640f, 564f, xyz.znix.xftl.hs.render.HsPauseMenu.seedText(), Constants.TEXT_BUTTON_TEXT)
         }
 
         val x = position.x

@@ -72,6 +72,9 @@ class ResourceSet() : Map<Resource, Int> {
     /** The intruders board through a hull breach rather than teleporting in. */
     var intrudersBreach: Boolean = false
 
+    /** The boarders are on the ship already: the event shows them, applying it adds none. */
+    var boardersAboard: Boolean = false
+
     val hasIntruders: Boolean get() = intruders.isNotEmpty() || boarderCount > 0
     val damage = ArrayList<EventHullDamage>()
     val upgrades = ArrayList<EventSystemUpgrade>()
@@ -283,8 +286,7 @@ class ResourceSet() : Map<Resource, Int> {
             val eventId = crewElem.getAttributeValue("event")
             val index = crewElem.getAttributeValue("index")!!.toInt()
 
-            val event = game.eventManager.getByDeserialisationId(eventId)
-            val info = event.removedCrew[index]
+            val info = game.eventManager.getSavedEvent(eventId).removedCrew.getOrNull(index) ?: continue
 
             refs.asyncResolve(LivingCrew::class.java, objectId) {
                 lostCrew += RemoveCrewEval(it!!, info)

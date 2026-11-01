@@ -62,7 +62,12 @@ class Ship(
     val name: String get() = type.name
     /** Player-facing name; blueprint identity remains [name]. */
     var displayName: String? = null
-    val maxHealth: Int get() = browserMaxHealth ?: type.maxHealth
+    /** ShipManager::OnInit reads the blueprint once: a later write to it reaches only ships built after. */
+    val builtMaxHealth = type.maxHealth
+    private val builtWeaponSlots = type.weaponSlots
+    private val builtDroneSlots = type.droneSlots
+    val boardingStrategy = type.boardingStrategy
+    val maxHealth: Int get() = browserMaxHealth ?: builtMaxHealth
 
     /**
      * A generated enemy's hull: ShipGenerator::CreateShip adds the effective
@@ -71,7 +76,14 @@ class Ship(
      */
     var browserMaxHealth: Int? = null
     val isPlayerShip: Boolean get() = type.isPlayerShip
-    val isUsingBossUI: Boolean get() = boss?.useBossShipUI ?: false
+    val isUsingBossUI: Boolean get() = (boss?.useBossShipUI ?: false) || hsBossShip != null
+
+    /**
+     * Hyperspace `<bossShip>`: an enemy whose blueprint is listed gets the flagship's box (the CombatControl /
+     * CommandGui::AddEnemyShip hooks of CustomEvents.cpp, `boss_visual`); see HostileShipUI for its placement.
+     */
+    val hsBossShip: xyz.znix.xftl.hs.events.BossShipDefinition?
+        get() = if (xyz.znix.xftl.hs.HS.active && !isPlayerShip) sys.eventManager.hs?.getBossShipDefinition(name) else null
     val isAutoScout: Boolean get() = type.isAutoScout
 
     /**
@@ -82,8 +94,17 @@ class Ship(
      * state, so it needs serialising.
      */
     var isAutomated: Boolean = false
-    val weaponSlots: Int? get() = customised?.weaponSlots ?: type.weaponSlots
-    val droneSlots: Int? get() = customised?.droneSlots ?: type.droneSlots
+    // A mod's playable ship may leave these out; the hangar and the HUD then count the usual boxes.
+    val weaponSlots: Int? get() = customised?.weaponSlots ?: builtWeaponSlots ?: if (isPlayerShip) 4 else null
+    val droneSlots: Int? get() = customised?.droneSlots ?: builtDroneSlots ?: if (isPlayerShip) 2 else null
+
+    /** Hyperspace: Ship::shipImage's x and y moved by a script. */
+    @JvmField var hsHullShiftX = 0
+    @JvmField var hsHullShiftY = 0
+
+    /** Hyperspace: WeaponSystem::slot_count and DroneSystem::slot_count written by a script: what fits; the weapons on board stay (oracle hw-sl). */
+    @JvmField var hsWeaponSlots: Int? = null
+    @JvmField var hsDroneSlots: Int? = null
 
     /**
      * If this ship is a boss, this points to its manager. Null otherwise.
@@ -92,6 +113,56 @@ class Ship(
         private set // Mutable only for deserialisation
 
     val rooms: List<Room>
+    /** Ship::lockdowns (the crystal shards of every lockdown on this ship), see [lockdownRoom]. */
+    val lockdownShards = ArrayList<xyz.znix.xftl.layout.LockdownShard>()
+
+    /**
+     * Ship::LockdownRoom (1.6.14 0x494f50; Hyperspace CustomLockdowns.cpp): the shards of a lockdown of [room] from
+     * ship pixel ([posX], [posY]). Per 35 px of the room's width three top/bottom pairs and per 35 px of its height three
+     * left/right pairs, each pair drawing two wall offsets (`random32() % 12`) before its two shards are made; then one
+     * shard per inner door of the room to the door's centre. The doors themselves are locked by [Room.lockdown].
+     * Hyperspace: [hsDuration] (the lockdown definition's), its [anims] and [colour]; each wall shard draws its
+     * animation again (LockdownShard::Initialize, after the vanilla constructor's draws).
+     */
+    fun lockdownRoom(room: Room, posX: Float, posY: Float, hsDuration: Float? = null,
+                     anims: List<String>? = null, colour: xyz.znix.xftl.rendering.Colour? = null,
+                     canDilate: Boolean = true, doorHealth: Int = 50) {
+        fun r32() = ftl.browser.BrowserRandom.nextBits(31)
+        val hs = xyz.znix.xftl.hs.HS.active
+        fun shard(gx: Int, gy: Int, door: Boolean): xyz.znix.xftl.layout.LockdownShard {
+            // the constructor: animation `random32() % 2 + 1` (not for a door shard), then the speed
+            var name = if (door) "crystal_1" else "crystal_" + (r32() % 2 + 1)
+            val speed = xyz.znix.xftl.layout.LockdownShard.speedOf(r32())
+            if (hs) {
+                val list = anims ?: listOf("crystal_1", "crystal_2")
+                if (list.isNotEmpty()) name = if (door) list[0] else list[r32() % list.size]
+                else if (!door) name = if (r32() % 2 == 0) "crystal_1" else "crystal_2"
+            }
+            return xyz.znix.xftl.layout.LockdownShard(this, room.id, posX, posY, gx, gy, name, speed, door && hs,
+                colour ?: xyz.znix.xftl.rendering.Colour.white, if (hs) (hsDuration ?: 12f) else null).also { it.canDilate = canDilate }
+        }
+        val x = room.offsetX; val y = room.offsetY; val w = room.pixelWidth; val h = room.pixelHeight
+        // Hyperspace links a wall shard that lands on a door to it (HS_GetSelectedDoor). It has no health of its own,
+        // so it goes on the next frame (Ship::OnLoop, CustomLockdowns.cpp).
+        fun wall(gx: Int, gy: Int) = shard(gx, gy, false).also { s ->
+            if (hs && doors.any { kotlin.math.abs(it.pixelCentre.x - gx) <= 10 && kotlin.math.abs(it.pixelCentre.y - gy) <= 10 }) s.done = true
+        }
+        for (i in 0 until w / 35 * 3) {
+            val a = r32(); val b = r32()
+            lockdownShards += wall(x + i * 12 + a % 12, y)
+            lockdownShards += wall(x + i * 12 + b % 12, y + h)
+        }
+        for (i in 0 until h / 35 * 3) {
+            val a = r32(); val b = r32()
+            lockdownShards += wall(x, y + i * 12 + a % 12)
+            lockdownShards += wall(x + w, y + i * 12 + b % 12)
+        }
+        for (door in doors) {
+            if (door.isAirlock || (door.left !== room && door.right !== room)) continue
+            lockdownShards += shard(door.pixelCentre.x, door.pixelCentre.y, true).also { it.door = door; it.ownHealth = doorHealth }
+        }
+    }
+
     val doors: List<Door>
 
     val offset: ConstPoint = type.roomOffset
@@ -179,6 +250,16 @@ class Ship(
      */
     val augments = ArrayList<AugmentBlueprint>()
 
+    /** Modded sessions: the starting weapons/drones already picked (hangar or run start); null = pick in loadDefaultContents. */
+    @JvmField var hsStartEquipment: xyz.znix.xftl.hs.ship.HsShipStart.Equipment? = null
+
+    /** Hyperspace per-ship state (hidden augments, room definitions, ...); null in vanilla play. */
+    @JvmField var hs: xyz.znix.xftl.hs.ship.HsShipState? = null
+
+    /** Spreader<Fire>::count and roomCount as of the last ship loop (Hyperspace Lua). */
+    @JvmField var hsFireCount = 0
+    @JvmField var hsFireRoomCount = IntArray(0)
+
     /**
      * This contains the sum of the values for each type of augment. Mods
      * will be able to apply augment effects without a regular augments,
@@ -194,7 +275,6 @@ class Ship(
     // This contains all the projectiles, both incoming and outgoing.
     val projectiles: MutableList<IProjectile> = ArrayList()
 
-    val inboundBeams: MutableList<BeamBlueprint.BeamInstance> = ArrayList()
     val animations: MutableList<FloatingAnimation> = ArrayList()
 
     // Cosmetic laser bolts fired between fighting crewmembers.
@@ -250,6 +330,9 @@ class Ship(
     // These only apply to the player, enemies use a fixed timer.
     var ftlChargeProgress: Float = 0f
 
+    /** ShipManager.jump_timer.second (85 unless a script writes it): a higher goal charges proportionally slower. */
+    @JvmField var hsJumpGoal: Float = 85f
+
     /**
      * The seed this ship was generated with by [xyz.znix.xftl.shipgen.ShipGenerator],
      * for ships spawned from an [EnemyShipSpec]. Used by the vanilla-format
@@ -273,18 +356,25 @@ class Ship(
         get() {
             // For the FTL to charge, the engines and piloting must
             // be working, and a pilot must be present.
-            val hasPilot = isAutoScout || isAutomated || piloting!!.hasPilot
-            return engines!!.powerSupplied > 0 && piloting!!.undamagedEnergy > 0 && hasPilot
-                    && !engines!!.isHackActive && !piloting!!.isHackActive
+            // Hyperspace ships (MV stations) can lack either system: no FTL charge then.
+            val engines = engines ?: return false
+            val piloting = piloting ?: return false
+            val hasPilot = isAutoScout || isAutomated || piloting.hasPilot
+            return engines.powerSupplied > 0 && piloting.undamagedEnergy > 0 && hasPilot
+                    && !engines.isHackActive && !piloting.isHackActive
         }
 
-    val maxReactorPower: Int get() = 25
+    // Hyperspace: the ship's `<customReactor maxLevel>` (ShipManager::CanUpgrade hook for the reactor).
+    val maxReactorPower: Int get() = if (hs != null) xyz.znix.xftl.hs.ship.HsShips.def(type.name).maxReactorLevel else 25
 
     // The raw amount of reactor power purchased by the player
     var purchasedReactorPower: Int = 5
 
     // The amount of reactor power available for use by the player, taking ion storms, events and so on into account
     val reactorPower: Int get() = purchasedReactorPower
+
+    // Hyperspace: PowerManager.currentPower.first written by a script: the tally apart from what the systems hold
+    @JvmField var hsReactorUsedOffset: Int = 0
 
     // The unused reactor/battery power
     val powerAvailableTypes = HashMap<EnergySource, Int>()
@@ -297,6 +387,15 @@ class Ship(
      */
     var blockedReactorPower: Int = 0
         private set
+
+    /** Hyperspace: this ship's PowerManager temporary status (null until used; see HsPower). */
+    @JvmField
+    var hsPower: xyz.znix.xftl.hs.systems.HsPower? = null
+
+    /** ShipManager::iLastDamage as DamageBeam stores it (the hull damage of its last room hit). */
+    @JvmField var nativeLastDamage = 0
+    /** ShipManager::killedByBeam: crew killed per beam (Damage.selfId), for ACH_SLUG_BIO. */
+    @JvmField val nativeBeamKills = HashMap<Int, Int>()
 
     var health = maxHealth
         set(value) {
@@ -339,10 +438,22 @@ class Ship(
     /**
      * The number of points of super-shield this ship currently has.
      */
-    var superShield: Int = 0
+    private var superShieldValue: Int = 0
+    var superShield: Int
+        get() = superShieldValue
         set(value) {
-            field = value.coerceIn(0..maxSuperShield)
+            superShieldValue = value.coerceIn(0..maxSuperShield)
+            if (value > 0 && hsSuperShieldSet == 0 && xyz.znix.xftl.hs.HS.active) hsSuperShieldSet = 1
         }
+
+    /** Native Shields::CollisionReal subtracts the full hit; OnLoop clamps a transient negative value next frame. */
+    internal fun nativeSetSuperShield(value: Int) { superShieldValue = value }
+
+    /**
+     * Hyperspace Lua: whether Shields::shields.power.super.second is set (FTL keeps 0 until Shields::AddSuperShield or
+     * PowerSuperShields gives a super shield, 0x631790 / 0x631810, and DrainSuperShield clears it on a jump).
+     */
+    @JvmField var hsSuperShieldSet = 0
 
     /**
      * ShipManager +0x4d8: set by ShipManager::JumpLeave and cleared when the reversed jump animation ends.
@@ -356,11 +467,30 @@ class Ship(
      */
     val isDead: Boolean get() = health == 0
 
+    /** ShipManager::bDestroyed (+0x499): latched by ShipManager::OnLoop (0x4abd40) the first loop it sees hull < 1. */
+    var nativeDestroyed = false
+
     /**
-     * Ship::DestroyedDone (0x48c880): the ship is dead and its 3 s ExplosionAnimation
-     * tracker (Ship constructor 0x48b570) has finished.
+     * Ship::DestroyedDone: the ship is dead and its ExplosionAnimation tracker (3 s from the Ship constructor
+     * and 4 s for a jump-out) has finished.
      */
-    val isGone: Boolean get() = isDead && destructionTime >= DESTRUCTION_TIME
+    val isGone: Boolean get() = isDead && destructionTime >= destructionEnd
+
+    /**
+     * ShipManager::bInvincible: at hull 0 the wreck ends in an emergency jump. ShipManager::OnLoop
+     * calls Ship::SetDestroyed(true, bInvincible); SetDestroyed sets ExplosionAnimation::bJumpOut and a 4 s
+     * tracker. BossShip::StartStage sets it to stage != 3; Hyperspace's `<invincible/>` event ships and Lua's
+     * `ShipManager.bInvincible` set it too (HS: emergency FTL upon destruction, as the flagship's stages 1 and 2).
+     */
+    @JvmField var invincible = false
+
+    /** ExplosionAnimation::bJumpOut: [invincible] when the explosion started. */
+    var destructionJumpOut = false
+        private set
+    private val destructionEnd: Float get() = if (destructionJumpOut) DESTRUCTION_JUMP_TIME else hsDestructionTime ?: DESTRUCTION_TIME
+
+    /** Hyperspace: a defeated `<finalBoss>` ship's explosion tracker runs 6 s (ship.explosion.time = 6.0, HsFinalBoss). */
+    @JvmField var hsDestructionTime: Float? = null
 
     val isCloakActive: Boolean get() = cloaking?.active ?: false
 
@@ -472,9 +602,14 @@ class Ship(
     var artillery: List<Artillery> = emptyList()
         private set
 
-    // GetDodgeFactor (0x49fe90): engines and piloting only, without the cloak.
+    // GetDodgeFactor (0x49fe90): engines and piloting only, without the cloak. It returns 0 when the ship has no
+    // engines (system slot 1 is -1) or no piloting (slot 6 is -1), e.g. Multiverse stations such as MU_ROCK_STATION.
     private val engineDodge: Float
-        get() = (piloting!!.evasion + engines!!.evasion.f) * piloting!!.evasionMultiplier * engines!!.evasionMultiplier
+        get() {
+            val piloting = piloting ?: return 0f
+            val engines = engines ?: return 0f
+            return (piloting.evasion + engines.evasion.f) * piloting.evasionMultiplier * engines.evasionMultiplier
+        }
 
     // Last frame's jump-ready (+0x7ed) and dodging (+0x7ec) flags. A new run
     // starts with the drive charged and silent; a loaded ship clears them.
@@ -495,24 +630,50 @@ class Ship(
      */
     var startSoundsMuted = false
 
-    // The ship's evasion, in percent
-    val evasion: Int
+    /** ShipManager::GetDodgeFactor excludes the cloak bonus, which GetDodged adds separately. */
+    /** Diagnostics only (native replays): a dodge factor standing in for the native ship's manning. */
+    var browserDiagnosticDodge: Int? = null
+
+    val dodgeFactor: Int
         get() {
-            var evasion: Float = piloting!!.evasion + engines!!.evasion.f
-            evasion *= piloting!!.evasionMultiplier
-            evasion *= engines!!.evasionMultiplier
+            browserDiagnosticDodge?.let { return it }
+            // GetDodged (0x4a00d0): GetDodgeFactor (0 without engines or piloting), plus 60 while cloaked.
+            val piloting = piloting
+            val engines = engines
+            var evasion = 0f
+            if (piloting != null && engines != null) {
+                evasion = piloting.evasion + engines.evasion.f
+                evasion *= piloting.evasionMultiplier
+                evasion *= engines.evasionMultiplier
+            }
 
-            if (isCloakActive)
-                evasion += 60
-
-            return evasion.toInt()
+            // HS 1b05a07 CustomDamage.cpp286 wraps InternalEvents.cpp337 in the actual oracle:
+            // callback result first, then the current projectile's accuracy (including direct Lua queries).
+            return if (xyz.znix.xftl.hs.HS.active)
+                xyz.znix.xftl.hs.weapons.HsWeaponHooks.dodgeFactor(this, evasion.toInt()) -
+                    (xyz.znix.xftl.hs.weapons.HsDamage.current?.accuracyMod ?: 0)
+            else evasion.toInt()
         }
+
+    // The ship's final evasion, in percent.
+    val evasion: Int get() = dodgeFactor + if (isCloakActive) 60 else 0
 
     /**
      * From 0-1.
      */
     var averageOxygen: Float = 1f
         private set
+
+    /** Hyperspace AddSystem of an oxygen system: every room full, the average with it (see HsSystemInstall.install). */
+    fun hsFillOxygen() {
+        for (room in rooms) room.oxygen = 1f
+        averageOxygen = 1f
+    }
+
+    /** Hyperspace RemoveSystem of the oxygen system (oxygenWithoutSystem): the rooms keep their levels, the dummy system's total starts empty until the next update. */
+    fun hsEmptyOxygenTotal() {
+        averageOxygen = 0f
+    }
 
     init {
         if (customised != null) {
@@ -612,7 +773,7 @@ class Ship(
 
         hullOffset = ConstPoint(minX, minY) * ROOM_SIZE + type.hullOffset
 
-        hardpoints = type.hardpoints.map { Hardpoint(it) }
+        hardpoints = type.hardpoints.mapTo(ArrayList()) { Hardpoint(it) }
         gibs = type.gibs.map { it.createInstance(sys) }
 
         // Set up the pathfinder after the layout is loaded
@@ -628,20 +789,24 @@ class Ship(
         // Load the starting reactor power
         purchasedReactorPower = type.startingReactorPower
 
-        // Load the starting systems
-        for (config in systemSlots) {
-            if (!config.spec.availableByDefault)
-                continue
+        // Load the starting systems (Hyperspace: in CreateSystems' order, see HsSystemState.creating)
+        xyz.znix.xftl.hs.systems.HsSystemState.creating(this) {
+            for (config in systemSlots) {
+                if (!config.spec.availableByDefault)
+                    continue
 
-            config.room.setSystem(config)
+                config.room.setSystem(config)
+            }
         }
 
         // Load the starting resources
         missilesCount = type.initialMissiles
         dronesCount = type.initialDroneParts
 
+        // Modded data (lists, equipment without its system): the original's rules, see HsShipStart.
+        if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.ship.HsShipStart.loadEquipment(this, hsStartEquipment)
         // Load all the weapon blueprints
-        for ((index, name) in type.initialWeapons.withIndex()) {
+        else for ((index, name) in type.initialWeapons.let { l -> type.weaponListCount?.let { l.take(it) } ?: l }.withIndex()) {
             // If there's a ship with invalid weapons, vanilla loads the weapon
             // with an empty name.
             // This empty-name weapon isn't actually set in the vanilla XML, but
@@ -657,8 +822,8 @@ class Ship(
         }
 
         // Load all the drone blueprints
-        for ((idx, name) in type.initialDrones.withIndex()) {
-            val drone = sys.blueprintManager.getOrNull(name) as DroneBlueprint?
+        if (!xyz.znix.xftl.hs.HS.modded) for ((idx, name) in type.initialDrones.withIndex()) {
+            val drone = sys.blueprintManager.getOrNull(name) as? DroneBlueprint
 
             // If a ship has an invalid drone, just ignore it.
             if (drone == null) {
@@ -682,7 +847,7 @@ class Ship(
             // ShipGenerator::CreateShip drops the Zoltan shield from the blueprint before OnInit on easy's first sector.
             if (name == omitAugment)
                 continue
-            val augment = sys.blueprintManager.getOrNull(name) as AugmentBlueprint?
+            val augment = sys.blueprintManager.getOrNull(name) as? AugmentBlueprint
 
             // Also ignore invalid blueprints.
             if (augment == null) {
@@ -700,6 +865,9 @@ class Ship(
                 room.oxygen = 0f
             }
         }
+
+        // Hyperspace: ShipManager_Extend::Initialize after OnInit (hidden augments, room definitions, automation).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsShipState.initialize(this)
 
         // Calculate the number of each type of augment
         cargoUpdated()
@@ -780,6 +948,7 @@ class Ship(
             }
         }
         shields?.instantCharge()
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSuperShield.detachedInstantCharge(this)
         // Settle the power and evasion for the start event, without simulating any time.
         update(0f)
     }
@@ -790,17 +959,25 @@ class Ship(
      * InstantPowerShields.
      */
     fun browserPowerNewSystem(system: AbstractSystem) {
-        if (system !is MainSystem)
+        if (system !is MainSystem) {
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystemState.firePending()
             return
+        }
         updateAvailablePower()
         val target = browserStartingTargetPower(system)
         var guard = system.undamagedEnergy + 2
         while (system.powerSelected < target && guard-- > 0) {
             val before = system.powerSelected
             system.increasePower()
-            if (system.powerSelected == before)
+            if (system.powerSelected == before) {
+                // Hyperspace Lua: PowerManager::failedPowerup records the refused bar (oracle wp5-sys, artillery
+                // added with a full reactor)
+                if (xyz.znix.xftl.hs.HS.active && powerAvailable <= 0) xyz.znix.xftl.hs.systems.HsPower.of(this).failedPowerup = true
                 break
+            }
         }
+        // Hyperspace: CONSTRUCT_SHIP_SYSTEM ends the constructor, before AddSystem's InstantPowerShields
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystemState.firePending()
         if (system is Shields)
             instantPowerShields()
     }
@@ -824,7 +1001,10 @@ class Ship(
     }
 
     fun instantPowerShields() {
-        val system = shields ?: return
+        val system = shields ?: run {
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSuperShield.detachedInstantCharge(this)
+            return
+        }
         // The native reactor accounting is always current; a freshly generated ship has not run its first update yet.
         updateAvailablePower()
         var guard = system.energyLevels + 2
@@ -849,16 +1029,54 @@ class Ship(
     // Presentation only: the random start must not draw from the simulation RNG.
     private val thrusterTimes = FloatArray(2) { (Math.random() * 0.5).toFloat() }
 
-    private fun drawThrusters(alpha: Float = renderAlpha) {
+    /** Hyperspace render state of this ship (hs.render: layout thrusters). */
+    @JvmField var hsRender: Any? = null
+
+    private fun drawThrusters(g: Graphics, alpha: Float = renderAlpha) {
+        // Hyperspace: SHIP_ENGINES render event and the layout's <thrusters> (Ship::RenderEngineAnimation)
+        if (xyz.znix.xftl.hs.HS.active) {
+            xyz.znix.xftl.hs.render.HsThrusters.render(this, g, thrusterOffsets != null, alpha) { drawVanillaThrusters(alpha) }
+            return
+        }
+        drawVanillaThrusters(alpha)
+    }
+
+    private fun drawVanillaThrusters(alpha: Float) {
         val offsets = thrusterOffsets ?: return
         val sheet = sys.getImg("img/effects/thrusters_on.png")
         for ((i, offset) in offsets.withIndex()) {
-            thrusterTimes[i] = (thrusterTimes[i] + sys.renderingDeltaTime) % 0.5f
-            val frame = (thrusterTimes[i] / 0.125f).toInt().coerceAtMost(3)
+            val written = if (i == 0) hsEngineAnim else null
+            val frame = written?.frame() ?: (thrusterTimes[i] / 0.125f).toInt().coerceAtMost(3)
             sheet.getSubImage(frame * 22, 0, 22, 70).draw(
-                hullOffset.x + offset.x, hullOffset.y + offset.y, Colour(1f, 1f, 1f, alpha))
+                (written?.x() ?: (hullOffset.x + offset.x)), (written?.y() ?: (hullOffset.y + offset.y)), Colour(1f, 1f, 1f, alpha))
         }
     }
+
+    /** What Lua sees of engineAnim: a write of its frame or position reaches the first thruster. */
+    interface EngineAnimView {
+        fun frame(): Int
+        fun x(): Int
+        fun y(): Int
+        fun updated(time: Float)
+        fun time(): Float
+    }
+    @JvmField var hsEngineAnim: EngineAnimView? = null
+    /** Native position of the first thruster, from the hull image's place. */
+    fun hsEngineAnimPos(): ConstPoint? = thrusterOffsets?.let { ConstPoint(hullOffset.x + it[0].x, hullOffset.y + it[0].y) }
+    /** Its loop time: where a view of it starts. */
+    fun hsEngineAnimTime(): Float = thrusterTimes[0]
+
+    /** Ship::OnLoop: the engine animations run with the game, not while it is paused. */
+    private fun updateThrusters(dt: Float) {
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsThrusters.update(this, dt)) return
+        hsEngineAnim?.let { thrusterTimes[0] = it.time() }
+        for (i in thrusterTimes.indices) thrusterTimes[i] = (thrusterTimes[i] + dt) % 0.5f
+        hsEngineAnim?.updated(thrusterTimes[0])
+    }
+
+    /** ShipGraph::shipBox moved by a script: the hull, cloak and floor images are drawn from it. */
+    @JvmField var hsBoxShiftX = 0
+    @JvmField var hsBoxShiftY = 0
 
     /** Where the jump flash is centred at progress p (Ship::OnRenderJump): see [renderJump]. */
     fun jumpFlareCentre(progress: Float): Pair<Float, Float> =
@@ -875,25 +1093,40 @@ class Ship(
      * Shots in flight and external drones belong to SpaceManager, so they keep drawing as ever.
      */
     fun renderJump(g: Graphics, fade: Float) {
+        // Hyperspace SHIP (CompleteShip::OnRenderShip) around SHIP_JUMP (Ship::OnRenderJump)
+        val luaShip = if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.preShip(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP, this) else 0
+        if (luaShip >= 0) {
+            val luaJump = if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.preShipJump(this, fade) else 0
+            if (luaJump >= 0) renderJumpInner(g, fade)
+            if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.postShipJump(this, luaJump)
+        }
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.postShip(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP, this, luaShip)
+    }
+
+    private fun renderJumpInner(g: Graphics, fade: Float) {
         val alpha = 1f - fade
         val previousAlpha = renderAlpha
         renderAlpha = alpha
 
+        xyz.znix.xftl.weapons.ProjectileRuntime.renderSmoke(g, this)
         for (proj in projectiles) {
-            if (proj.drawUnderShip) {
-                proj.render(g, this)
+            if (xyz.znix.xftl.weapons.ProjectileRuntime.rendersInLayer(proj, 2)) {
+                xyz.znix.xftl.weapons.ProjectileRuntime.render(proj, g, this)
             }
         }
+        // SpaceManager's render pass (0x41a8b0, layer 2, before the ship): every drone of this space draws here too,
+        // and again over the ship (measured: OnRender in both passes, native 1.6.14 drone-order probe).
+        for (drone in xyz.znix.xftl.drones.DroneRuntime.renderOrder(externalDrones)) drone.renderExternal(g)
 
         if (!isDead) {
-            renderShields()
+            renderShields(g)
             renderShieldHits(g)
         }
 
-        hullImage?.draw(hullOffset.x, hullOffset.y, Colour(1f, 1f, 1f, alpha))
+        hullImage?.draw(hullOffset.x + hsBoxShiftX, hullOffset.y + hsBoxShiftY, Colour(1f, 1f, 1f, alpha))
 
         val progress = InGameState.browserJumpFlareProgress(fade)
-        drawThrusters(1f - progress.coerceAtMost(1f))
+        drawThrusters(g, 1f - progress.coerceAtMost(1f))
 
         val starSize = InGameState.browserJumpFlareSize(progress)
         if (starSize > 0f) {
@@ -904,34 +1137,54 @@ class Ship(
         renderAlpha = previousAlpha
 
         for (proj in projectiles) {
-            if (!proj.drawUnderShip) {
-                proj.render(g, this)
+            if (xyz.znix.xftl.weapons.ProjectileRuntime.rendersInLayer(proj, 1)) {
+                xyz.znix.xftl.weapons.ProjectileRuntime.render(proj, g, this)
             }
         }
-        for (beam in inboundBeams) {
-            beam.renderInbound(g)
-        }
-        for (drone in externalDrones) {
+        // Cross-space beams stored in the other ship's projectiles draw their target part here.
+        BeamProjectile.renderInbound(g, this)
+        for (drone in xyz.znix.xftl.drones.DroneRuntime.renderOrder(externalDrones)) {
             drone.renderExternal(g)
         }
     }
 
     fun render(g: Graphics, interiorVisible: Boolean, selected: Room?) {
+        // Hyperspace SHIP (CompleteShip::OnRenderShip) and SHIP_MANAGER (ShipManager::OnRender) render events
+        if (xyz.znix.xftl.hs.HS.luaActive) {
+            val s = xyz.znix.xftl.hs.render.HsRenderEvents.preShip(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP, this)
+            if (s >= 0) {
+                val i = xyz.znix.xftl.hs.render.HsRenderEvents.preShipManager(this, interiorVisible, false)
+                if (i >= 0) renderManager(g, interiorVisible, selected)
+                xyz.znix.xftl.hs.render.HsRenderEvents.postShipManager(this, i)
+            }
+            xyz.znix.xftl.hs.render.HsRenderEvents.postShip(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP, this, s)
+            return
+        }
+        renderManager(g, interiorVisible, selected)
+    }
+
+    private fun renderManager(g: Graphics, interiorVisible: Boolean, selected: Room?) {
         // Draw departing shots, under the shield bubble as the original layers them (a missile leaving the
         // player's ship is tinted by the bubble). We'll draw the rest of them later.
+        xyz.znix.xftl.weapons.ProjectileRuntime.renderSmoke(g, this)
         for (proj in projectiles) {
-            if (proj.drawUnderShip) {
-                proj.render(g, this)
+            if (xyz.znix.xftl.weapons.ProjectileRuntime.rendersInLayer(proj, 2)) {
+                xyz.znix.xftl.weapons.ProjectileRuntime.render(proj, g, this)
             }
         }
+        // SpaceManager's render pass (0x41a8b0, layer 2, before the ship): every drone of this space draws here too,
+        // and again over the ship (measured: OnRender in both passes, native 1.6.14 drone-order probe).
+        for (drone in xyz.znix.xftl.drones.DroneRuntime.renderOrder(externalDrones)) drone.renderExternal(g)
 
         // Draw the shield and the flashes of the shots it stopped; a destroyed ship has none.
         if (!isDead) {
-            renderShields()
+            renderShields(g)
             renderShieldHits(g)
         }
 
-        for (system in systems)
+        // ShipManager::OnRender draws only the wreck for a destroyed ship: no systems, weapons or artillery
+        // in place (the weapons ride their gibs, see renderDestruction)
+        if (!isDead) for (system in systems)
             system.drawBackground(g)
 
         // If the ship is exploding, draw no further. The player's wreckage stays
@@ -950,20 +1203,37 @@ class Ship(
                 0f -> renderAlpha
                 else -> interiorAlpha * 0.75f
             }
-            hullImage?.draw(hullOffset.x, hullOffset.y, Colour(1f, 1f, 1f, hullAlpha))
-            drawThrusters()
+            // Hyperspace SHIP_HULL render event around the hull, cloak and engines of Ship::OnRenderBase
+            val luaHull = if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.preShipHull(this, cloakFade) else 0
+            if (luaHull >= 0) {
+            hullImage?.draw(hullOffset.x + hsBoxShiftX, hullOffset.y + hsBoxShiftY, Colour(1f, 1f, 1f, hullAlpha))
+            drawThrusters(g)
 
             if (cloakFade != 0f) {
-                requireNotNull(cloakImage) { "Ship '$name' cloaked, but it doesn't have a cloak image!" }
-
-                cloakImage.draw(
-                    hullOffset.x + cloakOffset.x, hullOffset.y + cloakOffset.y,
+                // A mod's ship can lack the image (Multiverse's STL_PANTS): the ship then just draws no cloak.
+                cloakImage?.draw(
+                    hullOffset.x + cloakOffset.x + hsBoxShiftX, hullOffset.y + cloakOffset.y + hsBoxShiftY,
                     Colour(1f, 1f, 1f, cloakFade)
                 )
             }
+            }
+            if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.postShipHull(this, luaHull)
 
-            if (interiorVisible) {
-                drawInterior(g, selected, interiorAlpha)
+            // Hyperspace cloakRenderFix (CustomShips.cpp, Ship::OnRenderBase / ShipManager::OnRender hooks): a cloaked
+            // player ship with no one aboard loses its floor image unless the sensors work, and its interior (hidden
+            // natively while cloaked without player presence, ShipManager +0x7ee) shows again while they do.
+            var drawFloor = true
+            var hideInterior = false
+            if (xyz.znix.xftl.hs.HS.active && isPlayerShip && isCloakActive && xyz.znix.xftl.hs.HS.cfg().cloakRenderFix) {
+                val sensorsOn = sensors?.providesPlayerVision == true
+                val ownCrew = crew.any { it is LivingCrew && it.ownerShip === this }
+                drawFloor = ownCrew || sensorsOn
+                hideInterior = !hasPlayerPresence && !sensorsOn
+            }
+            if (interiorVisible && !hideInterior) {
+                drawInterior(g, selected, interiorAlpha, drawFloor)
+            } else if (interiorVisible && drawFloor) {
+                floorImage?.draw(floorOffset.x + hullOffset.x + hsBoxShiftX, floorOffset.y + hullOffset.y + hsBoxShiftY, Colour(1f, 1f, 1f, interiorAlpha))
             }
         }
 
@@ -986,17 +1256,16 @@ class Ship(
         // Draw the projectiles, except for those we already
         // drew underneath the ship earlier.
         for (proj in projectiles) {
-            if (!proj.drawUnderShip) {
-                proj.render(g, this)
+            if (xyz.znix.xftl.weapons.ProjectileRuntime.rendersInLayer(proj, 1)) {
+                xyz.znix.xftl.weapons.ProjectileRuntime.render(proj, g, this)
             }
         }
 
-        for (beam in inboundBeams) {
-            beam.renderInbound(g)
-        }
+        // Cross-space beams stored in the other ship's projectiles draw their target part here.
+        BeamProjectile.renderInbound(g, this)
 
         // Draw any drones flying around the ship
-        for (drone in externalDrones) {
+        for (drone in xyz.znix.xftl.drones.DroneRuntime.renderOrder(externalDrones)) {
             drone.renderExternal(g)
         }
 
@@ -1010,15 +1279,32 @@ class Ship(
         for (num in damageNumbers) {
             num.draw()
         }
+
+        // Hyperspace room animations of layers 3 and 4 (ShipManager::OnRender hook, after the original)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsRoomAnims.renderShip(g, this, interiorVisible)
     }
 
     /** A hit on the shield bubble (Shields' ShieldAnimation list, +0x204): a white flash along the bubble. */
     private class ShieldHit(var x: Float, var y: Float, val owner: Any?) {
         var size = 0f
         var thickness = 0f
+        var nativeId: Int? = null
+        var nativeLayers: Int = 0
     }
 
     private val shieldHits = ArrayList<ShieldHit>()
+
+    /** Shields::CollisionReal 1.6.9 60d980 /1.6.14 6336f0: an existing flash also remembers this shot's layer count. */
+    internal fun beginNativeShieldHit(pos: xyz.znix.xftl.math.FPoint, selfId: Int, layers: Int): Int? {
+        val old = shieldHits.firstOrNull { it.nativeId == selfId }
+        if (old != null) {
+            old.x = pos.xf; old.y = pos.yf
+            old.size = SHIELD_HIT_SIZE - 16f * sys.renderingDeltaTime * 2f * SHIELD_HIT_SPEED
+            return old.nativeLayers
+        }
+        shieldHits += ShieldHit(pos.xf, pos.yf, null).also { it.nativeId = selfId; it.nativeLayers = layers }
+        return null
+    }
 
     /**
      * Shields::CollisionReal (0x006336f0): a shot reaching a raised shield or super-shield starts a flash at
@@ -1102,9 +1388,44 @@ class Ship(
         }
     }
 
-    private fun renderShields() {
-        val level = shields?.activeShields ?: 0
+    /**
+     * Shields::OnRenderBaseShield: the bubble, then on the player's ship the hole a lost layer opens (the bubble as it was
+     * except inside a growing circle) or the circle a new super shield opens from.
+     */
+    private fun renderShields(g: Graphics) {
+        val sh = shields
+        if (sh != null && xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdaptersWritesPictures.shieldsIn(sh)
+        renderShieldBase(g, sh?.activeShields ?: 0, superShield, maxSuperShield, 1f)
+        if (sh == null || !isPlayerShip) return
+        if (!sh.superUpTracker.running) {
+            if (!sh.downTracker.running) return
+            val progress = sh.downTracker.progress
+            Utils.drawStenciled(Utils.StencilMode.BLOCKING, { renderShieldHole(g, sh.downX, sh.downY, progress) }) {
+                if (sh.superShieldDown) renderShieldBase(g, 0, 5, 5, 1f)
+                else renderShieldBase(g, 1, 0, 5, 1f)
+            }
+        } else {
+            val progress = sh.superUpTracker.progress
+            val over = progress - 0.5f
+            val fade = if (over > 0f) 1f - (over + over) else 1f
+            Utils.drawStenciled(Utils.StencilMode.MASKING, { renderShieldHole(g, sh.superUpX, sh.superUpY, progress) }) {
+                renderShieldBase(g, 0, superShield, maxSuperShield, fade)
+            }
+        }
+    }
 
+    /** The stencil primitive of Shields::OnRenderBaseShield, scaled about the point it opens from. */
+    private fun renderShieldHole(g: Graphics, x: Int, y: Int, scale: Float) {
+        g.pushTransform()
+        g.translate(x.f, y.f)
+        g.scale(scale, scale)
+        g.colour = Colour.white
+        g.fillOval(-1000f, -1000f, 2000f, 2000f)
+        g.popTransform()
+    }
+
+    /** Shields::RenderBase with these power values: the layers' bubble (grown by shieldsUp), then the super shield. */
+    private fun renderShieldBase(g: Graphics, level: Int, superShield: Int, maxSuperShield: Int, alphaScale: Float) {
         // Draw the standard (non-Zoltan) shield
         val shieldMax = if (isPlayerShip) 3.5f else 4f // This is odd, but correct
         val levelFraction = level / shieldMax
@@ -1113,7 +1434,17 @@ class Ship(
         if (level == 0) {
             // Do nothing, shields disabled
         } else {
-            renderSingleShield(alpha, Colour.white)
+            // Native: a stopped shieldsUp hides the bubble (oracle hw-o2v).
+            val up = shields?.upTracker?.let { if (it.running) it.progress else 0f } ?: 1f
+            if (up < 1f) {
+                g.pushTransform()
+                g.translate(shieldOrigin.x.f, shieldOrigin.y.f)
+                g.scale(up, up)
+                g.translate(-shieldOrigin.x.f, -shieldOrigin.y.f)
+                renderSingleShield(alpha * alphaScale, Colour.white)
+                g.popTransform()
+            } else
+            renderSingleShield(alpha * alphaScale, Colour.white)
         }
 
         // Draw the super shields
@@ -1124,7 +1455,14 @@ class Ship(
                 superShieldAlpha = SHIELD_OPACITY_BASE + SHIELD_OPACITY_SCALING * superShieldAlpha
             }
 
-            renderSingleShield(superShieldAlpha, SYS_ENERGY_ACTIVE)
+            // Hyperspace: an augment super shield's colour and image (Shields::RenderBase, CustomSuperShield.cpp).
+            val look = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSuperShield.bubble(this) else null
+            if (look != null) {
+                val c = look.color!!
+                val path = look.image[if (isPlayerShip) 0 else 1]
+                renderSingleShield(superShieldAlpha * c.a * alphaScale, Colour(c.r, c.g, c.b), path?.let { sys.getImg("img/$it") })
+            } else
+            renderSingleShield(superShieldAlpha * alphaScale, SYS_ENERGY_ACTIVE)
 
             // TODO fix the ugly darkened line around the edge of enemy super-shields
             // I suspect this is caused by the scaling - Slick has had problems
@@ -1134,10 +1472,14 @@ class Ship(
         }
     }
 
-    private fun renderSingleShield(alpha: Float, filter: Colour) {
+    /** Hyperspace Lua: Shields::shieldImage or shieldPrimitive written by a script: what the bubble draws. */
+    @JvmField var hsShieldImage: Image? = null
+
+    private fun renderSingleShield(alpha: Float, filter: Colour, image: Image? = null) {
         val shieldAlpha = alpha * renderAlpha
         val basePosX = shieldOrigin.x - shieldHalfSize.x
         val basePosY = shieldOrigin.y - shieldHalfSize.y
+        val shieldImage = image ?: hsShieldImage ?: this.shieldImage
 
         // Draw the image scaled to fit the
         shieldImage.draw(
@@ -1170,11 +1512,26 @@ class Ship(
 
             // WeaponControl::RenderAiming (0x56b530) picks the yellow set of
             // crosshairs for a weapon that will fire again by itself.
-            val weaponNumber = min(target.weaponNumber + 1, 4)
             val suffix = if (target.isAutofire) "_yellow" else ""
-            val img = sys.getImg("img/misc/crosshairs_placed${weaponNumber}${suffix}.png")
+            // Hyperspace WeaponControl::GetAimingPrimitive (AdditionalWeaponSlots.cpp): slots 5 to 10 have their own
+            // crosshairs, any further slot the fallback set.
+            val name = if (xyz.znix.xftl.hs.HS.active) {
+                if (target.weaponNumber < 10) "crosshairs_placed${target.weaponNumber + 1}" else "crosshairs_placed_fallback"
+            } else {
+                "crosshairs_placed${min(target.weaponNumber + 1, 4)}"
+            }
+            val img = sys.getImg("img/misc/${name}${suffix}.png")
 
             val pos = Point(room.pixelCentre)
+
+            // a weapon with a radius (flak's spread) first draws a red disc of it at a quarter opacity around the target
+            val radius = target.weapon.aimRadius
+            if (radius != 0) {
+                val previous = g.colour
+                g.colour = Colour(1f, 0f, 0f, 0.25f)
+                g.fillOval(pos.x - radius.f, pos.y - radius.f, 2f * radius, 2f * radius)
+                g.colour = previous
+            }
 
             pos.x -= img.width / 2
             pos.y -= img.height / 2
@@ -1190,6 +1547,9 @@ class Ship(
         } else {
             inboundBeamAim = null
         }
+
+        // Hyperspace WeaponControl::RenderAimingNew: the player's targetable artillery aims.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsArtillery.renderAims(this, g)
     }
 
     fun renderTargetingBeam(g: Graphics, beam: SelectedTarget.BeamAim, autofire: Boolean = false) {
@@ -1227,7 +1587,7 @@ class Ship(
      * (0x57eba0) only lets the player pick one of its rooms when this holds.
      */
     val hasPlayerPresence: Boolean
-        get() = crew.any { it.belongsToPlayer == true || (it as? LivingCrew)?.mindControlledBy != null }
+        get() = crew.any { it.belongsToPlayer == true || (it as? LivingCrew)?.isMindControlled == true }
 
     /**
      * Can the player pick one of this ship's rooms (weapon aim, beam start, teleporter, hacking, mind control)?
@@ -1251,39 +1611,61 @@ class Ship(
             // ship.
             // Ship.crew lists only the crew physically standing aboard, so
             // boarding Slugs are found in the enemy ship's list.
-            if (sys.player?.crew?.any { it is CrewSlug && it.ownerShip === sys.player } == true)
+            if (sys.player?.crew?.any { it.detectsLifeforms && (it as? xyz.znix.xftl.crew.LivingCrew)?.ownerShip === sys.player } == true)
                 return true
-            if (sys.enemy?.crew?.any { it is CrewSlug && it.ownerShip === sys.player } == true)
+            if (sys.enemy?.crew?.any { it.detectsLifeforms && (it as? xyz.znix.xftl.crew.LivingCrew)?.ownerShip === sys.player } == true)
                 return true
 
             // The scanner only senses lifeforms aboard enemy vessels.
             return !isPlayerShip && sys.player?.hasAugment(AugmentBlueprint.LIFE_SCANNER) == true
         }
 
-    private fun drawInterior(g: Graphics, selected: Room?, alpha: Float) {
-        floorImage?.draw(
-            floorOffset.x + hullOffset.x,
-            floorOffset.y + hullOffset.y,
+    private fun drawInterior(g: Graphics, selected: Room?, alpha: Float, drawFloor: Boolean = true) {
+        if (drawFloor) floorImage?.draw(
+            floorOffset.x + hullOffset.x + hsBoxShiftX,
+            floorOffset.y + hullOffset.y + hsBoxShiftY,
             Colour(1f, 1f, 1f, alpha)
         )
 
-        // Draw the rooms
-        for (room in rooms) {
-            var roomSelected = selected == room
-
+        // Draw the rooms. Plain: each room in one go. While a Lua script listens to SHIP_FLOOR, SHIP_BREACHES or
+        // SHIP_SPARKS, FTL's stages run over all rooms in turn (Ship::OnRenderFloor, the systems,
+        // Ship::OnRenderBreaches, Ship::OnRenderSparks, then the rest) with their render events around them.
+        fun isSelected(room: Room): Boolean {
             // If the user is currently aiming a beam, highlight
             // the rooms it would hit.
-            if (inboundBeamAim?.hitRooms?.contains(room) == true) {
-                roomSelected = true
-            }
+            return selected == room || inboundBeamAim?.hitRooms?.contains(room) == true
+        }
 
-            room.render(g, roomSelected, alpha)
+        val ren = xyz.znix.xftl.hs.render.HsRenderEvents
+        val lua = xyz.znix.xftl.hs.lua.LuaApi
+        if (xyz.znix.xftl.hs.HS.luaActive && (ren.has(lua.RE_SHIP_FLOOR) || ren.has(lua.RE_SHIP_BREACHES) || ren.has(lua.RE_SHIP_SPARKS))) {
+            val floor = ren.preShip(lua.RE_SHIP_FLOOR, this)
+            if (floor >= 0) for (room in rooms) room.renderFloorPart(g, alpha)
+            ren.postShip(lua.RE_SHIP_FLOOR, this, floor)
+
+            for (room in rooms) room.renderSystemPart(g)
+
+            val breaches = ren.preShip(lua.RE_SHIP_BREACHES, this)
+            if (breaches >= 0) for (room in rooms) room.renderBreachPart(g)
+            ren.postShip(lua.RE_SHIP_BREACHES, this, breaches)
+
+            val sparks = ren.preShip(lua.RE_SHIP_SPARKS, this)
+            if (sparks >= 0) for (room in rooms) room.renderSparkPart(g, true)
+            ren.postShip(lua.RE_SHIP_SPARKS, this, sparks)
+
+            for (room in rooms) room.renderRest(g, isSelected(room), alpha, false, renderAlpha)
+        } else {
+            for (room in rooms) room.render(g, isSelected(room), alpha, renderAlpha)
         }
 
         // Draw the doors
         for (door in doors) {
             door.render(g, alpha)
         }
+        // Ship::OnRenderWalls: the lockdown shards after the doors
+        for (shard in lockdownShards) shard.render(g, alpha)
+        // then the systems' icons (Room.renderSystemIcon)
+        for (room in rooms) room.renderSystemIcon(g)
 
         // Draw the crew
         // Slug telepathy: while a living player-owned Slug is aboard, enemy
@@ -1331,6 +1713,9 @@ class Ship(
         // Draw the system foregrounds
         for (system in systems)
             system.drawForeground(g)
+
+        // Hyperspace: the player's queued temporal target on this ship.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.renderQueued(this, g)
     }
 
     fun screenPosToShipPos(point: Point) {
@@ -1362,6 +1747,8 @@ class Ship(
 
     /** For the parity checks: the explosions on the wreck and whether the hull has blown apart. */
     val diagnosticDestruction: Pair<Int, Boolean> get() = Pair(destructionExplosions.size, destructionSoundPlayed)
+    /** Diagnostics: the wreck's tracker time (s). */
+    val diagnosticDestructionTime: Float get() = destructionTime
 
     /**
      * Ship::OnLoop (0x493f70). For the first 1.5 s a random explosion1-4 plays at a
@@ -1374,9 +1761,14 @@ class Ship(
      * from then on the gibs drift. The tracker stops at 3 s.
      */
     private fun updateDestruction(dt: Float) {
-        if (destructionTime >= DESTRUCTION_TIME)
+        if (destructionTime == 0f) destructionJumpOut = invincible
+        if (destructionTime >= destructionEnd)
             return
-        destructionTime = min(destructionTime + dt, DESTRUCTION_TIME)
+        val before = destructionTime / destructionEnd
+        destructionTime = min(destructionTime + dt, destructionEnd)
+        // ExplosionAnimation::OnLoop: a jump-out plays jumpLeave as its tracker passes 0.75 (3 s of 4)
+        if (destructionJumpOut && before < JUMP_OUT_PROGRESS && destructionTime / destructionEnd >= JUMP_OUT_PROGRESS)
+            sys.sounds.getSampleOrWarn("jumpLeave")?.play()
 
         if (destructionTime >= DESTRUCTION_SOUND_TIME) {
             if (destructionTime > DESTRUCTION_SOUND_TIME) {
@@ -1426,25 +1818,102 @@ class Ship(
         }
     }
 
-    // AnimationControl resolves explosion_random to one of the three big explosions.
-    private fun randomBigExplosion(): AnimationSpec =
-        sys.animations["explosion_big${VisualRandom.nextInt(3) + 2}"]
+    // GetAnimation("explosion_random") picks explosion_big2-4 in that call (0x5a6450), on the wreck's visual stream.
+    private fun randomBigExplosion(): AnimationSpec = sys.animations.getOrNull("explosion_random", VisualRandom)!!
 
     /**
-     * ExplosionAnimation::OnRender (0x488e80): the gibs (last first), the whole hull
-     * on top until it blows apart, then the explosions until the tracker reaches 3 s.
+     * The wreck (ShipManager::OnRender draws nothing else for a destroyed ship): ExplosionAnimation::
+     * OnRender, the gibs (last first) with the weapons mounted on each (WeaponAnimation::OnRender in the
+     * gib's matrix, under its image), the whole hull on top until it blows apart, then the explosions until the tracker
+     * reaches 3 s. A jump-out (bJumpOut) leaves its last gib out past 0.75 and draws Ship::OnRenderJump((p - 0.75) x 4).
      */
     private fun renderDestruction(g: Graphics) {
-        for (gib in gibs.asReversed()) {
-            gib.draw(g, hullOffset, type.hullOffset)
+        val progress = destructionTime / destructionEnd
+        val jumping = destructionJumpOut && progress > JUMP_OUT_PROGRESS
+        // Hyperspace artilleryGibMountFix (CustomShips.cpp ExplosionAnimation::OnRender): each gib carries the artillery
+        // mounted on it (the layout's mount gib number, one-based), drawn under the gib's own image
+        val onGibs = hsArtilleryOnGibs()
+        for (index in gibs.indices.reversed()) {
+            if (jumping && index == gibs.size - 1) continue
+            val weaponsHere = hardpoints.any { it.weapon != null && it.spec.gib == index + 1 }
+            val artilleryHere = onGibs && artillery.any { it.hsMountGib == index + 1 }
+            val mounted: ((Graphics) -> Unit)? = if (weaponsHere || artilleryHere) {
+                { gg ->
+                    for (hp in hardpoints) if (hp.spec.gib == index + 1) hp.weapon?.let { renderWeaponOnGib(gg, hp, it) }
+                    if (artilleryHere) for (a in artillery) if (a.hsMountGib == index + 1) a.renderOnGib(gg)
+                }
+            } else null
+            gibs[index].draw(g, hullOffset, type.hullOffset, mounted)
         }
-        if (!destructionSoundPlayed)
+        // Hyperspace hideHullDuringExplosion (CustomShips.cpp ExplosionAnimation::OnRender): no hull while the gibs wait
+        val hideHull = xyz.znix.xftl.hs.HS.active &&
+                (xyz.znix.xftl.hs.HS.cfg().hideHullDuringExplosion || xyz.znix.xftl.hs.ship.HsShips.def(type.name).hideHullDuringExplosion)
+        if (!destructionSoundPlayed && !hideHull)
             hullImage?.draw(hullOffset.x, hullOffset.y)
         if (destructionTime < DESTRUCTION_TIME) {
             for (explosion in destructionExplosions)
                 explosion.render(g)
         }
+        if (jumping) renderJumpOut(g, (progress - JUMP_OUT_PROGRESS) * 4f)
     }
+
+    /** A weapon's launcher on its gib (Weapons' placement, slide included), without the charge bar. */
+    private fun renderWeaponOnGib(g: Graphics, hp: Hardpoint, weapon: AbstractWeaponInstance) {
+        val spec = hp.spec
+        val anim = weapon.animation
+        g.pushTransform()
+        if (spec.slide != null) {
+            val dist = (12 * (weapon.slide - 1)).roundToInt()
+            g.translate(spec.slide.x * dist.toFloat(), spec.slide.y * dist.toFloat())
+        }
+        // The mounts draw from Ship::shipImage's corner, ahead of the mount's own rotation (a write moves the weapons, not the hull).
+        g.translate(hsHullShiftX.toFloat(), hsHullShiftY.toFloat())
+        xyz.znix.xftl.systems.Weapons.translateHardpoint(g, spec)
+        g.translate(-anim.mountPoint.x.toFloat() - weapon.hsMountShiftX, -anim.mountPoint.y.toFloat() - weapon.hsMountShiftY)
+        weapon.render(g)
+        g.popTransform()
+    }
+
+    /**
+     * Ship::OnRenderJump of a jump-out wreck: the whole hull at alpha 1 - fade, the player's thrusters and
+     * the flash, inside Hyperspace's SHIP_JUMP render event. Hyperspace artilleryGibMountFix (CustomShips.cpp
+     * Ship::OnRenderJump): the enemy flagship at stage 1 or 2 first draws the artillery of its last gib, tinted
+     * 1 - fade, translated by the hull image offset less that gib's position.
+     */
+    private fun renderJumpOut(g: Graphics, fade: Float) {
+        val lua = if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.preShipJump(this, fade) else 0
+        if (lua >= 0) {
+            val flagship = boss as? xyz.znix.xftl.game.FlagshipBoss
+            if (hsArtilleryOnGibs() && gibs.isNotEmpty() && !isPlayerShip && flagship != null && (flagship.stage == 1 || flagship.stage == 2)) {
+                val last = gibs.size
+                val pos = gibs[last - 1].position
+                g.pushTransform()
+                g.translate(type.hullOffset.x - pos.xf, type.hullOffset.y - pos.yf)
+                val previous = renderAlpha
+                renderAlpha = 1f - fade
+                for (a in artillery) if (a.hsMountGib == last) a.renderOnGib(g)
+                renderAlpha = previous
+                g.popTransform()
+            }
+            hullImage?.draw(hullOffset.x, hullOffset.y, Colour(1f, 1f, 1f, 1f - fade))
+            val flare = InGameState.browserJumpFlareProgress(fade)
+            drawThrusters(g, 1f - flare.coerceAtMost(1f))
+            val starSize = InGameState.browserJumpFlareSize(flare)
+            if (starSize > 0f) {
+                val (x, y) = jumpFlareCentre(flare)
+                sys.jumpFlare.draw(x - starSize / 2f, y - starSize / 2f, starSize, starSize)
+            }
+        }
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.postShipJump(this, lua)
+    }
+
+    /**
+     * Hyperspace artilleryGibMountFix: a wrecked ship's artillery is drawn on the gib its mount belongs to, moving with it,
+     * and no longer in place (the global `<artilleryGibMountFix>` or the ship's own definition).
+     */
+    internal fun hsArtilleryOnGibs(): Boolean =
+        isDead && xyz.znix.xftl.hs.HS.active && artillery.isNotEmpty() &&
+                (xyz.znix.xftl.hs.HS.cfg().artilleryGibMountFix || xyz.znix.xftl.hs.ship.HsShips.def(type.name).artilleryGibMountFix)
 
     private fun updateDestructionSounds(dt: Float) {
         if (destructionSoundTimer >= 0f) {
@@ -1456,25 +1925,96 @@ class Ship(
         destructionSoundTimer = (ftl.browser.BrowserRandom.nextInt(3) + 1) * 0.3f
     }
 
+    /**
+     * Once a save is loaded: the weapons' and drones' power as native ShipManager::ImportShip leaves it. The rooms'
+     * crew lists are filled first: they are otherwise refreshed only in [Room.update], after the first
+     * [updateAvailablePower], so the first update after a load saw no Zoltan in any room, dropped every Zoltan bar
+     * and switched off the weapons those bars held (native ImportShip adds the crew in their rooms with the ship).
+     */
+    fun afterSaveLoad() {
+        for (room in rooms) room.updateCrewInRoom()
+        weapons?.powerManager?.afterSaveLoad()
+        drones?.powerManager?.afterSaveLoad()
+    }
+
     fun update(dt: Float) {
+        updateThrusters(dt)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.systems.Teleporter.hsRecallOnLoop(this) // HS TELEPORT_RECALL
+        if (xyz.znix.xftl.hs.HS.active && this === sys.player) xyz.znix.xftl.hs.crew.HsCustomTeleport.onLoop(sys) // HS teleportMove
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.systems.Hacking.hsShipSoundLoop(this) // HS hackLoopHS
+        if (dt > 0f && health <= 0) nativeDestroyed = true
+        // Hyperspace Lua: Spreader<Fire>::count / roomCount are recounted by the spreader's loop, not by SetFire
+        // (oracle wp5-ship: StartFire while paused leaves count at 0)
+        if (dt > 0f && hs != null) {
+            // Lua SetSystemPowerLoss: the stored loss reaches CheckMaxPower in this loop
+            hs?.lua?.pendingLoss?.let { p -> if (p.isNotEmpty()) { for ((sys, loss) in HashMap(p)) sys.scriptedPowerLoss = loss; p.clear() } }
+            xyz.znix.xftl.hs.ship.HsNavAugments.nanobots(this, dt)
+            hs?.lua?.let {
+                it.lastEngineStatus = xyz.znix.xftl.hs.lua.LuaAdaptersWP5Ship.engineStatus(this)
+                // ShipManager::CheckVision reveals and clears every tempVision flag; OnLoop
+                // zeroes damageCloaked while the ship is not cloaked (oracle sweep-world-ys1: 0 a second after a write)
+                it.tempVision.clear()
+                if (!isCloakActive) it.ints.remove(xyz.znix.xftl.hs.lua.LuaApi.A_ShipManager_damageCloaked)
+            }
+            hsFireRoomCount = IntArray(rooms.size) { i -> rooms[i].fires.count { it != null } }
+            hsFireCount = hsFireRoomCount.sum()
+        }
+        // Hyperspace ShipManager::OnLoop (CustomCrew.cpp) sets every system's bonus power from its crew again, and
+        // the loop reconciles battery bars a script forced: the Lua per-call values end here. The weapons do it
+        // through their RemoveBatteryPower (oracle wp4-power-calls: the last weapon goes off, its bars taken from
+        // the battery, so its reactor bars stay with the system).
+        for (s in systems) if (s is xyz.znix.xftl.systems.MainSystem) {
+            s.hsLuaBonusPower = null
+            // Weapons and drones: RemoveBatteryPower (ShipManager's battery check 0x49c510 calls it while a system
+            // holds battery bars over the battery's supply) once per loop while bars are left. It takes bars only
+            // from the items it switches off, so bars can stay (oracle wp4-power-calls: two battery bars on two
+            // drones turn one drone off per call and end at 0; on the weapons a cost-2 weapon takes both at once
+            // and the weapon still on keeps its reactor bar).
+            val manager = when (s) {
+                is xyz.znix.xftl.systems.Weapons -> s.powerManager
+                is xyz.znix.xftl.systems.Drones -> s.powerManager
+                else -> null
+            }
+            val battery = s.hsLuaBatteryPower
+            s.hsLuaBatteryPower = null
+            if (manager != null && battery != null && battery > 0)
+                s.hsLuaBatteryPower = manager.hsRemoveBatteryPower(battery).takeIf { it > 0 }
+        }
+        for (h in hardpoints) h.weapon?.hsLuaAmmo = null
         // Update the power, in case a Zoltan has moved between rooms.
         updateAvailablePower()
+        // Hyperspace room animations (ShipManager::OnLoop hook: RoomAnim::OnUpdate)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsRoomAnims.update(this, dt)
 
         updateShieldHits(dt)
 
         updateExterior(dt)
 
         if (isDead) {
+            // Hyperspace: TemporalSystem::_HS_ShipDestroyed ends a running dilation.
+            if (xyz.znix.xftl.hs.HS.active) (systems.firstOrNull { it is xyz.znix.xftl.hs.systems.Temporal } as xyz.znix.xftl.hs.systems.Temporal?)?.shipDestroyed()
             updateDestruction(dt)
+            if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.shipLoop(this)
             return
         }
 
+        // Hyperspace OxygenSystem::OnLoop: CALCULATE_LEAK_MODIFIER for this frame's breaches and airlocks.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsOxygen.beginFrame(this)
         for (room in rooms)
             room.update(dt)
+        // Hyperspace ShipManager::UpdateEnvironment hook (ErosionEffect.cpp): eroding rooms.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsErosionRoom.update(this, dt)
+
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsHackDoors.apply(this)
 
         // Update the door open/close animations
         for (door in doors) {
             door.update(dt)
+        }
+        // Ship::OnLoop (0x494af0): the lockdown shards after the doors and rooms; a finished one is erased
+        if (lockdownShards.isNotEmpty()) {
+            for (shard in lockdownShards) shard.update(dt)
+            lockdownShards.removeAll { it.done }
         }
 
         // Move oxygen around the ship
@@ -1489,6 +2029,10 @@ class Ship(
 
         updateCrew(dt)
 
+        // ShipManager::OnLoop hook (StatBoost.cpp): room stat boost timers.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.stat.StatBoostManager.updateRoomBoosts(this, dt)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsPowerDrain.update(this)
+
         // This FTL charge logic is for the player; enemies have a completely
         // separate charge time stored in ShipAI.
         if (canChargeFTL && !browserJumping) {
@@ -1497,7 +2041,7 @@ class Ship(
             // simply full (InGameState).
             val boost = sys.getEnemyOf(this) == null
             val rate = engines?.ftlChargePerUnit(boost) ?: 0f
-            ftlChargeProgress += rate * 16f * dt / Engines.FTL_CHARGE_MAX
+            ftlChargeProgress += rate * 16f * dt / Engines.FTL_CHARGE_MAX * (85f / hsJumpGoal)
         }
         if (ftlChargeProgress > 1f) {
             ftlChargeProgress = 1f
@@ -1524,13 +2068,26 @@ class Ship(
         for ((augment, totalValue) in augmentValues) {
             augment.update(this, dt, totalValue)
         }
+
+        // Hyperspace: the tail of TemporalSystem.cpp's ShipManager::OnLoop hook (room animations).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.afterShipUpdate(this, dt)
+        // Hyperspace: ShipManager::OnLoop (CustomCrew.cpp) restarts every system's additionalPowerLoss before SHIP_LOOP.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSysExt.resetLoop(this)
+        // Hyperspace SHIP_LOOP: ShipManager::OnLoop hook, after the original
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.shipLoop(this)
+        // Hyperspace: CheckMaxPower with the frame's additionalPowerLoss (crew drain and SHIP_LOOP scripts).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSysExt.commit(this)
     }
 
     private fun updateCrew(dt: Float) {
         // Duplicate the crew and drone lists, in case some are removed
         // by dying or (in the case of drones) the enemy ship blowing up.
-        for (crew in crew.toTypedArray())
-            crew.update(dt)
+        for (crew in crew.toTypedArray()) {
+            // Hyperspace: crew loops run at their room's temporal dilation (TemporalSystem.cpp UpdateCrewmembers).
+            crew.update(if (xyz.znix.xftl.hs.HS.active) dt * xyz.znix.xftl.hs.systems.HsTemporal.crewFactor(crew, this) else dt)
+            // Hyperspace CREW_LOOP: CrewMember::OnLoop hook, after the original
+            if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.crewLoop(crew)
+        }
 
         // Update the list of intruders and friendly (non-intruder) crewmembers
         require(intruders is ArrayList)
@@ -1548,7 +2105,10 @@ class Ship(
     private fun updateExterior(dt: Float) {
         // Walk backwards, since projectiles may remove themselves
         for (i in projectiles.size - 1 downTo 0) {
-            projectiles[i].update(dt, this)
+            val projectile = projectiles[i]
+            if (projectile is AbstractProjectile &&
+                (xyz.znix.xftl.weapons.ProjectileRuntime.nativeMotion(projectile) || projectile.updatesInProjectileLoop)) continue
+            projectile.update(dt, this)
         }
 
         // Check for collisions between any two projectiles. To avoid
@@ -1563,6 +2123,9 @@ class Ship(
 
             for (upperI in projectiles.size - 1 downTo lowerI + 1) {
                 val second = projectiles[upperI]
+
+                if ((first is AbstractProjectile && xyz.znix.xftl.weapons.ProjectileRuntime.handlesContacts(first)) ||
+                    (second is AbstractProjectile && xyz.znix.xftl.weapons.ProjectileRuntime.handlesContacts(second))) continue
 
                 if (!second.collisionsEnabled)
                     continue
@@ -1582,15 +2145,7 @@ class Ship(
                     continue
                 }
 
-                // Run a CCD check to see if the projectiles have collided
-                // at any point between the last frame and this frame.
-                if (!IProjectile.checkCollision(
-                        dt,
-                        first.position, second.position,
-                        first.velocity, second.velocity,
-                        first.hitboxRadius.f, second.hitboxRadius.f
-                    )
-                ) {
+                if (!IProjectile.endpointContact(first.position, second.position)) {
                     continue
                 }
 
@@ -1634,16 +2189,12 @@ class Ship(
             for (projectileI in projectiles.size - 1 downTo 0) {
                 val proj = projectiles[projectileI]
 
+                if (proj is AbstractProjectile && xyz.znix.xftl.weapons.ProjectileRuntime.handlesContacts(proj)) continue
+
                 if (!proj.collisionsEnabled)
                     continue
 
-                if (!IProjectile.checkCollision(
-                        dt,
-                        drone.flightController.position, proj.position,
-                        drone.flightController.velocity, proj.velocity,
-                        drone.hitboxRadius.f, proj.hitboxRadius.f
-                    )
-                ) {
+                if (!IProjectile.endpointContact(proj.position, drone.flightController.position)) {
                     continue
                 }
 
@@ -1751,11 +2302,20 @@ class Ship(
         val preEnvPower = powerAvailableTypes.values.sum()
 
         // Let the environment (for ion storms) deduct power
-        sys.currentBeacon.getEnvironment(sys).adjustShipPower(this, powerAvailableTypes)
+        sys.currentBeacon.powerEnvironment(sys)?.adjustPowerStack(this, powerAvailableTypes)
+        // Hyperspace: the PowerManager's cap / loss / divisor (reactor statuses and Lua) limit the reactor.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsPower.apply(this, powerAvailableTypes)
+        // Hyperspace: a system a second AddSystem displaced keeps its bars (HsSystemInstall.duplicate)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystemInstall.ghostPower(this).takeIf { it > 0 }?.let { g ->
+            powerAvailableTypes[ReactorEnergySource]?.let { r -> powerAvailableTypes[ReactorEnergySource] = maxOf(0, r - g) }
+        }
 
         // Remember how much power is unavailable, as it's shown in the UI.
         val postEnvPower = powerAvailableTypes.values.sum()
         blockedReactorPower = max(0, preEnvPower - postEnvPower)
+        if (hsReactorUsedOffset != 0) powerAvailableTypes[ReactorEnergySource]?.let { r ->
+            powerAvailableTypes[ReactorEnergySource] = maxOf(0, r - hsReactorUsedOffset)
+        }
 
         // ShipManager::UpdateReactor (0x49c6d0, every ShipManager::OnLoop): while the
         // systems use more reactor power than is available (a plasma storm halved
@@ -1804,6 +2364,7 @@ class Ship(
             // repairing the super shield.
             val damageValue = ionArmourIon * 2 + max(damage.hullDamage, 0)
             superShield -= damageValue
+            if (damagePos != null && damageValue > 0) shields?.startDown(damagePos.x, damagePos.y, true)
 
             if (damagePos != null && ionNegated) {
                 showDamageTextAt(damagePos, "text_resist", DAMAGE_COLOUR_ION)
@@ -1823,6 +2384,7 @@ class Ship(
             if (isPlayerShip && (shields?.activeShields ?: 0) > 0 && sys.getEnemyOf(this) != null)
                 skillEvents.shield++
             shields?.popShieldLayer()
+            if (damagePos != null) shields?.startDown(damagePos.x, damagePos.y, false)
         }
 
         attackShieldsIon(damage)
@@ -1855,7 +2417,9 @@ class Ship(
      * (ShipManager::DamageBeam, 0x4a9d40) and uses the same roll for the room's hull damage and the cell's breach.
      */
     @JvmOverloads
-    fun damage(target: Room, damage: Damage, textPos: IPoint? = null, rockArmourRoll: Boolean? = null) {
+    fun damage(target: Room, damage: Damage, textPos: IPoint? = null, rockArmourRoll: Boolean? = null,
+               /** ShipManager::DamageArea's location: where a lockdown's shards start (the room centre when unknown). */
+               hitPos: IPoint? = textPos) {
         // ShipManager::DamageArea (0x4a6100): a hull buster doubles the hull
         // damage to a room without a system.
         var hullMult = 1
@@ -1894,8 +2458,11 @@ class Ship(
         // vanilla shows the same 'RESIST' popup as Rock Plating, tinted
         // with the ion damage-number blue; any hull/system components of
         // the hit still show their own numbers.
-        val ionNegated = damage.ionDamage > 0 && ionArmourNegates()
-        val appliedIonDamage = if (ionNegated) 0 else damage.ionDamage
+        // Hyperspace CustomShips.cpp ShipManager::DamageSystem: the room's sys/ion damage resist chances (Room_Extend)
+        // roll before the native body (ion armour); DAMAGE_SYSTEM below still receives the hit as it came.
+        val resisted = if (xyz.znix.xftl.hs.HS.active) damage.copy().also { xyz.znix.xftl.weapons.BeamDamageRules.hsSystemResist(this, target, it) } else damage
+        val ionNegated = resisted.ionDamage > 0 && ionArmourNegates()
+        val appliedIonDamage = if (ionNegated) 0 else resisted.ionDamage
 
         if (ionNegated)
             target.showDamageText("text_resist", DAMAGE_COLOUR_ION, textPos)
@@ -1903,9 +2470,9 @@ class Ship(
         if (hullArmorNegates && hullDamage > 0)
             target.showDamageText("text_resist", Colour.white, textPos)
         else if (hullArmorNegates)
-            showDamageText(target, 0, if (casingNegates) 0 else damage.effectiveSysDamage, appliedIonDamage, textPos)
+            showDamageText(target, 0, if (casingNegates) 0 else resisted.effectiveSysDamage, appliedIonDamage, textPos)
         else
-            showDamageText(target, hullDamage, if (casingNegates) 0 else damage.effectiveSysDamage, appliedIonDamage, textPos)
+            showDamageText(target, hullDamage, if (casingNegates) 0 else resisted.effectiveSysDamage, appliedIonDamage, textPos)
         crewWeaponDamage(target, damage.effectiveCrewDamage.f, damage)
 
         if (sys.debugFlags.noDmg.set)
@@ -1918,8 +2485,15 @@ class Ship(
             if (sys.player === this)
                 sys.shakeForHullDamage(hullDamage)
         }
-        target.system?.dealDamage(if (casingNegates) 0 else damage.effectiveSysDamage, appliedIonDamage)
-        if (damage.lockdown) target.lockdown()
+        // Hyperspace ShipManager::DamageSystem: DAMAGE_SYSTEM may pre-empt the system damage.
+        if (!(xyz.znix.xftl.hs.HS.luaActive && target.system != null && xyz.znix.xftl.hs.weapons.HsWeaponsLua.damageSystem(this, target.id, damage)))
+            target.system?.dealDamage(if (casingNegates) 0 else resisted.effectiveSysDamage, appliedIonDamage)
+        if (damage.lockdown) {
+            // ShipManager::DamageArea runs with currentLockdown = the weapon's customLockdown (CustomLockdowns.cpp Ship::LockdownRoom)
+            val custom = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsDamage.current?.def?.lockdownDef else null
+            if (custom != null) xyz.znix.xftl.hs.ship.HsLockdowns.lockdown(target, custom, hitPos?.x?.toFloat(), hitPos?.y?.toFloat())
+            else target.lockdown(hitPos?.x?.toFloat(), hitPos?.y?.toFloat())
+        }
 
         // Fire and breach are mutually exclusive, if a fire spawns then a breach cannot.
         if (ftl.browser.BrowserRandom.rollChance(damage.fireChance)) {
@@ -1932,18 +2506,21 @@ class Ship(
             target.spawnBreach()
         }
 
-        // Crystal Vengeance (CRYSTAL_SHARDS, 0x4a5df0): hull damage that
-        // gets through rolls rand%100 < value*100 to break off a CRYSTAL_1
-        // shard at the ship being fought. It's a neutral projectile, so ANY
-        // defence drone (including ours - a vanilla quirk) can shoot it.
-        // System-only and ion-only hits don't count.
+        // Crystal Vengeance (CRYSTAL_SHARDS, 0x4a5df0): only hull damage that gets through rolls a shard.
+        if (hullDamage > 0 && !hullArmorNegates) checkCrystalAugment(target.pixelCentre)
+    }
+
+    /**
+     * ShipManager::CheckCrystalAugment (1.6.14 0x4a5df0): rolls rand%100 < value*100 to break off a CRYSTAL_1
+     * shard at the ship being fought. It's a neutral projectile, so ANY defence drone (including ours - a vanilla
+     * quirk) can shoot it. DamageArea passes the room's centre here and DamageBeam the beam's current point.
+     */
+    fun checkCrystalAugment(spawnPos: IPoint) {
         val enemy = sys.getEnemyOf(this)
-        val damageTaken = hullDamage > 0 && !hullArmorNegates
-        if (enemy != null && !enemy.isGone && damageTaken) {
+        if (enemy != null && !enemy.isGone) {
             val shardChance = getAugmentValue(AugmentBlueprint.CRYSTAL_SHARDS)
             if (shardChance > 0f && ftl.browser.BrowserRandom.rollChance((shardChance * 100).toInt())) {
                 val shard = VengeanceShardProjectile(enemy.rooms.random(ftl.browser.BrowserRandom))
-                val spawnPos = target.pixelCentre
 
                 // Launch like a weapon does: aim far past the ±800 ship
                 // space boundary (in the enemy-facing direction), so the
@@ -1953,11 +2530,13 @@ class Ship(
                 shard.setInitialPath(spawnPos, endPos)
                 projectiles.add(shard)
             }
+            // Hyperspace: the <crystalShard> functions of custom augments (CheckCrystalAugment hook).
+            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsCrystalShards.check(this, enemy, spawnPos)
         }
     }
 
     fun playDamageEffect(type: AbstractWeaponBlueprint, position: IPoint): FloatingAnimation {
-        val animation = sys.animations[type.explosion ?: error("Default explosion not set")]
+        val animation = sys.animations.orEmpty(type.explosion ?: "")
         return playCentredAnimation(animation, position)
     }
 
@@ -2017,6 +2596,11 @@ class Ship(
      * (healing) is only applied to crew of the owner's ship.
      */
     fun damageCrewMember(crew: AbstractCrew, damage: Float, dmg: Damage): Boolean {
+        // Hyperspace ShipManager::DamageCrew (priority -100, before super): weapon stat boosts.
+        // Hyperspace ShipManager::DamageCrew (CustomCrew.cpp): a crew power's damage never hurts its user.
+        if (xyz.znix.xftl.hs.HS.active && dmg.hsSelfId != -1 && dmg.hsSelfId == xyz.znix.xftl.hs.crew.HsCrew.ex(crew).selfId)
+            return false
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsDamage.crewDamaged(crew)
         val owner = dmg.ownerShip
         val sameShip = owner != null && crewHomeShip(crew) === owner
         if (sameShip && !dmg.friendlyFire)
@@ -2049,8 +2633,11 @@ class Ship(
         cargoBlueprints[4] = null
         cargoBlueprints[5] = null
         overCapacityBoxShown.fill(false)
+        if (hs != null) xyz.znix.xftl.hs.ship.HsEquipment.onJump(this)
         cargoUpdated()
         crew.filterIsInstance<xyz.znix.xftl.crew.CrewCrystal>().forEach { it.resetLockdown() }
+        // ShipManager::JumpArrive: CrewMember::ResetPower (HS _HS_ResetPower) and the StatBoost.cpp hook.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewContent.jumpArrive(this)
         // Shields::Jump (0x6340e0) only resets the hit list and the Zoltan shield (below): the layers are not
         // recharged, they keep their charge and recharge normally at the new beacon.
 
@@ -2060,6 +2647,7 @@ class Ship(
         // Jumping clears the super shield (if the augment is
         // present, it'll add it back in afterwards).
         superShield = 0
+        hsSuperShieldSet = 0
 
         // Remove all incoming and outgoing projectiles
         projectiles.clear()
@@ -2072,10 +2660,13 @@ class Ship(
         // Clear any previously-set scripted power limits, and re-apply
         // any that were previously set at this beacon.
         updateScriptedPowerLimits()
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsPower.arrive(this)
 
         for (augment in augmentValues.keys) {
             augment.onJump(this)
         }
+        // Hyperspace: Shields::Jump fills an augment super shield (CustomSuperShield.cpp).
+        if (xyz.znix.xftl.hs.HS.active && shields != null) xyz.znix.xftl.hs.systems.HsSuperShield.fill(this)
 
         // The weapons jump and the clone bay heals on arrival (ShipManager::JumpArrive 0x49d490); the other systems
         // and the doors already did at the jump-out (browserJumpLeave), unless the beacon changed without one.
@@ -2087,6 +2678,8 @@ class Ship(
         }
         if (!leftBeacon)
             resetDoorsForJump()
+        // Hyperspace JUMP_ARRIVE: ShipManager::JumpArrive hook, after the original
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.jumpArrive(this)
     }
 
     /** Set by [browserJumpLeave] until the arrival's [resetAfterJump]; not saved (a repeated system Jump is harmless). */
@@ -2098,12 +2691,17 @@ class Ship(
      * and the doors are repaired when no boarder is aboard.
      */
     fun browserJumpLeave() {
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.systems.Teleporter.hsRecallOnJumpLeave(this) // HS TELEPORT_RECALL
         for (system in systems) {
             if (system !is Weapons && system !is xyz.znix.xftl.systems.Clonebay)
                 system.onJump()
         }
         resetDoorsForJump()
         browserLeftBeacon = true
+        // Hyperspace: the rooms lose their temporal dilation (TemporalSystem.cpp ShipManager::JumpLeave hook).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.jumpLeave(this)
+        // Hyperspace JUMP_LEAVE: ShipManager::JumpLeave hook, after the original
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.jumpLeave(this)
     }
 
     /** FUN_0048ca90 from JumpLeave and Wait: the door health is reset while no non-drone boarder is aboard. */
@@ -2126,6 +2724,18 @@ class Ship(
     }
 
     /**
+     * ShipManager::SetSafe, every frame nothing around the player is hostile: the teleporter is charged and unlocked, the
+     * cloak's and the battery's cooldowns end.
+     */
+    fun browserSetSafe() {
+        teleporter?.hsForceReady()
+        for (system in systems) {
+            if ((system is xyz.znix.xftl.systems.Cloaking || system is xyz.znix.xftl.systems.BackupBattery) &&
+                xyz.znix.xftl.hs.systems.HsSystemsLua.lockCount(system) > 0) system.lockUnits(0)
+        }
+    }
+
+    /**
      * ShipManager::Wait (0x49d300), the no-fuel wait: no fuel and no jump animation, and only these resets -
      * the weapons, shields, artillery and hacking Jump, the door repair when no boarder is aboard, the jump
      * heal (CloneHealing1), MindSystem::ForceReady and LockSystem(0) on the shields, engines, weapons and
@@ -2136,6 +2746,7 @@ class Ship(
         resetWeaponsForJump()
         augmentValues.keys.filterIsInstance<xyz.znix.xftl.augments.AugPreigniter>().forEach { it.onJump(this) }
         superShield = 0
+        hsSuperShieldSet = 0
         augmentValues.keys.filterIsInstance<xyz.znix.xftl.augments.AugZoltanShield>().forEach { it.onJump(this) }
         for (system in systems) {
             if (system is xyz.znix.xftl.systems.Artillery || system is xyz.znix.xftl.systems.Hacking)
@@ -2174,10 +2785,22 @@ class Ship(
         return spawnCrewMember(info, false, false, room, recordRecruitment)
     }
 
+    /**
+     * Hyperspace player start (HsShipState.startingCrewRooms): a starting crew member in the room 0x4ae2f0 chose,
+     * standing by the computer of a station like the vanilla placement below.
+     */
+    fun addInitialCrewInRoom(info: LivingCrewInfo, room: Room): LivingCrew {
+        require(room.ship === this) { "Crew spawn room belongs to another ship" }
+        val system = room.system
+        val slot = if (system != null) system.configuration.computerPoint ?: ConstPoint.ZERO else null
+        val station = if (slot != null && room.isSlotFree(slot, AbstractCrew.SlotType.CREW)) RoomPoint(room, slot) else null
+        return spawnCrewMember(info, true, false, room, true, station)
+    }
+
     private fun spawnCrewMember(info: LivingCrewInfo, initial: Boolean, isIntruder: Boolean,
-                               startingRoom: Room?, recordRecruitment: Boolean): LivingCrew {
+                               startingRoom: Room?, recordRecruitment: Boolean, station: RoomPoint? = null): LivingCrew {
         val mode = if (isIntruder) AbstractCrew.SlotType.INTRUDER else AbstractCrew.SlotType.CREW
-        var freeSpace: RoomPoint? = startingRoom?.let { findSpaceForCrew(it, mode) }
+        var freeSpace: RoomPoint? = station ?: startingRoom?.let { findSpaceForCrew(it, mode) }
 
         // If this crewmember is being created with the ship, put them
         // in a system that makes sense.
@@ -2277,13 +2900,25 @@ class Ship(
         // in a path from it to piloting is connected.
         checkRoom(firstRoom)?.let { return it }
 
+        // Modded ships can hold more crew than tiles reachable from the room (a Hyperspace <crew> list on top of the
+        // generated crew, rooms without doors): the original stacks them, so take any free tile, else share one.
+        if (xyz.znix.xftl.hs.HS.modded) {
+            for (room in rooms) room.firstFreeSlot(type)?.let { return RoomPoint(room, it) }
+            return RoomPoint(firstRoom, ConstPoint.ZERO)
+        }
+
         // No free space!
         error("Couldn't find any free space in ship $name, starting at room $firstRoom")
     }
 
     fun updateAvailableSystems() {
         systems = rooms.mapNotNull { it.system }
-        mainSystems = systems.mapNotNull { it as? MainSystem }.sortedBy { it.sortingType }
+        // Hyperspace SystemControl::CreateSystemBoxes sorts the boxes by SystemPositionManager's `position` (CustomSystems.cpp)
+        mainSystems = systems.mapNotNull { it as? MainSystem }.let { l ->
+            // (CreateSystemBoxes collects the systems by id first; std::sort of so few is an insertion sort, so ties keep id order)
+            if (xyz.znix.xftl.hs.HS.active) l.sortedWith(compareBy({ xyz.znix.xftl.hs.systems.HsSystems.position(xyz.znix.xftl.ai.nativeSystemId(it)) }, { xyz.znix.xftl.ai.nativeSystemId(it) }))
+            else l.sortedBy { it.sortingType }
+        }
         subSystems = systems.mapNotNull { it as? SubSystem }.sortedBy { it.sortingType }
 
         weapons = systems.mapNotNull { it as? Weapons }.firstOrNull()
@@ -2314,6 +2949,28 @@ class Ship(
         sys.shipUI?.shipModified()
     }
 
+    /** The augment slots (vanilla three; Hyperspace `augSlots` plus AUGMENT_SLOT). */
+    val augmentSlotCount: Int get() = if (hs != null) xyz.znix.xftl.hs.ship.HsEquipment.augCapacity(this) else MAX_AUGMENTS
+
+    /** The ordinary cargo slots (vanilla four; Hyperspace `cargoSlots` plus CARGO_SLOT). */
+    val cargoSlotCount: Int get() = if (hs != null) xyz.znix.xftl.hs.ship.HsEquipment.cargoCapacity(this) else CARGO_SLOTS
+
+    /** The ordinary cargo slot [slot]; slots beyond the first four are Hyperspace's. */
+    fun cargoAt(slot: Int): Blueprint? = if (slot < 4 || hs == null) cargoBlueprints[slot] else xyz.znix.xftl.hs.ship.HsEquipment.cargoAt(this, slot)
+
+    fun setCargoAt(slot: Int, item: Blueprint?) {
+        if (slot < 4 || hs == null) cargoBlueprints[slot] = item else xyz.znix.xftl.hs.ship.HsEquipment.setCargoAt(this, slot, item)
+    }
+
+    /** Every cargo item: the slots, and with Hyperspace the extra slots and the over-capacity items of every page. */
+    fun allCargo(): List<Blueprint> = if (hs != null) xyz.znix.xftl.hs.ship.HsEquipment.cargoItems(this) else cargoBlueprints.filterNotNull()
+
+    /** Something is in an over-capacity box (the equipment screen opens on arrival so it can be dealt with). */
+    fun hasOverflow(): Boolean = cargoBlueprints.drop(4).any { it != null } || (hs != null && xyz.znix.xftl.hs.ship.HsEquipment.hasOverItems(this))
+
+    /** Every ordinary cargo slot is taken (the store boxes for weapons and drones are disabled then). */
+    fun cargoFull(): Boolean = (0 until cargoSlotCount).all { cargoAt(it) != null }
+
     fun cargoUpdated() {
         // Weapon slots are persistent, including intentionally empty slots.
         weapons?.selectedTargets?.reindex()
@@ -2341,6 +2998,15 @@ class Ship(
 
         // Update the number of each type of augment, for fast lookups.
         privateAugmentValues.clear()
+        val hsState = hs
+        if (hsState != null) {
+            // Hyperspace: hidden augments and augment functions count too (HsAugments has the rules).
+            xyz.znix.xftl.hs.ship.HsAugments.fillValues(this, privateAugmentValues)
+            // CustomEquipment::OnLoop: the augment and cargo slot counts, locked augments (CustomAugments.cpp).
+            xyz.znix.xftl.hs.ship.HsEquipment.normalize(this)
+            xyz.znix.xftl.hs.ship.HsEquipment.swapLocked(this)
+            return
+        }
         for (aug in augments) {
             privateAugmentValues[aug] = aug.value + (augmentValues[aug] ?: 0f)
         }
@@ -2356,35 +3022,50 @@ class Ship(
      */
     private fun storeOverflow(item: Blueprint, forced: Boolean, slot: Int): Boolean {
         if (!forced) return false
+        if (xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(this)) {
+            // multipleOverCapacity: IsCompletelyFull is false for weapons, drones and augments, every item is kept.
+            xyz.znix.xftl.hs.ship.HsEquipment.addOver(this, item)
+            cargoUpdated()
+            return true
+        }
         if (cargoBlueprints[slot] == null) {
             cargoBlueprints[slot] = item
             overCapacityBoxShown[slot - 4] = true
             cargoUpdated()
         } else {
+            sys.eventCreator.create(sys.eventManager["EQUIP_FULL"], sys.eventCreator.currentLevel())
             val event = sys.eventManager["EQUIP_FULL"].resolve()
-            val message = DialogueWindow.SyntheticEvent(event.text!!.resolve(ftl.browser.BrowserRandom))
+            val message = DialogueWindow.SyntheticEvent(event.text!!.resolve(ftl.browser.BrowserRandom), "EQUIP_FULL")
             message.resources.scrap = 25
             sys.shipUI.showSyntheticDialogue(message)
         }
         return true
     }
 
-    fun addBlueprint(item: Blueprint, forced: Boolean): Boolean {
+    /** [forceCargo] (Hyperspace Equipment::AddToCargo): weapons and drones skip their own slots and go to the cargo. */
+    @JvmOverloads
+    fun addBlueprint(item: Blueprint, forced: Boolean, forceCargo: Boolean = false): Boolean {
         // Augments can only go in their special area
         if (item is AugmentBlueprint) {
             // Break down non-stackable duplicated augments
             // to scrap, using the AUGMENT_FULL event.
             // Note this goes before the max augments check, so the player
             // gets paid for duplicate augments when they're full.
-            if (!item.stackable && augments.any { it == item }) {
+            // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Ship/CustomAugments.cpp
+            // (ShipObject::HasAugmentation hook): with Hyperspace the duplicate test counts hidden copies and
+            // functional augment functions, so FTL_JUMPER_SCANNER (function ADV_SCANNERS) turns ADV_SCANNERS to scrap.
+            val owned = if (hs != null) hasAugment(item.name) else augments.any { it == item }
+            if (!item.stackable && owned) {
+                // The original creates the event, which draws like any other, before its reward message.
+                sys.eventCreator.create(sys.eventManager["AUGMENT_FULL"], sys.eventCreator.currentLevel())
                 val realEvent = sys.eventManager["AUGMENT_FULL"].resolve()
-                val synthetic = DialogueWindow.SyntheticEvent(realEvent.text!!.resolve(ftl.browser.BrowserRandom))
+                val synthetic = DialogueWindow.SyntheticEvent(realEvent.text!!.resolve(ftl.browser.BrowserRandom), "AUGMENT_FULL")
                 synthetic.resources.scrap = 25
                 sys.shipUI.showSyntheticDialogue(synthetic)
                 return true
             }
 
-            if (augments.size < MAX_AUGMENTS) {
+            if (augments.size < augmentSlotCount) {
                 augments.add(item)
                 cargoUpdated()
                 return true
@@ -2393,7 +3074,7 @@ class Ship(
             return storeOverflow(item, forced, 5)
         }
 
-        if (item is AbstractWeaponBlueprint) {
+        if (item is AbstractWeaponBlueprint && !forceCargo) {
             val weaponSlotCount = weaponSlots ?: hardpoints.size
 
             for (slot in 0 until weaponSlotCount) {
@@ -2401,13 +3082,14 @@ class Ship(
                     continue
 
                 hardpoints[slot].weapon = item.buildInstance(this)
+                xyz.znix.xftl.shipgen.ShipConstructionDraws.weapon()
                 cargoUpdated()
                 return true
             }
         }
 
         val drones = drones
-        if (item is DroneBlueprint && drones != null) {
+        if (item is DroneBlueprint && drones != null && !forceCargo) {
             for (slot in 0 until drones.drones.size) {
                 if (drones.drones[slot] != null)
                     continue
@@ -2418,11 +3100,13 @@ class Ship(
             }
         }
 
-        for ((slot, current) in cargoBlueprints.take(4).withIndex()) {
-            if (current != null)
+        for (slot in 0 until cargoSlotCount) {
+            if (cargoAt(slot) != null)
                 continue
 
-            cargoBlueprints[slot] = item
+            setCargoAt(slot, item)
+            // Equipment::AddWeapon makes the ProjectileFactory for a weapon in the hold too.
+            if (item is AbstractWeaponBlueprint) xyz.znix.xftl.shipgen.ShipConstructionDraws.weapon()
             cargoUpdated()
             return true
         }
@@ -2443,7 +3127,13 @@ class Ship(
             if (cargo != item)
                 continue
             cargoBlueprints[index] = null
+            if (hs != null) xyz.znix.xftl.hs.ship.HsEquipment.syncOver(this)
 
+            cargoUpdated()
+            return true
+        }
+
+        if (hs != null && xyz.znix.xftl.hs.ship.HsEquipment.removeExtra(this, item)) {
             cargoUpdated()
             return true
         }
@@ -2487,7 +3177,8 @@ class Ship(
     fun hasAugment(name: String): Boolean {
         // Multiverse removes the O2_MASKS blueprint, so we need to account
         // for augments not existing.
-        val blueprint = sys.blueprintManager.getOrNull(name) as AugmentBlueprint? ?: return false
+        if (hs != null) return xyz.znix.xftl.hs.ship.HsAugments.count(this, name) > 0
+        val blueprint = sys.blueprintManager.getOrNull(name) as? AugmentBlueprint ?: return false
         return augmentValues.containsKey(blueprint)
     }
 
@@ -2521,9 +3212,13 @@ class Ship(
      * augment doesn't exist.
      */
     fun getAugmentValueOrNull(name: String): Float? {
-        val blueprint = sys.blueprintManager.getOrNull(name) as AugmentBlueprint? ?: return null
+        if (hs != null) return xyz.znix.xftl.hs.ship.HsAugments.valueOrNull(this, name)
+        val blueprint = sys.blueprintManager.getOrNull(name) as? AugmentBlueprint ?: return null
         return augmentValues[blueprint]
     }
+
+    /** While above zero, [updateCrewReservedSlots] waits (several crew get new slots in one step); see [AbstractCrew.setTargetSlot]. */
+    @JvmField var deferCrewSlotUpdates = 0
 
     /**
      * Update [Room.reservedPlayerSlots] and [Room.reservedEnemySlots]
@@ -2533,12 +3228,14 @@ class Ship(
      * to their pathfinding target is made. It can also be called whenever
      * the crew on the ship are changed, such as from deaths or new crew.
      */
-    fun updateCrewReservedSlots() {
+    fun updateCrewReservedSlots(resolveConflicts: Boolean = true) {
+        if (deferCrewSlotUpdates > 0) return
         val conflicts = ArrayList<AbstractCrew>()
 
         for (room in rooms) {
             room.updateCrewReservedSlots(conflicts)
         }
+        if (!resolveConflicts) return
 
         // If two crewmembers are in, or set to be in, the same location then
         // one of them will be in the conflicts list. Make them find a new
@@ -2573,7 +3270,11 @@ class Ship(
         if (browserJumping)
             return true
 
-        val missed = ftl.browser.BrowserRandom.rollChance(evasion + deltaEvasion)
+        // Native GetDodged 1.6.9 492060 /1.6.14 4a00d0: no draw for a nonpositive first factor;
+        // otherwise draw, then query again. HS callbacks can change the second value inside this operation.
+        val first = evasion + deltaEvasion
+        val missed = first > 0 && (ftl.browser.BrowserRandom.nextInt().ushr(1) % 100) <
+            (if (xyz.znix.xftl.hs.HS.active) evasion + deltaEvasion else first)
         sys.browserAchievements.dodgeRolled(this, missed)
         if (missed) {
             // ShipManager's dodge roll (0x4a0190..0x4a0225) raises event 7 only
@@ -2717,44 +3418,53 @@ class Ship(
         }
     }
 
+    /** Native portrait crew, plus HS's owned drones currently on their home ship (CustomDrones.cpp). */
+    private fun stationCrew(): List<AbstractCrew> {
+        val result = ArrayList<AbstractCrew>()
+        if (isPlayerShip) result.addAll(sys.playerCrew.filter { it.ownerShip === this })
+        // During a new run the global portrait list has not been rebuilt yet.
+        for (member in crew.filterIsInstance<LivingCrew>())
+            if (member.ownerShip === this && member !in result) result.add(member)
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.cfg().droneSaveStations)
+            result.addAll(crew.filterIsInstance<AbstractIndoorsDrone.Pawn>().filter {
+                it.drone.ownerShip === this && it.room.ship === this
+            })
+        return result
+    }
+
     fun saveCrewPositions() {
-        for (member in crew) {
-            if (member.mode != AbstractCrew.SlotType.CREW)
-                continue
-
-            if (member !is LivingCrew)
-                continue
-
-            if (member.ownerShip != this)
-                continue
-
-            val currentPos = member.pathingTarget ?: member.standingPosition ?: continue
-            member.savedPosition = currentPos.shipPoint
+        // SaveCrewPositions 1.6.9 0x490440 / 1.6.14 CrewMember::SavePosition 0x47a7e0:
+        // save the reserved destination slot at home; ClearPosition for crew on another ship.
+        for (member in stationCrew()) {
+            member.savedPosition = if (member.room.ship === this)
+                member.currentSlotPoint.shipPoint else null
         }
     }
 
-    fun loadCrewPositions() {
-        // Note that since we change the crew target positions one at a time,
-        // if crew need to swap positions then we can end up not being able
-        // to do that, even if it should be valid.
-        for (member in crew) {
-            if (member.mode != AbstractCrew.SlotType.CREW)
-                continue
-
-            if (member !is LivingCrew)
-                continue
-
-            if (member.ownerShip != this)
-                continue
-
-            val saved = member.savedPosition ?: continue
-            val roomPos = shipToRoomPos(saved) ?: continue
-
-            if (!member.setTargetRoom(roomPos.room, roomPos)) {
-                // If our spot is taken, go somewhere else in the room.
-                member.setTargetRoom(roomPos.room)
-            }
+    fun loadCrewPositions(): Boolean {
+        // Native RestoreCrewPositions (1.6.9 0x497540) empties every home slot BEFORE restoring the saved ones,
+        // then fits crew without saved stations around them. A batch permits swaps and larger rotations.
+        val members = stationCrew().filter {
+            it.room.ship === this && (it !is LivingCrew || !it.isMindControlled)
         }
+        val old = members.associateWith { it.pathingTarget ?: it.standingPosition }
+        val stations = members.associateWith { member -> member.getReportedStation()?.let { shipToRoomPos(it) } }
+        val ordered = members.filter { stations[it] != null } + members.filter { stations[it] == null }
+        deferCrewSlotUpdates++
+        try {
+            for (room in rooms) room.releaseStationSlots(members)
+            for (member in ordered) {
+                val target = stations[member] ?: old[member] ?: continue
+                if (member.health <= 0f) continue
+                if (!member.setTargetRoom(target.room, target)) member.setTargetRoom(target.room)
+                val goal = member.pathingTarget ?: member.standingPosition
+                goal?.room?.reserveStationSlot(member)
+            }
+        } finally {
+            deferCrewSlotUpdates--
+            updateCrewReservedSlots()
+        }
+        return stations.values.any { it != null }
     }
 
 
@@ -2888,6 +3598,8 @@ class Ship(
             SaveUtil.addAttr(augElem, "name", aug.name)
             elem.addContent(augElem)
         }
+        // Hyperspace ship state (modded saves only).
+        hs?.save(elem)
 
         // Serialise loose cargo
         for ((index, item) in cargoBlueprints.withIndex()) {
@@ -2938,6 +3650,13 @@ class Ship(
         val oxygenLevelElem = Element("oxygenLevels")
         oxygenLevelElem.addContent(oxygenLevelString.toString().trim())
         elem.addContent(oxygenLevelElem)
+
+        // Ship::SaveState writes the lockdown shards (LockdownShard::SaveState 0x48b200)
+        if (lockdownShards.isNotEmpty()) {
+            val shardsElem = Element("lockdownShards")
+            for (shard in lockdownShards) shardsElem.addContent(shard.saveToXML())
+            elem.addContent(shardsElem)
+        }
 
         // Serialise any floating animations, like the animations from a weapon
         // hitting a room or the shields.
@@ -3012,8 +3731,8 @@ class Ship(
 
         SaveUtil.getAttrRef(rootElem, "bossManager", refs, BossManager::class.java) { boss = it }
 
-        // Load the systems
-        for (elem in rootElem.getChild("systems").getChildren("system")) {
+        // Load the systems (Hyperspace: the load's CreateSystems order, see HsSystemState.creating)
+        xyz.znix.xftl.hs.systems.HsSystemState.creating(this) { for (elem in rootElem.getChild("systems").getChildren("system")) {
             // Spawn in the system
             val name: String = elem.getAttributeValue("name")
             val blueprint = sys.blueprintManager[name] as SystemBlueprint
@@ -3034,9 +3753,14 @@ class Ship(
 
             // Re-load the system's properties
             room.system!!.loadFromXML(elem, refs)
-        }
+        } }
 
-        // Load the crew
+        // Load the crew. A crew member's side (LivingCrew.mode) needs its ownerShip, which only resolves with the refs,
+        // so the slot reservations wait until then (released below): rebuilt mid-load, an intruder counts as crew and
+        // loses its goal to a crew member standing on that cell.
+        deferCrewSlotUpdates++
+        // Hyperspace: the load's OnInit made the blueprint's crew first (a space id and CONSTRUCT_CREWMEMBER each)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsDummyCrew.loadPhantoms(this)
         for (crewElem in rootElem.getChild("crew").getChildren("crewMember")) {
             val raceName = crewElem.getAttributeValue("type")
             val race = sys.blueprintManager[raceName] as CrewBlueprint
@@ -3072,10 +3796,17 @@ class Ship(
         }
 
         // Deserialise the oxygen levels, which are just numbers for each room.
+        lockdownShards.clear()
+        rootElem.getChild("lockdownShards")?.getChildren("shard")?.forEach { lockdownShards += xyz.znix.xftl.layout.LockdownShard.loadFromXML(this, it) }
         val oxygenLevels = rootElem.getChildTextTrim("oxygenLevels").split(' ', '\t')
+        // Hyperspace ShipManager::ImportShip (Ship/OxygenWithoutSystem.cpp, 1b05a07): the dummy oxygen system of a ship
+        // without one reads each level through an int (`int oxygenLevel = FileHelper::readFloat(fd)`), so a level comes
+        // back as a whole percentage.
+        val hsWholeOxygen = xyz.znix.xftl.hs.HS.active && oxygen == null && xyz.znix.xftl.hs.HS.cfg().oxygenWithoutSystem
         for ((index, levelStr) in oxygenLevels.withIndex()) {
             val room = rooms[index]
-            room.oxygen = levelStr.toFloat()
+            val level = levelStr.toFloat()
+            room.oxygen = if (hsWholeOxygen) (level * 100f).toInt() / 100f else level
         }
 
         // Deserialise the weapons
@@ -3105,6 +3836,7 @@ class Ship(
             val name = SaveUtil.getAttr(augElem, "name")
             augments.add(sys.blueprintManager[name] as AugmentBlueprint)
         }
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsShipState.load(this, rootElem)
 
         // Deserialise loose cargo
         for (cargoElem in rootElem.getChildren("cargoBlueprint")) {
@@ -3112,6 +3844,8 @@ class Ship(
             val index = SaveUtil.getAttrInt(cargoElem, "index")
             cargoBlueprints[index] = sys.blueprintManager[name] as Blueprint
         }
+
+        if (hs != null) xyz.znix.xftl.hs.ship.HsEquipment.load(this, rootElem.getChild(xyz.znix.xftl.hs.ship.HsShipState.ELEMENT)) { sys.blueprintManager.getOrNull(it) as? Blueprint }
 
         // Deserialise explosion (and similar) animations
         for (animElem in rootElem.getChild("animations").getChildren("animation")) {
@@ -3121,10 +3855,18 @@ class Ship(
         // Deserialise the in-flight projectiles
         for (projectileElem in rootElem.getChild("projectiles").getChildren("projectile")) {
             val serialisationType = SaveUtil.getAttr(projectileElem, "loadType")
-            IProjectile.loadFromXML(sys, projectileElem, refs, serialisationType) { projectiles += it }
+            IProjectile.loadFromXML(sys, projectileElem, refs, serialisationType) {
+                // Hyperspace: a loaded projectile's current space is the ship whose list holds it
+                if (it is xyz.znix.xftl.weapons.AbstractProjectile && it.hsExt != null) it.hsCurrentSpace = this
+                projectiles += it
+            }
         }
 
-        updateCrewReservedSlots()
+        // The sides are still unknown here: fill the slots without moving anyone, and rebuild them properly once
+        // the refs resolve (a loader that never resolves keeps the filled slots).
+        deferCrewSlotUpdates--
+        updateCrewReservedSlots(resolveConflicts = false)
+        refs.addOnResolveFunction { updateCrewReservedSlots() }
         updateAvailableSystems()
         cargoUpdated()
         // The OnInit loop's dodge latch (see the top): set once the systems are known.
@@ -3147,6 +3889,17 @@ class Ship(
             .any { it.ownerShip != this }
     }
 
+    // Hyperspace Lua: CONSTRUCT_SHIP_MANAGER after the ShipManager constructor, then CONSTRUCT_ROOM for each room
+    // Ship::OnInit builds (both before the systems are installed). The last initialiser of the class, so a callback
+    // sees every field set.
+    init {
+        if (xyz.znix.xftl.hs.HS.luaActive) {
+            xyz.znix.xftl.hs.crew.HsDummyCrew.once(this)
+            xyz.znix.xftl.hs.lua.LuaShipEvents.constructShipManager(this)
+            for (room in rooms) xyz.znix.xftl.hs.lua.LuaShipEvents.constructRoom(room)
+        }
+    }
+
     companion object {
         /** ShieldAnimation's end size (40, from 0x00885390): the flash's half-arc in degrees and its lifetime. */
         private const val SHIELD_HIT_SIZE = 40f
@@ -3155,7 +3908,6 @@ class Ship(
         private const val SHIELD_HIT_SPEED = 10f
 
         const val MAX_AUGMENTS: Int = 3
-
         /** The ordinary cargo boxes; [cargoBlueprints] slots 4 (weapon/drone) and 5 (augment) are the overflow boxes. */
         const val CARGO_SLOTS: Int = 4
 
@@ -3165,8 +3917,27 @@ class Ship(
         /** The ExplosionAnimation tracker's length (Ship constructor 0x48b570). */
         const val DESTRUCTION_TIME: Float = 3f
 
+        /** A jump-out's tracker (Ship::SetDestroyed / ExplosionAnimation::SetJumpOut: 4.0). */
+        const val DESTRUCTION_JUMP_TIME: Float = 4f
+
+        /** ExplosionAnimation::OnLoop / OnRender: where a jump-out leaves (0.75). */
+        private const val JUMP_OUT_PROGRESS = 0.75f
+
         /** Ship::OnLoop 0x493f70: no new small explosion while 25 are playing. */
         private const val MAX_DESTRUCTION_EXPLOSIONS = 25
+    }
+
+    /** ShipInfo::equipList entries with no item behind them: weapons a script added with no slot left. */
+    @JvmField val hsExtraEquipment = HashMap<String, Int>()
+
+    /** Weapons a script replaced (WeaponSystem::AddWeapon keeps them in weaponsTrashList). */
+    @JvmField val hsReplacedWeapons = ArrayList<xyz.znix.xftl.weapons.AbstractWeaponInstance>()
+
+    /** A weapon a script added past the ship's mounts (WeaponSystem::AddWeapon appends one past slot_count): it shares the last mount. */
+    fun hsExtraHardpoint(): Hardpoint {
+        val h = Hardpoint(hardpoints.last().spec)
+        (hardpoints as MutableList<Hardpoint>).add(h)
+        return h
     }
 
     class Hardpoint(val spec: ShipBlueprint.ParsedHardpoint) {
@@ -3179,6 +3950,7 @@ class Ship(
         val isFinished get() = animation.isStopped
 
         fun render(g: Graphics) {
+            if (animation.spec.blank) return
             val frame = animation.currentFrame
 
             if (scaling == 1f) {
@@ -3213,7 +3985,7 @@ class Ship(
                     // so we have to grab the proper animation here.
                     FireInstance.SMOKE_ANIMATION.name -> FireInstance.SMOKE_ANIMATION
 
-                    else -> game.animations[name]
+                    else -> game.animations.orEmpty(name)
                 }
 
                 val x = SaveUtil.getAttrInt(elem, "x")

@@ -14,7 +14,8 @@ and want them (or the project) removed, email ftl@911bob.dev.
 
 Chakra Petch Latin regular/semibold WOFF2 files come from the pinned
 `@fontsource/chakra-petch` 5.3.0 package. Their SIL Open Font License is included
-at `third_party/notices/ChakraPetch-LICENSE.txt`. The reference website's FTL
+at `third_party/notices/ChakraPetch-LICENSE.txt`. The Android launcher's `android/app/src/main/assets/site/ChakraPetch-*.ttf` are
+the same package's Latin WOFF files unpacked to TTF (tables unchanged). The reference website's FTL
 font URLs rejected binary downloads; those proprietary font files are not included.
 
 All assets load from the application's own origin. No CDN, reference-site

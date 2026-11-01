@@ -5,9 +5,25 @@ import kotlin.random.Random
 
 /**
  * Stores all the available crew names, from names.xml.
+ *
+ * BlueprintManager keeps a name table per `language` of names.xml and GetCrewName draws from the one of
+ * TextLibrary's current language at the time of the call (the lists without a language when it has none), so the
+ * names follow a language switch. [language] is only the language the game started in.
  */
-class CrewNameManager(df: Datafile, private val language: String) {
+class CrewNameManager(df: Datafile, @Suppress("unused") private val language: String) {
+    private val allNames: List<CrewNameList>
+    private val byLanguage = HashMap<String, List<CrewNameList>>()
+    private val flatByLanguage = HashMap<String, List<Pair<String, Boolean>>>()
+
+    private fun currentLanguage(): String =
+        xyz.znix.xftl.Languages.current.let { if (xyz.znix.xftl.Translator.isEnglish(it)) "en" else it }
+
+    /** The current language's lists. */
     val names: List<CrewNameList>
+        get() = byLanguage.getOrPut(currentLanguage()) {
+            val lang = currentLanguage()
+            allNames.filter { it.language == lang }.ifEmpty { allNames.filter { it.language == "en" } }
+        }
 
     init {
         val allNames = ArrayList<CrewNameList>()
@@ -15,12 +31,14 @@ class CrewNameManager(df: Datafile, private val language: String) {
         val root = df.parseXML(df["data/names.xml"]).rootElement
 
         for (child in root.children) {
+            if (child.name != "nameList" && xyz.znix.xftl.hs.HsLoad.skipUnknown("data/names.xml", child.name)) continue
             require(child.name == "nameList") { "Found non-nameList element in names.xml root" }
 
             val listNames = ArrayList<String>()
             val shortVersions = HashMap<String, String>()
 
             for (nameElem in child.children) {
+                if (nameElem.name != "name" && xyz.znix.xftl.hs.HsLoad.skipUnknown("data/names.xml", nameElem.name)) continue
                 require(nameElem.name == "name") { "Found non-name element in nameList (in names.xml)" }
                 val name = nameElem.textTrim
                 listNames.add(name)
@@ -37,12 +55,7 @@ class CrewNameManager(df: Datafile, private val language: String) {
             allNames.add(CrewNameList(listNames, shortVersions, isMale, listLanguage))
         }
 
-        val matchingLanguage = allNames.filter { it.language == language }
-        if (matchingLanguage.isNotEmpty()) {
-            names = matchingLanguage
-        } else {
-            names = allNames.filter { it.language == "en" }
-        }
+        this.allNames = allNames
     }
 
     /**
@@ -51,14 +64,15 @@ class CrewNameManager(df: Datafile, private val language: String) {
      * std::map<string, bool> (by UTF-8 bytes), with the gender of the last
      * list that names it.
      */
-    val flatNames: List<Pair<String, Boolean>> by lazy {
-        val merged = HashMap<String, Boolean>()
-        for (list in names) {
-            for (name in list.names)
-                merged[name] = list.isMale
+    val flatNames: List<Pair<String, Boolean>>
+        get() = flatByLanguage.getOrPut(currentLanguage()) {
+            val merged = HashMap<String, Boolean>()
+            for (list in names) {
+                for (name in list.names)
+                    merged[name] = list.isMale
+            }
+            merged.entries.map { Pair(it.key, it.value) }.sortedWith { a, b -> compareUtf8(a.first, b.first) }
         }
-        merged.entries.map { Pair(it.key, it.value) }.sortedWith { a, b -> compareUtf8(a.first, b.first) }
-    }
 
     fun getForGender(male: Boolean?, rand: Random): String {
         val lists = names.filter {

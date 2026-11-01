@@ -54,14 +54,36 @@ class BrowserRunProgress(private val game: InGameState) {
         main.profile.unlockAchievement(game.content.achievements[id], game.difficulty)
     }
 
+    private var victoryAwarded = false
+
+    fun flagshipDefeated() {
+        if (victoryAwarded) return
+        game.sounds.stopPlaylist(0.1f)
+        game.sounds.getSampleOrWarn("victory")?.play()
+        awardVictory()
+    }
+
+    /** The win achievements and the ship's victory, once a run. */
+    private fun awardVictory() {
+        if (victoryAwarded) return
+        victoryAwarded = true
+        unlock("ACH_WIN_EASY")
+        if (game.difficulty != Difficulty.EASY) unlock("ACH_WIN_NORMAL")
+        game.mainGame?.profile?.recordShipVictory(game.player.type.name, game.difficulty)
+    }
+
+    /** The console's victory opens the credits without defeating anything: only the victory screen's unlocks. */
+    fun skipVictoryAward() {
+        victoryAwarded = true
+    }
+
     fun finish(result: GameOverWindow.Outcome) {
         if (finished) return
         finished = true
         outcome = result
         if (result == GameOverWindow.Outcome.WIN) {
-            unlock("ACH_WIN_EASY")
-            if (game.difficulty != Difficulty.EASY) unlock("ACH_WIN_NORMAL")
-            game.mainGame?.profile?.recordShipVictory(game.player.type.name, game.difficulty)
+            awardVictory()
+            game.mainGame?.profile?.recordVictoryScreen(game.player.type.name, game.difficulty)
         }
         game.mainGame?.profile?.recordBrowserRun(snapshot())
     }

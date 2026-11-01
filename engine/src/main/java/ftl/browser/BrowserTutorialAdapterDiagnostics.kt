@@ -13,7 +13,7 @@ import xyz.znix.xftl.weapons.*
 object BrowserTutorialAdapterDiagnostics {
     fun run(main: MainGame, container: GameContainer, graphics: Graphics) {
         val profile = main.profile
-        val profileXml = BrowserXml.write(profile.save())
+        val profileXml = BrowserXml.write(profile.snapshot())
         val storedProfile = BrowserFiles.getProfile()
         val run = BrowserFiles.getRun()
         val rng = BrowserRandom.snapshot()
@@ -294,7 +294,7 @@ object BrowserTutorialAdapterDiagnostics {
             check(controller.mapOpeningAllowed && controller.shipOpeningAllowed) { "BrowserTutorialAdapterDiagnostics.kt:294" }
             check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == storedProfile) { "BrowserTutorialAdapterDiagnostics.kt:295" }
             main.endTutorialSession()
-            check(main.profile === profile && BrowserXml.write(profile.save()) == profileXml) { "BrowserTutorialAdapterDiagnostics.kt:297" }
+            check(main.profile === profile && BrowserXml.write(profile.snapshot()) == profileXml) { "BrowserTutorialAdapterDiagnostics.kt:297" }
             check(BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialAdapterDiagnostics.kt:298" }
         } finally {
             main.endTutorialSession()

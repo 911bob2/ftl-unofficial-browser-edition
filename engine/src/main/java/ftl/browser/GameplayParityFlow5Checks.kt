@@ -19,7 +19,7 @@ internal object GameplayParityFlow5Checks {
         val rng = BrowserRandom.snapshot()
         val nativeRng = NativeRandom.snapshot()
         try {
-            val oxygen = laniusStartOxygen(main, container)
+            val oxygen = BrowserGameplayParityDiagnostics.vanillaOnly("oxygen") { laniusStartOxygen(main, container) }
             val floor = rewardFloor(main, container)
             val augments = augmentRewards(main, container)
             val drive = startDrive(main, container)
@@ -97,7 +97,8 @@ internal object GameplayParityFlow5Checks {
             val state = main.currentState as InGameState
             check(state.shipUI.diagnosticDialogue != null) { "$ship opening event not open" }
             check(state.player.ftlChargeProgress < .01f) { "$ship drive ${state.player.ftlChargeProgress} under the opening event" }
-            state.shipUI.diagnosticDialogue?.selectOption(0)
+            // (A mod's opening can be several boxes.)
+            BrowserDiagnostics.closeBoxes(main, container)
             repeat(3) { main.update(container, .05f) }
             check(state.player.isFtlCharged) { "$ship drive ${state.player.ftlChargeProgress} after the opening event" }
         }

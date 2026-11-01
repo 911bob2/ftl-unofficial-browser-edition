@@ -139,15 +139,14 @@ internal object GameplayParityCombatRulesChecks {
     private fun missedBomb(main: MainGame, container: GameContainer): String {
         val state = BrowserGameplayParityDiagnostics.fresh(main, container)
         val ship = state.player
-        val type = state.blueprintManager["BOMB_1"] as BombBlueprint
         val directions = HashSet<Int>()
         for (room in ship.rooms) {
-            repeat(4) {
-                val animation = state.animations[type.projectile!!].startSingle(state, 0.5f, true)
-                val bomb = BombBlueprint.FiredBomb(type, room, animation, true, false)
-                val x = bomb.position.x
-                val y = bomb.position.y
+            for (direction in 0 until 4) {
                 val centre = room.pixelCentre
+                val landing = xyz.znix.xftl.weapons.BombProjectile.missLanding(ship,
+                    xyz.znix.xftl.math.ConstFPoint(centre.x.toFloat(), centre.y.toFloat()), direction)
+                val x = landing.xf
+                val y = landing.yf
                 check(ship.rooms.none { it.containsPixelInclusive(x.toInt(), y.toInt()) }) { "A missed bomb landed inside the ship" }
 
                 val dx = x.toInt() - centre.x

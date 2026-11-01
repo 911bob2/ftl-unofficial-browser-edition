@@ -25,7 +25,11 @@ class ConfirmationWindow(
     yesKey: String = "confirm_yes",
     noKey: String = "confirm_no",
     private val accept: () -> Unit,
-    private val cancel: () -> Unit
+    private val cancel: () -> Unit,
+    /** Text shown as is instead of [messageKey]'s translation (Hyperspace's literal TextString). */
+    literalMessage: String? = null,
+    /** Escape, when it does more than NO (MenuScreen's prompt: CommandGui::KeyDown closes the whole menu). */
+    private val escape: (() -> Unit)? = null
 ) : Window() {
     private val image = context.getImg("img/confirm_window.png")
     private val bodyFont = NativeFonts.font(context::getFont, 52)
@@ -35,7 +39,7 @@ class ConfirmationWindow(
     private val yesWidth = buttonFont.measure(yesLabel) + 6
     private val noWidth = buttonFont.measure(noLabel) + 6
     private val boxWidth = max(minimumWidth, yesWidth + noWidth + 100)
-    private val lines = context.translator[messageKey].replace("\\n", "\n").split('\n')
+    private val lines = (literalMessage ?: context.translator[messageKey]).replace("\\n", "\n").split('\n')
         .flatMap { bodyFont.font.wrapString(it, boxWidth - 40) }
     private val bodyHeight = lines.size * bodyFont.lineHeight
     override val size: IPoint = ConstPoint(boxWidth, bodyHeight + image.height - 22)
@@ -89,9 +93,9 @@ class ConfirmationWindow(
             Constants.TEXT_BUTTON_NORMAL)
         for ((index, x, width, label) in listOf(
             ButtonLabel(0, yesX, yesWidth, yesLabel), ButtonLabel(1, noX, noWidth, noLabel))) {
-            g.colour = if (hovered == index) Constants.TEXT_BUTTON_HOVER else Constants.TEXT_BUTTON_NORMAL
+            g.colour = if (hovered == index) xyz.znix.xftl.hs.render.HsColors.tbSelected() else xyz.znix.xftl.hs.render.HsColors.tbActive()
             Buttons.drawChamfer(g, position.x + x, position.y + buttonY, width, 24, 4)
-            buttonFont.printButtonLabel(position.x + x, position.y + buttonY, width, 24, label, Constants.TEXT_BUTTON_TEXT)
+            buttonFont.printButtonLabel(position.x + x, position.y + buttonY, width, 24, label, xyz.znix.xftl.hs.render.HsColors.tbText())
         }
     }
 
@@ -123,7 +127,14 @@ class ConfirmationWindow(
         if (accepted) accept() else cancel()
     }
 
-    override fun escapePressed() = resolve(false)
+    override fun escapePressed() {
+        val escape = escape ?: return resolve(false)
+        if (resolved) return
+        resolved = true
+        BrowserDebug.record("ui", "confirmation.answer",
+            "{\"message\":${BrowserDebug.quote(messageKey)},\"accepted\":false,\"escape\":true}")
+        escape()
+    }
     override fun onTextInput(key: Int, c: Char): Boolean {
         if (key == Input.KEY_ESCAPE) escapePressed()
         return true // A modal confirmation must consume all gameplay shortcuts.

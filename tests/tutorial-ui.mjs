@@ -13,10 +13,10 @@ while(!await fetch(origin+'/health/ready').then(response=>response.ok).catch(()=
  await new Promise(resolve=>setTimeout(resolve,250));
 }
 const initial=new Map((await readFile((process.env.DEBUG_FIXTURE_DIR??'.build/debug-data')+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
-const selected=(process.env.TUTORIAL_UI_BROWSERS??'Chrome,Edge,Firefox').split(',');
-const full=(process.env.TUTORIAL_UI_FULL_BROWSERS??'Chrome,Edge,Firefox').split(',').filter(Boolean);
-assert.ok([...selected,...full].every(name=>['Chrome','Edge','Firefox'].includes(name)));
-for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge',chromium,{channel:'msedge'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))) {
+const selected=(process.env.TUTORIAL_UI_BROWSERS??process.env.MENU_BROWSERS??'Chromium,Firefox').split(',');
+const full=(process.env.TUTORIAL_UI_FULL_BROWSERS??'Chromium,Firefox').split(',').filter(Boolean);
+assert.ok([...selected,...full].every(name=>['Chromium','Firefox'].includes(name)));
+for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))) {
  const browser=withOnboarding(await type.launch({headless:!(name==='Firefox'&&process.env.RUNNER_FIREFOX_WINDOWED==='1'),...options}),origin),page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],networkFailures=[];
  await page.addInitScript(()=>{window.tutorialRuntimeErrors=[];window.tutorialFetchFailures=[];const originalFetch=window.fetch;window.fetch=function(...args){const stack=new Error().stack;return originalFetch.apply(this,args).catch(error=>{window.tutorialFetchFailures.push({url:String(args[0]),message:error.message,stack});throw error;});};window.addEventListener('ftl-engine-error',event=>window.tutorialRuntimeErrors.push({message:String(event.detail?.message??event.detail),stack:event.detail?.stack??null}));});
  page.setDefaultTimeout(90000);page.on('requestfailed',request=>networkFailures.push({url:request.url(),failure:request.failure(),at:new Date().toISOString()}));page.on('pageerror',error=>errors.push({message:error.message,stack:error.stack,url:page.url(),networkFailures:[...networkFailures]}));
@@ -36,9 +36,11 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
  async function appReady() {await page.evaluate(async()=>{const script=document.querySelector('script[type="module"][src*="app.mjs"]');await import(script.src);});}
  async function launch(navigate=true) {
   console.log('TEST '+name+' launch');if(navigate)await page.goto(origin);await appReady();console.log('TEST '+name+' page ready');await page.locator('#launch').click();
-  console.log('TEST '+name+' Launch clicked');await page.waitForFunction(()=>!!window.ftlEngine||!document.getElementById('takeover').hidden);
-  if(!await page.evaluate(()=>!!window.ftlEngine))await page.locator('#takeover').click();
-  await page.waitForFunction(()=>!!window.ftlEngine);await state('MainMenuState');
+  console.log('TEST '+name+' Launch clicked');
+  // The other browser's run of this test closed without Save and close, so its lock on the save stands.
+  await page.waitForFunction(()=>!!window.ftlEngine||!!document.querySelector('#save-lock-dialog[open]'));
+  if(await page.locator('#save-lock-dialog[open]').count()){await page.locator('#save-lock-dialog-yes').click();await page.waitForFunction(()=>!!window.ftlEngine);}
+  await state('MainMenuState');
   // A newly created profile first shows the native welcome ChoiceBox; key 1 continues.
   if(JSON.parse(await page.evaluate(()=>window.ftlEngine.debugSnapshot())).window==='WelcomeChoiceBox'){
    await page.locator('#game').press('1');await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).window!=='WelcomeChoiceBox');
@@ -82,7 +84,7 @@ for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['Edge'
   const ordinary=await snapshot();assert.equal(ordinary.tutorial,false);
   await back(page);await wait(()=>JSON.parse(window.ftlEngine.debugSnapshot()).window==='PauseWindow');
   const quit=(await snapshot()).windowRect;await click(quit.x+70,quit.y+260);await state('MainMenuState');
-  const saved=page.waitForResponse(r=>r.url().endsWith('/api/saves/current')&&r.request().method()==='PUT');await page.locator('#save').click();assert.ok((await saved).ok());
+  await page.locator('#save').click();await page.waitForFunction(()=>/^Saved · synced/.test(document.getElementById('save-status').textContent));
   const before=await progress();assert.ok(before.run);
 
   await startTutorial();assert.equal((await snapshot()).ae,false);

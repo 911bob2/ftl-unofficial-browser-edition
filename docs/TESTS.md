@@ -1,5 +1,10 @@
 # Launcher tests and benchmarks
 
+For a busy development machine, `LAUNCHER_SKIP_FPS_CHECK=1` explicitly defers the launcher's measured
+FPS/throughput acceptance. The runner prints `SKIP`, while still checking benchmark completion, the selected
+limit, callback accounting, cancellation and save preservation. Default runs retain the original FPS bounds.
+Record this waiver separately from passing functional checks; rerun without the flag for performance acceptance.
+
 The Tests page stores verified boot resources and requested audio in a private,
 origin-local browser cache, reused across suites, runs and page reloads. Each engine run
 first retrieves a fresh authorized manifest; cached resources do not enable an
@@ -43,8 +48,10 @@ checks available to that account. External users choose a matching local DAT
 and use the browser asset provider described in [website and accounts](WEBSITE.md).
 They do not request the private server manifest, boot bundle or audio.
 
-The packaged Security group runs deterministic .NET session/export/proxy/XML/path
-regressions and HTTP cookie/save/lease tests against fresh disposable fixtures.
+The packaged Security group runs deterministic .NET session/export/proxy/XML/path,
+profile-merge and save-migration regressions and HTTP cookie/save/lock tests against
+fresh disposable fixtures (`saves-v2.mjs` covers the save API; its fixture lowers the
+account storage limit with `FTL_SAVE_BYTES_LIMIT`, honoured only in Development).
 See [security hardening](SECURITY_HARDENING.md) for the tested behavior and limits.
 Server-job starts allow five requests per account per five minutes; the existing
 single active job limit also applies.
@@ -211,6 +218,40 @@ does not consume simulation RNG or alter serialized gameplay state. Screen shake
 has a separate cosmetic random source. These cases exposed an actual dependence
 of gameplay RNG on drawing frequency, now fixed.
 
+## Engine modes on a modded fixture
+
+Memory: `HS_FULLRUN_PROBE="reload-handles 30" tools/hs-fullrun/run.sh <seed>` loads the same run 30 times on Multiverse data
+and fails when the handles Lua holds grow with the loads, which is what kept every game behind a Continue alive. The heap
+after `gc()` inside the full-run probe is not a leak figure: the probe is one long job of the page, so what waits for the end
+of a job (a `WeakRef` read, the queued saves) stays until it returns. Measure leaks with the page yielding between steps.
+
+The diagnostics modes also run with Hyperspace (F2) and Hyperspace + Multiverse (F3) data. There they check the rules, not
+vanilla's data: `gameplay-parity` holds back its steps that compare with captures of native vanilla (seeds, draw counts,
+pools, maps, stores) and reports them as not run, and the rule checks that hold vanilla's numbers or classes follow the
+mod's. They do not establish parity with native Hyperspace; the full runs and `hs-*` suites do. Multiverse has about 1,600
+ship specifications and 340 player ships, so `BASELINE_MODE_TIMEOUT_MS` raises the 180 s limit per mode for `encounters`,
+`ae`, `vanilla` and `campaign`. `BASELINE_ENCOUNTER_BATCH=<n>` runs `encounters` in slices on a fresh page and
+`BASELINE_ENCOUNTER_RANGE=<first>,<end>` limits it to part of the sorted list; a slice with failures does not stop the next.
+
+## Android multi-touch on the emulator
+
+`adb shell input` has one finger, and a Google Play image refuses `adb root` and `sendevent`. The emulator's own gRPC
+`sendTouch` needs neither: it writes multi-touch protocol B to the guest's virtio touchscreen, so real fingers go through
+the kernel, EventHub, InputReader and InputDispatcher into the app. `tools/android-touch/` calls it (Node only, no packages).
+
+```
+emulator -avd blindboard_api36 -read-only -gpu host -no-window -port 5570 -grpc 8570
+cd android && ./gradlew --offline :app:assembleDebug && adb -s emulator-5570 install -r app/build/outputs/apk/debug/app-debug.apk
+node tools/android-touch/run.mjs --serial emulator-5570 --grpc 8570 --out <dir> [--only name,name] [--list]
+```
+
+It needs `ftl.dat` already imported on the device, opens the game itself, and starts each scenario with a new run and a
+spawned enemy. The debug-only `TouchProbe` answers with the game's state, and `<dir>` gets frames with the fingers shown
+(`show_touches`); look at them, a passing check does not say the picture is right. Exit code 1 on any failure. Beam, odd
+cases, cancels, rotation, border fingers, doors and hold tooltips take about 8 minutes. Keep the screen in its default fit.
+`getevent -lt /dev/input/event2` on the device shows the raw events. `TouchRouterTest` (`:app:testDebugUnitTest`) is the
+quick check of finger routing, at the engine's call only.
+
 ## Packaged integration runner
 
 The app image includes Node and Playwright's Chromium, Chrome, Edge and Firefox.
@@ -222,9 +263,9 @@ checks are separate from the current-PC performance measurement.
 
 | Group | Scripts |
 | --- | --- |
-| Browser modules | `audio.mjs`, `frame-pacer.mjs`, `diagnostic-export.mjs`, `resource-cache.mjs` |
-| Security | `server-security/Ftl.SecurityTests.csproj`, `security.mjs`, `accounts.mjs`, `account-recovery.mjs`, `onboarding.mjs` (consent and mode cookies, registration, persistent sessions, account deletion, single bootstrap admin) |
-| Browser menus and launcher | `menus.mjs`, `tutorial-ui.mjs`, `launcher.mjs`, `diagnostics-ui.mjs`, `resource-cache-ui.mjs`, `local-mode.mjs` (first visit, local-only saves, move to account, account panel) |
+| Browser modules | `audio.mjs`, `frame-pacer.mjs`, `diagnostic-export.mjs`, `resource-cache.mjs`, `dat.mjs`, `mods-merge.mjs` (mod merge against ftlman ground truth, see [mods](MODS.md)), `mods-mega.mjs`, `saves-client.mjs` (the page's syncer over the real `savecore.js` and an in-memory account: offline then sync, conflicts, locks and overrides, tabs, deletions, limits, profiles; see [saves](SAVES.md)) |
+| Security | `server-security/Ftl.SecurityTests.csproj`, `security.mjs`, `accounts.mjs`, `account-recovery.mjs`, `onboarding.mjs` (consent and mode cookies, registration, persistent sessions, account deletion, single bootstrap admin), `mods-security.mjs`, `saves-v2.mjs` (save model 2 API: revisions, locks and overrides, snapshots, tombstones, profiles, limits, account isolation) |
+| Browser menus and launcher | `saves-softlock.mjs` (a save locked to its mod files by hash; `SOFTLOCK_HS_FILES=<files>` runs it on real ones, `SOFTLOCK_FILL_QUOTA=1` measures a real quota refusal in Chromium and stops there), `menus.mjs`, `tutorial-ui.mjs`, `launcher.mjs`, `diagnostics-ui.mjs`, `resource-cache-ui.mjs`, `local-mode.mjs` (first visit, local-only saves, move to account, account panel), `mods-ui.mjs` (mod library, modded launch and saves, unchanged vanilla launch), `mods-browser.mjs` (catalogue downloads, local files, saves with mods), `saves-browser.mjs` (save model 2 in the page: offline play then sync, missing content, two tabs, another device's override, both conflict choices, Verified/Custom mods and "missing mod", migration of the old browser stores) |
 | Diagnostic recording and recovery | `diagnostics.mjs` |
 | Unavailable diagnostic storage | `debug-storage.mjs` |
 | HTTPS production behavior | `production.mjs` |
@@ -343,3 +384,9 @@ pacing comparison opts out of benchmark warmup; the Benchmark preset retains its
 normal two-second warmup. The Colorblind option is a user-requested WIP notice; its
 modal input, Back/acknowledgment, fullscreen and unchanged settings/RNG are
 tested from title, hangar and run Options. Native video/language options remain separate.
+
+Set `FTL_SKIP_PERFORMANCE=1` when performance testing is deferred. Browser suites then skip timed FPS/throughput,
+browser-timing measurements and flagship benchmark runs (including cache/session benchmark runs), logging each
+skip explicitly. Frame-limit controls, persistence, functional engine checks and browser coverage still run.
+Keep test jobs and browsers sequential. Unset the variable or set it to `0` to restore performance coverage;
+a run with it enabled does not establish performance acceptance.

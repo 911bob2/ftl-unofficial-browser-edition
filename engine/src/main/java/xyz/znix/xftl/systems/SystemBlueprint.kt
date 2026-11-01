@@ -10,7 +10,8 @@ class SystemBlueprint(xml: Element) : Blueprint(xml) {
 
     val startPower: Int = xml.getChildTextTrim("startPower").toInt()
     val maxPower: Int = xml.getChildTextTrim("maxPower").toInt()
-    override val cost: Int = xml.getChildTextTrim("cost").toInt()
+    private val xmlCost: Int = xml.getChildTextTrim("cost").toInt()
+    override val cost: Int get() = hsCost ?: xmlCost
 
     val upgradeCost: List<Int> = xml.getChild("upgradeCost").getChildren("level").map { it.text.toInt() }
 
@@ -20,7 +21,8 @@ class SystemBlueprint(xml: Element) : Blueprint(xml) {
 
     // No idea what the 'locked' flag does.
 
-    val info: SystemInfo? = BY_NAME[type]
+    // Hyperspace sessions add the temporal system (HsSystems.info is null in vanilla).
+    val info: SystemInfo? = BY_NAME[type] ?: xyz.znix.xftl.hs.systems.HsSystems.info(type)
 
     init {
         if (info == null) {

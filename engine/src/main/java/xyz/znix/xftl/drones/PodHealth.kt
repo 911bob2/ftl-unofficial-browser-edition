@@ -25,9 +25,13 @@ import kotlin.math.max
  * - Drone::OnLoop (0x462220): a stunned drone rolls rand%20 < 3 each time
  *   its stun time passes a whole second beyond two, and blows up on a hit.
  */
-class PodHealth(private val game: InGameState, private val dodge: Int) {
+class PodHealth(
+    private val game: InGameState, private val dodge: Int,
+    /** The pod's SpaceDrone explosion, GetAnimation("explosion_random") picked when the drone was made. */
+    private val explosionSpec: xyz.znix.xftl.AnimationSpec = game.animations["explosion_random"]
+) {
     var ionTimer: Float = 0f
-        private set
+        internal set
 
     private var stunTotalTimer: Float = 0f
 
@@ -79,7 +83,7 @@ class PodHealth(private val game: InGameState, private val dodge: Int) {
         if (explosion != null)
             return
 
-        explosion = game.animations["explosion_random"].startSingle(game)
+        explosion = explosionSpec.startSingle(game)
         game.sounds.getSample("smallExplosion").play()
     }
 
@@ -135,7 +139,7 @@ class PodHealth(private val game: InGameState, private val dodge: Int) {
         ionTimer = SaveUtil.getOptionalTagFloat(elem, "podIonTimer") ?: 0f
         stunTotalTimer = SaveUtil.getOptionalTagFloat(elem, "podStunTimer") ?: 0f
         SaveUtil.getOptionalTagFloat(elem, "podExplosion")?.let { timer ->
-            explosion = game.animations["explosion_random"].startSingle(game).also { it.timer = timer }
+            explosion = explosionSpec.startSingle(game).also { it.timer = timer }
         }
     }
 }

@@ -206,7 +206,8 @@ internal object GameplayParityCrew7Checks {
         val gaps = log.hits.map { it.first }.zipWithNext { a, b -> b - a }
         check(gaps.all { it in 0.94f..1.36f }) { "Punch gaps $gaps" }
         check(log.hits.all { it.second in 2.99f..7.01f }) { "Punch damage ${log.hits}" }
-        check(log.hits.first().first in 0.49f..0.7f) { "First punch landed at ${log.hits.first().first} s" }
+        // Step times are i * 0.05f in floats: the 14th step reads 0.70000005.
+        check(log.hits.first().first in 0.49f..0.7001f) { "First punch landed at ${log.hits.first().first} s" }
         return "punch 1.0-1.3 s"
     }
 

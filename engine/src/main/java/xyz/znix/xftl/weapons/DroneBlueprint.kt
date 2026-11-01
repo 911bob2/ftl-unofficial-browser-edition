@@ -14,21 +14,37 @@ import xyz.znix.xftl.rendering.Image
 
 class DroneBlueprint(xml: Element) : Blueprint(xml) {
     val type: DroneType = DroneType.valueOf(xml.getChildTextTrim("type"))
-    override val cost: Int? = xml.getChildTextTrim("cost")?.toInt()
-    val power: Int = xml.getChildTextTrim("power").toInt()
-    val speed: Int? = xml.getChildTextTrim("speed")?.toInt()
+    // Numbers are read as ProcessDroneBlueprint reads them (atoi; NativeNumbers), so `<cooldown>0.05</cooldown>` is 0.
+    private val xmlCost: Int? = xml.nativeInt("cost")
+    override val cost: Int? get() = hsCost ?: xmlCost
+    val power: Int = xml.nativeInt("power") ?: 0
+    val speed: Int? = xml.nativeInt("speed")
     val droneImage: String? = xml.getChildTextTrim("droneImage")
     val iconImage: String? = xml.getChildTextTrim("iconImage")
 
     // For defence drones (which includes anti-drones)
-    val cooldown: Int? = xml.getChildTextTrim("cooldown")?.toInt() // In milliseconds
+    val cooldown: Int? = xml.nativeInt("cooldown") // In milliseconds
     val defenceTarget: String? = xml.getChildTextTrim("target") // Either DRONES or LASERS
 
     // For external drones, a 0-10 chance that this drone will dodge projectiles that hit it.
     // Nothing in vanilla uses it, but it's easy to implement.
-    val dodge: Int? = xml.getChildTextTrim("dodge")?.toInt()
+    val dodge: Int? = xml.nativeInt("dodge")
 
-    private val weaponBlueprintName: String? = xml.getChildTextTrim("weaponBlueprint")
+    val weaponBlueprintName: String? = xml.getChildTextTrim("weaponBlueprint")
+
+    /** DroneBlueprint::typeName: the `<type>` text. */
+    val typeName: String = xml.getChildTextTrim("type") ?: ""
+
+    /** DroneBlueprint::level (`<level>`, 1 when absent). */
+    val level: Int = xml.nativeInt("level") ?: 1
+
+    /** DroneBlueprint::targetType from `<target>`: LASERS 4, DRONES 3, ALL 6, otherwise 1 (wp4-drone-body oracle, HS 1.6.9 + MV). */
+    val targetType: Int = when (xml.getChildTextTrim("target")) {
+        "LASERS" -> 4
+        "DRONES" -> 3
+        "ALL" -> 6
+        else -> 1
+    }
     var weaponBlueprint: AbstractWeaponBlueprint? = null
         private set
 
@@ -111,7 +127,7 @@ class DroneBlueprint(xml: Element) : Blueprint(xml) {
         super.finishSetup(content)
 
         if (weaponBlueprintName != null) {
-            weaponBlueprint = content.blueprintManager[weaponBlueprintName] as AbstractWeaponBlueprint
+            weaponBlueprint = content.blueprintManager.getOrNull(weaponBlueprintName) as? AbstractWeaponBlueprint
         }
     }
 

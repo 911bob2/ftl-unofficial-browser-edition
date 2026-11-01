@@ -9,11 +9,13 @@ import xyz.znix.xftl.game.Hotkey
 import xyz.znix.xftl.game.SystemPowerButton
 import xyz.znix.xftl.game.VanillaHotkeys
 import xyz.znix.xftl.math.IPoint
+import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.replaceArg
 import xyz.znix.xftl.savegame.ObjectRefs
 import xyz.znix.xftl.savegame.RefLoader
 import xyz.znix.xftl.savegame.SaveUtil
 import xyz.znix.xftl.sys.Input
+import kotlin.math.abs
 import kotlin.math.max
 
 class Cloaking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
@@ -28,7 +30,8 @@ class Cloaking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     var timeRemaining: Float? = null
 
     /** The cloak timer's length the last frame (TimerHelper max), for rescaling when the power changes. */
-    private var timerMax: Float = 0f
+    var timerMax: Float = 0f
+        internal set
 
     val active: Boolean get() = timeRemaining != null
 
@@ -111,8 +114,22 @@ class Cloaking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             activateCloak()
     }
 
+    // The console lights of the room image: `<image>_glow.png`, pulsing on a looping 2 s tracker that never stops.
+    private var glowTime = 0f
+
+    override fun drawRoomFloor(g: Graphics) {
+        if (!active) return
+        val path = configuration.spec.interiorImage ?: return
+        val glow = ship.sys.getImgIfExists(path.removeSuffix(".png") + "_glow.png") ?: return
+        val room = room ?: return
+        val half = GLOW_PERIOD / 2
+        glow.draw(room.offsetX, room.offsetY, (half - abs(glowTime - half)) / half)
+    }
+
     override fun update(dt: Float) {
         super.update(dt)
+
+        glowTime = (glowTime + dt) % GLOW_PERIOD
 
         if (shouldPlayCloakSound) {
             shouldPlayCloakSound = false
@@ -202,6 +219,7 @@ class Cloaking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         const val COOLDOWN_LOCK_UNITS = 4
         const val TIME_PER_POWER = 5f
         const val FADE_TIMER = 0.5f
+        private const val GLOW_PERIOD = 2f
 
         val INFO: SystemInfo = CloakingInfo
     }

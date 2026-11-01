@@ -62,6 +62,14 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
      * All gameplay behaviour must read THIS, not [powerSelected] - that's the
      * demand, used for button state, power-bar highlights and re-powering.
      */
+    /** Hyperspace: powerState.first written by a script. */
+    fun hsWritePowerSupplied(v: Int) {
+        val delta = v - powerSupplied
+        powerSupplied = v
+        powerSelected += delta
+        targetPower += delta
+    }
+
     var powerSupplied: Int = 0
         protected set
 
@@ -90,6 +98,23 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
         get() = !forcingPowerDecrease && (isIonised || isHackActive || hasPermanentLock)
 
     private var forcingPowerDecrease = false
+
+    /**
+     * Hyperspace Lua ShipSystem::SetBonusPower(amount, permanentPower 0): the bonus (Zoltan) power instead of the
+     * crew's until HS's ShipManager::OnLoop sets the crew's count again at the start of the next frame
+     * (CustomCrew.cpp; cleared by [Ship.update]). Oracle wp4-power-calls: a bonus that displaces reactor bars
+     * leaves them off once it goes. (Natively the weapons it powered then stay powered on the reactor; here
+     * WeaponPowerManager switches them off with the bonus: not matched yet.)
+     */
+    @JvmField var hsLuaBonusPower: Int? = null
+
+    /**
+     * Hyperspace Lua ShipSystem::ForceBatteryPower(power) (0x7568f0; WeaponSystem 0x635630 also sets
+     * iStartingBatteryPower): only the battery field (+0x1a4) is written, so GetEffectivePower adds it, unclamped,
+     * until the next ShipManager loop reconciles the battery bars with the ship's battery (oracle: 0 on a ship
+     * without one). Not one of the engine's power sources; cleared by [Ship.update].
+     */
+    @JvmField var hsLuaBatteryPower: Int? = null
 
     /** Power this system holds from the shared non-reactor sources (the backup battery). */
     internal val sharedPowerInUse: Int
@@ -333,6 +358,35 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
      *
      * Returns true if the change was made, or false if that was not possible.
      */
+    /**
+     * Hyperspace Lua (ShipSystem::IncreasePower / DecreasePower / ForceIncreasePower / ForceDecreasePower): the power
+     * goes to [level] by the engine's rules; [user] also makes it the player's target (ShipSystem::lastUserPower).
+     */
+    fun hsSetPower(level: Int, user: Boolean): Boolean {
+        val ok = setSystemPower(level)
+        if (ok && user) targetPower = powerSelected
+        if (!user && powerSelected < targetPower) hsClimbBack = true
+        return ok
+    }
+
+    /** A script took bars without changing the demand: ShipSystem::OnLoop climbs back every frame while it can. */
+    private var hsClimbBack = false
+
+    override fun update(dt: Float) {
+        super.update(dt)
+        if (hsClimbBack) hsClimbBackUpdate()
+    }
+
+    private fun hsClimbBackUpdate() {
+        val wanted = min(targetPower, undamagedEnergy)
+        if (powerSelected >= wanted) {
+            hsClimbBack = false
+            return
+        }
+        val next = min(powerAvailable, repowerReach(wanted))
+        if (next > powerSelected) setSystemPower(next)
+    }
+
     protected fun setSystemPower(level: Int): Boolean {
         // Are we already there?
         if (level == powerSelected)
@@ -387,7 +441,12 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
         val previousBonus = forcedPower
         var bonus = 0
         for (type in EnergySource.PER_SYSTEM_TYPES) {
-            val bonusPower = min(type.getSystemPower(this), remainingUntilFull)
+            var systemPower = type.getSystemPower(this)
+            if (type === xyz.znix.xftl.crew.ZoltanEnergySource) hsLuaBonusPower?.let { systemPower = it }
+            // Hyperspace SET_BONUS_POWER (ShipSystem::SetBonusPower hook): scripts change the bonus (Zoltan) power.
+            if (xyz.znix.xftl.hs.HS.luaActive && type === xyz.znix.xftl.crew.ZoltanEnergySource)
+                systemPower = xyz.znix.xftl.hs.systems.HsSystemsLua.setBonusPower(this, systemPower, previousPowerSources[type] ?: 0)
+            val bonusPower = min(systemPower, remainingUntilFull)
             if (bonusPower == 0)
                 continue
 
@@ -410,7 +469,13 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
             val displaced = (nonBonus - remainingUntilFull).coerceAtLeast(0)
             val onTop = ((bonus - previousBonus) - displaced).coerceAtLeast(0)
             powerSelected = (selected + onTop).coerceAtMost(undamagedEnergy)
-            bonusOnTop += onTop
+            when {
+                hsLuaBonusPower == null -> bonusOnTop += onTop
+                // A Lua call (no permanent bars): the displaced reactor bars are not taken back when it goes.
+                this !is Weapons -> bonusOnTop += bonus - previousBonus
+                // WeaponSystem::SetBonusPower (0x636630): the bars it powered stay demanded after it.
+                else -> Unit
+            }
         } else if (bonus < previousBonus) {
             val drop = min(previousBonus - bonus, bonusOnTop)
             powerSelected = (selected - drop).coerceAtLeast(0)
@@ -617,6 +682,10 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
         ARTILLERY,
         MIND_CONTROL,
         HACKING,
+        // Hyperspace's temporal system (SystemPositionManager position 10, between hacking and weapons).
+        TEMPORAL,
+        // Hyperspace's Lua-defined systems (HS sorts the boxes by SystemPositionManager position instead).
+        CUSTOM,
         WEAPONS,
         DRONES;
     }

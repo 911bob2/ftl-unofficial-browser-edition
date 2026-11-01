@@ -5,8 +5,9 @@ Renewal uses a conditional SQL update: revoked or expired sessions cannot be
 recreated, an older refresh cannot overwrite a newer one, and the absolute lifetime
 is 180 days (sign-in is persistent and slides forward 30 days while the account is
 used). Expired-session cleanup rechecks the persisted expiry, and a periodic purge
-(every 15 minutes) removes expired or over-age session rows and long-expired play
-leases, so abandoned sessions never accumulate. Invalid
+(every 15 minutes) removes expired or over-age session rows, long-expired play
+leases (save model 1) and save tombstones older than 90 days, so abandoned sessions
+never accumulate. Invalid
 security stamps and disabled accounts clear cookies; password-attempt lockout blocks
 new sign-ins while preserving established sessions.
 
@@ -18,13 +19,12 @@ addresses are distinct; configure each address actually used by the proxy.
 Only the client IP and scheme are forwarded. The public Host check remains active.
 Trust a subnet only when every peer able to reach the service on it is trusted.
 
-Play lease acquisition requires explicit takeover whenever an unexpired lease is
-held by a different tab or device, including tabs sharing the authentication cookie.
-The current holder can supply its existing `lease` token for idempotent reacquisition.
-Takeover rotates the token and fences stale heartbeats and saves. No database schema
-change is required. Save revisions and snapshots remain transactional. SQLite
-contention returns a retryable 503; disk and other storage failures retain error
-logging instead of masquerading as revision conflicts.
+Save locks ([SAVES.md](SAVES.md), 2026-10-29) are per save and name the game instance that holds them
+(`X-FTL-Instance`), so tabs sharing the authentication cookie are told apart. Another instance needs an explicit
+override; the override is recorded and the displaced instance's next lock refresh, upload or restore gets
+`409 lock_overridden` instead of overwriting the new holder. Save revisions (`If-Match`), snapshots and the account
+storage limit are checked in one transaction. SQLite contention returns a retryable 503; disk and other storage
+failures retain error logging instead of masquerading as revision conflicts.
 
 Diagnostic exports pin immutable chunks before releasing the logging gate. Delete
 and quota eviction remove session visibility but defer physical deletion of pinned
@@ -54,3 +54,18 @@ does not weaken the login limiter to run its assertions. Test-run starts are lim
 to five requests per account per five minutes, in addition to the existing single
 active server-job guard. Fixture databases, credentials, exports and results remain
 private under ignored `.build/` paths.
+
+Mods (2026-10-24). Mod files come only from the operator's mods directory, only after their size and
+SHA-256 match the pinned catalogue (file names are validated; ids that are not in the catalogue are 404), and the
+server applies the role rule per request (Multiverse files get 403 for every role, as we do not host them); two concurrent downloads per account. The CSP's `connect-src` adds only
+MEGA's API and storage hosts for the browser's own MEGA reader.
+
+Cloud saves (save model 3, 2026-10-30). Saves, snapshots, tombstones and lock overrides are keyed by account:
+another account's id is simply absent (404), and the same id in two accounts is two saves. Limits: 30 saves, 10
+snapshots per save, names of 1 to 40 characters, meta of at most 8 KiB, 64 mods per setup, runs and profiles
+validated by `SaveValidation` (16 MiB and 4 MiB, no DTD, depth 64, a profile's elements and attributes), and 256 MiB
+per account in total (runs, profiles, meta and snapshots), checked in the write transaction. Mod archives never reach
+the server; a setup only names them. Account deletion and `reset-game-progress` remove all of it. The save model 1
+endpoints answer `410 saves_v2`; their tables stay, read-only, for the startup migration, which first writes a
+SQLite backup to `<data>/backups/pre-saves2-<UTC time>/`.
+

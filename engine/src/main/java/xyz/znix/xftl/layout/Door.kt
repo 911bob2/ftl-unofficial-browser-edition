@@ -17,6 +17,8 @@ import xyz.znix.xftl.savegame.SaveUtil
 import kotlin.math.abs
 import kotlin.math.max
 
+private const val FORCED_OPEN_TIME = 7f
+
 data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val isVertical: Boolean) {
     init {
         check(left != null || right != null) { "Cannot have a door detached from any room" }
@@ -52,7 +54,47 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
     internal var lockdownHealth: Int = LOCKDOWN_HEALTH
         private set
 
+    /** The door shard's health written by a script (LockdownShard_Extend::health): at zero the lockdown of the door ends. */
+    internal fun setLockdownHealth(v: Int) {
+        lockdownHealth = v
+        if (v < 1 && lockdownTimer > 0f) endLockdown()
+    }
+
+    private fun endLockdown() {
+        lockdownTimer = 0f
+        hsShardLeft = 0f; hsShardRight = 0f
+        lockdownHealth = LOCKDOWN_HEALTH
+        open = true
+        damage = 0
+    }
+
     fun lockdown() { lockdownTimer = 12f; damage = 0; open = false; lockdownHealth = LOCKDOWN_HEALTH }
+
+    /**
+     * Hyperspace's lockdown rework (CustomLockdowns.cpp): the door stays locked while a shard of either locking room
+     * lives, and each shard counts down at its room's temporal dilation (LockdownShard::Update with canDilate, the
+     * default lockdown). Seconds left of the shards from [left] and [right]; zero when none.
+     */
+    private var hsShardLeft = 0f
+    private var hsShardRight = 0f
+    // LockdownShard_Extend::canDilate of the shard of each side: only a shard that can dilate counts down at its room's rate
+    private var hsDilateLeft = true
+    private var hsDilateRight = true
+
+    /**
+     * Room.lockdown from [from]: the vanilla timer, and under Hyperspace that side's shard. A Hyperspace custom
+     * lockdown (CustomLockdownDefinition, CustomLockdowns.cpp) gives the shards its [duration] and the door shard its
+     * [health]; the defaults are the vanilla 12 s and 50.
+     */
+    fun lockdown(from: Room?, duration: Float = 12f, health: Int = LOCKDOWN_HEALTH, canDilate: Boolean = true) {
+        lockdown()
+        if (xyz.znix.xftl.hs.HS.active) {
+            lockdownTimer = duration
+            lockdownHealth = health
+            if (from === left) { hsShardLeft = duration; hsDilateLeft = canDilate }
+            if (from === right) { hsShardRight = duration; hsDilateRight = canDilate }
+        }
+    }
 
     // Door::SetBlastDoor (0x470470) / Door::OnLoop (0x471380): a hacked door has the level-3
     // health (0x87895c) whatever the hack level is, otherwise the table for the doors
@@ -101,8 +143,25 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
     // the first update (Door+0x1d0 in the original).
     private var scaledMax: Int = 0
 
+    /** Door::forcedOpen: the door is drawn open while it runs. */
+    @JvmField val forcedOpen = xyz.znix.xftl.systems.Shields.ShieldTracker(FORCED_OPEN_TIME)
+    /** Door::gotHit: started by each hit. */
+    @JvmField val gotHit = xyz.znix.xftl.systems.Shields.ShieldTracker(0.5f)
+    @JvmField var hsGotHitIn: (() -> Unit)? = null
+    @JvmField var hsGotHitOut: (() -> Unit)? = null
+    /** Hyperspace Lua: the tracker a script reads and writes, into the engine's and back. */
+    @JvmField var hsForcedIn: (() -> Unit)? = null
+    @JvmField var hsForcedOut: (() -> Unit)? = null
+    /** Hyperspace Lua: Door::doorLevel written by a script: the picture's level. */
+    @JvmField var hsLevel: Int? = null
+    /** Hyperspace Lua: Door::doorAnim's position moved by a script. */
+    @JvmField var hsAnimShiftX = 0
+    @JvmField var hsAnimShiftY = 0
+
     // True if the player is hovering over this door
     private var hovered: Boolean = false
+
+    /** The mouse is over this door (CrewControl::selectedDoor, Hyperspace Lua). */
     val isHovered: Boolean get() = hovered
 
     // Set during the update cycle by crew walking through this door.
@@ -120,6 +179,9 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
      */
     var isHacked = false
         private set
+
+    /** Hyperspace HACK_DOORS balance of the crew in the rooms beside this door this frame (intruders +1, own -1). */
+    @JvmField var hsHackDoors = 0
 
     /**
      * The level of this door.
@@ -192,7 +254,20 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
     }
 
     fun update(dt: Float) {
-        lockdownTimer = max(0f, lockdownTimer - dt)
+        hsForcedIn?.invoke()
+        forcedOpen.update(dt)
+        hsForcedOut?.invoke()
+        hsGotHitIn?.invoke()
+        gotHit.update(dt)
+        hsGotHitOut?.invoke()
+        if (xyz.znix.xftl.hs.HS.active && (hsShardLeft > 0f || hsShardRight > 0f) && lockdownTimer > 0f) {
+            hsShardLeft = max(0f, hsShardLeft - dt * (if (hsDilateLeft) xyz.znix.xftl.hs.systems.HsTemporal.factor(left) else 1f))
+            hsShardRight = max(0f, hsShardRight - dt * (if (hsDilateRight) xyz.znix.xftl.hs.systems.HsTemporal.factor(right) else 1f))
+            lockdownTimer = max(hsShardLeft, hsShardRight)
+        } else {
+            hsShardLeft = 0f; hsShardRight = 0f
+            lockdownTimer = max(0f, lockdownTimer - dt)
+        }
         // If a crewmember is walking through this door, they'll
         // set crewOpenDemand every update.
         crewOpenDemand = false
@@ -202,7 +277,8 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
         // whoosh sound); at or below that the door only leaks at 16%/s like any other drain,
         // which OxygenTransfer applies. Air transfer between non-airlock doors is handled
         // by OxygenTransfer.
-        if (open && (left == null || right == null)) {
+        // (Hyperspace: HsOxygen runs UpdateAirlock with the leak modifier.)
+        if (open && (left == null || right == null) && !xyz.znix.xftl.hs.HS.active) {
             for (airlockRoom in listOfNotNull(left, right)) {
                 if (airlockRoom.oxygen > 0.1f) {
                     ship.airLossSound.play()
@@ -218,6 +294,8 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
         isHacked = ship.doorsSystem?.isHackActive == true ||
                 left?.system?.hackedBy?.isPoweredUp == true ||
                 right?.system?.hackedBy?.isPoweredUp == true
+        // Hyperspace Ship::OnLoop hook (CustomCrew.cpp, HACK_DOORS): set by HsHackDoors before this update.
+        if (hsHackDoors > 0) isHacked = true else if (hsHackDoors < 0) isHacked = false
 
         // Door::OnLoop (0x471380): hacked doors shut themselves again every frame.
         if (isHacked) {
@@ -330,11 +408,14 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
 
         // Broken and level 1 doors use the same sprite, but broken doors
         // have a colour filter applied to them.
-        val sheetY = ROOM_SIZE * (level - 1).coerceAtLeast(0)
+        val sheetY = ROOM_SIZE * (hsLevel ?: level - 1 + 1).minus(1).coerceAtLeast(0)
 
         // This is used to animate the door opening and closing, selecting the
         // correct frame for its motion.
-        val sheetX = ROOM_SIZE * (stateAnimation * 4).toInt()
+        // forcedOpen draws the door's third frame (oracle hw-o2v); gotHit changes no picture.
+        hsForcedIn?.invoke()
+        hsGotHitIn?.invoke()
+        val sheetX = if (forcedOpen.running) ROOM_SIZE * 3 else ROOM_SIZE * (stateAnimation * 4).toInt()
 
         val filter = when { lockdownTimer > 0f -> Colour(0.35f, 0.75f, 1f); level == 0 -> Constants.DOOR_BROKEN_FILTER; else -> Colour.white }
 
@@ -342,6 +423,7 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
         // or not, NOT whether the two rooms it joins are placed one
         // above the other.
         g.pushTransform()
+        g.translate(hsAnimShiftX.f, hsAnimShiftY.f)
         if (isVertical) {
             g.translate(offsetX.f - ROOM_SIZE / 2, offsetY.f)
         } else {
@@ -372,14 +454,14 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
         // shards' 12 seconds, Ship::RoomLocked 0x48c510).
         if (lockdownTimer > 0f) {
             lockdownHealth--
-            if (lockdownHealth < 1) {
-                lockdownTimer = 0f
-                lockdownHealth = LOCKDOWN_HEALTH
-                open = true
-                damage = 0
-            }
+            if (lockdownHealth < 1) endLockdown()
             return
         }
+        // Door::ApplyDamage: a door still forced open takes nothing (oracle hw-dh).
+        hsForcedIn?.invoke()
+        if (forcedOpen.running) return
+        gotHit.start()
+        hsGotHitOut?.invoke()
         damage++
 
         // Door::ApplyDamage (0x46e0f0): one point of health per hit, and at zero
@@ -388,11 +470,27 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
         if (damage >= maxHealth) {
             open = true
             damage = 0
+            forcedOpen.start()
+            hsForcedOut?.invoke()
         }
     }
 
     fun resetHealth() {
         damage = 0
+    }
+
+    /** Hyperspace Lua `Door.health = v`: a plain field write (no clamp to the maximum). */
+    fun luaSetHealth(health: Int) {
+        damage = maxHealth - health
+    }
+
+    /**
+     * Door::ApplyDamage (1.6.9 0x463f30, the float amount is ignored): an open door takes nothing, a closed one
+     * one hit ([attackDoor]); always returns false.
+     */
+    fun luaApplyDamage(): Boolean {
+        if (!open) attackDoor()
+        return false
     }
 
     fun saveToXML(): Element? {
@@ -409,6 +507,8 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
         SaveUtil.addAttrFloat(elem, "browserLockdown", lockdownTimer)
         if (lockdownTimer > 0f)
             SaveUtil.addAttrInt(elem, "browserLockdownHealth", lockdownHealth)
+        if (hsShardLeft > 0f) SaveUtil.addAttrFloat(elem, "hsShardLeft", hsShardLeft)
+        if (hsShardRight > 0f) SaveUtil.addAttrFloat(elem, "hsShardRight", hsShardRight)
         SaveUtil.addAttrInt(elem, "damage", damage)
 
         return elem
@@ -417,6 +517,8 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
     fun loadFromXML(elem: Element) {
         lockdownTimer = elem.getAttributeValue("browserLockdown")?.toFloat() ?: 0f
         lockdownHealth = elem.getAttributeValue("browserLockdownHealth")?.toInt() ?: LOCKDOWN_HEALTH
+        hsShardLeft = elem.getAttributeValue("hsShardLeft")?.toFloat() ?: 0f
+        hsShardRight = elem.getAttributeValue("hsShardRight")?.toFloat() ?: 0f
         // (Older saves also carry browserLockdownDamage, from a removed rule; it is ignored.)
         damage = SaveUtil.getAttrInt(elem, "damage")
         scaledMax = 0

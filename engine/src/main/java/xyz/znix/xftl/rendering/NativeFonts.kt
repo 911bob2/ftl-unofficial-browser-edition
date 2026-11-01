@@ -38,13 +38,25 @@ object NativeFonts {
         64 to Spec("HL2", 4f, 32, 52),
     )
 
+    /** GetFontData's ID mapping: 6-8 are 9, 11 is 12. */
+    fun resolve(id: Int) = when (id) {
+        6, 7, 8 -> 9
+        11 -> 12
+        else -> id
+    }
+
+    /** The English font_data of an ID. */
+    fun baseSpec(id: Int): Spec = specs[resolve(id)] ?: specs.getValue(12)
+
+    /**
+     * The font_data of an ID in the current language: a language with fonts of its own ([LanguageFonts]) has its
+     * own line height. The baseline stays the English one: the language font's copy of the [SILFontLoader] moves its
+     * glyphs to its own baseline, for the callers that place text by an English baseline too.
+     */
     fun spec(id: Int): Spec {
-        val resolved = when (id) {
-            6, 7, 8 -> 9
-            11 -> 12
-            else -> id
-        }
-        return specs[resolved] ?: specs.getValue(12)
+        val base = baseSpec(id)
+        val lineHeight = LanguageFonts.lineHeight(id) ?: return base
+        return Spec(base.name, base.scale, base.baseline, lineHeight)
     }
 
     /**
@@ -53,8 +65,20 @@ object NativeFonts {
      */
     fun centredStart(pen: Float, frameX: Float) = if (pen < frameX) frameX - (frameX - pen).roundToInt() else pen
 
-    /** TextButton::SetFont's label offset for the font (0x005905c0). */
-    fun buttonTextOffset(id: Int) = when (id) {
+    /**
+     * What TextButton::OnInit stores for a button made with the game (CommandGui's, the language
+     * chooser's): the line height and SetFont's label offset of font [id] in the language the game started in.
+     */
+    fun buttonMetricsAtStart(id: Int): Pair<Int, Int> {
+        val lang = xyz.znix.xftl.Languages.atStart
+        val lineHeight = LanguageFonts.lineHeightIn(lang, id) ?: baseSpec(id).lineHeight
+        return Pair(lineHeight, buttonTextOffset(id, lang))
+    }
+
+    /** TextButton::SetFont's label offset for the font in language [lang]. */
+    fun buttonTextOffset(id: Int, lang: String = xyz.znix.xftl.Languages.current) = when (id) {
+        // Japanese moves font 51's labels down too (SetFont tests TextLibrary::currentLanguage == "ja").
+        51 -> if (lang == "ja") 2 else 0
         52, 62 -> 2
         63 -> 4
         64 -> 6
@@ -64,11 +88,33 @@ object NativeFonts {
 
     /** A scaled copy of the font behind a native ID. */
     fun font(fonts: (String) -> SILFontLoader, id: Int): NativeFont {
-        val spec = spec(id)
-        return NativeFont(id, SILFontLoader(fonts(spec.name)).also { it.scale = spec.scale }, spec)
+        val spec = baseSpec(id)
+        return NativeFont(id, SILFontLoader(fonts(spec.name)).also { it.scale = spec.scale; it.nativeId = resolve(id) }, spec)
     }
 
-    class NativeFont(val id: Int, val font: SILFontLoader, val spec: Spec) {
+    /**
+     * A copy of [font] that keeps the game font's own glyphs in every language: ResourceControl::GetFontData with
+     * ignoreLanguage, as the weapon and drone slot numbers (font 5) and the evasion and
+     * oxygen numbers (font 10, ShipStatus::RenderEvadeOxygen) use it.
+     */
+    fun english(font: SILFontLoader): SILFontLoader =
+        SILFontLoader(font).also { it.scale = font.scale; it.nativeId = font.nativeId; it.ownGlyphs = true }
+
+    /**
+     * CrewBox and CrewEquipBox::RenderLabels print a crew name with ignoreLanguage when
+     * none of its UTF-8 bytes is above 0xD1, so names of code points up to U+047F (Latin and Cyrillic letters) keep
+     * the English font in Japanese and Chinese, and any other name takes the language's.
+     */
+    fun nameIgnoresLanguage(name: String): Boolean = name.all { it.code <= 0x47F }
+
+    class NativeFont(val id: Int, val font: SILFontLoader, private val baseSpec: Spec,
+                     private val ignoreLanguage: Boolean = false) {
+        /** [NativeFonts.spec]: the current language's line height. */
+        val spec: Spec get() = if (LanguageFonts.active && !ignoreLanguage) NativeFonts.spec(id) else baseSpec
+
+        /** This font with ignoreLanguage ([NativeFonts.english]). */
+        val english: NativeFont by lazy { NativeFont(id, NativeFonts.english(font), baseSpec, true) }
+
         val lineHeight get() = spec.lineHeight
 
         fun width(text: String) = font.getWidth(text)
@@ -101,24 +147,32 @@ object NativeFonts {
             }
         }
 
-        /** freetype::easy_printRightAlign: right edge at [x]. */
+        /**
+         * freetype::easy_printRightAlign: the line layout starts each line its string width (where the pen
+         * ends, [SILFontLoader.getAdvanceWidth]) left of [x], so a trailing space or postkern counts.
+         */
         fun printRight(x: Float, y: Float, text: String, colour: Colour) {
             text.split('\n').forEachIndexed { i, line ->
-                font.drawString(x - font.getWidth(line), y + spec.baseline + i * spec.lineHeight, line, colour)
+                font.drawString(x - font.getAdvanceWidth(line), y + spec.baseline + i * spec.lineHeight, line, colour)
             }
         }
 
         /**
          * TextButton label placement (TextButton::OnRender 0x00591f00): lines are
          * centred on the button, starting at h/2 - lines*lineHeight/2 + textYOffset.
+         * [lineHeight] and [textOffset] are what TextButton::OnInit stored: the measured height of " "
+         * and SetFont's offset, in the language current then.
          */
-        fun printButtonLabel(x: Int, y: Int, width: Int, height: Int, label: String, colour: Colour) {
+        fun printButtonLabel(x: Int, y: Int, width: Int, height: Int, label: String, colour: Colour,
+                             lineHeight: Int = spec.lineHeight, textOffset: Int = buttonTextOffset(id)) {
             val lines = label.split('\n')
             // Multi-line labels step by the button's measured line height (that of
-            // " "), 26px for font 63 (OptionsScreen's DELETE PROFILE).
-            val step = if (lines.size > 1 && id == 63) 26 else spec.lineHeight
-            var top = if (step != spec.lineHeight) height / 2 + y - lines.size * step / 2 + buttonTextOffset(id) - 6
-            else height / 2 + y - lines.size * spec.lineHeight / 2 + buttonTextOffset(id)
+            // " "), 26px for font 63 (OptionsScreen's DELETE PROFILE); OptionsScreen::OnInit
+            // gives its two-line buttons 28 in Japanese.
+            val stepped = lines.size > 1 && id == 63
+            val step = if (stepped) (if (xyz.znix.xftl.Languages.current == "ja") 28 else 26) else spec.lineHeight
+            var top = if (stepped) height / 2 + y - lines.size * step / 2 + textOffset - 6
+            else height / 2 + y - lines.size * lineHeight / 2 + textOffset
             for (line in lines) {
                 printCenter((width / 2 + x).f, top.f, line, colour)
                 top += step

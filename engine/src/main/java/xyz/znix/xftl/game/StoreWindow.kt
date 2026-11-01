@@ -7,6 +7,7 @@ import xyz.znix.xftl.f
 import xyz.znix.xftl.math.ConstPoint
 import xyz.znix.xftl.math.IPoint
 import xyz.znix.xftl.math.Point
+import xyz.znix.xftl.rendering.Colour
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.rendering.HotkeyDelayedTooltip
 import xyz.znix.xftl.sys.Input
@@ -28,9 +29,10 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
     // JumpWindow's CANCEL button).
     // Desktop: CommandGui's storeScreens share the ship windows' origin (0x00538710),
     // which puts this window at (335,85).
+    // The touch layout puts the window at (43,85) of the HUD block, with the info box to its right.
     override val windowCentreOffset = ConstPoint(
-        if (PlatformSpecific.INSTANCE.isTouchUi) -266 else -11,
-        if (PlatformSpecific.INSTANCE.isTouchUi) -70 else -63
+        if (TouchMode.enabled) -175 else if (PlatformSpecific.INSTANCE.isTouchUi) -266 else -11,
+        if (TouchMode.enabled) -87 else if (PlatformSpecific.INSTANCE.isTouchUi) -70 else -63
     )
 
     override val renderScale = if (PlatformSpecific.INSTANCE.isTouchUi) 1.2f else 1f
@@ -53,6 +55,12 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
     private val labelFont63 = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 63)
     private val repairLabelFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 59)
     private val hullNumberFont = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 0)
+
+    // Hyperspace: the custom store (StoreComplete) replaces the buy page; the ship's system limits (CustomShipDefinition).
+    private val hsStore = store.hs
+    private val hsDef = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name) else null
+    private val systemLimit get() = hsDef?.systemLimit ?: 8
+    private val subsystemLimit get() = hsDef?.subsystemLimit ?: 4
 
     private val buySound = game.sounds.getSample("buy")
     private val repairSound = game.sounds.getSample("repairShip")
@@ -78,6 +86,16 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         }
     }
     private val infoPanel = InfoPanel(game)
+
+    // Touch layout: a finger on an item selects it, shown like a hovered item with its info box and BUY; only BUY spends
+    // the scrap. The finger can slide to another item. While BUY is active, touches over the info column change nothing;
+    // anywhere else, a touch away from every item clears the selection.
+    private var touchSelected: BuyButton? = null
+    private var touchFingerDown = false
+    private var touchPressedBuy = false
+    private val touchBuy: TouchGetBox? = if (TouchMode.enabled) TouchGetBox(
+        game, game.translator["button_buy"], { touchSelected?.price }, { touchSelected?.disabled == false }
+    ) { touchSelected?.touchBuy() } else null
 
     private val buyTabButton = SimpleButton(
         game, ConstPoint(0, 0), ConstPoint(170, 46), ConstPoint(0, 0),
@@ -183,6 +201,9 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
             // equipment menu, so we need to shift it around a little to make it
             // line up properly here.
             sellPanel.position = position + ConstPoint(GLOW_WIDTH, GLOW_WIDTH - 7)
+        } else if (hsStore != null) {
+            buttons.add(sellTabButton)
+            addHsBuyButtons(hsStore)
         } else {
             buttons.add(sellTabButton)
             buttons.add(fuelButton)
@@ -202,8 +223,13 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
     }
 
     override fun draw(g: Graphics) {
+        // Under the confirm dialog the store is drawn at half brightness, the dialog itself in the middle of the screen.
+        val tint = Graphics.tint
+        if (hsConfirm != null) Graphics.tint = Colour(tint.r * .5f, tint.g * .5f, tint.b * .5f, tint.a)
         if (sellTab) {
             drawSell(g)
+        } else if (hsStore != null) {
+            drawBuyHs(g, hsStore)
         } else {
             drawBuy(g)
         }
@@ -211,8 +237,10 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         // See JumpWindow
         // Note the corners should have one step more roundness than the current
         // buttons, so the current ones look a bit ugly.
-        closeButtonOutline.draw(closeButton.pos + ConstPoint(-23, -7))
-        closeButton.draw(g)
+        if (hsConfirm == null) {
+            closeButtonOutline.draw(closeButton.pos + ConstPoint(-23, -7))
+            closeButton.draw(g)
+        }
 
         buySellTabFont.drawString(
             position.x + GLOW_WIDTH + 47f,
@@ -229,10 +257,35 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         )
 
         // Draw the info for whatever the player is hovering
+        if (touchBuy != null) {
+            val selected = touchSelected
+            if (selected != null && !sellTab) {
+                infoPanel.touchBottom = 0
+                selected.drawInfoPanel(g)
+                touchBuy.drawBelow(g, infoPanel)
+            } else {
+                touchBuy.hide()
+            }
+        } else {
         val hoveredBuyButton = buttons.filterIsInstance<BuyButton>().firstOrNull { it.hovered }
         hoveredBuyButton?.drawInfoPanel(g)
+        }
 
         sellPanel.drawDrag(g)
+        Graphics.tint = tint
+        hsConfirm?.draw(g)
+    }
+
+    /** Hyperspace: the store's confirm dialog for a system purchase. */
+    private var hsConfirm: ConfirmationWindow? = null
+
+    private fun openHsConfirm(key: String, literal: String?, purchase: () -> Unit) {
+        val window = ConfirmationWindow(SettingsContext(game), key, 300, accept = {
+            hsConfirm = null
+            purchase()
+        }, cancel = { hsConfirm = null }, literalMessage = literal)
+        window.centre(1280, 720)
+        hsConfirm = window
     }
 
     private fun drawBuy(g: Graphics) {
@@ -419,14 +472,20 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                         if (systemSlot == null)
                             return true
 
+                        // Hyperspace SystemStoreBox::CanHold: CanFitSystem/CanFitSubsystem(id), where a system that
+                        // replaces an exclusive one always fits.
+                        if (xyz.znix.xftl.hs.HS.active)
+                            return systemSlot.isInstalled || !xyz.znix.xftl.hs.systems.HsSystemInstall.canFit(ship, systemSlot)
+
                         // Stop the user from installing more than eight systems, unless
                         // this replaces an existing system (clonebay/medbay).
+                        // Hyperspace: the ship's systemLimit / subsystemLimit (CanFitSystem / CanFitSubsystem hooks).
                         val numSystems = ship.mainSystems.size
-                        if (numSystems >= 8 && systemSlot.room.system == null && isSubSystem != true)
+                        if (numSystems >= systemLimit && systemSlot.room.system == null && isSubSystem != true)
                             return true
 
                         // ShipManager::CanFitSystem (0x49b770) / 0x49b840: at most four subsystems.
-                        if (isSubSystem && ship.systems.count { it.blueprint.info?.isSubSystem == true } >= 4)
+                        if (isSubSystem && ship.systems.count { it.blueprint.info?.isSubSystem == true } >= subsystemLimit)
                             return true
 
                         // Stop the user from installing the same system twice
@@ -437,7 +496,9 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                     store.systems[i] = null
                     updateButtons() // Make this button show as sold out
 
-                    systemSlot!!.room.setSystem(systemSlot)
+                    // Hyperspace: the AddSystem hook replaces an exclusive system and carries its level.
+                    if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystemInstall.install(ship, systemSlot!!)
+                    else systemSlot!!.room.setSystem(systemSlot)
 
                     // AddSystem (0x4a8370): the new system starts powered towards its starting target, and new
                     // shields are powered and charged at once.
@@ -474,11 +535,14 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                 override val blueprint: Blueprint? get() = crew?.race
                 override val price: Int get() = crew!!.race.cost
 
-                override val customDisabled: Boolean = game.isPlayerCrewFull
+                // Hyperspace: CrewStoreBox::CanHold checks ShipManager::CanFitCrew for this race.
+                override val customDisabled: Boolean = if (xyz.znix.xftl.hs.HS.active && crew != null)
+                    !xyz.znix.xftl.hs.ship.HsShipState.canFitCrew(ship, game.playerCrew.size, crew.race.name) else game.isPlayerCrewFull
 
                 override fun buy() {
                     store.crew[index] = null
                     ship.addCrewMember(crew!!, false)
+                    game.gameMap.noteBlueprintCrew(game, crew!!)
                     updateButtons()
                 }
 
@@ -557,7 +621,7 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                             }
                         }
 
-                        return ship.cargoBlueprints.take(Ship.CARGO_SLOTS).all { it != null }
+                        return ship.cargoFull() && !xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)
                     }
 
                 override fun buy() {
@@ -601,7 +665,7 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                         if (droneSystem != null && droneSystem.drones.any { it == null })
                             return false
 
-                        return ship.cargoBlueprints.take(Ship.CARGO_SLOTS).all { it != null }
+                        return ship.cargoFull() && !xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)
                     }
 
                 override fun buy() {
@@ -647,7 +711,7 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                         }
 
                         // Check if the user's augments are full
-                        return ship.augments.size >= Ship.MAX_AUGMENTS
+                        return ship.augments.size >= ship.augmentSlotCount
                     }
 
                 override fun buy() {
@@ -701,6 +765,328 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         }
     }
 
+    // ---- Hyperspace custom store buy page (StoreComplete: SetPositions, OnRender, MouseClick, MouseMove, OnLoop) ----
+    // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/UserInterface/CustomStore.cpp and CustomStoreBox.cpp.
+
+    private val hsBuyImage by lazy { game.getImg("img/storeUI/store_buy_main_custom.png") }
+    private val hsLimitImage by lazy { game.getImg("img/storeUI/store_limit_indicator.png") }
+    private val font52 = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 52)
+    private val font24 = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 24)
+    private val font14 = xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 14)
+    private val hsLimitFont by lazy { xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, xyz.znix.xftl.hs.ship.HsStores.limitFontSize) }
+
+    private fun addHsBuyButtons(hs: xyz.znix.xftl.hs.ship.HsStoreState) {
+        // ItemStoreBoxes at (18, 83 + {0, 50, 99}), the repair boxes at (18, 291) and (18, 346).
+        val offsets = intArrayOf(0, 50, 99)
+        for ((i, r) in hs.resources.withIndex()) {
+            if (i >= offsets.size) break
+            buttons += HsResourceButton(ConstPoint(18, 83 + offsets[i]), r)
+        }
+        hs.repairPrice?.let { price ->
+            val repairImg = ButtonImageSet.select2(game, "img/storeUI/store_repair")
+            val repairPricePos = ConstPoint(130, 28)
+            buttons += object : RepairButton(ConstPoint(18, 291), repairImg, repairPricePos) {
+                override val nameKey: String get() = "repair_one_button"
+                override val price: Int get() = price
+                override fun buy() { ship.health++ }
+            }
+            buttons += object : RepairButton(ConstPoint(18, 346), repairImg, repairPricePos) {
+                override val nameKey: String get() = "repair_all_button"
+                override val price: Int get() = (ship.maxHealth - ship.health) * price
+                override fun buy() { ship.health = ship.maxHealth }
+            }
+        }
+        // Page arrows (storeUI/button_store_arrow at (451,12) and, mirrored, (547,12)): active with more than one page.
+        buttons += HsArrowButton(ConstPoint(451, 12), false, hs) { hs.previousPage(); updateButtons() }
+        buttons += HsArrowButton(ConstPoint(547, 12), true, hs) { hs.nextPage(); updateButtons() }
+
+        val page = hs.pages.getOrNull(hs.currentPage)
+        if (page != null) {
+            for ((secIndex, sec) in page.sections.withIndex()) {
+                val boxes = sec.storeBoxes.getOrNull(sec.currentSection) ?: continue
+                for ((boxIndex, box) in boxes.withIndex()) {
+                    val equipment = sec.category != 2 && sec.category != 4
+                    val pos = if (equipment) ConstPoint(208 + boxIndex * 125, 103 + secIndex * 209)
+                    else ConstPoint(203, 83 + secIndex * 209 + boxIndex * 53)
+                    buttons += HsBoxButton(pos, box, hs)
+                }
+            }
+        }
+        for (b in buttons) b.windowOffset = position
+    }
+
+    private fun drawBuyHs(g: Graphics, hs: xyz.znix.xftl.hs.ship.HsStoreState) {
+        sellTabButton.draw(g)
+        hsBuyImage.draw(position)
+
+        sectionFont.drawString(position.x + GLOW_WIDTH + 11f, position.y + GLOW_WIDTH + 54f, game.translator["store_title_items"], Constants.JUMP_DISABLED_TEXT)
+        sectionFont.drawString(position.x + GLOW_WIDTH + 11f, position.y + GLOW_WIDTH + 263f, game.translator["store_title_repair"], Constants.JUMP_DISABLED_TEXT)
+        val currentHull = game.translator["store_current_hull"]
+        repairLabelFont.printCenter(position.x + 73f, position.y + if ('\n' in currentHull) 419f else 427f, currentHull, Constants.SECTOR_CUTOUT_TEXT)
+
+        // "%d/%d" (just the page past nine pages) centred at (515,11) in font 63.
+        val pageText = when {
+            hs.pages.size > 9 -> (hs.currentPage + 1).toString()
+            hs.pages.isEmpty() -> "1/1"
+            else -> "${hs.currentPage + 1}/${hs.pages.size}"
+        }
+        labelFont63.printCenter(position.x + 515f, position.y + 11f, pageText, Constants.JUMP_DISABLED_TEXT)
+
+        val unavailable = game.translator["store_unavailable"]
+        val page = hs.pages.getOrNull(hs.currentPage)
+        if (page != null) {
+            for ((i, sec) in page.sections.withIndex()) {
+                val title = sec.customTitle.ifEmpty { game.translator[sec.headingKey] }
+                sectionFont.drawString(position.x + 206f, position.y + 61f + i * 209, title, Constants.JUMP_DISABLED_TEXT)
+            }
+            if (page.sections.size == 1)
+                font52.printCenter(position.x + 394f, position.y + 358f, unavailable, Constants.SECTOR_CUTOUT_TEXT)
+        } else {
+            font52.printCenter(position.x + 394f, position.y + 148f, unavailable, Constants.SECTOR_CUTOUT_TEXT)
+            font52.printCenter(position.x + 394f, position.y + 358f, unavailable, Constants.SECTOR_CUTOUT_TEXT)
+        }
+        if (hs.resources.isEmpty())
+            font52.printCenter(position.x + 102f, position.y + 148f, unavailable, Constants.SECTOR_CUTOUT_TEXT)
+        if (hs.repairPrice == null)
+            font52.printCenter(position.x + 102f, position.y + 332f, unavailable, Constants.SECTOR_CUTOUT_TEXT)
+
+        for (b in buttons) if (b !== sellTabButton && b !== closeButton) b.draw(g)
+
+        hullNumberFont.print(position.x + 143f, position.y + 432f, ship.health.toString(), Constants.SECTOR_CUTOUT_TEXT)
+
+        if (hs.itemPurchaseLimit != -1) {
+            hsLimitImage.draw(position.x + 7 - hsLimitImage.width, position.y + 26)
+            // StoreComplete::MouseMove: an instant tooltip over the indicator, when the text exists.
+            val mx = hsMouse.x; val my = hsMouse.y
+            if (position.x + 10 - hsLimitImage.width < mx && mx < position.x + 7 && position.y + 38 < my &&
+                my < position.y + 12 + hsLimitImage.height && !game.translator["tooltip_purchase_limit"].startsWith("Could not find:"))
+                g.tooltip = hsLimitTooltip
+            hsLimitFont.printCenter(
+                position.x + xyz.znix.xftl.hs.ship.HsStores.limitX.f, position.y + xyz.znix.xftl.hs.ship.HsStores.limitY.f,
+                (hs.itemPurchaseLimit - hs.itemsPurchased).toString(), Constants.SECTOR_CUTOUT_TEXT
+            )
+        }
+    }
+
+    private inner class HsArrowButton(
+        pos: IPoint, val mirror: Boolean, val hs: xyz.znix.xftl.hs.ship.HsStoreState, val action: () -> Unit
+    ) : Button(game, pos, ConstPoint(game.getImg("img/storeUI/button_store_arrow_on.png").width, game.getImg("img/storeUI/button_store_arrow_on.png").height)) {
+        private val images = ButtonImageSet.select2(game, "img/storeUI/button_store_arrow")
+        override val disabled: Boolean get() = hs.pages.size <= 1
+        override fun draw(g: Graphics) {
+            val img = when { disabled -> images.off; hovered -> images.hover; else -> images.normal }
+            if (!mirror) { img.draw(pos); return }
+            g.pushTransform(); g.translate(pos.x + img.width.f, pos.y.f); g.scale(-1f, 1f); img.draw(0, 0); g.popTransform()
+        }
+        override fun click(button: Int) { if (button == Input.MOUSE_LEFT_BUTTON) action() }
+    }
+
+    private inner class HsResourceButton(pos: IPoint, val box: xyz.znix.xftl.hs.ship.HsStores.ResourceBox) : BuyButton(
+        pos, ButtonImageSet.select2(game, "img/storeUI/store_items_${resourceTextureName(box.resource)}"), ConstPoint(169, 40)
+    ) {
+        override val blueprint = box.resource.getBlueprint(game)!!
+        override val disabled: Boolean get() = box.count <= 0
+        override val touchSelectable: Boolean get() = box.count > 0
+        override val price: Int get() = box.cost
+
+        override fun draw(g: Graphics) {
+            val img = when { box.count <= 0 -> image.off; hovered -> image.hover; else -> image.normal }
+            img.draw(pos)
+            if (box.count <= 0) return
+            val textColour = if (hovered) Constants.STORE_BUY_HOVER else Constants.SECTOR_CUTOUT_TEXT
+            numberFont.drawString(pos.x + 130f, pos.y + 26f, price.toString(), textColour)
+            numberFont.drawString(pos.x + 70f, pos.y + 26f, box.count.toString(), textColour)
+        }
+
+        override fun buy() {
+            if (box.count <= 0) return
+            val resourceSet = ResourceSet()
+            resourceSet[box.resource] = 1
+            game.givePlayerResources(resourceSet)
+            box.count--
+        }
+
+        override fun drawInfoPanel(g: Graphics) {
+            if (box.count > 0) infoPanel.drawItem(blueprint)
+        }
+    }
+
+    /** CustomStoreBox: an item of a custom store section (prices and mystery items are per box). */
+    private inner class HsBoxButton(pos: IPoint, val box: xyz.znix.xftl.hs.ship.HsStores.Box, val hs: xyz.znix.xftl.hs.ship.HsStoreState) : BuyButton(
+        if (box.category == 3) pos + ConstPoint(9, 9) else pos,
+        when (box.category) {
+            0 -> ButtonImageSet.select2(game, "img/storeUI/store_buy_weapons")
+            1 -> ButtonImageSet.select2(game, "img/storeUI/store_buy_drones")
+            3 -> ButtonImageSet.select2(game, "img/storeUI/store_buy_crew")
+            4 -> if ((box.blueprint as? xyz.znix.xftl.systems.SystemBlueprint)?.info?.isSubSystem == true)
+                ButtonImageSet.select2(game, "img/storeUI/store_subsystems") else ButtonImageSet.select2(game, "img/storeUI/store_systems")
+            else -> ButtonImageSet.select2(game, "img/storeUI/store_weapons")
+        },
+        when (box.category) { 0, 1 -> ConstPoint(42, 98); 3 -> ConstPoint(33, 89); 4 -> ConstPoint(345, 26); else -> ConstPoint(345, 27) }
+    ) {
+        override val blueprint: Blueprint? get() = box.blueprint
+        override val empty: Boolean get() = box.count <= 0 || box.blueprint == null
+        override val price: Int get() = box.cost
+
+        private val systemSlot
+            get() = (box.blueprint as? xyz.znix.xftl.systems.SystemBlueprint)?.let { s -> ship.systemSlots.lastOrNull { it.system == s } }
+
+        override val customDisabled: Boolean
+            get() {
+                // StoreComplete::OnLoop: every section box is inactive once the purchase limit is reached.
+                if (hs.limitReached) return true
+                when (box.category) {
+                    0 -> {
+                        if (ship.weapons != null) for (slot in 0 until ship.weaponSlots!!) if (ship.hardpoints[slot].weapon == null) return false
+                        return ship.cargoFull() && !xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)
+                    }
+                    1 -> {
+                        val droneSystem = ship.drones
+                        if (droneSystem != null && droneSystem.drones.any { it == null }) return false
+                        return ship.cargoFull() && !xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)
+                    }
+                    2 -> {
+                        val augment = box.blueprint as xyz.znix.xftl.augments.AugmentBlueprint
+                        if (!augment.stackable && ship.augments.contains(augment)) return true
+                        return ship.augments.size >= ship.augmentSlotCount
+                    }
+                    3 -> return !xyz.znix.xftl.hs.ship.HsShipState.canFitCrew(ship, game.playerCrew.size, box.blueprint!!.name)
+                    else -> {
+                        val slot = systemSlot ?: return true
+                        // CanFitSystem/CanFitSubsystem(id) (CustomSystems.cpp): exclusive replacements always fit.
+                        return slot.isInstalled || !xyz.znix.xftl.hs.systems.HsSystemInstall.canFit(ship, slot)
+                    }
+                }
+            }
+
+        // SystemStoreBox::Activate hook: with the scrap to pay, a system that replaces one, or one that takes the
+        // ship's last (sub)system slot, asks first; yes buys it (StoreComplete::MouseClick + confirmDialog).
+        override fun click(button: Int) {
+            if (box.category == 4 && button == Input.MOUSE_LEFT_BUTTON && !disabled && ship.scrap >= price) {
+                val text = hsSystemConfirm()
+                if (text != null) {
+                    openHsConfirm(text.first, text.second) { super.click(button) }
+                    return
+                }
+            }
+            super.click(button)
+        }
+
+        /** The confirm text (key, literal or null) the HS hook picks for this system, or null to buy at once. */
+        private fun hsSystemConfirm(): Pair<String, String?>? {
+            val bought = box.blueprint as? xyz.znix.xftl.systems.SystemBlueprint ?: return null
+            val isSub = bought.info?.isSubSystem == true
+            // ShipManager::SystemWillReplace (systems' HsSystemInstall). Medbay/clonebay replacing each other keep the
+            // original's texts (the hook calls it); any other replacement names both systems.
+            val replaced = xyz.znix.xftl.hs.systems.HsSystemInstall.willReplace(ship, bought.type)
+            if (replaced != null) {
+                if (bought.type == "medbay" && replaced.blueprint.type == "clonebay") return Pair("confirm_buy_medbay", null)
+                if (bought.type == "clonebay" && replaced.blueprint.type == "medbay") return Pair("confirm_buy_clonebay", null)
+                val text = game.translator["confirm_buy_custom"].replace("\\1", bought.translateTitle(game))
+                    .replace("\\2", replaced.blueprint.translateTitle(game))
+                return Pair("confirm_buy_custom", text)
+            }
+            val limit = if (isSub) subsystemLimit else systemLimit
+            // The original keeps its own behaviour for subsystems when all four fit and no custom ones exist.
+            if (isSub && limit >= 4) return null
+            val count = ship.systems.count { (it.blueprint.info?.isSubSystem == true) == isSub }
+            if (limit - count == 1) return Pair(if (isSub) "confirm_buy_last_subsystem" else "confirm_buy_last_system", null)
+            return null
+        }
+
+        override fun buy() {
+            box.count = 0
+            when (box.category) {
+                0, 1, 2 -> if (!ship.addBlueprint(box.blueprint!!, false)) error("Couldn't find space to place purchased item!")
+                3 -> { ship.addCrewMember(box.crew!!, false); game.gameMap.noteBlueprintCrew(game, box.crew!!) }
+                else -> {
+                    val slot = systemSlot!!
+                    xyz.znix.xftl.hs.systems.HsSystemInstall.install(ship, slot)
+                    slot.room.system?.let { ship.browserPowerNewSystem(it) }
+                    box.freeDrone?.let { name ->
+                        (game.blueprintManager.getOrNull(name) as? xyz.znix.xftl.weapons.DroneBlueprint)?.let { ship.addBlueprint(it, false) }
+                    }
+                }
+            }
+            // StoreComplete::MouseClick: a section item bought counts towards the purchase limit.
+            hs.itemsPurchased++
+            updateButtons()
+        }
+
+        override fun draw(g: Graphics) {
+            if (box.category == 3 && !empty) { drawCrewBox(); return }
+            if (box.category == 2 && !empty) { drawAugmentBox(g); return }
+            if (!box.mysteryItem || empty) { super.draw(g); return }
+            val img = when { disabled -> image.off; hovered -> image.hover; else -> image.normal }
+            img.draw(pos)
+            if (box.category == 0 || box.category == 1) {
+                // A mystery item's name and icon are "?" (font 24 centred above the icon's centre).
+                crewNameFont.drawStringCentred(pos.x + 11f, pos.y + 70f, 96f, "?", textColour)
+                font24.printCenter(pos.x + 60f, pos.y + 34f - 26f, "?", Constants.SECTOR_CUTOUT_TEXT)
+            } else {
+                font14.print(pos.x + 48f, pos.y + 2f, "?", textColour)
+            }
+            numberFont.drawString(pos.x + priceOffset.x.f, pos.y + priceOffset.y.f, price.toString(), textColour)
+        }
+
+        private val augmentTooltip = object : xyz.znix.xftl.rendering.StandardTooltip(game) {
+            override fun getText(): String {
+                // AugmentStoreBox::MouseMove (CustomEquipment.cpp): "have_augment" for a non-stackable duplicate, else
+                // "max_augments" (the text's backslash-1 and the literal 3 become the ship's augment slots).
+                val aug = box.blueprint as? xyz.znix.xftl.augments.AugmentBlueprint
+                if (aug != null && !aug.stackable && ship.augments.contains(aug)) return game.translator["have_augment"]
+                val slots = ship.augmentSlotCount
+                return xyz.znix.xftl.hs.ship.HsEquipment.maxAugmentsText(game.translator["max_augments"], ship.type.name).replace("\\1", slots.toString())
+            }
+        }
+
+        private fun drawAugmentBox(g: Graphics) {
+            val img = when { disabled -> image.off; hovered -> image.hover; else -> image.normal }
+            img.draw(pos)
+            // Hovering a button the ship cannot take (full augments or a duplicate) explains why.
+            if (hovered && box.count >= 1 && !box.mysteryItem && customDisabled) g.tooltip = augmentTooltip
+            val name = if (box.mysteryItem) "?" else (box.blueprint as xyz.znix.xftl.augments.AugmentBlueprint).translateTitle(game)
+            augmentNameFont.drawString(pos.x + 48f, pos.y + 26f, name, textColour)
+            if (!customDisabled) numberFont.drawString(pos.x + priceOffset.x.f, pos.y + priceOffset.y.f, price.toString(), textColour)
+        }
+
+        private fun drawCrewBox() {
+            val crew = box.crew ?: return
+            val img = when { disabled -> image.off; hovered -> image.hover; else -> image.normal }
+            img.draw(pos.x - 9, pos.y - 9)
+            crewNameFont.drawStringCentred(pos.x + 2f, pos.y + 61f, 96f, if (box.mysteryItem) "?" else crew.name, textColour)
+            if (!box.mysteryItem) {
+                val yOffset = when (crew.race.name) { "rock" -> -6; "mantis", "crystal" -> -10; else -> -5 }
+                // A race whose art the engine cannot resolve yet (HS animBase: statcrew) is reported, not fatal.
+                try {
+                    crew.drawPortrait(pos.x + (96 - 35 * 2) / 2 + 3, pos.y + yOffset, 2f)
+                } catch (e: Exception) {
+                    xyz.znix.xftl.hs.HS.unsupported("crew", "animations", "store portrait of ${crew.race.name}: ${e.message}")
+                }
+            }
+            numberFont.drawString(pos.x + priceOffset.x.f, pos.y + priceOffset.y.f, price.toString(), textColour)
+        }
+
+        override fun drawInfoPanel(g: Graphics) {
+            // StoreComplete::MouseMove: no info box for a mystery item.
+            if (empty || box.mysteryItem) return
+            when (val bp = box.blueprint) {
+                is xyz.znix.xftl.weapons.AbstractWeaponBlueprint -> infoPanel.drawWeapon(bp)
+                is xyz.znix.xftl.weapons.DroneBlueprint -> infoPanel.drawDrone(bp)
+                is xyz.znix.xftl.augments.AugmentBlueprint -> infoPanel.drawAugment(bp)
+                is xyz.znix.xftl.systems.SystemBlueprint -> { infoPanel.drawDescriptionBoxSystem(bp); infoPanel.drawSystemPowerBox(g, bp, bp.startPower, 0) }
+                else -> box.crew?.let {
+                    // A race whose art the engine cannot resolve yet (HS <animSheet>: statcrew) is reported, not fatal.
+                    try {
+                        infoPanel.drawCrew(g, it)
+                    } catch (e: Exception) {
+                        xyz.znix.xftl.hs.HS.unsupported("crew", "animations", "store info of ${it.race.name}: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
     private fun drawSell(g: Graphics) {
         buyTabButton.draw(g)
         sellImage.draw(position)
@@ -709,10 +1095,25 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
 
         // Draw the information for the currently-hovered blueprint.
         sellPanel.drawInfoPanel(infoPanel)
+        if (TouchMode.enabled) sellPanel.drawTouchSell(g, infoPanel)
     }
 
     override fun escapePressed() {
+        hsConfirm?.let { it.escapePressed(); return }
         close()
+    }
+
+    /** Hyperspace StoreComplete::KeyDown (custom stores): the left and right arrow keys turn the buy pages. */
+    override fun onTextInput(key: Int, c: Char): Boolean {
+        hsConfirm?.let { return it.onTextInput(key, c) }
+        val hs = hsStore ?: return false
+        when (key) {
+            Input.KEY_RIGHT -> hs.nextPage()
+            Input.KEY_LEFT -> hs.previousPage()
+            else -> return false
+        }
+        if (!sellTab) updateButtons()
+        return true
     }
 
     override fun clickTargetAt(x: Int, y: Int): Any? {
@@ -724,7 +1125,27 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         return null
     }
 
+    /** The item under the finger, or none: see [touchSelected]. */
+    private fun touchPick(x: Int, y: Int) {
+        if (touchPressedBuy) return
+        if (touchBuy?.disabled == false && touchSelected != null && x - TouchMode.hudX >= TOUCH_INFO_X) return
+        touchSelected = buttons.lastOrNull { it is BuyButton && it.touchSelectable && it.contains(x, y) } as BuyButton?
+    }
+
     override fun mouseClick(button: Int, x: Int, y: Int) {
+        hsConfirm?.let { val p = scaleWindowPoint(x, y); it.mouseClick(button, p.x, p.y); return }
+        if (touchBuy != null) {
+            if (button != Input.MOUSE_LEFT_BUTTON) return
+            touchFingerDown = true
+            touchPressedBuy = false
+            if (touchBuy.press(x, y)) {
+                touchPressedBuy = true
+                return
+            }
+            for (btn in ArrayList(buttons)) if (btn !is BuyButton) btn.mouseDown(button, x, y)
+            if (sellTab) sellPanel.mouseClick(button, x, y) else touchPick(x, y)
+            return
+        }
         if (!tapArmGate(button, x, y))
             return
 
@@ -740,6 +1161,10 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
     }
 
     override fun mouseReleased(button: Int, x: Int, y: Int) {
+        if (button == Input.MOUSE_LEFT_BUTTON) {
+            touchFingerDown = false
+            touchPressedBuy = false
+        }
         super.mouseReleased(button, x, y)
 
         if (sellTab) {
@@ -748,13 +1173,42 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         }
     }
 
+    private var hsMouse = ConstPoint(-1, -1)
+    private val hsLimitTooltip by lazy { xyz.znix.xftl.rendering.FixedStandardTooltip(game, "tooltip_purchase_limit") }
+
     override fun updateUI(x: Int, y: Int) {
+        hsConfirm?.let { val p = scaleWindowPoint(x, y); it.updateUI(p.x, p.y); return }
+        if (touchBuy != null) {
+            touchUpdate(touchBuy, x, y)
+            return
+        }
         super.updateUI(x, y)
+        if (hsStore != null) scaleWindowPoint(x, y).let { hsMouse = ConstPoint(it.x, it.y) }
 
         if (sellTab) {
             val p = scaleWindowPoint(x, y)
             sellPanel.updateUI(p.x, p.y)
         }
+    }
+
+    private fun touchUpdate(buy: TouchGetBox, x: Int, y: Int) {
+        if (hsStore != null) hsMouse = ConstPoint(x, y)
+        if (touchFingerDown && !sellTab) touchPick(x, y)
+
+        // A sold-out item, or one on a page or tab no longer shown
+        touchSelected?.let { if (it !in buttons || !it.touchSelectable) touchSelected = null }
+
+        val selected = touchSelected
+        for (btn in buttons) {
+            when {
+                btn !is BuyButton -> btn.update(x, y)
+                btn === selected -> btn.update(btn.pos.x + 1, btn.pos.y + 1)
+                else -> btn.update(-1, -1)
+            }
+        }
+        buy.updateHover(x, y)
+
+        if (sellTab) sellPanel.updateUI(x, y)
     }
 
     override fun shipModified() {
@@ -765,7 +1219,7 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
     override fun positionUpdated() {
         super.positionUpdated()
         // The shared InfoBox sits at (942,159), as it does for the ship windows.
-        infoPanel.position = position + ConstPoint(size.x + 20, 74)
+        infoPanel.position = position + if (TouchMode.enabled) ConstPoint(603, 50) else ConstPoint(size.x + 20, 74)
     }
 
     abstract inner class BuyButton(pos: IPoint, images: ButtonImageSet, val priceOffset: IPoint) :
@@ -774,6 +1228,12 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         abstract val price: Int
 
         abstract fun buy()
+
+        /** Touch layout: whether a finger can select this. An item the ship can't take still shows its info. */
+        open val touchSelectable: Boolean get() = !empty
+
+        /** Touch layout: the BUY button's press, with the checks and confirmations of a click. */
+        fun touchBuy() = click(Input.MOUSE_LEFT_BUTTON)
 
         override fun draw(g: Graphics) {
             super.draw(g)
@@ -824,6 +1284,7 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         val numAvailable: Int get() = store.availableResources[resource] ?: 0
 
         override val disabled: Boolean get() = numAvailable == 0
+        override val touchSelectable: Boolean get() = numAvailable > 0
 
         override val price: Int get() = blueprint.cost
 
@@ -922,6 +1383,9 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         const val CANVAS_H: Int = 720
 
         const val GLOW_WIDTH: Int = 7
+
+        /** Touch layout: the info column's left edge in the HUD block. */
+        private const val TOUCH_INFO_X = 643
 
         private fun resourceTextureName(resource: Resource): String {
             return when (resource) {

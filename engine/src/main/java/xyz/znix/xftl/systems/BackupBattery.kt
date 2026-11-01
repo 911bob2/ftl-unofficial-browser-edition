@@ -75,6 +75,12 @@ class BackupBattery(blueprint: SystemBlueprint) : SubSystem(blueprint) {
         }
     }
 
+    /** Hyperspace: BatterySystem::bTurnedOn written by a script. */
+    fun hsWriteTurnedOn(on: Boolean) {
+        timeRemaining = if (on) (timeRemaining ?: Float.MAX_VALUE) else null
+        for (system in ship.systems) system.powerStateChanged()
+    }
+
     fun startBattery() {
         // This is called constantly by the AI, so we have to check if we're ready.
         if (ionTimer > 0f || timeRemaining != null)

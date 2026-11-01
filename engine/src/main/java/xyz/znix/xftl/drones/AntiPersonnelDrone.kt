@@ -9,7 +9,7 @@ import xyz.znix.xftl.weapons.DroneBlueprint
 /** An autonomous friendly battle pawn; it cannot repair, man systems or be ordered by the player. */
 class AntiPersonnelDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
     override val occupancySlotType get() = AbstractCrew.SlotType.CREW
-    override val pawnCodename get() = "battle"
+    override val pawnCodename get() = PAWN_RACE
 
     override fun init(ownerShip: Ship) {
         super.init(ownerShip)
@@ -62,10 +62,14 @@ class AntiPersonnelDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
 
     private inner class BattlePawn(room: Room) : Pawn(room) {
         // Verified BattleDrone virtuals in the unmodified 1.6.14 executable.
-        override val baseMaxHealth get() = 150f
-        override val attackDamageMult get() = 1.2f
-        override val canFight get() = true
+        override val vanillaMaxHealth get() = 150f
+        override val attackDamageMult get() = hsStat(xyz.znix.xftl.hs.stat.CrewStat.DAMAGE_MULTIPLIER) ?: 1.2f
+        override val canFight get() = hsFlag(xyz.znix.xftl.hs.stat.CrewStat.CAN_FIGHT) ?: true
         override val canPunch get() = false
         override val canSabotage get() = false
+    }
+
+    companion object {
+        const val PAWN_RACE = "battle"
     }
 }

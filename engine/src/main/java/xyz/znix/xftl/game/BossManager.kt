@@ -62,6 +62,9 @@ interface BossManager : ISerialReferencable {
      */
     fun updateShip(ship: Ship, dt: Float) {}
 
+    /** Called every update while the hostile boss ship is breaking up, before [bossShipKilled]. */
+    fun updateDyingShip(ship: Ship) {}
+
     /**
      * Draw the icon for this boss on the map.
      *
@@ -84,6 +87,12 @@ interface BossManager : ISerialReferencable {
      * Called when the player kills a ship spawned by this boss.
      */
     fun bossShipKilled(enemy: Ship)
+
+    /**
+     * Called when every crew member of the boss ship has died while it is hostile (CompleteShip::DeadCrew). Unlike
+     * an ordinary ship, a boss is not defeated by it; the default does nothing.
+     */
+    fun bossCrewKilled(enemy: Ship) {}
 
     // Serialisation
     fun saveToXML(elem: Element, refs: ObjectRefs)
