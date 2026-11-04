@@ -4,8 +4,11 @@
 // Needs the debug build in flight on a Hyperspace save (Multiverse for the Multiverse checks), with no window open.
 // A made-up mod's two event buttons are added through the debug console (modbutton): one in the top bar
 // (<location>4</location>), one at a customLocation. Each must reach the touch HUD, be drawn and placed, and a tap on it
-// must run its own click. On Multiverse it also checks the storage crate (after the ship button), the speed control
-// (Lua drawing in FTL_BUTTON, pressed through its own ON_MOUSE_L_BUTTON_DOWN handler) and More Info.
+// must run its own click. On Multiverse it also checks the storage crate (there from the start beacon on, after the ship
+// button, active exactly out of danger), the speed control (Lua drawing in FTL_BUTTON, pressed through its own
+// ON_MOUSE_L_BUTTON_DOWN handler) and More Info; that the shelf's pieces line up (one scale, the middles of their solid art
+// on one line, equal gaps); and that no piece moves from one drawn frame to the next for a few seconds.
+//   --only-layout skips the taps (for states where a tap would change what is checked: combat, a jump).
 import { Device, sleep } from './device.mjs';
 
 const arg = (name, dflt) => {
@@ -48,6 +51,44 @@ async function until(what, f, ms = 8000) {
 
 let s = await d.state();
 if (!s.flight || !s.hsActive || s.window) throw new Error('needs the game in flight on a Hyperspace save, with no window open');
+const onlyLayout = process.argv.includes('--only-layout');
+const multiverse = !!piece(s, 'lua:17') || !!piece(s, 'event:UI_JUKEBOX');
+
+if (multiverse) {
+    console.log('Multiverse HUD layout');
+    // The storage crate: START_BEACON_REAL makes it, nothing in Multiverse removes it, so every run has it; it is active
+    // (noDanger) exactly when the ship is out of danger.
+    const crate = piece(s, 'event:UI_STORAGE_CHECK_BUTTON');
+    check(!!crate?.placed && crate.zone === 'AFTER_SHIP' && crate.desk, 'the storage crate is drawn in the top row after the ship button', JSON.stringify(crate));
+    if (crate) check(crate.active === !s.danger, `the crate is ${s.danger ? 'inactive in danger' : 'active out of danger'}`, JSON.stringify({ active: crate.active, danger: s.danger }));
+    // The shelf: one scale, the solid art's middles on one line, the same gap between neighbours.
+    const shelf = (s.extras || []).filter((p) => p.placed && p.zone === 'SHELF').sort((a, b) => a.solid[0] - b.solid[0]);
+    const right = (s.extras || []).filter((p) => p.placed && p.zone === 'SHELF_RIGHT');
+    if (shelf.length > 1) {
+        check(new Set(shelf.map((p) => p.s)).size === 1, 'the shelf pieces share one scale', shelf.map((p) => `${p.key} ${p.s}`).join(', '));
+        const mids = [...shelf, ...right].map((p) => (p.solid[1] + p.solid[3]) / 2);
+        check(Math.max(...mids) - Math.min(...mids) <= 0.5, 'their solid art is centred on one line', mids.join(' '));
+        const gaps = shelf.slice(1).map((p, i) => p.solid[0] - shelf[i].solid[2]);
+        check(Math.max(...gaps) - Math.min(...gaps) <= 0.5, 'with the same gap between neighbours', gaps.join(' '));
+    }
+}
+
+// Frame to frame: each piece's place changes only when its drawing does (TouchExtras counts the changes per drawn frame).
+{
+    const before = await d.state();
+    await sleep(4000);
+    const after = await d.state();
+    const moved = (after.extras || []).filter((p) => {
+        const was = piece(before, p.key);
+        return p.placed && was?.placed && (p.moves !== was.moves || JSON.stringify(p.solid) !== JSON.stringify(was.solid));
+    });
+    check(moved.length === 0, 'no piece moves over 4 seconds of frames', moved.map((p) => `${p.key} moves ${piece(before, p.key).moves}->${p.moves}`).join(', '));
+    s = after;
+}
+if (onlyLayout) {
+    console.log(failed ? `FAILED ${failed}` : 'PASS all');
+    process.exit(failed ? 1 : 0);
+}
 
 console.log('made-up mod buttons');
 d.console('modbutton TOUCH_TEST_TOP 4');
@@ -65,10 +106,9 @@ for (const [p, name] of [[top, 'TOUCH_TEST_TOP'], [custom, 'TOUCH_TEST_CUSTOM']]
     check(after !== null, `a tap on ${name} runs its click`);
 }
 
-if (piece(s, 'event:UI_STORAGE_CHECK_BUTTON')) {
-    console.log('Multiverse');
+if (multiverse && piece(s, 'event:UI_STORAGE_CHECK_BUTTON')) {
+    console.log('Multiverse taps');
     const crate = piece(s, 'event:UI_STORAGE_CHECK_BUTTON');
-    check(crate.placed && crate.zone === 'AFTER_SHIP' && crate.y0 <= 2, 'the storage crate sits in the top row after the ship button', JSON.stringify(crate));
     const speed = piece(s, 'lua:17');
     check(speed?.placed, 'the speed control (FTL_BUTTON Lua drawing) is placed', JSON.stringify(speed));
     if (speed?.placed) {

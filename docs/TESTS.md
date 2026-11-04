@@ -355,7 +355,8 @@ spawned enemy. The debug-only `TouchProbe` answers with the game's state, and `<
 (`show_touches`); look at them, a passing check does not say the picture is right. Exit code 1 on any failure. Beam, odd
 cases, cancels, rotation, border fingers, doors and hold tooltips take about 8 minutes. Keep the screen in its default fit.
 `getevent -lt /dev/input/event2` on the device shows the raw events. The touch HUD's desktop elements (TouchExtras) have
-their own one-finger script, `tools/android-touch/extras.mjs` ([ANDROID.md](ANDROID.md#testing)). `TouchRouterTest` (`:app:testDebugUnitTest`) is the
+their own one-finger script, `tools/android-touch/extras.mjs` ([ANDROID.md](ANDROID.md#testing)): places, taps, the
+Multiverse storage crate's rule, the shelf's alignment and frame-to-frame stability. `TouchRouterTest` (`:app:testDebugUnitTest`) is the
 quick check of finger routing, at the engine's call only.
 
 ## Packaged integration runner

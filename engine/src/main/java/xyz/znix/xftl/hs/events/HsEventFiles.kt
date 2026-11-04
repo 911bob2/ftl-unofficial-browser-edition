@@ -22,7 +22,7 @@ object HsEventFiles {
     fun beforeVanilla(hs: HsEventParser, hyperspaceRoot: Element?, df: Datafile): List<String> {
         val files = ArrayList<String>()
         // Event buttons are parsed with the events (render: hs.render.HsEventButtons) and saved with the run.
-        xyz.znix.xftl.hs.render.HsEventButtons.resetDefs()
+        xyz.znix.xftl.hs.render.HsEventButtons.resetDefs { df.getOrNull(it) != null }
         xyz.znix.xftl.hs.render.HsEventButtons.registerSave()
         xyz.znix.xftl.hs.render.HsBackgroundObjects.resetDefs()
         xyz.znix.xftl.hs.render.HsBackgroundObjects.registerSave()

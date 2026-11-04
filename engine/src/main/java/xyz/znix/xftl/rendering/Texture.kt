@@ -27,6 +27,13 @@ class Texture(
 
     private var currentFiltering = -1
 
+    /**
+     * Where a small image is solid: the box of its pixels at least half opaque (x0, y0, x1, y1 in texels, the ends
+     * exclusive), or null when not worked out (large images, the glyph pages) or when no pixel is. The touch layout uses it
+     * to line desktop HUD art up by what shows rather than by its transparent margins and glow ([DrawProbe]).
+     */
+    @JvmField var solid: IntArray? = null
+
     override var freed: Boolean = false
         private set
 

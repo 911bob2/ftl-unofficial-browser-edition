@@ -238,6 +238,7 @@ class StagedImageLoad(
 
     private fun finishUpload() {
         val texture = Texture(texWidth, texHeight, width, height, textureId)
+        if (glWidth == texWidth && width * height <= SOLID_MAX_PIXELS) texture.solid = solidBox(pixels!!, width, height, texWidth)
         context.register(texture)
         image = Image(0, 0, texture.imageWidth, texture.imageHeight, texture)
         if (!keepPixels) pixels = null
@@ -245,6 +246,31 @@ class StagedImageLoad(
     }
 
     companion object {
+        /** Images up to this many pixels get their solid box ([Texture.solid]): HUD buttons and icons, not backgrounds. */
+        private const val SOLID_MAX_PIXELS = 256 * 256
+
+        /** The box of the pixels with alpha of at least 128 in RGBA rows of [stride] pixels, or null when there are none. */
+        @JvmStatic
+        fun solidBox(pixels: ByteBuffer, width: Int, height: Int, stride: Int): IntArray? {
+            val array = pixels.array()
+            val base = pixels.arrayOffset() + 3
+            var x0 = width
+            var y0 = height
+            var x1 = 0
+            var y1 = 0
+            for (y in 0 until height) {
+                val row = base + y * stride * 4
+                for (x in 0 until width) {
+                    if ((array[row + x * 4].toInt() and 0xff) < 128) continue
+                    if (x < x0) x0 = x
+                    if (x >= x1) x1 = x + 1
+                    if (y < y0) y0 = y
+                    y1 = y + 1
+                }
+            }
+            return if (x1 > x0) intArrayOf(x0, y0, x1, y1) else null
+        }
+
         /** Rows decoded between looks at the clock: about half a millisecond at most. */
         private const val DECODE_ROWS = 8
 

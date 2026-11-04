@@ -4,6 +4,7 @@ import org.jdom2.Element
 import org.junit.Assert.assertEquals
 import org.junit.After
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import xyz.znix.xftl.game.TouchExtras
@@ -63,13 +64,13 @@ class TouchExtrasTest {
         assertEquals(Zone.DOCK, TouchExtras.zoneForPlace(rect(def.customX, def.customY, def.customX + 74, def.customY + 55), 1))
         // Multiverse's jukebox and toggle buttons: the shelf under the status; a button by the crew list: under it.
         assertEquals(Zone.SHELF, TouchExtras.zoneForPlace(rect(338, 46, 380, 89), 1))
-        assertEquals(Zone.SHELF, TouchExtras.zoneForPlace(rect(104, 109, 148, 153), 1))
+        assertEquals(Zone.SHELF, TouchExtras.zoneForPlace(rect(105, 110, 147, 153), 1))
         assertEquals(Zone.CREW, TouchExtras.zoneForPlace(rect(110, 300, 150, 340), 1))
         // Lua drawing in the top bar, such as a speed control: the top row.
         assertEquals(Zone.TOP_END, TouchExtras.zoneForPlace(rect(700, 20, 760, 60), 1))
     }
 
-    /** Multiverse's three UI_STORAGE_CHECK_BUTTON definitions, in [order] (the parse order differs between sessions). */
+    /** Three of Multiverse's UI_STORAGE_CHECK_BUTTON definitions, in [order] (a changed mod list parses them in another). */
     private fun storageDefs(order: List<Int>): List<Pair<Element, HsEventButtons.Def>> = order.map { i ->
         val node = Element("eventButton").setAttribute("name", "UI_STORAGE_CHECK_BUTTON")
         node.addContent(child("event", null, "load" to "STORAGE_CHECK_BUTTON"))
@@ -97,6 +98,101 @@ class TouchExtrasTest {
         storageDefs(listOf(0, 1, 2))
         HsEventButtons.read(Element("eventButtons").addContent(Element("b").setAttribute("idx", "0").setAttribute("name", "UI_STORAGE_CHECK_BUTTON")))
         assertEquals(2, HsEventButtons.buttons().single().location)
+    }
+
+    /** The game files of [storageDefs]: Multiverse has no `top_storage_on_on.png`, so the location-0 definition draws nothing. */
+    private val multiverseImages = { path: String -> path == "img/statusUI/top_storage_on.png" }
+
+    private fun entry(idx: Int, vararg attrs: Pair<String, String>) = Element("b").setAttribute("idx", "$idx")
+        .setAttribute("name", "UI_STORAGE_CHECK_BUTTON").also { e -> for ((k, v) in attrs) e.setAttribute(k, v) }
+
+    @Test
+    fun theStorageCrateLostByAnOlderSaveComesBack() {
+        // 2.0.1 loaded a button by its name, the last definition parsed: SPAWN_STORAGE's at location 0, which no event
+        // loads and which draws nothing. Its save kept that index and name, and 2.0.2 kept location and image too.
+        // As in Multiverse, that definition is the last of its name parsed (index 2 here).
+        for (old in listOf(entry(2), entry(2, "loc" to "0", "img" to "statusUI/top_storage_on"), entry(7))) {
+            HsEventButtons.resetDefs(multiverseImages)
+            storageDefs(listOf(0, 2, 1))
+            HsEventButtons.read(Element("eventButtons").addContent(old))
+            val back = HsEventButtons.buttons().single()
+            assertEquals(old.attributes.toString(), 2, back.location)
+            assertEquals("statusUI/top_storage", back.image)
+            assertEquals(0, back.idx)
+        }
+        // Without the game files to look at, the saved definition stays as it is.
+        HsEventButtons.resetDefs()
+        storageDefs(listOf(0, 2, 1))
+        HsEventButtons.read(Element("eventButtons").addContent(entry(2)))
+        assertEquals(0, HsEventButtons.buttons().single().location)
+    }
+
+    @Test
+    fun aSavedButtonComesBackByItsIndexAsNativeLoads() {
+        // The same mods give the same numbers in every session (EventButtonManager::Load takes the index): two definitions
+        // that look the same come back as the one saved.
+        HsEventButtons.resetDefs(multiverseImages)
+        storageDefs(listOf(0, 1, 2))
+        HsEventButtons.read(Element("eventButtons").addContent(entry(2, "loc" to "2", "img" to "statusUI/top_storage")))
+        assertEquals(2, HsEventButtons.buttons().single().idx)
+    }
+
+    @Test
+    fun aMeasureDoesNotMoveForFloatNoise() {
+        // The speed control's quads mapped back through its own transform: 530 one frame, 529.99997 the next.
+        val first = TouchExtras.settle(null, floatArrayOf(529.99997f, -6.00002f, 616.00003f, 29.99998f))
+        assertEquals(listOf(530f, -6f, 616f, 30f), first.toList())
+        val again = TouchExtras.settle(first, floatArrayOf(530.00003f, -5.99997f, 615.99996f, 30.00002f))
+        assertTrue("noise keeps the measure in use", again === first)
+        // A real change of the drawing (the button row grew by a pixel) is taken.
+        assertEquals(listOf(530f, -6f, 617f, 30f), TouchExtras.settle(first, floatArrayOf(530f, -6f, 617f, 30f)).toList())
+        // Half pixels stay half pixels.
+        assertEquals(10.5f, TouchExtras.settle(null, floatArrayOf(10.5f, 0f, 20f, 20f))[0])
+    }
+
+    @Test
+    fun theShelfLinesUpMultiversesButtonsByTheirArt() {
+        // Jukebox (338,46), toggle (105,110) and the addon icon (115,5): images and their solid art (alpha >= 128).
+        val desks = listOf(rect(338, 46, 380, 89), rect(105, 110, 147, 153), rect(115, 5, 139, 19))
+        val solids = listOf(rect(343, 46, 375, 76), rect(110, 115, 142, 148), rect(118, 6, 137, 18))
+        val places = TouchExtras.shelfLayout(desks, solids, 8f, 400f, 63f, 46f, 1.25f)
+        // One scale: the desktop's sizes relative to each other; the tallest image fills the shelf.
+        assertEquals(1, places.map { it[0] }.toSet().size)
+        assertEquals(46f / 43f, places[0][0], 1e-4f)
+        val art = solids.zip(places).map { (sd, p) -> floatArrayOf(sd[0] * p[0] + p[1], sd[1] * p[0] + p[2], sd[2] * p[0] + p[1], sd[3] * p[0] + p[2]) }
+        // The art's middles on one line, the shelf's.
+        for (a in art) assertEquals(63f + 23f, (a[1] + a[3]) / 2, 1e-3f)
+        // The same gap between each one's art and the next one's.
+        assertEquals(TouchExtras.SHELF_GAP, art[1][0] - art[0][2], 1e-3f)
+        assertEquals(TouchExtras.SHELF_GAP, art[2][0] - art[1][2], 1e-3f)
+        // The images stay inside the shelf.
+        for ((d, p) in desks.zip(places)) assertTrue(d[3] * p[0] + p[2] - (d[1] * p[0] + p[2]) <= 46f + 1e-3f)
+    }
+
+    @Test
+    fun theProbeSeesAnImagesSolidArt() {
+        // The jukebox image (42x43, solid 5..37 x 0..30) drawn at (338,46) at twice its size: one quad, six vertices.
+        val tex = xyz.znix.xftl.rendering.Texture(42, 43, 42, 43, 0)
+        tex.solid = intArrayOf(5, 0, 37, 30)
+        val probe = xyz.znix.xftl.rendering.DrawProbe()
+        probe.newDraw(tex)
+        val (x0, y0, x1, y1) = listOf(338f, 46f, 338f + 84f, 46f + 86f)
+        for ((x, y, u, v) in listOf(listOf(x0, y0, 0f, 0f), listOf(x1, y0, 1f, 0f), listOf(x0, y1, 0f, 1f),
+                listOf(x1, y0, 1f, 0f), listOf(x1, y1, 1f, 1f), listOf(x0, y1, 0f, 1f))) probe.point(x, y, u, v, 1f)
+        probe.end()
+        assertEquals(listOf(x0, y0, x1, y1), probe.rects.single().toList())
+        val solid = probe.solids.single()
+        assertEquals(338f + 10f, solid[0], 1e-3f)
+        assertEquals(46f, solid[1], 1e-3f)
+        assertEquals(338f + 74f, solid[2], 1e-3f)
+        assertEquals(46f + 60f, solid[3], 1e-3f)
+        // A colour fill is solid where it is.
+        probe.reset()
+        probe.newDraw(null)
+        probe.point(0f, 0f, 0f, 0f, 1f)
+        probe.point(10f, 10f, 0f, 0f, 1f)
+        probe.end()
+        assertEquals(probe.rects.single().toList(), probe.solids.single().toList())
     }
 
     @Test

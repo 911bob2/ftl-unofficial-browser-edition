@@ -21,7 +21,10 @@ import xyz.znix.xftl.hs.lua.LuaApi as A
  *
  * Each element is a [Piece], drawn by its own desktop code in desktop coordinates, under a transform that puts it at its
  * touch place. What it drew is measured ([DrawProbe]) and the next frame fits that rectangle into the place; a piece not
- * measured yet is drawn off the canvas. A finger lifted on a piece is the desktop click at the matching desktop point: a
+ * measured yet is drawn off the canvas. The measure is taken through the piece's own transform, so it is settled
+ * ([settle]): float noise in the mapping back never moves the piece, only a real change of what it draws. Pieces on the
+ * shelf share one scale (the desktop's sizes relative to each other) and line up by their solid art ([Piece.solid]), not
+ * by their images' transparent margins and glow. A finger lifted on a piece is the desktop click at the matching desktop point: a
  * button's own mouseDown, or, for Lua drawing, a mouse that rests there for a frame (the script's tick and render see it)
  * and then presses and releases. While the finger is down the piece sees the mouse there too: hover images and tooltips.
  *
@@ -37,8 +40,24 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
         /** What it drew in the last measured frame, desktop coordinates: x0, y0, x1, y1. Null until measured. */
         var desk: FloatArray? = null
 
+        /** The solid part of what it drew ([DrawProbe.solids]), desktop coordinates; [desk] when nothing showed solid. */
+        var solid: FloatArray? = null
+
         /** The separate places it drew in (rectangles more than [CLUSTER_GAP] apart). */
         var clusters = 0
+
+        /** How often its touch place changed from one drawn frame to the next (for the checks: a settled piece stays). */
+        var moves = 0
+        private var lastS = Float.NaN
+        private var lastOx = Float.NaN
+        private var lastOy = Float.NaN
+
+        /** Counts a move when the place differs from the last drawn frame's. */
+        fun noteFrame() {
+            if (!placed) return
+            if (!lastS.isNaN() && (s != lastS || ox != lastOx || oy != lastOy)) moves++
+            lastS = s; lastOx = ox; lastOy = oy
+        }
 
         /** Touch place: HUD x = desktop x * [s] + [ox]. */
         var s = 1f
@@ -62,6 +81,12 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
         fun y0() = desk!![1] * s + oy
         fun x1() = desk!![2] * s + ox
         fun y1() = desk!![3] * s + oy
+
+        /** The solid part's place in HUD coordinates: x0, y0, x1, y1. */
+        fun solidPlace(): FloatArray {
+            val d = solid ?: desk!!
+            return floatArrayOf(d[0] * s + ox, d[1] * s + oy, d[2] * s + ox, d[3] * s + oy)
+        }
 
         fun contains(x: Int, y: Int): Boolean {
             if (!placed || desk == null) return false
@@ -209,16 +234,16 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
      * above the pause button.
      */
     fun placeRest(crewX: Int, crewY: Int, stationsRight: Int, stationsY: Int, canvasW: Int, hudX: Int) {
-        // Shelf: right end first.
-        var right = SHELF_RIGHT
+        // Shelf: right end first, its solid art's right edge at the end and its middle on the shelf's.
+        var right = SHELF_RIGHT.toFloat()
         for (p in zoned(Zone.SHELF_RIGHT)) {
-            val d = p.desk!!
+            val sd = p.solid!!
             fit(p, SHELF_H, 1.3f)
-            p.ox = right - d[2] * p.s
-            p.oy = SHELF_Y + (SHELF_H - (d[3] - d[1]) * p.s) / 2 - d[1] * p.s
-            right = (p.x0() - 6).toInt()
+            p.ox = right - sd[2] * p.s
+            p.oy = SHELF_Y + SHELF_H / 2 - (sd[1] + sd[3]) / 2 * p.s
+            right = p.solidPlace()[0] - SHELF_GAP
         }
-        row(zoned(Zone.SHELF), SHELF_LEFT.toFloat(), right.toFloat(), SHELF_Y.toFloat(), SHELF_H.toFloat(), 1.25f)
+        shelfRow(zoned(Zone.SHELF), SHELF_LEFT.toFloat(), right, SHELF_Y.toFloat(), SHELF_H, 1.25f)
         // Crew page arrows beside the station buttons, the rest under them.
         var x = stationsRight + 8f
         for (p in zoned(Zone.CREW_PAGE)) {
@@ -245,6 +270,15 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
     private fun fit(p: Piece, h: Float, most: Float) {
         val d = p.desk!!
         p.s = minOf(most, h / maxOf(1f, d[3] - d[1]))
+    }
+
+    private fun shelfRow(list: List<Piece>, left: Float, right: Float, top: Float, h: Float, most: Float) {
+        val places = shelfLayout(list.map { it.desk!! }, list.map { it.solid!! }, left, right, top, h, most)
+        for ((p, place) in list.zip(places)) {
+            p.s = place[0]
+            p.ox = place[1]
+            p.oy = place[2]
+        }
     }
 
     /** Left to right from [left], centred on the row; all smaller when they do not fit before [right]. */
@@ -296,6 +330,7 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
             g.translate(p.ox, p.oy)
             g.scale(p.s, p.s)
             g.flushAll()
+            p.noteFrame()
             probe.reset()
             DrawQueue.probe = probe
             try {
@@ -304,6 +339,7 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
             } finally {
                 DrawQueue.probe = null
             }
+            probe.end()
             measure(g, p)
             g.popTransform()
         }
@@ -312,28 +348,25 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
     private fun measure(g: Graphics, p: Piece) {
         if (probe.rects.isEmpty()) {
             p.desk = null
+            p.solid = null
             p.clusters = 0
             p.placed = false
             return
         }
-        val rects = ArrayList<FloatArray>(probe.rects.size)
-        for (r in probe.rects) {
-            g.unmap(r[0], r[1], point)
-            val ax = point[0]
-            val ay = point[1]
-            g.unmap(r[2], r[3], point)
-            rects += floatArrayOf(minOf(ax, point[0]), minOf(ay, point[1]), maxOf(ax, point[0]), maxOf(ay, point[1]))
-        }
+        val rects = probe.rects.map { unmapRect(g, it) }
         val groups = cluster(rects)
-        val u = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE)
-        for (r in groups) {
-            u[0] = minOf(u[0], r[0]); u[1] = minOf(u[1], r[1]); u[2] = maxOf(u[2], r[2]); u[3] = maxOf(u[3], r[3])
-        }
-        val old = p.desk
-        // Whole pixels, so a piece does not wander by fractions.
-        for (i in 0..3) u[i] = if (i < 2) Math.floor(u[i].toDouble()).toFloat() else Math.ceil(u[i].toDouble()).toFloat()
-        if (old == null || !old.contentEquals(u)) p.desk = u
+        val desk = settle(p.desk, union(groups))
+        p.desk = desk
+        p.solid = if (probe.solids.isEmpty()) desk else settle(p.solid, union(probe.solids.map { unmapRect(g, it) }))
         p.clusters = groups.size
+    }
+
+    private fun unmapRect(g: Graphics, r: FloatArray): FloatArray {
+        g.unmap(r[0], r[1], point)
+        val ax = point[0]
+        val ay = point[1]
+        g.unmap(r[2], r[3], point)
+        return floatArrayOf(minOf(ax, point[0]), minOf(ay, point[1]), maxOf(ax, point[0]), maxOf(ay, point[1]))
     }
 
     // ---- fingers -------------------------------------------------------------------------------------------------
@@ -430,6 +463,9 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
         const val SHELF_RIGHT = 506
         const val SHELF_Y = 63
         const val SHELF_H = 46f
+
+        /** Between two shelf pieces' solid art: room for both images' glow (5 px each on Multiverse's buttons). */
+        const val SHELF_GAP = 12f
         const val CREW_W = 200f
         const val CREW_H = 46f
         const val DOCK_LEFT = 846f
@@ -470,6 +506,57 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
                 cx < 300 && cy < 500 -> Zone.CREW
                 else -> Zone.DOCK
             }
+        }
+
+        /** How far a new measure may differ from the one in use before the piece moves: float noise, not new drawing. */
+        private const val SETTLE = 0.05f
+
+        /**
+         * The measured rectangle [raw] (desktop coordinates, mapped back from the framebuffer through the piece's transform)
+         * against the one in use, [old]: kept when every edge is within [SETTLE], so the mapping's float noise (529.9999 one
+         * frame, 530.0001 the next) never moves the piece and so never changes the next measure; else the new one, each edge
+         * on its whole pixel when that close to one.
+         */
+        @JvmStatic
+        fun settle(old: FloatArray?, raw: FloatArray): FloatArray {
+            if (old != null && (0..3).all { Math.abs(old[it] - raw[it]) < SETTLE }) return old
+            return FloatArray(4) { i ->
+                val r = Math.round(raw[i]).toFloat()
+                if (Math.abs(raw[i] - r) < SETTLE) r else raw[i]
+            }
+        }
+
+        /**
+         * The shelf's places (scale, x offset, y offset each) for pieces that drew [desks] with [solids] solid: left to
+         * right from [left], one scale for all (the desktop's sizes relative to each other: the largest that fits the
+         * tallest image in [h], at most [most]), each one's solid art centred on the shelf's middle line and [SHELF_GAP]
+         * from the next one's; all smaller when they do not fit before [right].
+         */
+        @JvmStatic
+        fun shelfLayout(desks: List<FloatArray>, solids: List<FloatArray>, left: Float, right: Float, top: Float, h: Float,
+                        most: Float): List<FloatArray> {
+            if (desks.isEmpty()) return emptyList()
+            val tallest = desks.maxOf { it[3] - it[1] }
+            var scale = minOf(most, h / maxOf(1f, tallest))
+            val art = solids.sumOf { (it[2] - it[0]).toDouble() }.toFloat()
+            val room = right - left - SHELF_GAP * solids.size
+            if (art * scale > room) scale = maxOf(scale * 0.4f, room / art)
+            var x = left + SHELF_GAP / 2
+            return solids.map { sd ->
+                val place = floatArrayOf(scale, x - sd[0] * scale, top + h / 2 - (sd[1] + sd[3]) / 2 * scale)
+                x += (sd[2] - sd[0]) * scale + SHELF_GAP
+                place
+            }
+        }
+
+        /** The rectangle around all of [list] (x0, y0, x1, y1 each). */
+        @JvmStatic
+        fun union(list: List<FloatArray>): FloatArray {
+            val u = floatArrayOf(Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE)
+            for (r in list) {
+                u[0] = minOf(u[0], r[0]); u[1] = minOf(u[1], r[1]); u[2] = maxOf(u[2], r[2]); u[3] = maxOf(u[3], r[3])
+            }
+            return u
         }
 
         /** Joins rectangles closer than [CLUSTER_GAP] into one each. */

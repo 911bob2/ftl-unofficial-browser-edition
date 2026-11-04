@@ -76,9 +76,14 @@ object HsEventButtons {
     /** Changes whenever the button list does; PlayerShipUI rebuilds its top bar when it differs. */
     @JvmField var version = 0
 
+    /** Whether a game file exists (set with the definitions, from the content they are parsed from); null: assume so. */
+    private var fileExists: ((String) -> Boolean)? = null
+
     @JvmStatic
-    fun resetDefs() {
+    @JvmOverloads
+    fun resetDefs(exists: ((String) -> Boolean)? = null) {
         defs.clear(); named.clear(); byElement.clear(); buttons.clear(); version++
+        fileExists = exists
     }
 
     @JvmStatic
@@ -161,10 +166,15 @@ object HsEventButtons {
     }
 
     // ---- save (EventButtonManager::Save/Load: the definition indices) ----
-    // The port's indices are not stable between sessions (inline definitions are numbered as their events are parsed,
-    // and a reload parses again), and a name may have several definitions (Multiverse has three UI_STORAGE_CHECK_BUTTON:
-    // two at location 2, one at 0 with another image). So the save also names the definition by its name, location and
-    // image, and loading takes the definition that matches all three; then the index if its name matches; then the name.
+    // The index is native's: definitions are numbered as the event files are parsed, every file at load in one order, so
+    // the same mods give the same numbers in every session. A name may have several definitions (Multiverse has four
+    // UI_STORAGE_CHECK_BUTTON: three at location 2 with `top_storage`, one at 0 with `top_storage_on`, which draws
+    // nothing, in SPAWN_STORAGE, an event nothing loads). The save also keeps name, location and image, for a mod list
+    // that changed: loading takes the definition at the index when those match (EventButtonManager::Load), else the first
+    // matching all three, else the index if its name matches, else the name.
+    // Saves of 2.0.1 kept only index and name and loaded by the name, which is the last definition parsed (Multiverse's
+    // SPAWN_STORAGE one), and a run saved again kept that one. A loaded button that draws nothing (no image, no text) while
+    // another definition of its name does is that substitution, never a native run's: it gets the first that draws.
     @JvmStatic
     fun write(elem: Element) {
         for (b in buttons) elem.addContent(Element("b").setAttribute("idx", b.idx.toString()).setAttribute("name", b.name)
@@ -180,13 +190,24 @@ object HsEventButtons {
             val d = if (name.isEmpty()) idx?.let { defs.getOrNull(it) } else {
                 val loc = e.getAttributeValue("loc")?.toIntOrNull()
                 val img = e.getAttributeValue("img")
-                defs.firstOrNull { it.name == name && loc != null && it.location == loc && it.image == img }
+                fun same(it: Def) = it.name == name && (loc == null || (it.location == loc && it.image == img))
+                idx?.let { defs.getOrNull(it) }?.takeIf(::same)
+                    ?: defs.firstOrNull { it.name == name && loc != null && it.location == loc && it.image == img }
                     ?: idx?.let { defs.getOrNull(it) }?.takeIf { it.name == name }
                     ?: named[name]
             }
-            if (d != null) buttons += d
+            if (d != null) buttons += repaired(d)
         }
         version++
+    }
+
+    /** Whether [d] draws anything: a label, or its `_on` image in the game files. */
+    private fun draws(d: Def): Boolean = d.text.isNotEmpty() || fileExists?.invoke("img/${d.image}_on.png") != false
+
+    /** [d], or for one that draws nothing the first definition of its name that does (see the save notes above). */
+    private fun repaired(d: Def): Def {
+        if (d.name.isEmpty() || draws(d)) return d
+        return defs.firstOrNull { it.name == d.name && draws(it) } ?: d
     }
 
     @JvmStatic

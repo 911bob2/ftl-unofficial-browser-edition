@@ -1,5 +1,6 @@
 package xyz.znix.xftl.rendering
 
+import org.lwjgl.opengl.GL11
 import org.lwjgl.opengl.GL30
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -112,7 +113,7 @@ object DrawQueue {
      */
     fun begin(mode: Int, texture: Texture?, filter: Int, vertCount: Int) {
         flushes++
-        probe?.newDraw()
+        probe?.newDraw(if (mode == GL11.GL_TRIANGLES) texture else null)
         if (unbatched) drain()
         val needed = (verts + vertCount) * STRIDE
         if (needed > stream.capacity()) {
@@ -144,7 +145,7 @@ object DrawQueue {
 
     /** One of the vertices promised to [begin]. */
     fun vert(x: Float, y: Float, u: Float, v: Float, r: Float, g: Float, b: Float, a: Float) {
-        probe?.point(x, y, a)
+        probe?.point(x, y, u, v, a)
         val s = stream
         s.putFloat(x)
         s.putFloat(y)

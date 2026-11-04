@@ -333,7 +333,10 @@ on yet.
   HUD's list that the touch HUD does not draw itself (Hyperspace's event buttons, from any mod; the crew list's page
   arrows), the Lua drawing of the FTL_BUTTON and SHIP_STATUS render stages (Multiverse's speed control and addon icons),
   Hyperspace's More Info button and triggered-event boxes. (SPACE_STATUS drawing follows the touch hazards spot.) Each is drawn by its own desktop code under a transform that
-  puts it in its touch place; what it drew is measured (`rendering/DrawProbe`) and fitted there the next frame. A tap is the
+  puts it in its touch place; what it drew is measured (`rendering/DrawProbe`) and fitted there the next frame. The measure
+  goes back through the piece's own transform, so a new one moves the piece only when it differs by more than float noise
+  (`TouchExtras.settle`): before, edges that came back as 529.9999 one frame and 530.0001 the next were floored and ceiled,
+  the piece moved, the next measure differed again, and Multiverse's speed control shook by up to 8 screen pixels. A tap is the
   desktop click at the matching desktop point: a button's own mouseDown, or for Lua drawing the mouse resting there for a
   drawn frame, then ON_MOUSE_L_BUTTON_DOWN and UP. A held finger shows the hover image and tooltip.
   Places: event buttons by their `<location>` in the top row, in Hyperspace's order (1 before the ship button, 2 after it,
@@ -343,6 +346,14 @@ on yet.
   under the scrap counter, the crew corner under the station buttons (page arrows beside them), the rest (More Info, a
   mod's customLocation button) to a dock above Pause. A piece drawn in several far places, or larger than a button, keeps
   the desktop layout fitted to the canvas.
+  The shelf keeps the desktop's sizes relative to each other: one scale for all its pieces (the tallest image fills the
+  shelf's 46 px), each one's solid art (pixels at least half opaque, `Texture.solid`, worked out for images up to 256x256 as
+  they load) centred on the shelf's middle line, 12 px between neighbours' art (room for two 5 px glows); the FTL_BUTTON
+  drawing's art ends at the shelf's right end on the same line. So Multiverse's jukebox (art 32x30, a tab cut flat at the
+  top that hangs under the desktop's hull box) and toggle (32x33 inside a glow) sit level and the same size although their
+  images' transparent margins differ. The order is the desktop HUD's list (event buttons as Hyperspace keeps them, then the
+  Lua drawing). The small grey ship with "TRC" is Multiverse's addon icon for The Renegade Collection, an add-on that is not
+  installed (`ADDON_TRC_DISABLED` in `data/events_addon_icon.xml`, drawn by `addon-icon.lua`); a tap shows its info event.
 - Names are typed on the system keyboard, which sends single characters; the game slides up to keep the field in view
   (`TouchMode.keyboardFocusY`). A mouse's left button acts as a finger.
 
@@ -352,11 +363,15 @@ on yet.
   fixtures), `:engine:testDebugUnitTest`, `:app:testDebugUnitTest`.
 - Emulator: AVD on the android-36 x86_64 image; `adb` installs `app-debug.apk`.
 - Multi-touch: real fingers through the input stack on the emulator, [TESTS.md](TESTS.md#android-multi-touch-on-the-emulator).
-- Desktop HUD elements on touch: `TouchExtrasTest` (places, the event button restore) and, on the emulator,
+- Desktop HUD elements on touch: `TouchExtrasTest` (places, the event button restore and the storage crate an older save
+  lost, the settled measure, the shelf's alignment, the probe's solid art) and, on the emulator,
   `node tools/android-touch/extras.mjs --serial <serial> --out <dir>` (one finger through `adb input`, no gRPC): in flight on
   a Hyperspace save it adds a made-up mod's two event buttons (debug console `modbutton <name> <location>` or
-  `modbutton <name> <x> <y>`), checks their places and that a tap runs each one's click; on Multiverse also the storage crate,
-  the speed control and More Info. `hscmd <command>` runs a Hyperspace console command (`hscmd LUA ...`, `hscmd STORE`).
+  `modbutton <name> <x> <y>`), checks their places and that a tap runs each one's click; on Multiverse also the storage crate
+  (drawn after the ship button, active exactly out of danger), the shelf's alignment (one scale, the art's middles on one
+  line, equal gaps), the speed control and More Info; and on any save that no piece moves over 4 seconds of frames
+  (`moves` in `touchstate`: changes of place between drawn frames). `--only-layout` leaves out the taps (combat, after a
+  jump). `touchstate` answers longer than logcat's line come in numbered parts, which `device.mjs` joins. `hscmd <command>` runs a Hyperspace console command (`hscmd LUA ...`, `hscmd STORE`).
 - Lua patch runtime (a JVM test cannot load the `.so`, so a debug-only `main` runs on the device): lua-cases and L1
   against ftlman's results, parity against the website's runtime and merge (recorded when the vectors are exported),
   security, bombs. After `:mods:modVectors` and installing the debug APK:

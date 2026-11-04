@@ -141,11 +141,19 @@ The Mouse shadow lives per frame as MouseControl does (sixth pass below).
 - `<eventButton>` (EventButtons.cpp) in the browser = native: Multiverse's storage crate after the ship button (location 2),
   jukebox (338,46), toggle (105,110) and More Info at the same pixels as oracle frame `arty-ceala/02-60s`; the speed control
   (MV core.lua in FTL_BUTTON) too.
-- Save and load: the port numbers definitions as their events are parsed, so an index is not the same definition in another
-  session, and Multiverse has three `UI_STORAGE_CHECK_BUTTON` (two at location 2 with `top_storage`, one at 0 with
-  `top_storage_on`, which draws nothing). The save keeps name, location and image with the index and loading takes the
-  definition matching all three (then the index if its name matches, then the name). Before, a Continue could bring the
-  location-0 one back and the crate was gone (both builds).
+- Save and load: the index is native's (EventButtonManager::Save/Load): definitions are numbered as the event files are
+  parsed, all at load in one order, so the same mods give the same numbers in every session (checked on the emulator:
+  0, 9, 10 before and after an app restart). Multiverse has four `UI_STORAGE_CHECK_BUTTON`: three at location 2 with
+  `top_storage` (START_BEACON_REAL, the first-run tutorial offer, the tutorial), one at 0 with `top_storage_on`, which draws
+  nothing (`top_storage_on_on.png` does not exist), in SPAWN_STORAGE, which no event or script loads. The save keeps name,
+  location and image too; loading takes the definition at the index when they match, else the first matching all three,
+  else the index if its name matches, else the name.
+- 2.0.1 saved only index and name and loaded by the name, which gave the last definition parsed, SPAWN_STORAGE's, so the
+  crate vanished after a Continue and a run saved again kept that definition (2.0.2 too, with its location and image).
+  A loaded button that draws nothing while another definition of its name does is that substitution, never a native run's:
+  it gets the first definition of the name that draws (START_BEACON_REAL's crate). Native never substitutes (it loads by
+  index), so it shows the crate from the start beacon on, active out of danger, after Save and Continue too (oracle
+  sessions `hudfix-native-a`/`-b`, `.build/hs/reports/hud-fix/oracle/`).
 - The touch layout's place for these and other desktop HUD elements: [ANDROID.md](ANDROID.md#touch-controls).
 
 ## Shield squares past four layers (vanilla and HS)

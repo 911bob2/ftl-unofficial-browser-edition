@@ -38,8 +38,8 @@ android {
         applicationId = "dev.ftl911bob.unofficial"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "2.0.2"
+        versionCode = 5
+        versionName = "2.0.3"
         // The website the app signs in to; a self-hosted instance is chosen in the launcher.
         buildConfigField("String", "DEFAULT_SERVER", "\"https://ftl.911bob.dev\"")
         // The engine build the website's saves name (PrepareAssets: engineBuild), so saves move between both.

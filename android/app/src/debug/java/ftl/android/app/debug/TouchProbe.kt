@@ -87,8 +87,14 @@ object TouchProbe {
                     "y0" to if (placed) p.y0().roundToInt() else null,
                     "x1" to if (placed) (p.x1() + xyz.znix.xftl.game.TouchMode.hudX).roundToInt() else null,
                     "y1" to if (placed) p.y1().roundToInt() else null,
-                    "desk" to p.desk?.map { it.roundToInt() })
+                    "desk" to p.desk?.map { Math.round(it * 100) / 100.0 },
+                    // The solid art's place on the canvas, the scale and how often the place changed between frames
+                    "solid" to if (placed) p.solidPlace().mapIndexed { i, v ->
+                        Math.round((v + if (i % 2 == 0) xyz.znix.xftl.game.TouchMode.hudX else 0) * 100) / 100.0 } else null,
+                    "s" to Math.round(p.s * 10000) / 10000.0, "moves" to p.moves,
+                    "active" to (p as? xyz.znix.xftl.game.TouchExtras.ButtonPiece)?.button?.disabled?.not())
             }
+            out["danger"] = game.isInDanger
             out["eventButtonClicked"] = xyz.znix.xftl.hs.render.HsEventButtons.lastClicked
             out["speedLevel"] = xyz.znix.xftl.hs.lua.LuaFps.speedLevel
             out["speedEnabled"] = xyz.znix.xftl.hs.lua.LuaFps.speedEnabled
@@ -126,6 +132,14 @@ object TouchProbe {
                 )
             }
         }
-        Log.i(TAG, str(out))
+        // logcat cuts a line at about 4000 bytes: a longer answer comes in numbered parts ("part <tag> i/n ...").
+        val json = str(out)
+        if (json.length <= PART) Log.i(TAG, json)
+        else {
+            val n = (json.length + PART - 1) / PART
+            for (i in 0 until n) Log.i(TAG, "part $tag ${i + 1}/$n " + json.substring(i * PART, minOf(json.length, (i + 1) * PART)))
+        }
     }
+
+    private const val PART = 3000
 }

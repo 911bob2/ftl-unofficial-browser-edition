@@ -50,9 +50,22 @@ export class Device {
         const tag = `s${Date.now()}_${this.tagCount++}`;
         this.console(`touchstate ${tag}`);
         for (let i = 0; i < 100; i++) {
-            const log = this.adb('logcat', '-d', '-s', 'FTL-Touch:I', '-t', '60').toString('utf8');
-            const line = log.split('\n').find((l) => l.includes(`"tag":"${tag}"`));
+            const log = this.adb('logcat', '-d', '-s', 'FTL-Touch:I', '-t', '200').toString('utf8');
+            const lines = log.split('\n').map((l) => l.replace(/\r$/, ''));
+            const line = lines.find((l) => l.includes(`"tag":"${tag}"`) && !l.includes(`part ${tag} `));
             if (line) return JSON.parse(line.slice(line.indexOf('{')));
+            // A long answer comes in parts, "part <tag> i/n <text>" (logcat cuts a line at about 4000 bytes).
+            const parts = [];
+            let total = 0;
+            for (const l of lines) {
+                const at = l.indexOf(`part ${tag} `);
+                if (at < 0) continue;
+                const m = /^(\d+)\/(\d+) /.exec(l.slice(at + tag.length + 6));
+                if (!m) continue;
+                parts[Number(m[1]) - 1] = l.slice(at + tag.length + 6 + m[0].length);
+                total = Number(m[2]);
+            }
+            if (total && parts.filter((x) => x !== undefined).length === total) return JSON.parse(parts.join(''));
             await sleep(50);
         }
         throw new Error('no answer from the running game (is it open on a debug build?)');
