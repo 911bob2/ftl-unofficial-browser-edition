@@ -386,6 +386,29 @@ HSSYS_LOSS = 1
             out += "clonebay jump heal +$pct% (${before} -> ${crew.health})"
         }
 
+        // ShipSystem::IncreasePower(1, true) adds one bar a call (PowerManager::IncreasePower takes the amount as it
+        // is; HS CustomShips.cpp powers enemy shields over 10 levels one bar a call), shields included: an odd total
+        // stays. The engine used to round each odd shield demand down, so five calls in a frame left one extra bar.
+        if (HS.luaActive) run {
+            // PLAYER_SHIP_CEL has no shield system: a Kestrel's fight for this one.
+            val kestrel = fight(main, container, "PLAYER_SHIP_HARD")
+            val shields = kestrel.player.shields!!
+            kestrel.player.purchasedReactorPower = 25
+            shields.energyLevels = 8
+            shields.powerLimitChanged()
+            repeat(8) { shields.decreasePower() }
+            step(kestrel, 2)
+            check(shields.powerSupplied == 0) { "shields before: ${shields.powerSupplied}" }
+            lua("hs-systems-incpower", "local s = Hyperspace.ships.player:GetSystem(0); for i = 1, 5 do assert(s:IncreasePower(1, true), 'call ' .. i) end; " +
+                "assert(s.powerState.first == 5, 'bars ' .. s.powerState.first)")
+            step(kestrel, 2)
+            check(shields.powerSupplied == 5 && shields.selectedShieldBars == 2) { "five IncreasePower(1): ${shields.powerSupplied} bars, ${shields.selectedShieldBars} layers" }
+            lua("hs-systems-incpower2", "local s = Hyperspace.ships.player:GetSystem(0); assert(s:IncreasePower(1, true)); assert(s.powerState.first == 6, 'bars ' .. s.powerState.first)")
+            step(kestrel, 2)
+            check(shields.powerSupplied == 6 && shields.selectedShieldBars == 3) { "sixth IncreasePower(1): ${shields.powerSupplied} bars" }
+            out += "Lua IncreasePower(1) on shields: one bar a call, odd total kept"
+        }
+
         return "PASS hs-systems units: " + out.joinToString("; ")
     }
 

@@ -341,6 +341,48 @@ internal object GameplayParityStoresChecks {
         return "bought items never use the overflow box, rewards do"
     }
 
+    /**
+     * An augment reward with every augment slot full waits in the over-capacity augment box, and the store's sell tab
+     * shows that box as on the equipment screen (oracle session bt-store-over, Multiverse: SYLVAN_SHIELD_REWARD as a
+     * fourth augment, then STORE). The sell tab used to make the augment a weapon/drone box, which cannot draw an
+     * augment: the frame threw and the game stopped as the tab opened. Drawn here with the desktop and the touch layout.
+     * A step of its own in BrowserGameplayParityDiagnostics, so it runs under a mod's data too.
+     */
+    fun overflowAugmentStore(main: MainGame, container: GameContainer): String {
+        val state = prepare(main, container, "PLAYER_SHIP_HARD")
+        val ship = state.player
+        val names = listOf("SCRAP_COLLECTOR", "AUTO_COOLDOWN", "SHIELD_RECHARGE", "DRONE_SPEED", "FLEET_DISTRACTION", "EXPLOSIVE_REPLICATOR",
+            "ION_ARMOR", "STASIS_POD", "CREW_STIMS", "REPAIR_ARM", "WEAPON_PREIGNITE", "BACKUP_DNA")
+        val augments = names.mapNotNull { state.blueprintManager.getOrNull(it) as? xyz.znix.xftl.augments.AugmentBlueprint }
+        ship.augments.clear()
+        ship.cargoUpdated()
+        val capacity = ship.augmentSlotCount
+        check(augments.size > capacity) { "Only ${augments.size} augments for $capacity slots" }
+        for (aug in augments.take(capacity)) check(ship.addBlueprint(aug, true)) { "${aug.name} found no slot" }
+        check(ship.augments.size == capacity && ship.cargoBlueprints[5] == null) { "The slots are not just full: ${ship.augments.size} of $capacity" }
+        val extra = augments[capacity]
+        check(ship.addBlueprint(extra, true)) { "The reward found no place" }
+        check(ship.augments.size == capacity && ship.cargoBlueprints[5] === extra && ship.overCapacityBoxShown[1]) {
+            "The fourth augment is not in the over-capacity box: ${ship.augments.map { it.name }} / ${ship.cargoBlueprints[5]?.name}"
+        }
+        val graphics = BrowserEngine.diagnosticGraphics()
+        val touch = xyz.znix.xftl.game.TouchMode.enabled
+        try {
+            for (layout in listOf(false, true)) {
+                xyz.znix.xftl.game.TouchMode.enabled = layout
+                val window = xyz.znix.xftl.game.StoreWindow(state, ship, StoreData()) {}
+                window.draw(graphics)
+                window.sellTab = true
+                window.draw(graphics)
+                window.sellTab = false
+            }
+        } finally {
+            xyz.znix.xftl.game.TouchMode.enabled = touch
+        }
+        check(ship.cargoBlueprints[5] === extra) { "Drawing the store moved the over-capacity augment" }
+        return "an over-capacity augment shows on the store's sell tab (desktop, touch)"
+    }
+
     // ---- Helpers
 
     /** Run [block] and count the draws it makes from the stream (seeding is not a draw). */

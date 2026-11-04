@@ -131,7 +131,7 @@ class CommandCompleter(console: DebugConsole) : BasicCompletionEngine<DebugConso
         super.sortEntries(entries, currentToken)
 
         // Pull all the prefix matches to the start
-        val matches = entries.filter { it.name.startsWith(currentToken) }.toList()
+        val matches = entries.filter { it.name.startsWith(currentToken, ignoreCase = true) }.toList()
 
         // Order the matching commands by name, so they're stable
         matches.sortedBy { it.name }

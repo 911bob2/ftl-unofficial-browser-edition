@@ -53,16 +53,16 @@ const browser=withOnboarding(await chromium.launch({headless:true}),origin);cons
 try {
 console.log('UI sign-in');
 await page.goto(origin);await page.locator('#login-form [name=username]').fill('user01');await page.locator('#login-form [name=password]').fill(password);await page.locator('#login-form button').click();await page.locator('#launch-panel').waitFor({state:'visible'});
-await page.locator('#logs-button').click();await page.locator('#debug-enabled').check();await page.waitForFunction(()=>document.getElementById('debug-status').textContent.includes('Recording'));
+await page.locator('#logs-button').click();await page.locator('#debug-enabled').check();await page.locator('#console-enabled').check();await page.waitForFunction(()=>document.getElementById('debug-status').textContent.includes('Recording'));
 console.log('UI launch');
 await page.locator('#play-button').click();await page.locator('#launch').click();
 await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});
 await page.evaluate(()=>window.ftlEngine.newRun('PLAYER_SHIP_HARD',1));await page.locator('#console').click();await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).console===true);
 console.log('UI console typing');
-await page.locator('#game').press('r');await page.locator('#game').press('i');await page.locator('#game').press('c');await page.locator('#game').press('h');await page.locator('#game').press('Enter');
+await page.locator('#game').pressSequentially('dev-rich');await page.locator('#game').press('Enter');
 await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).scrap===5000,{},{timeout:5000});const state=await page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()));assert.equal(state.scrap,5000);assert.equal(state.console,true);
 await page.evaluate(()=>window.ftlEngine.consoleExecute('save roundtrip'));
-await page.evaluate(()=>window.ftlEngine.consoleExecute('poor'));
+await page.evaluate(()=>window.ftlEngine.consoleExecute('dev-poor'));
 assert.equal((await page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()))).scrap,0);
 await page.evaluate(()=>window.ftlEngine.consoleExecute('load roundtrip'));
 assert.equal((await page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()))).scrap,5000);
@@ -107,6 +107,6 @@ await page.reload();await page.locator('#logs-panel').waitFor({state:'visible'})
 await waitUntil(async()=>{const data=await user.json('/debug/sessions/'+activeBeforeReload.id+'/records?search=session.resume');return data.records.length>0;},'recording resume',15000);pass('Recording survives a page reload without losing its session or sequence');
 await page.locator('#logs-mark').click();await page.locator('#debug-stop').click();await page.waitForFunction(()=>document.getElementById('debug-status').textContent==='Stopped');
 await page.locator('#logs-refresh').click();await page.locator('#log-sessions tr').first().waitFor();assert.deepEqual(errors,[]);await page.screenshot({path:'.build/debug-logs.png',fullPage:true});pass('daisyUI navigation, pre-launch recording, issue marker and stop complete without browser errors');
-await page.locator('#play-button').click();await page.locator('#logout').click();
+await page.locator('#play-button').click();await page.locator('#logout').click();await page.locator('#logout-dialog-yes').click();
 await writeFile('.build/debug-results.json',JSON.stringify({at:new Date().toISOString(),checks},null,2));
 } finally { await browser.close(); }

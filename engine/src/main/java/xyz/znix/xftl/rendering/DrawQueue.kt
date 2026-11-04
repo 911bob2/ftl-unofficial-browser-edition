@@ -103,12 +103,16 @@ object DrawQueue {
     /** For the checks: no joining and no holding back, one upload and one GL draw per draw asked for. */
     @JvmField var unbatched = false
 
+    /** While set, it is told every draw and vertex position too (the touch layout measures what a desktop element drew). */
+    @JvmField var probe: DrawProbe? = null
+
     /**
      * Start a draw of [vertCount] vertices. A draw without a picture passes a null [texture]: its shader path ignores
      * whatever is bound, so it can share a run with any picture.
      */
     fun begin(mode: Int, texture: Texture?, filter: Int, vertCount: Int) {
         flushes++
+        probe?.newDraw()
         if (unbatched) drain()
         val needed = (verts + vertCount) * STRIDE
         if (needed > stream.capacity()) {
@@ -140,6 +144,7 @@ object DrawQueue {
 
     /** One of the vertices promised to [begin]. */
     fun vert(x: Float, y: Float, u: Float, v: Float, r: Float, g: Float, b: Float, a: Float) {
+        probe?.point(x, y, a)
         val s = stream
         s.putFloat(x)
         s.putFloat(y)

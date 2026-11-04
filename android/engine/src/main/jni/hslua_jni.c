@@ -146,6 +146,11 @@ double js_now(void) {
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 }
+double js_epoch(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
 double js_getn(int h, int attr) {
   HostCall hc; JNIEnv *env = enter(&hc);
   jdouble v = env ? (*env)->CallStaticDoubleMethod(env, host, mGetn, (jint)h, (jint)attr) : 0;

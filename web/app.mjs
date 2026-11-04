@@ -126,7 +126,36 @@ async function missingMods(setup){
 }
 /** The mod files in this browser as a save names them (Saves > a save > Advanced). */
 async function libraryMods(){const [{listArchives},cat,svc]=await Promise.all([import('./mods/store.mjs'+version),catalogueOnce().catch(()=>null),saveService()]);return (await listArchives()).map(a=>({...svc.core.classify(cat,a.name,a.sha256,a.size),title:a.title}));}
-const savesCtx=()=>({service:saves,enabled:()=>enabledSetup(),label:setupLabel,presets,blocked:()=>engine?SWITCH_BLOCKED:null,playing:()=>engine?session?.id??null:null,play:id=>playSave(id),missing:missingMods,libraryMods,message,download,showAll:()=>show('saves-panel'),openMods:()=>{show('launch-panel');const m=$('mods-panel');if(m){m.open=true;m.scrollIntoView({block:'start'});}}});
+const savesCtx=()=>({service:saves,enabled:()=>enabledSetup(),label:setupLabel,presets,blocked:()=>engine?SWITCH_BLOCKED:null,playing:()=>engine?session?.id??null:null,play:id=>playSave(id),missing:missingMods,libraryMods,message,download,showAll:()=>show('saves-panel'),openMods,hyperspace:setup=>hyperspaceStep(setup,null,{show:false})});
+function openMods(){show('launch-panel');const m=$('mods-panel');if(m){m.open=true;m.scrollIntoView({block:'start'});}}
+/**
+ * "Hyperspace mod without Hyperspace" (docs/MODS.md, mods/hs-needed.mjs), once per start of a set with mods: a mod that
+ * uses Hyperspace while Hyperspace.ftl is not among them asks Enable Hyperspace / Run anyway. Enable gets the file (asking
+ * before it downloads), then for a new save puts it first in the mod picker and shows it there; an existing save changes
+ * its mods only in Advanced (or the player starts a new save with Hyperspace). Resolves null (go on as it is), 'stop',
+ * 'again' (the enabled mods changed: start again with them) or 'played' (the save was started from Advanced).
+ */
+async function hyperspaceStep(setup,save,{show:showPicker=true}={}){
+ if(!setup.mods.length)return null;
+ const hs=await import('./mods/hs-needed.mjs'+version),mod=await hs.hyperspaceMissing(setup.mods,await catalogueOnce().catch(()=>null));
+ if(!mod)return null;
+ const answer=await hs.askHyperspace({mod,save:save?.name??null});
+ if(answer!=='enable')return answer==='run'?null:'stop';
+ const tools=await modsTools(),{getArchive}=await import('./mods/store.mjs'+version);
+ const entry=await hs.getHyperspace({catalogue:fresh=>{if(fresh)catalogueCache=null;return catalogueOnce();},have:async sha=>!!await getArchive(sha).catch(()=>null),
+  download:e=>tools.download(e,'server'),error:e=>tools.downloadError(e),signIn:()=>location.assign('/?view=signin'),openMods});
+ if(!entry)return 'stop';
+ const hsMod={name:entry.title,version:entry.version??'',sha256:entry.sha256,size:entry.size,verified:true};
+ if(save){
+  const how=await hs.askSaveHyperspace(save.name);
+  if(how==='advanced'){const row=(await (await saveService()).rows()).find(r=>r.id===save.id);if(!row||!await (await savesUiModule()).modsDialog(savesCtx(),row,{first:hsMod}))return 'stop';await playSave(save.id,{hsAsked:true});return 'played';}
+  if(how!=='new')return 'stop';
+  if(!await tools.requireSet([hsMod,...setup.mods.filter(m=>m.sha256!==hsMod.sha256)]))return 'stop';
+ }
+ await tools.enableFirst(entry.sha256);
+ if(showPicker){openMods();document.querySelector('#mods-panel [data-highlight="true"]')?.scrollIntoView({block:'center'});}
+ return 'again';
+}
 
 // The Saves panel: the list, New save, Import, the sync line, and the cards for saves still to move.
 function buildSavesPanel(){
@@ -135,7 +164,7 @@ function buildSavesPanel(){
  const input=h('input',{id:'backup-import',type:'file',accept:'application/json,.json'});
  panel.replaceChildren(
   h('div',{className:'section-heading'},h('div',{},h('h1',{},'Saves'),h('p',{id:'saves-sync',className:'muted text-sm',role:'status'},''))),
-  h('div',{className:'actions'},h('button',{id:'new-save',className:'btn btn-primary',type:'button'},'New save'),h('label',{className:'btn file-button'},'Import save',input),h('button',{id:'saves-sync-now',className:'btn btn-ghost',type:'button',hidden:true},'Sync now')),
+  h('div',{className:'actions'},h('button',{id:'new-save',className:'btn btn-primary',type:'button'},'New save'),h('label',{className:'btn file-button'},'Import save',input),h('button',{id:'native-import',className:'btn',type:'button'},'Import from FTL'),h('button',{id:'saves-sync-now',className:'btn btn-ghost',type:'button',hidden:true},'Sync now')),
   h('div',{id:'saves-list',className:'saves-card'},h('p',{className:'muted',role:'status'},'Loading…')),
   h('p',{id:'saves-usage',className:'muted text-sm'}),
   h('div',{id:'saves-local-card',className:'subcard',hidden:true},h('h2',{},'Saves from playing without an account'),h('p',{id:'saves-local-info',className:'muted'}),h('div',{className:'actions'},h('button',{id:'saves-local-upload',className:'btn btn-primary btn-sm',type:'button'},'Move them to this account'))),
@@ -164,6 +193,7 @@ function syncStatus(){
 }
 $('new-save').addEventListener('click',async()=>{try{const ui=await savesUiModule();await saveService();await ui.newSave({ctx:savesCtx()});refreshLaunch();}catch(e){message(e.message);}});
 $('backup-import').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>16*1024*1024)throw Error('Backup exceeds 16 MiB.');const made=await (await saveService()).importBackup(await file.text());message('Imported as '+made.name+'.');(await savesUiModule()).refreshSaves();}catch(err){message(err.message);}finally{e.target.value='';}});
+$('native-import').addEventListener('click',async()=>{try{const [{importFromGame},ui]=await Promise.all([import('./native-import.mjs'+version),savesUiModule(),saveService()]);const made=await importFromGame(savesCtx());if(made){message('Imported as '+made.name+'.');ui.refreshSaves();refreshLaunch();}}catch(e){message(e.message);}});
 $('saves-sync-now').addEventListener('click',async()=>{const svc=await saveService();await svc.sync.syncAll();savesPage().catch(()=>{});});
 $('saves-local-upload').addEventListener('click',async()=>{try{const n=await (await saveService()).adoptLocalSaves();message(n===1?'The save is now in your account.':n+' saves are now in your account.');savesPage();}catch(e){message(e.message);}});
 $('saves-old-download').addEventListener('click',async()=>{const {oldBackup}=await import('./old-saves.mjs'+version);const b=await oldBackup();if(b)download({schema:'ftl-old-saves',savedUtc:b.at,...b.data},'ftl-old-saves.json');});
@@ -201,7 +231,7 @@ window.addEventListener('online',()=>saves?.sync.setOnline(true));window.addEven
 
 // One Launch button: it plays the save Play names for the enabled mods ("Launch FTL with mods") or, with none enabled,
 // the save without mods (the first one is made at once). Mods with no save ask first and never create one silently.
-async function launchFromButton(){
+async function launchFromButton({hsAsked=false}={}){
  try{
   const m=await modsEnabledModule;let shas=await m.enabledMods(me.id);
   if(shas.length){const {getList}=await import('./mods/store.mjs'+version);shas=(await getList(me.id)).filter(e=>e.enabled).map(e=>e.sha256);m.writeEnabled(me.id,shas);launchLabel(shas);}
@@ -209,6 +239,7 @@ async function launchFromButton(){
   let cur=await svc.currentFor(setup.key);
   // A new browser may not have the account's saves yet: look before making one (offline this gives up at once or after the wait).
   if(!cur&&svc.sync.cloudEnabled){await withTimeout(svc.sync.syncAll().catch(()=>{}),8000);cur=await svc.currentFor(setup.key);}
+  if(!hsAsked){const step=await hyperspaceStep(setup,cur);if(step==='again')return launchFromButton({hsAsked:true});if(step)return;}
   if(!cur&&setup.key==='vanilla')cur=await svc.create(setup,null);
   if(!cur){
    const rows=await svc.rows(),withoutMods=setup.hyperspace?null:rows.filter(r=>r.setup.key==='vanilla'&&r.hasRun).map(r=>({id:r.id,name:r.name}));
@@ -216,7 +247,7 @@ async function launchFromButton(){
    if(answer.action==='copy'){const from=rows.find(r=>r.id===answer.id);cur=await svc.create(setup,'Copy of '+from.name,await svc.dataOf(answer.id));}
    else cur=await svc.create(setup,null);
   }
-  await playSave(cur.id);
+  await playSave(cur.id,{hsAsked:true});
  }catch(e){message(e.message);$('launch').disabled=false;}
 }
 /**
@@ -226,12 +257,13 @@ async function launchFromButton(){
  * copy" applies at once; "Keep this device's copy" replaces the account's version only once this tab holds the lock
  * (a lock held elsewhere asks first, as for any Play), then the game starts.
  */
-async function playSave(id,{override=false}={}){
+async function playSave(id,{override=false,hsAsked=false}={}){
  if(engine)throw Error(SWITCH_BLOCKED);
  const svc=await saveService(),sync=svc.sync,ui=await savesUiModule();
  const row=(await svc.rows()).find(r=>r.id===id);if(!row)throw Error('That save no longer exists.');
  if(row.setup.key==='vanilla'){if((await (await modsEnabledModule).enabledMods(me.id)).length)await (await modsTools()).disableAll();}
  else if(!await (await modsTools()).requireSet(row.setup.mods))return;
+ if(!hsAsked){const step=await hyperspaceStep(row.setup,row);if(step==='again')return launchFromButton({hsAsked:true});if(step)return;}
  const d=await sync.prepare(id);let keepMine=false;
  if(d?.action==='ASK_CONFLICT'){
   const a=await ui.askConflict(row.name);if(!a){ui.refreshSaves();return;}
@@ -291,7 +323,7 @@ async function launch(save){
   const {loadGame}=await import('./game.mjs'+version);const {readSettings}=await import('./device-store.mjs'+version);
   engine=await loadGame({canvas:$('game'),manifest,accountId:me.id,fetchBoot:modLaunch?modLaunch.fetchBoot:assetProvider.fetchBoot,fetchAudio:modLaunch?modLaunch.fetchAudio:assetProvider.fetchAudio,mods:modLaunch?.overlay,onProgress:(text,detail)=>loadingUpdate(text,detail),onSave:(kind,xml)=>session?.onSave(kind,xml),run:session.run,profile:session.profileXml,settings:readSettings(),ae,audioContext});
   $('game-loading').hidden=true;$('save-status').textContent=save.name;
-  engine.debugConfig?.(diagnostics?.enabled()??false);await diagnostics?.checkpoint('engine.start');
+  engine.debugConfig?.(diagnostics?.enabled()??false);engine.consoleConfig?.(consoleSetting.consoleEnabled());await diagnostics?.checkpoint('engine.start');
   // A save that names content these game files lack loads without it (the engine drops it); say what went.
   missingTimer=setInterval(async()=>{const names=engine?.missingContent?.();if(names)(await savesUiModule()).showMissingContent(names.split('\n'));},700);
   window.ftlExit=()=>saveAndClose().catch(e=>message(e.message));
@@ -343,13 +375,18 @@ async function haltGame(text){
  const id=session?.id;session?.close();session=null;clearInterval(missingTimer);if(id)saves?.sync.uploadNow(id).catch(()=>{});
  $('connection-panel').hidden=false;$('connection-message').textContent=text+' Your last save is kept in this browser.';$('save-status').textContent='Stopped';
 }
-const {initGameBar}=await import('./gamebar.mjs'+version);initGameBar({$,getEngine:()=>engine,save:saveNow,saveAndClose,message});
+const consoleSetting=await import('./console-setting.mjs'+version);
+const {initGameBar}=await import('./gamebar.mjs'+version);const gameBar=initGameBar({$,getEngine:()=>engine,save:saveNow,saveAndClose,message,consoleEnabled:consoleSetting.consoleEnabled});
+// Logs page: the browser's "Debug console" setting (docs/CONSOLE.md), for the running game too.
+$('console-enabled').checked=consoleSetting.consoleEnabled();
+$('console-enabled').addEventListener('change',e=>{consoleSetting.setConsoleEnabled(e.target.checked);engine?.consoleConfig?.(e.target.checked);gameBar.render();});
 window.addEventListener('ftl-engine-error',e=>haltGame('The engine stopped: '+(e.detail?.message??e.detail)+'.'));
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&session&&saves?.sync.cloudEnabled){const id=session.id;setTimeout(()=>session?.flush().then(()=>saves.sync.uploadNow(id)).catch(()=>{}),0);}});
 // Leaving the page: the engine saves once more; a write still queued then is kept by the session's pagehide handler
 // (localStorage) and stored at the next start, so leaving never needs a question.
 window.addEventListener('beforeunload',()=>{if(engine&&session){try{engine.save();}catch{}}});
-$('logout').addEventListener('click',async()=>{try{if(engine){await saveToDevice();const synced=await withTimeout(saves.sync.uploadNow(session.id),10000).catch(()=>false);if(!synced&&!await (await dialogsModule()).confirmAction({id:'logout-unsynced-dialog',title:'Sign out?',text:'Your latest progress is saved in this browser but not in your account yet. It syncs the next time you sign in here.',yes:'Sign out'}))return;session.close();engine.stop();}await api('/auth/logout',{method:'POST'});await import('./asset-cache.mjs').then(m=>m.clearServerAssets()).catch(()=>{});try{new BroadcastChannel('ftl-session').postMessage('changed');}catch{}location.reload();}catch(e){message(e.message);}});
+// Sign out always asks first (web/sign-out.mjs); an open game is saved and sent to the account before the question.
+$('logout').addEventListener('click',async()=>{try{let unsynced=false;if(engine){await saveToDevice();unsynced=!await withTimeout(saves.sync.uploadNow(session.id),10000).catch(()=>false);}const ask=await import('./sign-out.mjs'+version);unsynced||=await ask.unsyncedSaves(me?.id);if(!await ask.confirmSignOut(unsynced))return;if(engine){session.close();engine.stop();}await api('/auth/logout',{method:'POST'});await import('./asset-cache.mjs').then(m=>m.clearServerAssets()).catch(()=>{});try{new BroadcastChannel('ftl-session').postMessage('changed');}catch{}location.reload();}catch(e){message(e.message);}});
 $('account-button').addEventListener('click',e=>{e.preventDefault();engine?.pause();show('account-panel');});$('change-password').addEventListener('click',()=>{engine?.pause();show('password-panel');});
 $('play-button').addEventListener('click',e=>{e.preventDefault();show(engine?'game-panel':'launch-panel');});$('saves-button').addEventListener('click',e=>{e.preventDefault();engine?.pause();show('saves-panel');});$('logs-button').addEventListener('click',e=>{e.preventDefault();engine?.pause();show('logs-panel');diagnostics?.refresh();});for(const id of ['about-button','about-nav-button'])$(id).addEventListener('click',e=>{e.preventDefault();engine?.pause();show('about-panel');});
 document.querySelectorAll('.close-panel').forEach(b=>b.addEventListener('click',()=>show(engine?'game-panel':'launch-panel')));

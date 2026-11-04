@@ -59,10 +59,19 @@ class SaveProfile private constructor() {
     /** Hyperspace ship unlock popups (HsProfileHooks), shown like the vanilla ones. */
     fun addHsNotification(n: ProgressNotification) { if (achievementPopups && !suppressNotifications) pendingNotifications.add(n) }
 
+    /**
+     * A profile imported from the original game (vanillasave.NativeImport): the original keeps no layout B unlocks and
+     * works them out of the achievements without a popup (native-capture st-van-cont: its menu shows none), so the
+     * first reconciliation of such a profile is silent too.
+     */
+    var importedProgression = false
+
     fun configureProgression(families: ShipFamily.FamilyTable, achievements: Achievement.AchievementTable) {
         progressionFamilies = families
         progressionAchievements = achievements
-        reconcileProgression()
+        if (!importedProgression) { reconcileProgression(); return }
+        suppressNotifications = true
+        try { reconcileProgression() } finally { suppressNotifications = false; importedProgression = false }
     }
 
     private fun reconcileProgression() {
@@ -83,14 +92,15 @@ class SaveProfile private constructor() {
         return ship == family.ships.first() && family.unlockId?.let { unlockedShips.containsKey(it) } == true
     }
 
-    fun unlockLayout(ship: String, difficulty: Difficulty) {
+    /** [popup] false: no "Ship unlocked" notice (ScoreKeeper::UnlockShip's hidePopup, the console's SHIP ALL). */
+    fun unlockLayout(ship: String, difficulty: Difficulty, popup: Boolean = true) {
         // Hyperspace's ScoreKeeper::UnlockShip hook (Seeds.cpp): a seeded run unlocks nothing unless <seeds allowUnlocks>.
         if (xyz.znix.xftl.hs.HS.active && !xyz.znix.xftl.hs.ship.HsShipUnlocks.unlocksAllowed()) return
         if ((unlockedLayouts[ship]?.difficulty?.ordinal ?: -1) >= difficulty.ordinal) return
         val firstUnlock = !unlockedLayouts.containsKey(ship)
         unlockedLayouts[ship] = AchievementUnlockInfo(difficulty)
         dirty = true
-        if (firstUnlock && achievementPopups && !suppressNotifications) pendingNotifications.add(ProgressNotification(ship = ship))
+        if (firstUnlock && popup && achievementPopups && !suppressNotifications) pendingNotifications.add(ProgressNotification(ship = ship))
         ftl.browser.BrowserDebug.record("progression", "layout.unlock", "{\"ship\":${ftl.browser.BrowserDebug.quote(ship)},\"difficulty\":${ftl.browser.BrowserDebug.quote(difficulty.name)}}")
     }
 

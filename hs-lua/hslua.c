@@ -15,7 +15,8 @@
  *    results onto this Lua stack through the hs_* exports below.
  *  - script.on_* registration and dispatch follow LuaLibScript.cpp (stable priority sort, Chain values, argument
  *    rewriting); each callback runs under an instruction cap and is profiled per callback.
- * No filesystem, clock, os/io/package/debug/coroutine libraries; math.random draws from the engine.
+ * No filesystem, io/package/debug/coroutine libraries and only os.clock, os.time and os.difftime of os (see open_os);
+ * math.random draws from the engine.
  */
 #include <string.h>
 #include <stdio.h>
@@ -35,7 +36,8 @@
 IMPORT(log) extern void js_log(int kind, const char *p, int len);          /* 0 log, 1 print, 2 error, 3 warning */
 IMPORT(rand32) extern int js_rand32(void);
 IMPORT(srand32) extern void js_srand32(unsigned int seed);
-IMPORT(now) extern double js_now(void);
+IMPORT(now) extern double js_now(void);                                    /* monotonic milliseconds */
+IMPORT(epoch) extern double js_epoch(void);                                /* milliseconds since 1970 (UTC) */
 IMPORT(getn) extern double js_getn(int h, int attr);                      /* numbers and booleans */
 IMPORT(gets) extern int js_gets(int h, int attr);                         /* string into sbuf, -1 = nil */
 IMPORT(geto) extern double js_geto(int h, int attr);                      /* packed type * 2^32 + handle, 0 = nil */
@@ -619,6 +621,26 @@ static int math_randomseed(lua_State *L) {
   (void)js_rand32();
   return 0;
 }
+/* os. The Windows build of Hyperspace 1.23.2 links Lua's full library set (its lua/linit.c is not among the compiled
+ * sources; oracle session bt-mv-tutorial2: os, io, debug, coroutine and package all exist), and Multiverse's tutorial.lua
+ * pulses its red outlines with os.clock(). Neither the page nor the app has a process or files for the rest of os, io
+ * and package, so os holds clock (seconds since the runtime first started, as MSVC's clock() counts from process start),
+ * time (now; a date table is refused) and difftime. */
+static double clockBase = -1;
+static int os_clock(lua_State *L) { lua_pushnumber(L, (lua_Number)((js_now() - clockBase) / 1000.0)); return 1; }
+static int os_time(lua_State *L) {
+  if (!lua_isnoneornil(L, 1)) return luaL_error(L, "os.time with a date table is not available");
+  lua_pushinteger(L, (lua_Integer)(js_epoch() / 1000.0));
+  return 1;
+}
+static int os_difftime(lua_State *L) { lua_pushnumber(L, luaL_checknumber(L, 1) - luaL_optnumber(L, 2, 0)); return 1; }
+static int open_os(lua_State *L) {
+  static const luaL_Reg fns[] = {{"clock", os_clock}, {"time", os_time}, {"difftime", os_difftime}, {0, 0}};
+  if (clockBase < 0) clockBase = js_now();
+  luaL_newlib(L, fns);
+  return 1;
+}
+
 static void remove_dangerous(lua_State *L) {
   static const char *const names[] = {"collectgarbage", "dofile", "load", "loadfile", "newproxy", "rawequal", "rawget", "rawset", 0};
   for (int i = 0; names[i]; i++) { lua_pushnil(L); lua_setglobal(L, names[i]); }
@@ -1085,7 +1107,8 @@ EXPORT(hs_init) int hs_init(void) {
   L0 = L;
   idle_hook(L);
   lua_atpanic(L, at_panic);
-  luaL_openlibs(L);                                   /* hs-lua/linit.c: HS's library set */
+  luaL_openlibs(L);                                   /* hs-lua/linit.c */
+  luaL_requiref(L, "os", open_os, 1); lua_pop(L, 1);
   for (int i = 1; i < REG_LAST; i++) { lua_newtable(L); regRef[i] = luaL_ref(L, LUA_REGISTRYINDEX); }
   PUSHREG(L, REG_CACHE); lua_newtable(L); lua_pushliteral(L, "v"); lua_setfield(L, -2, "__mode"); lua_setmetatable(L, -2); lua_pop(L, 1);
   PUSHREG(L, REG_CACHE2); lua_newtable(L); lua_pushliteral(L, "v"); lua_setfield(L, -2, "__mode"); lua_setmetatable(L, -2); lua_pop(L, 1);

@@ -3,7 +3,8 @@ package ftl.saves
 /**
  * The summary the save list shows, read from the engine's run XML (`xftlSaveGame`): the player ship's name (else its
  * blueprint), hull and scrap, and the sector number (visitedSectors/sectorInfo, as web/save-summary.mjs counts it).
- * Play time is not in the run; the device adds it to the metadata while the game runs.
+ * Play time is not in the run; the device adds it to the metadata while the game runs. A run imported from the original
+ * game and not converted yet carries its summary on the root (NativeSave.wrapRun).
  */
 object RunSummary {
     fun read(run: String?, playSeconds: Long = 0): Summary {
@@ -22,8 +23,11 @@ object RunSummary {
         var maxHull: Int? = null
         var scrap: Int? = null
         var sectors: Int? = null
+        var wrapped: Summary? = null
         val path = ArrayList<String>()
         XmlScanner(xml).forEachTag { name, attrs, closing, selfClosing ->
+            if (wrapped != null) return@forEachTag
+            if (!closing && path.isEmpty()) wrapped = NativeSave.wrappedSummary(attrs, playSeconds)
             if (closing) {
                 if (path.isNotEmpty()) path.removeAt(path.size - 1)
                 return@forEachTag
@@ -42,6 +46,7 @@ object RunSummary {
             }
             if (!selfClosing) path.add(name)
         }
+        wrapped?.let { return it }
         return Summary(ship ?: shipId, shipId, sectors?.let { maxOf(1, it) }, scrap, hull, maxHull, playSeconds)
     }
 }

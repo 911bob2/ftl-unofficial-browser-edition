@@ -16,8 +16,9 @@ button. The panel has three parts:
 - **Mod files**: one row per catalogue file with **Download**, **Choose file**, official page, licence (Hyperspace)
   and credits; a progress bar with MB done / total, speed and time left; Pause/Resume; Delete once cached.
 - **Your mods**: archives in this browser (catalogue files and any `.ftl`/`.zip` the player adds), per account, in patch
-  order with enable boxes, move up/down, size, source, a **Verified** or **Custom** badge and Remove. Hints (not enforced): a mod with
-  `data/hyperspace.xml` wants Hyperspace.ftl above it; Multiverse Data wants Multiverse Assets above it.
+  order with enable boxes, move up/down, size, source, a **Verified** or **Custom** badge and Remove. Hints (not enforced): a mod that
+  uses Hyperspace wants Hyperspace.ftl above it ([Hyperspace mod without Hyperspace](#hyperspace-mod-without-hyperspace));
+  Multiverse Data wants Multiverse Assets above it.
 
 Buttons that change their label with their state (Enable / Enabled, Download / Resume, the preset dialog's Download /
 Downloading… and Cancel / Pause and close, Launch FTL / Launch FTL with mods) keep one width: the other labels sit
@@ -139,6 +140,33 @@ to take over vanilla progress: a save holds its own profile, so there is no shar
 **Fresh data.** Play, Saves and Mods re-read saves, enabled mods and downloaded files whenever they become visible, on
 `visibilitychange` and `focus`, and after every action; other tabs of the browser follow through
 `BroadcastChannel('ftl-saves')` and the `storage` event.
+
+## Hyperspace mod without Hyperspace
+
+The engine has Hyperspace's program built in and turns it on whenever the merged files hold `data/hyperspace.xml`, which
+Multiverse ships too. `Hyperspace.ftl` is Hyperspace's data (images, fonts, translations, sounds, default settings); the
+native game needs both, Hyperspace first. A set without it starts and plays with that data missing, so it stays allowed, with
+a warning (`web/mods/hs-needed.mjs`, Android `mods/HyperspaceRule.kt`, the same rule and words):
+
+- **When**: a mod uses Hyperspace (`data/hyperspace.xml`, or a patch of it: `.xml.append`, `.append.xml`, raw append or
+  clobber, `.append.lua`) and no mod of the set is Hyperspace.ftl: the catalogue's file of `mod: "hyperspace"` by
+  SHA-256 (any file name), or an archive whose own metadata title is "Hyperspace" (another build). Never by file name.
+  Archives not on the device are not looked into.
+- **Quiet hint** in the mod picker while such a set is enabled (website: Your mods; Android: the picker of New save and
+  Advanced). The order hint (Hyperspace.ftl present but below) stays as it was.
+- **Warning**, once per start, never per toggle: "Hyperspace mod without Hyperspace", naming the mod, with **Enable
+  Hyperspace**, **Run anyway** and Cancel. Website: Launch FTL with mods, Play on a save, New save's Create. Android: Play or
+  Start on a save, New save's Create.
+- **Enable Hyperspace** first gets the file when it is missing, asking before anything downloads: its name, version, size and
+  this server as source (Hyperspace may be hosted; Multiverse never is). Signed out or playing offline (the catalogue says
+  `sign-in`): Sign in, or the official release page. Server unreachable: Try again. Not offered (`absent`, `mismatch`) or
+  still `verifying`: the official page (and Try again while verifying). A failed download: its error and Try again.
+- Then, **for a new save** (Launch with no save yet for the set, New save): Hyperspace.ftl is enabled first in the picker
+  (website: the Mods panel opens with its row marked, and the start goes on to "No save for ..."; New save shows the new
+  list and Create goes on). **For a save that exists**: its mods change only through Advanced, so the next question is
+  **Change this save's mods** (Advanced opens with Hyperspace.ftl added first; nothing changes until the player confirms
+  there, then the save starts) or **New save with Hyperspace** (website: the set with Hyperspace enabled and the start goes
+  on; Android: New save with that list).
 
 ## Merge rules (ftlman 0.7.4 `apply_ftl`, ported in `web/mods/merge.mjs`)
 

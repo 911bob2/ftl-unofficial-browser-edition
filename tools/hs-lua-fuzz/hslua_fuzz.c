@@ -344,6 +344,7 @@ void js_log(int kind, const char *p, int len) { (void)kind; touch(p, len); }
 int js_rand32(void) { return (int)rnd(); }
 void js_srand32(unsigned int seed) { (void)seed; }
 double js_now(void) { static double t; return t += 0.25; }
+double js_epoch(void) { return 1.7e12; }
 void js_registered(int kind, int id) { (void)kind; (void)id; }
 
 static void getter_failure(HostCall *hc) { int n = odd_text(); fail(hc, scratch, n); }

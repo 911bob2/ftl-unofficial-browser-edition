@@ -5,6 +5,7 @@ package xyz.znix.xftl.hs.lua
 import xyz.znix.xftl.Blueprint
 import xyz.znix.xftl.GameText
 import xyz.znix.xftl.hs.events.HsEventsLua
+import xyz.znix.xftl.hs.tutorial.HsTutorial
 import xyz.znix.xftl.hs.lua.LuaApi as A
 import xyz.znix.xftl.hs.lua.LuaArgs as arg
 import xyz.znix.xftl.hs.lua.LuaPush as ret
@@ -419,8 +420,13 @@ object LuaAdaptersWP7Ui {
         wrapNames(listOf("TabbedWindow.bBlockClose", "TabbedWindow.bTutorialMode", "TabbedWindow.bWindowLock"), shadow = { o -> shadowAny(o, A.T_TabbedWindow) })
 
         // TutorialManager
-        wrapNames(listOf("TutorialManager.bGamePaused", "TutorialManager.bQuitTutorial", "TutorialManager.bAllowJumping",
-            "TutorialManager.bAllowUpgrades", "TutorialManager.tracker"), ro = setOf("TutorialManager.tracker"))
+        wrapNames(listOf("TutorialManager.bGamePaused", "TutorialManager.bQuitTutorial", "TutorialManager.tracker"),
+            ro = setOf("TutorialManager.tracker"))
+        // hyperspace.i: bAllowJumping / bAllowUpgrades are CustomTutorialState::allowJumping / allowUpgrades, which
+        // TutorialManager::AllowJumping / AllowUpgrades return under <disableDefaultTutorial> (Multiverse's tutorial.lua
+        // opens the map and the ship window with them).
+        LuaReg.bool(A.A_TutorialManager_bAllowJumping, { HsTutorial.allowJumping }, { _, v -> HsTutorial.allowJumping = v })
+        LuaReg.bool(A.A_TutorialManager_bAllowUpgrades, { HsTutorial.allowUpgrades }, { _, v -> HsTutorial.allowUpgrades = v })
         val tm = LuaTutorial
         LuaReg.obj(attr("TutorialManager.playerShip"), ObjGet { if (it === tm) LuaAdapters.inGame()?.player else null })
         LuaReg.obj(attr("TutorialManager.gui"), ObjGet { LuaGui })

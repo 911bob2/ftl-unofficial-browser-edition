@@ -205,8 +205,43 @@ One save as a file: the website's backup (`web/save-service.mjs`) and the app's 
 [ANDROID.md](ANDROID.md#save-files)) are one format and each reads the other's. Importing always makes a new save. The app checks
 a file to the server's limits before it stores anything, so what imports can also sync.
 
+## Saves from the original game
+
+**Import from FTL** (website: Saves, beside Import save; Android: the empty list and New save) turns the files of FTL on a
+computer (Steam, GOG, Humble) into a new save: the profile (`ae_prof.sav`: unlocked ships, achievements, scores) and the run
+left with Save and Quit (`continue.sav`), one or both. Hyperspace writes the same files with its save prefix:
+`hs_prof.sav`/`hs_continue.sav`, Multiverse `hs_mv_prof.sav`/`hs_mv_continue.sav` (`<saveFile><prefix>` of its
+`hyperspace.xml`). The guide in the dialog names the folder: Windows `Documents\My Games\FasterThanLight`, macOS
+`~/Library/Application Support/FasterThanLight`, Linux `~/.local/share/FasterThanLight` (Proton/Wine: the Windows folder in
+the prefix); Steam Cloud keeps the same files there.
+
+- **On the device only.** savecore `NativeSave` (Kotlin, the same code in the page through TeaVM and in the app) tells the
+  files apart by name and content, reads them bounded (run 4 MiB, profile 1 MiB, strings 64 KiB, every count capped) and
+  refuses garbage, truncated files, the old `prof.sav`, runs of FTL before 1.6, two runs or two games with a plain reason. It
+  needs no game data, so it does not convert: it keeps each original file as Base64 inside the engine's root element
+  (`<xftlSaveGame nativeImport="1" prefix ship sector scrap hull><nativeImport kind file bytes sha256>`, the same for
+  `xftl-profile`), which the server takes like any run or profile, and gives the summary the list shows.
+- **The setup.** No prefix: No mods. `hs`: the catalogue preset Hyperspace only; `hs_mv`: Multiverse 5.5.1; another prefix:
+  the player picks (website: the presets and the enabled mods; Android: the presets or mod files). A modded save whose files
+  this device lacks shows them as missing and plays once they are added, as any save.
+- **The conversion** is the engine's, the first time the save is played, with that save's game files and mods
+  (`xyz.znix.xftl.vanillasave`: `NativeImport`, `NativeProfile`, `NativeHsRun`, `VanillaSaveParser`): the profile becomes the
+  engine's profile when the game starts; Continue converts the run and saves it in the engine's format at once, so the save
+  holds the engine's run and profile from then on. A file that does not convert stops with what it lacks (another version,
+  the mods it needs) and the save keeps the original files. Hyperspace runs keep their state through the engine's own run
+  block (`HsSave`): variables, event queues, aliases, renamed and regenerated beacons, hidden augments, seeds, triggered
+  events, event buttons; the profile's Hyperspace unlocks, victories, achievements and meta variables likewise.
+- **The ship at the beacon** of a run without mods comes from its section in the save (hull, crew, weapons), hostile or
+  neutral as saved; in a Hyperspace run it is rebuilt from the beacon's event.
+- **What does not carry over.** Dead crew waiting in the clonebay; the state of a Hyperspace run's ship in mid-fight; Hyperspace custom stores (the beacon keeps a store), background objects, temporal
+  and custom system state, crew power cooldowns; crystal lockdown shards (the run is refused). Scores keep the player's score
+  as the scrap that gives it. FTL Profile Editor (Vhati, GPL-2.0) was read for the format; no code from it is used.
+
 ## Engine requirements
 
 - A save that names content the loaded game files lack (an item, crew race, augment or ship of a missing mod) loads
   with that item dropped and a notice listing what was dropped; it never crashes.
 - Saves stay backward compatible (no save-version bump); metadata lives beside the run, not inside it.
+- The ship at the beacon is saved whenever there is one and it is not destroyed, hostile or not, with crew or none, as
+  WorldManager::SaveGame (1.6.14 0x61a3a0) does: a neutral event ship, an automated guard drone or a crew-killed ship
+  reloads as it was, neutral and with its target panel.

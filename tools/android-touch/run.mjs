@@ -65,7 +65,7 @@ async function fresh({ weapon = 'BEAM_2', ship = 'PIRATE', power = true } = {}) 
     await sleep(2500);
     await until('flight', (s) => s.flight && s.window, 20000);
     await closeBox();
-    d.console(`weapon ${weapon}`);
+    d.console(`dev-weapon ${weapon}`);
     d.console(`spawn-ship ${ship} 1.normal`);
     const s = await until('the enemy', (x) => x.enemy && !x.focusPlayer && x.slots.some((w) => w?.id === weapon));
     const slot = s.slots.findIndex((w) => w?.id === weapon);
@@ -465,7 +465,7 @@ async function aimRunning(slot) {
 scenarios.enemy_dies_during_aim = async () => {
     const slot = await fresh();
     const { placed, g } = await aimRunning(slot);
-    d.console('kill');
+    d.console('dev-kill');
     await sleep(600);
     await d.moveTo(placed.f, placed.f.cx - 10, placed.f.cy + 5);
     await d.settle(400);
@@ -494,7 +494,7 @@ scenarios.enemy_dies_during_aim = async () => {
 scenarios.enemy_dies_then_lift = async () => {
     const slot = await fresh();
     const { placed, g } = await aimRunning(slot);
-    d.console('kill');
+    d.console('dev-kill');
     await sleep(500);
     await d.up(g, placed.f);
     await sleep(300);

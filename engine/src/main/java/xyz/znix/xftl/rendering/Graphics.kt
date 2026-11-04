@@ -380,6 +380,19 @@ class Graphics {
     }
 
     /**
+     * The point drawn at framebuffer pixel ([sx], [sy]) in the current coordinates (the inverse of the live transform),
+     * into [out] as x, y.
+     */
+    fun unmap(sx: Float, sy: Float, out: FloatArray) {
+        val t = transform
+        val det = t.m00 * t.m11 - t.m01 * t.m10
+        val dx = sx - t.m02
+        val dy = sy - t.m12
+        out[0] = (t.m11 * dx - t.m01 * dy) / det
+        out[1] = (-t.m10 * dx + t.m00 * dy) / det
+    }
+
+    /**
      * Use this instance's transform matrix for image rendering.
      */
     fun markCurrentImageTransformSource() {

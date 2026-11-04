@@ -31,7 +31,11 @@ object BrowserWarningDiagnostics {
         return state
     }
 
+    /** The current state's class, for a message (a first start without a language shows the language list). */
+    fun stateName(main: MainGame): String = main.currentState?.let { it::class.simpleName } ?: "no state"
+
     fun run(main: MainGame, container: GameContainer, graphics: Graphics): String {
+        check(main.currentState is MainMenuState) { "Menu warnings start at the main menu, not ${stateName(main)}" }
         val profile = BrowserXml.write(main.profile.snapshot())
         val storedProfile = BrowserFiles.getProfile()
         val run = BrowserFiles.getRun()

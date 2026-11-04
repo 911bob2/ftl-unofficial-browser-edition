@@ -70,6 +70,9 @@ object HsEventButtons {
     // ---- the run's buttons (EventButtonManager::buttons) ----
     private val buttons = ArrayList<Def>()
 
+    /** The name of the last button clicked (for the debug probes). */
+    @JvmField var lastClicked: String? = null
+
     /** Changes whenever the button list does; PlayerShipUI rebuilds its top bar when it differs. */
     @JvmField var version = 0
 
@@ -157,12 +160,15 @@ object HsEventButtons {
         buttons.clear(); version++
     }
 
-    // TODO(render, from hscore): after MainGame.loadSavedGame the definitions are built again with new indices
-    // (MV Kestrel: idx 0,1,2 saved, 9,10,11 after one reload), so idx drifts and defs grows per load; names still restore.
-    // ---- save (EventButtonManager::Save/Load: the definition indices; names too, as the port's data may move) ----
+    // ---- save (EventButtonManager::Save/Load: the definition indices) ----
+    // The port's indices are not stable between sessions (inline definitions are numbered as their events are parsed,
+    // and a reload parses again), and a name may have several definitions (Multiverse has three UI_STORAGE_CHECK_BUTTON:
+    // two at location 2, one at 0 with another image). So the save also names the definition by its name, location and
+    // image, and loading takes the definition that matches all three; then the index if its name matches; then the name.
     @JvmStatic
     fun write(elem: Element) {
-        for (b in buttons) elem.addContent(Element("b").setAttribute("idx", b.idx.toString()).setAttribute("name", b.name))
+        for (b in buttons) elem.addContent(Element("b").setAttribute("idx", b.idx.toString()).setAttribute("name", b.name)
+            .setAttribute("loc", b.location.toString()).setAttribute("img", b.image))
     }
 
     @JvmStatic
@@ -170,7 +176,14 @@ object HsEventButtons {
         buttons.clear()
         elem?.getChildren("b")?.forEach { e ->
             val name = e.getAttributeValue("name") ?: ""
-            val d = if (name.isNotEmpty()) named[name] else e.getAttributeValue("idx")?.toIntOrNull()?.let { defs.getOrNull(it) }
+            val idx = e.getAttributeValue("idx")?.toIntOrNull()
+            val d = if (name.isEmpty()) idx?.let { defs.getOrNull(it) } else {
+                val loc = e.getAttributeValue("loc")?.toIntOrNull()
+                val img = e.getAttributeValue("img")
+                defs.firstOrNull { it.name == name && loc != null && it.location == loc && it.image == img }
+                    ?: idx?.let { defs.getOrNull(it) }?.takeIf { it.name == name }
+                    ?: named[name]
+            }
             if (d != null) buttons += d
         }
         version++
@@ -304,6 +317,10 @@ object HsEventButtons {
         return EventButton(game, d, imagePos, ConstPoint(imagePos.x + b, imagePos.y + b), ConstPoint(w, h), shipActive)
     }
 
+    /** The definition of an event button from [button], or null for any other button. */
+    @JvmStatic
+    fun defOf(b: Button): Def? = (b as? EventButton)?.def
+
     private class EventButton(game: InGameState, val def: Def, val imagePos: ConstPoint, pos: ConstPoint, size: ConstPoint,
                               val shipActive: () -> Boolean) : Button(game, pos, size) {
         private val imgOn = image(game, def, "on")
@@ -370,6 +387,7 @@ object HsEventButtons {
             if (button != Input.MOUSE_LEFT_BUTTON) return
             // CommandGui::LButtonDown: queue the event (todo in HS: seeded), drop a once button
             HsEvents.eventQueue.addLast(EventQueueEvent(def.event, "", -1))
+            lastClicked = def.name
             if (def.once) { buttons.remove(def); version++ }
         }
     }

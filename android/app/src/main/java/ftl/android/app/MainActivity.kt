@@ -46,8 +46,11 @@ import androidx.lifecycle.lifecycleScope
 import ftl.android.app.game.GameActivity
 import ftl.android.app.icons.AppIcons
 import ftl.android.app.settings.SettingsPage
+import ftl.android.app.settings.rememberGameImport
 import ftl.android.app.settings.rememberSaveFiles
 import ftl.android.app.sync.SyncEngine
+import ftl.android.app.update.Release
+import ftl.android.app.update.Updates
 import ftl.android.app.ui.Badge
 import ftl.android.app.ui.Banner
 import ftl.android.app.ui.SitePage
@@ -136,6 +139,19 @@ class MainActivity : ComponentActivity() {
             }
         }
         app.sync.requestSync().invokeOnCompletion { runOnUiThread { refresh.value++ } }
+        checkForUpdate()
+    }
+
+    /**
+     * The automatic update check (docs/ANDROID.md, "Updates"): from the launcher only, so never during a run, in the
+     * background, and not before the notice is agreed. UpdateCheck keeps it to once a day.
+     */
+    private fun checkForUpdate() {
+        if (!getSharedPreferences("launcher", Context.MODE_PRIVATE).getBoolean("agreed", false) || app.sync.playing != null || !app.updates.due()) return
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { app.updates.checkIfDue() }
+            refresh.value++
+        }
     }
 
     @Composable
@@ -148,10 +164,28 @@ class MainActivity : ComponentActivity() {
         val launcherScope = rememberCoroutineScope()
         val tick = refresh.value
         val data = remember(tick) { app.gameData.info }
+        val offer = remember(tick) { app.updates.banner() }
         val setMode = { m: String? -> prefs.edit().putString("mode", m).apply(); mode = m }
         val firstSteps = !agreed || mode == null || mode == "cloud" && user == null
         var showSettings by rememberSaveable { mutableStateOf(false) }
+        // Sign out's question while it is open: whether a save has unsynced progress.
+        var signOutAsk by rememberSaveable { mutableStateOf<Boolean?>(null) }
         val focus = LocalFocusManager.current
+        signOutAsk?.let { unsynced ->
+            SignOutDialog(unsynced, onSignOut = {
+                signOutAsk = null
+                // The logout request goes off the main thread (Android refuses network calls there).
+                launcherScope.launch {
+                    withContext(Dispatchers.IO) {
+                        app.sync.releaseHeld()
+                        app.account.signOut()
+                    }
+                    app.accountChanged()
+                    user = null
+                    setMode(null)
+                }
+            }, onCancel = { signOutAsk = null })
+        }
         SitePage {
             BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
                 // On a short screen (landscape, or the keyboard is open) the header and banner give way to the content.
@@ -162,17 +196,11 @@ class MainActivity : ComponentActivity() {
                     if (user != null) {
                         // With little room (a large font) these give way, not the cog.
                         Badge(user!!.username, modifier = Modifier.weight(1f, fill = false))
-                        FtlButton("Sign out", {
+                        FtlButton(SignOut.YES, {
                             showSettings = false
-                            // The logout request goes off the main thread (Android refuses network calls there).
+                            // It asks first (SignOut), saying so when a save has progress the account does not have yet.
                             launcherScope.launch {
-                                withContext(Dispatchers.IO) {
-                                    app.sync.releaseHeld()
-                                    app.account.signOut()
-                                }
-                                app.accountChanged()
-                                user = null
-                                setMode(null)
+                                signOutAsk = withContext(Dispatchers.IO) { SignOut.unsynced(app.store.list()) }
                             }
                         }, Modifier.weight(1f, fill = false), kind = ButtonKind.GHOST)
                     } else if (mode == "offline") FtlButton("Enable cloud saves", { showSettings = false; setMode("cloud") }, Modifier.weight(1f, fill = false), kind = ButtonKind.GHOST)
@@ -193,12 +221,13 @@ class MainActivity : ComponentActivity() {
                         if (firstSteps) Banner(if (short) 96 else 190)
                         Box(Modifier.fillMaxWidth().padding(18.dp), contentAlignment = Alignment.TopCenter) {
                             Column(Modifier.widthIn(max = 820.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                                if (agreed) offer?.let { r -> UpdateBanner(r, { Updates.open(this@MainActivity, r) }) { app.updates.dismiss(r); refresh.value++ } }
                                 when {
-                                    !agreed -> Notice { prefs.edit().putBoolean("agreed", true).apply(); agreed = true }
+                                    !agreed -> Notice { prefs.edit().putBoolean("agreed", true).apply(); agreed = true; checkForUpdate() }
                                     mode == null -> ModeChoice { setMode(it) }
                                     mode == "cloud" && user == null -> SignIn({ user = it; refresh.value++; app.sync.requestSync() }, { setMode("offline") })
                                     data == null -> DataImport { refresh.value++ }
-                                    else -> Saves(tick)
+                                    else -> Saves(tick) { setMode("cloud") }
                                 }
                             }
                         }
@@ -206,6 +235,22 @@ class MainActivity : ComponentActivity() {
                     if (showSettings) SettingsPage(!firstSteps && data != null, { refresh.value++ }) { showSettings = false; refresh.value++ }
                 }
                 }
+            }
+        }
+    }
+
+    /** A newer release is out: one quiet row above the screen's content, until Download installs it or Not now puts it off. */
+    @Composable
+    private fun UpdateBanner(r: Release, onDownload: () -> Unit, onNotNow: () -> Unit) {
+        FlowRow(Modifier.fillMaxWidth().background(Ftl.surface).border(1.dp, Ftl.line).padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.spacedBy(10.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Txt("Version ${r.version} is available", Ftl.label.copy(color = Ftl.accent))
+                Txt("You have ${app.updates.current}. Download opens its page on GitHub.", Ftl.small)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FtlButton("Not now", onNotNow, kind = ButtonKind.GHOST)
+                FtlButton("Download", onDownload, kind = ButtonKind.PRIMARY)
             }
         }
     }
@@ -342,20 +387,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private sealed class Ask {
-        class Lock(val id: String, val lock: LockInfo, val keepMine: Boolean?) : Ask()
+        class Lock(val id: String, val lock: LockInfo, val keepMine: Boolean?, val hsAsked: Boolean = false) : Ask()
         class Conflict(val id: String) : Ask()
         class Overridden(val id: String, val by: String, val at: String?) : Ask()
         class Deleted(val id: String) : Ask()
-        class NewSave : Ask()
-        class Advanced(val id: String) : Ask()
+        class NewSave(val prefill: List<String> = emptyList()) : Ask()
+        class Advanced(val id: String, val first: String? = null) : Ask()
+        /** "Hyperspace mod without Hyperspace" before a save starts, then the way to Hyperspace.ftl and to the save's mods. */
+        class HsMissing(val id: String, val name: String, val mod: ftl.android.app.mods.ModLibrary.Mod, val keepMine: Boolean?) : Ask()
+        class HsGet(val id: String, val name: String) : Ask()
+        class HsSave(val id: String, val name: String) : Ask()
+        class Snapshots(val id: String, val name: String) : Ask()
         class Rename(val id: String, val name: String) : Ask()
         class Delete(val id: String, val name: String) : Ask()
         class Message(val title: String, val text: String) : Ask()
-        class LowMemory(val id: String, val keepMine: Boolean?) : Ask()
+        class LowMemory(val id: String, val keepMine: Boolean?, val hsAsked: Boolean = false) : Ask()
     }
 
     @Composable
-    private fun Saves(tick: Int) {
+    private fun Saves(tick: Int, onSignIn: () -> Unit) {
         val scope = rememberCoroutineScope()
         val sync by app.sync.state.collectAsState()
         var locals by remember(tick) { mutableStateOf(app.store.list()) }
@@ -372,6 +422,7 @@ class MainActivity : ComponentActivity() {
         var showMods by remember { mutableStateOf(false) }
         val modWork = remember { ModWork() }
         val saveFiles = rememberSaveFiles { locals = app.store.list(); refresh.value++ }
+        val gameImport = rememberGameImport { locals = app.store.list(); refresh.value++ }
         if (showMods) {
             ModsPanel(modWork, scope) { showMods = false; reload() }
             return
@@ -386,7 +437,8 @@ class MainActivity : ComponentActivity() {
         }
 
         /** keepMine: the answer to "changed in two places", applied once this device has the lock. */
-        fun play(id: String, override: Boolean = false, keepMine: Boolean? = null, memoryAnswered: Boolean = false) {
+        /** hsAsked: the "Hyperspace mod without Hyperspace" warning was answered in this start (it asks once per start). */
+        fun play(id: String, override: Boolean = false, keepMine: Boolean? = null, memoryAnswered: Boolean = false, hsAsked: Boolean = false) {
             busy = id
             scope.launch {
                 try {
@@ -403,11 +455,12 @@ class MainActivity : ComponentActivity() {
                         val missing = missingMods(save.setup, app.mods.list().map { m -> m.sha256 }.toSet())
                         if (missing.isNotEmpty()) return@withContext Ask.Message("Mods missing", "This save needs mod files this device does not have:\n" +
                             missing.joinToString("\n") { "${it.name}, ${it.sha256}" } + "\n\nAdd them under Mods, or change the save's mods under ⋯ > Advanced.")
+                        if (!hsAsked) app.mods.withoutHyperspace(save.setup.mods.map { it.sha256 })?.let { return@withContext Ask.HsMissing(id, save.name, it, keepMine) }
                         if (!memoryAnswered && !MemoryNotice.warnedAlready(this@MainActivity, id) &&
-                            MemoryNotice.tooSmallFor(this@MainActivity, save.setup.mods.sumOf { it.size })) return@withContext Ask.LowMemory(id, keepMine)
+                            MemoryNotice.tooSmallFor(this@MainActivity, save.setup.mods.sumOf { it.size })) return@withContext Ask.LowMemory(id, keepMine, hsAsked)
                         if (!signedIn) return@withContext null
                         when (val r = app.sync.lock(id, override)) {
-                            is SyncEngine.LockResult.Held -> Ask.Lock(id, r.lock, keepMine)
+                            is SyncEngine.LockResult.Held -> Ask.Lock(id, r.lock, keepMine, hsAsked)
                             is SyncEngine.LockResult.Overridden -> Ask.Overridden(id, r.by?.device ?: "another device", r.at)
                             else -> { if (keepMine != null) app.sync.resolveConflict(id, keepMine); null }
                         }
@@ -443,18 +496,23 @@ class MainActivity : ComponentActivity() {
         }
         if (rows.isEmpty()) Panel {
             Txt("No saves yet. Create one with New save, or bring one in from a file.", Ftl.small)
-            FtlButton("Import a save", saveFiles.import)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FtlButton("Import a save", saveFiles.import)
+                FtlButton("Import from FTL", gameImport.start)
+            }
         }
         for (r in rows) SaveRow(r, sync, busy == r.id, have, onPlay = { play(r.id) }, onRename = { ask = Ask.Rename(r.id, r.name) },
-            onExport = { saveFiles.export(r.id, r.name) }, onAdvanced = { ask = Ask.Advanced(r.id) }, onDelete = { ask = Ask.Delete(r.id, r.name) })
+            onExport = { saveFiles.export(r.id, r.name) }, onAdvanced = { ask = Ask.Advanced(r.id) }, onDelete = { ask = Ask.Delete(r.id, r.name) },
+            onSnapshots = if (signedIn && r.cloud != null) ({ ask = Ask.Snapshots(r.id, r.name) }) else null)
         Spacer(Modifier.height(24.dp))
         saveFiles.dialogs()
+        gameImport.dialogs()
 
         when (val a = ask) {
             null -> {}
             is Ask.Lock -> FtlDialog("In use on ${a.lock.device}", { ask = null }, {
                 FtlButton("Cancel", { ask = null })
-                FtlButton("Override lock", { ask = null; play(a.id, override = true, keepMine = a.keepMine) }, kind = ButtonKind.DANGER)
+                FtlButton("Override lock", { ask = null; play(a.id, override = true, keepMine = a.keepMine, hsAsked = a.hsAsked) }, kind = ButtonKind.DANGER)
             }) {
                 Txt("${a.lock.device} has this save open · last seen ${clock(a.lock.lastSeen)}.")
                 Txt("It may have progress and unlocks that have not synced yet. Overriding discards them; nothing is kept.", Ftl.small.copy(color = Ftl.error))
@@ -477,22 +535,58 @@ class MainActivity : ComponentActivity() {
             }) {
                 Txt("This save was deleted on another device, but this device has progress that never synced.")
             }
-            is Ask.Advanced -> AdvancedDialog(a.id) { ask = null; reload() }
+            is Ask.Advanced -> AdvancedDialog(a.id, a.first, onChanged = { if (a.first != null) play(a.id, hsAsked = true) }) { ask = null; reload() }
+            is Ask.HsMissing -> HyperspaceWarning(a.mod, a.name, onEnable = {
+                ask = if (app.mods.hyperspace?.let { app.mods.get(it.sha256) } != null) Ask.HsSave(a.id, a.name) else Ask.HsGet(a.id, a.name)
+            }, onRun = { ask = null; play(a.id, keepMine = a.keepMine, hsAsked = true) }, onCancel = { ask = null })
+            is Ask.HsGet -> GetHyperspace(onSignIn) { got -> ask = if (got != null) Ask.HsSave(a.id, a.name) else null; reload() }
+            is Ask.HsSave -> HyperspaceForSave(a.name, onAdvanced = { ask = Ask.Advanced(a.id, app.mods.hyperspace?.sha256) }, onNewSave = {
+                val hs = app.mods.hyperspace?.sha256
+                ask = Ask.NewSave(listOfNotNull(hs) + (app.store.get(a.id)?.setup?.mods?.map { it.sha256 } ?: emptyList()).filter { it != hs })
+            }, onCancel = { ask = null })
+            is Ask.Snapshots -> SnapshotsDialog(a.id, a.name) { done ->
+                ask = null
+                reload()
+                done?.let { Toast.makeText(this@MainActivity, it, Toast.LENGTH_LONG).show() }
+            }
             is Ask.NewSave -> {
                 var name by remember { mutableStateOf(SaveNames.next(rows.map { it.name })) }
-                val library = remember { app.mods.list() }
-                var chosen by remember { mutableStateOf(emptyList<String>()) }
+                var library by remember { mutableStateOf(app.mods.list()) }
+                var chosen by remember { mutableStateOf(a.prefill.filter { sha -> library.any { it.sha256 == sha } }) }
+                // "Hyperspace mod without Hyperspace", once per Create: Enable Hyperspace puts it first here, for the player to see.
+                var hsWarn by remember { mutableStateOf<ftl.android.app.mods.ModLibrary.Mod?>(null) }
+                var hsGet by remember { mutableStateOf(false) }
+                var hsAsked by remember { mutableStateOf(false) }
+                var hsNote by remember { mutableStateOf(if (a.prefill.isNotEmpty()) "Hyperspace.ftl is added first. Create to go on." else null) }
+                fun create() {
+                    val clean = SaveNames.clean(name) ?: return
+                    val setup = Setup.of(chosen.map { sha -> library.first { it.sha256 == sha }.file })
+                    val s = LocalSave(UUID.randomUUID().toString(), clean, setup, Instant.now().toString(), SaveMeta(),
+                        base = 0, dirty = true, hasRun = false)
+                    app.store.put(s)
+                    ask = null
+                    reload()
+                    app.sync.requestSync()
+                }
+                fun hyperspaceFirst(hs: String) {
+                    library = app.mods.list()
+                    chosen = listOf(hs) + chosen.filter { it != hs }
+                    hsNote = "Hyperspace.ftl is added first. Create to go on."
+                }
+                hsWarn?.let { m ->
+                    HyperspaceWarning(m, null, onEnable = {
+                        hsWarn = null
+                        hsAsked = true
+                        val hs = app.mods.hyperspace?.sha256?.takeIf { app.mods.get(it) != null }
+                        if (hs != null) hyperspaceFirst(hs) else hsGet = true
+                    }, onRun = { hsWarn = null; hsAsked = true; create() }, onCancel = { hsWarn = null })
+                }
+                if (hsGet) GetHyperspace(onSignIn) { got -> hsGet = false; if (got != null) hyperspaceFirst(got.sha256) else hsAsked = false }
                 FtlDialog("New save", { ask = null }, {
                     FtlButton("Cancel", { ask = null })
                     FtlButton("Create", {
-                        val clean = SaveNames.clean(name) ?: return@FtlButton
-                        val setup = Setup.of(chosen.map { sha -> library.first { it.sha256 == sha }.file })
-                        val s = LocalSave(UUID.randomUUID().toString(), clean, setup, Instant.now().toString(), SaveMeta(),
-                            base = 0, dirty = true, hasRun = false)
-                        app.store.put(s)
-                        ask = null
-                        reload()
-                        app.sync.requestSync()
+                        if (!hsAsked) app.mods.withoutHyperspace(chosen)?.let { hsWarn = it; return@FtlButton }
+                        create()
                     }, kind = ButtonKind.PRIMARY, enabled = SaveNames.clean(name) != null)
                 }) {
                     Field("Name", name, { name = it })
@@ -500,8 +594,11 @@ class MainActivity : ComponentActivity() {
                     Txt("Mods", Ftl.label)
                     Txt(if (chosen.isEmpty()) "No mods: the game as it ships." else "A save keeps its mod files; change them later only under ⋯ > Advanced.", Ftl.small)
                     ModPicker(library, chosen) { chosen = it }
+                    hsNote?.let { Txt(it, Ftl.small.copy(color = Ftl.accent)) }
                     Txt("Or import a save from a file, exported from this app or the website.", Ftl.small)
                     FtlButton("Import a save", { ask = null; saveFiles.import() })
+                    Txt("Or bring your profile and run from FTL on a computer, with or without Hyperspace and Multiverse.", Ftl.small)
+                    FtlButton("Import from FTL", { ask = null; gameImport.start() })
                 }
             }
             is Ask.Rename -> {
@@ -542,7 +639,7 @@ class MainActivity : ComponentActivity() {
                 FtlButton("Play anyway", {
                     MemoryNotice.markWarned(this@MainActivity, a.id)
                     ask = null
-                    play(a.id, keepMine = a.keepMine, memoryAnswered = true)
+                    play(a.id, keepMine = a.keepMine, memoryAnswered = true, hsAsked = a.hsAsked)
                 }, kind = ButtonKind.PRIMARY)
             }) { Txt(MemoryNotice.TOO_SMALL_TEXT) }
             is Ask.Message -> FtlDialog(a.title, { ask = null }, { FtlButton("OK", { ask = null }, kind = ButtonKind.PRIMARY) }) { Txt(a.text) }
@@ -550,7 +647,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun SaveRow(r: Row, sync: SyncEngine.State, busy: Boolean, have: Set<String>, onPlay: () -> Unit, onRename: () -> Unit, onExport: () -> Unit, onAdvanced: () -> Unit, onDelete: () -> Unit) {
+    private fun SaveRow(r: Row, sync: SyncEngine.State, busy: Boolean, have: Set<String>, onPlay: () -> Unit, onRename: () -> Unit, onExport: () -> Unit, onAdvanced: () -> Unit, onDelete: () -> Unit, onSnapshots: (() -> Unit)? = null) {
         val decision = sync.decisions[r.id]
         val lock = r.cloud?.lock?.takeIf { app.sync.lockState(r.cloud) == LockState.OTHER }
         var menu by remember { mutableStateOf(false) }
@@ -583,6 +680,7 @@ class MainActivity : ComponentActivity() {
                 FtlButton("Rename", { menu = false; onRename() })
                 FtlButton("Export", { menu = false; onExport() })
                 FtlButton("Advanced", { menu = false; onAdvanced() })
+                onSnapshots?.let { FtlButton("Recovery snapshots", { menu = false; it() }) }
                 FtlButton("Delete", { menu = false; onDelete() }, kind = ButtonKind.DANGER)
             }
         }

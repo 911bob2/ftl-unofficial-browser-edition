@@ -4,7 +4,6 @@ import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.game.MainGame
 import xyz.znix.xftl.hs.HS
 import xyz.znix.xftl.hs.HsConfig
-import xyz.znix.xftl.hs.render.HsConsole
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.sys.GameContainer
 
@@ -13,7 +12,7 @@ import xyz.znix.xftl.sys.GameContainer
  * to the oracle's `wp7-ui.lua`. Commands `name:arg`; the ones not listed here go to [BrowserHsWp6EventsDiagnostics]
  * (driver, shim, append, lua, options, box, state, ...).
  * - `xml:<nodes>`: authored hyperspace.xml nodes (the oracle's `hs_options.append`) added to the loaded config.
- * - `console`: the HS command console's state (open, text, cursor) as one line.
+ * - `console`: the debug console's state (open, text, cursor) as one line.
  */
 object BrowserHsWp7UiDiagnostics {
     private var original: HsConfig? = null
@@ -84,7 +83,7 @@ object BrowserHsWp7UiDiagnostics {
                 "wreck" -> (main.currentState as InGameState).enemy?.let {
                     "t=${it.diagnosticDestructionTime} jumpOut=${it.destructionJumpOut} invincible=${it.invincible} gone=${it.isGone}"
                 } ?: "no enemy"
-                "console" -> HsConsole.debugState() + " paused=${(main.currentState as? InGameState)?.isPaused}"
+                "console" -> (main.currentState as InGameState).let { it.debugConsole.debugState(it.isDebugConsoleVisible) + " paused=${it.isPaused}" }
                 // the text the named event resolves to now, and the event the last location showed
                 "eventtext" -> {
                     val st = main.currentState as InGameState

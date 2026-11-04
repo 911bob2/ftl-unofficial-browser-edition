@@ -93,6 +93,9 @@ public class MainGame implements Game {
             InGameState state = new InGameState(this, content, "PLAYER_SHIP_TUTORIAL", Difficulty.NORMAL, null);
             setCurrentState(state);
             ftl.browser.BrowserDebug.event("tutorial", "session.start", "mode", "vanilla");
+            // Hyperspace script.on_init(newGame = true): the tutorial's world is made by WorldManager::CreateNewGame too,
+            // with TutorialManager running (Multiverse's tutorial.lua starts its first lesson there).
+            if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.onInit(true);
             return state;
         } catch (RuntimeException failure) {
             endTutorialSession();
@@ -229,6 +232,7 @@ gameContainer = gc; profile = loadProfile(); loadDatafile(); if (LanguageSelectS
         if (currentState != null) { currentState.shutdown(); currentState = null; }
         content.freeResources();
         content = replacement;
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaGraphics.contentReplaced();
         profile.configureProgression(content.shipFamilies, content.achievements);
     }
 
@@ -254,7 +258,37 @@ return ftl.browser.BrowserFiles.getRun() != null;
      * button. If the save is missing or corrupt, fall back to the hangar.
      */
     public void continueSavedRun() {
-Document doc = consumeRunSave(); if(doc != null) loadSavedGame(doc); else switchToShipSelect();
+Document doc = consumeRunSave();
+        if (doc == null) { switchToShipSelect(); return; }
+        xyz.znix.xftl.vanillasave.NativeImport.File imported = xyz.znix.xftl.vanillasave.NativeImport.unwrap(doc);
+        if (imported != null) startImportedRun(imported); else loadSavedGame(doc);
+    }
+
+    /**
+     * A run imported from the original game (vanillasave.NativeImport): converted with this session's game data, then
+     * saved at once in the engine's format, so the save holds the engine's run from now on. A file that does not
+     * convert stops with a RunLoadException that says why.
+     */
+    public void startImportedRun(xyz.znix.xftl.vanillasave.NativeImport.File file) {
+        try {
+            useAdvancedEdition(file.bytes.length < 12 || file.bytes[8] != 0);
+            VanillaSaveData data = xyz.znix.xftl.vanillasave.NativeImport.parseRun(file, content);
+            InGameState state;
+            try {
+                state = new InGameState(this, content, data, true);
+            } catch (RuntimeException e) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?:Unknown blueprint|Missing event) ([^ ]+)").matcher(String.valueOf(e.getMessage()));
+                throw new xyz.znix.xftl.vanillasave.NativeImport.Failed(m.find()
+                        ? "The run from the original game names content these game files or mods lack (" + m.group(1) + "). Play it with the mods it was made with."
+                        : "The run from the original game could not be converted (" + e.getMessage() + ").", e);
+            }
+            setCurrentState(state);
+            if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.onInit(false);
+            writeRunSave();
+            ftl.browser.BrowserDebug.record("persistence", "native.import", "{\"prefix\":" + ftl.browser.BrowserDebug.quote(file.prefix) + ",\"bytes\":" + file.bytes.length + "}");
+        } catch (xyz.znix.xftl.vanillasave.NativeImport.Failed e) {
+            throw new xyz.znix.xftl.savegame.RunLoadException(e);
+        }
     }
 
     /**
@@ -640,7 +674,11 @@ return null;
     }
 
     private SaveProfile loadProfile() {
-SaveProfile p = SaveProfile.createBlank(); String xml=ftl.browser.BrowserFiles.getProfile(); if(xml != null) p.load(ftl.browser.BrowserXml.parse(xml)); else { newProfileWelcome = true; firstRunHangar = true; firstRunTip = true; if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSave.newProfile(); } String settings=ftl.browser.BrowserFiles.getSettings(); if(settings != null) p.loadSettings(ftl.browser.BrowserXml.parse(settings)); return p;
+SaveProfile p = SaveProfile.createBlank(); String xml=ftl.browser.BrowserFiles.getProfile(); if(xml != null) { Document doc = ftl.browser.BrowserXml.parse(xml);
+        // A profile imported from the original game becomes the engine's profile now and is saved in its format.
+        xyz.znix.xftl.vanillasave.NativeImport.File imported = xyz.znix.xftl.vanillasave.NativeImport.unwrap(doc);
+        if (imported != null) doc = xyz.znix.xftl.vanillasave.NativeImport.profileDocument(imported);
+        p.load(doc); if (imported != null) { p.markDirty(); p.setImportedProgression(true); } } else { newProfileWelcome = true; firstRunHangar = true; firstRunTip = true; if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSave.newProfile(); } String settings=ftl.browser.BrowserFiles.getSettings(); if(settings != null) p.loadSettings(ftl.browser.BrowserXml.parse(settings)); return p;
     }
 
     /** ScoreKeeper flags a profile created this session; the title shows "welcome" once. */

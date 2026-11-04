@@ -86,6 +86,7 @@ object BrowserGameplayParityDiagnostics {
             vanillaStep("GameplayParityMapEventsChecks.run") { GameplayParityMapEventsChecks.run(main, container) }
             vanillaStep("GameplayParityEvents2Checks.run") { GameplayParityEvents2Checks.run(main, container) }
             vanillaStep("GameplayParityStoresChecks.run") { GameplayParityStoresChecks.run(main, container) }
+            step("overflowAugmentStore") { GameplayParityStoresChecks.overflowAugmentStore(main, container) }
             step("GameplayParityCombatRulesChecks.run") { GameplayParityCombatRulesChecks.run(main, container) }
             step("GameplayParityShipRulesChecks.run") { GameplayParityShipRulesChecks.run(main, container) }
             step("GameplayParityDronesCrewChecks.run") { GameplayParityDronesCrewChecks.run(main, container) }
@@ -109,6 +110,8 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityCloak7Checks.run") { GameplayParityCloak7Checks.run(main, container, graphics) }
             step("GameplayParityVanillaNativeChecks.run") { GameplayParityVanillaNativeChecks.run(main, container) }
             step("GameplayParityLockdownShardChecks.run") { GameplayParityLockdownShardChecks.run(main, container) }
+            step("GameplayWeapons17Checks.run") { GameplayWeapons17Checks.run(main, container, graphics) }
+            step("GameplayWeaponBarChecks.run") { GameplayWeaponBarChecks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)

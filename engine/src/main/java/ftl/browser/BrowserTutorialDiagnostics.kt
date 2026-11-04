@@ -107,7 +107,7 @@ object BrowserTutorialDiagnostics {
         val originalRng = BrowserRandom.snapshot()
         val originalMode = main.gameContent.enableAdvancedEdition
         val originalBrowserMode = BrowserFiles.enableAE
-        check(main.currentState is MainMenuState) { "BrowserTutorialDiagnostics.kt:110" }
+        check(main.currentState is MainMenuState) { "Tutorial isolation starts at the main menu, not ${BrowserWarningDiagnostics.stateName(main)}" }
         try {
             for (mode in listOf(false, true)) {
                 BrowserEngine.diagnosticProgress("tutorial isolation with ordinary AE=$mode save")

@@ -21,6 +21,9 @@ const selected=(process.env.MENU_BROWSERS??'Chromium,Firefox').split(',');
 for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['Firefox',firefox,{}]].filter(([name])=>selected.includes(name))){
  const browser=withOnboarding(await type.launch({headless:!(name==='Firefox'&&process.env.RUNNER_FIREFOX_WINDOWED==='1'),...options}),origin),page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
  page.setDefaultTimeout(20000);page.on('pageerror',error=>errors.push(error.message));
+ // A player's browser: no navigator.webdriver, so the engine's first start would show the language list (2.0.1 failed
+ // Menu & jump warnings and Tutorial isolation there; the Tests page now marks its runs, window.ftlTestRuns).
+ await page.addInitScript(()=>Object.defineProperty(Navigator.prototype,'webdriver',{get:()=>false,configurable:true}));
  const pass=label=>{checks.push(name+': '+label);console.log('PASS '+name+': '+label);};
  try{
   await login(page);const before=await page.evaluate(async()=>(await(await fetch('/api/saves')).json()).saves),initial=await bounds(page);
@@ -42,10 +45,25 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   await page.locator('#follow-output').uncheck();await page.locator('#results').evaluate(e=>e.scrollTop=0);assert.equal(await page.locator('#results').evaluate(e=>e.scrollTop),0);
   await page.keyboard.press('Tab');await page.locator('#tab-activity').focus();await page.keyboard.press('Home');assert.equal(await page.locator('#tab-cases').getAttribute('aria-selected'),'true');
   pass('137 live encounters, bounded results/output, passed summary, filters, case details and keyboard tabs preserve preview geometry');
+  assert.equal(await page.evaluate(()=>navigator.webdriver),false);
+  // Two categories: the loading screen shows for a second between them; then both start at the main menu.
+  await page.locator('#custom-selection').evaluate(e=>e.open=true);for(const checkbox of await page.locator('#suite-options input:enabled').all())await checkbox.uncheck();
+  await page.locator('#suite-warnings').check();await page.locator('#suite-tutorial-isolation').check();const started=Date.now();await page.locator('#run-tests').click();
+  await page.waitForFunction(()=>/Loading Tutorial isolation/.test(document.getElementById('preview-empty').textContent)&&!document.getElementById('preview-empty').hidden,{},{timeout:120000});
+  await page.waitForFunction(()=>/^Completed/.test(document.getElementById('test-status').textContent),{},{timeout:180000});
+  const two=await exported(page);assert.equal(two.status,'passed',JSON.stringify(two.results.map(r=>[r.name,r.status,r.error])));assert.deepEqual(two.results.map(r=>r.name),['Menu & jump warnings','Tutorial isolation']);
+  const gap=new Date(two.results[1].started)-new Date(two.results[0].started)-two.results[0].durationMs;assert.ok(gap>=1000,'the pause between categories is '+gap+' ms');
+  pass('Without navigator.webdriver both categories start at the main menu and pass, with a 1 s loading screen between them ('+gap+' ms, '+(Date.now()-started)+' ms in all)');
+  // Hyperspace/Multiverse need their files in this browser's mod library: without them they are disabled and say so.
+  for(const id of ['hs-core','mv-core','mv-rules']){assert.ok(await page.locator('#suite-'+id).isDisabled(),id+' enabled without mods');assert.match(await page.locator('#suite-'+id).locator('xpath=..').innerText(),/in Mods first/);}
+  await page.locator('.preset[data-preset="all"]').click();assert.equal(await page.locator('#suite-mv-core').isChecked(),false,'All tests without Multiverse');
+  // The results pane and the case details can be resized by their corner; the case list keeps several rows.
+  assert.deepEqual(await page.evaluate(()=>['.diagnostic-results','#case-detail-output'].map(q=>getComputedStyle(document.querySelector(q)).resize)),['vertical','vertical']);
+  pass('Mod suites stay out of All tests without the mod files; results and case details resize vertically');
   if(skipPerformance)console.log('SKIP '+name+': browser timing and flagship benchmarks (FTL_SKIP_PERFORMANCE=1)');
   else {
   await page.locator('#measure-browser').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing measured');
-  const timing=await exported(page),sample=timing.browserTiming.at(-1);assert.ok(sample.callbacks>10);assert.ok(sample.fps>0&&sample.intervalP95>0);assert.equal(timing.results.length,137);assert.equal(sample.screen.width>0,true);
+  const timing=await exported(page),sample=timing.browserTiming.at(-1);assert.ok(sample.callbacks>10);assert.ok(sample.fps>0&&sample.intervalP95>0);assert.equal(timing.results.length,2);assert.equal(sample.screen.width>0,true);
   await page.locator('#measure-browser').click();await page.locator('#stop-tests').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing stopped');assert.ok(await page.locator('#run-tests').isEnabled());
   await page.locator('#measure-browser').click();await page.evaluate(()=>{Object.defineProperty(document,'hidden',{value:true,configurable:true});document.dispatchEvent(new Event('visibilitychange'));delete document.hidden;});
   await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing stopped');assert.match(await page.locator('#browser-rate').innerText(),/visible/);
@@ -57,8 +75,11 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
    await writeFile('.build/diagnostics-unlimited-firefox.json',JSON.stringify(unlimited,null,2));pass('Unlimited flagship benchmark draws on every supplied Firefox callback in all three phases');
   }
   }
+  // The case list is measured on its own tab (the timing and benchmark runs leave the benchmark tab open).
+  await page.locator('#tab-cases').click();
   await page.locator('.preset[data-preset="quick"]').click();await page.locator('#custom-selection').evaluate(e=>e.open=false);await page.screenshot({path:'.build/diagnostics-workspace-'+name.toLowerCase()+'.png'});
-  for(const view of [{width:1000,height:700},{width:900,height:600},{width:390,height:844},{width:320,height:640}]){await page.setViewportSize(view);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Horizontal page overflow at '+view.width);await page.locator('#custom-selection').evaluate(e=>e.open=true);assert.ok(await page.locator('#suite-encounters').isVisible());await page.locator('#custom-selection').evaluate(e=>e.open=false);assert.ok(await page.locator('#preview').isVisible());}
+  for(const view of [{width:1000,height:700},{width:900,height:600},{width:390,height:844},{width:320,height:640}]){await page.setViewportSize(view);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Horizontal page overflow at '+view.width);
+   assert.ok(await page.evaluate(()=>{document.getElementById('case-detail').open=true;const h=document.querySelector('.diagnostic-case-scroll').getBoundingClientRect().height;document.getElementById('case-detail').open=false;return h>=8*parseFloat(getComputedStyle(document.documentElement).fontSize)-1;}),'The case list is squashed at '+view.width+'x'+view.height);await page.locator('#custom-selection').evaluate(e=>e.open=true);assert.ok(await page.locator('#suite-encounters').isVisible());await page.locator('#custom-selection').evaluate(e=>e.open=false);assert.ok(await page.locator('#preview').isVisible());}
   await page.screenshot({path:'.build/diagnostics-workspace-narrow-'+name.toLowerCase()+'.png',fullPage:true});
   pass('Configuration remains usable on desktop, short windows and 320px screens without horizontal page overflow');
   // Fake only the server API, exercising a real failed UI run without starting jobs.

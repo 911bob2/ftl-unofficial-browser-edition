@@ -2,7 +2,8 @@
 // an earlier account cached in this browser profile.
 const clearServerAssets=()=>import('./asset-cache.mjs').then(m=>m.clearServerAssets()).catch(()=>{});
 {const page=document.body.dataset;if(!['admin','user'].includes(page.role)||page.authState&&page.authState!=='authenticated')clearServerAssets();}
-if(!document.getElementById('login-form'))document.getElementById('logout')?.addEventListener('click',async()=>{try{const token=(await(await fetch('/api/auth/csrf',{cache:'no-store'})).json()).token;const r=await fetch('/api/auth/logout',{method:'POST',headers:{'X-CSRF-TOKEN':token}});if(r.ok||r.status===401){await clearServerAssets();try{new BroadcastChannel('ftl-session').postMessage('changed');}catch{}location.assign('/');}}catch{location.assign('/');}});
+// The other pages' Sign out asks first too (web/sign-out.mjs).
+if(!document.getElementById('login-form'))document.getElementById('logout')?.addEventListener('click',async()=>{try{const ask=await import('./sign-out.mjs'+new URL(import.meta.url).search);if(!await ask.confirmSignOut(await ask.unsyncedSaves(document.body.dataset.account)))return;const token=(await(await fetch('/api/auth/csrf',{cache:'no-store'})).json()).token;const r=await fetch('/api/auth/logout',{method:'POST',headers:{'X-CSRF-TOKEN':token}});if(r.ok||r.status===401){await clearServerAssets();try{new BroadcastChannel('ftl-session').postMessage('changed');}catch{}location.assign('/');}}catch{location.assign('/');}});
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const d of document.querySelectorAll('.user-actions details[open]')){d.open=false;d.querySelector('summary')?.focus();}});
 document.addEventListener('click',e=>{for(const d of document.querySelectorAll('.user-actions details[open]'))if(!d.contains(e.target))d.open=false;});

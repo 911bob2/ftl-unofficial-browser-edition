@@ -53,6 +53,8 @@ export function wrapSaveCore(raw) {
     cleanName: name => raw.savecoreCleanName(name ?? '') ?? null,
     nextName: names => raw.savecoreNextName(JSON.stringify(names)),
     sha256: value => raw.savecoreSha256(value),
+    /** Files of the original game ([{name, base64}]) as one import: {prefix, setup, from, run, profile, wrappedRun, wrappedProfile} or {error}. */
+    nativePick: files => parse(raw.savecoreNativePick(JSON.stringify(files))),
   };
 }
 

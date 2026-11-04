@@ -17,7 +17,7 @@ import xyz.znix.xftl.game.InGameState
  * | --- | --- | --- | --- | --- |
  * | weapon1..4 | 1..4 | 1 | 8..11 | weapon_slot_1..4 (vanilla, moved) |
  * | drone4..6 | 8, 9, 0 | 1 | 15..17 | drone_slot_4..6 |
- * | console | \ | 0 | 21 | console (the HS command console, [HsConsole]; gated by `<console enabled>`, decision U4) |
+ * | console | \ | 0 | 21 | console (the debug console, docs/CONSOLE.md: opens it while `<console enabled>`, or with the setting) |
  * | speed | ` | 0 | 22 | speed (CFPS speedEnabled) |
  * | info | right Alt | 0 | 11 | info (More Info / altMode) |
  * | temporal / un_temporal | ; / none | 2 | 11 / end | sys_power_temporal(_off) (systems' power keys) |
@@ -26,8 +26,8 @@ import xyz.znix.xftl.game.InGameState
  *
  * ControlsScreen::OnInit then lays pages 0-2 out from (480, 130) with 12, 10 and 12 boxes in the first column
  * (page 3 keeps the original's layout). Under Hyperspace the port's own development keys give up a default key
- * an HS hotkey takes (frame step on '.'); the port's development console no longer opens on '`' under Hyperspace
- * (that is the `speed` hotkey), only on its own hotkey.
+ * an HS hotkey takes (frame step on '.'). '`' is the `speed` hotkey under Hyperspace unless the device's "Debug console"
+ * setting is on, which opens the console on it in every mode (devutil/ConsoleRegistry.kt, ConsoleGate).
  */
 object HsHotkeys {
     private class Def(val name: String, val id: String, val default: String?, val page: Int, val index: Int)
@@ -88,7 +88,7 @@ object HsHotkeys {
         groups.firstOrNull { it.id == "hyperspace" }?.hotkeys?.none { it.default === key } ?: true
 
     /**
-     * CommandGui::KeyDown hook (speed, info; the console opens in InGameState, [HsConsole.tryOpen]) and CombatControl::KeyDown hook
+     * CommandGui::KeyDown hook (speed, info; the console opens in InGameState, ConsoleGate) and CombatControl::KeyDown hook
      * (aim_artillery1..4 while the artillery is targetable); drone4..6 power the 4th to 6th drone slot.
      */
     @JvmStatic

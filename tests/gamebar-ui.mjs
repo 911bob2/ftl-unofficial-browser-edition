@@ -26,6 +26,11 @@ const geometry=page=>page.evaluate(()=>{
 export async function gameBarUiChecks(page,{pass,name}){
  await leaveFullscreen(page);
  for(const id of ['menu-back','pause','export','debug-export'])assert.equal(await page.locator('#'+id).count(),0,'#'+id+' must be gone');
+ // The Console button waits for the Logs page's "Debug console" setting (docs/CONSOLE.md), off by default.
+ assert.ok(await page.locator('#console').isHidden(),'Console button without the Debug console setting');
+ await page.locator('#logs-button').click();await page.locator('#console-enabled').check();await page.locator('#logs-panel .close-panel').click();
+ await page.locator('#game-panel').waitFor({state:'visible'});
+ pass('The Console button appears with the Debug console setting of the Logs page');
  for(const id of ['console','save','fullscreen','save-close','debug-mark'])assert.ok(await page.locator('#'+id).isVisible(),'#'+id+' missing from the bar');
  assert.equal(await page.locator('#save-close').textContent(),'Save and close');
  assert.ok(await page.locator('#hide-header').isHidden(),'Hide header is only for fullscreen');
@@ -130,7 +135,7 @@ export async function hangarEscapeCheck(page,{click,state,pass}){
 export async function saveCloseUiChecks(page,{snapshot,state,click,pass}){
  await leaveFullscreen(page);
  await page.evaluate(()=>window.ftlEngine.newRun('PLAYER_SHIP_HARD',1));await state('InGameState');
- await page.evaluate(()=>window.ftlEngine.consoleExecute('rich'));
+ await page.evaluate(()=>window.ftlEngine.consoleExecute('dev-rich'));
  await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).scrap===5000);
  // The device store refuses writes (as a full disk would).
  await page.evaluate(()=>{const put=IDBObjectStore.prototype.put;window.ftlTestRestorePut=()=>{IDBObjectStore.prototype.put=put;};IDBObjectStore.prototype.put=function(...args){const tx=this.transaction;if(tx.db.name==='ftl-saves'&&this.name==='runs')queueMicrotask(()=>{try{tx.abort();}catch{}});return put.apply(this,args);};});

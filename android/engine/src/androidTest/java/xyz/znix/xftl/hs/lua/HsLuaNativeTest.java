@@ -90,14 +90,17 @@ public class HsLuaNativeTest {
     @Test
     public void sandboxHasNoLoadersOrSystemLibraries() {
         assertNull(run("local present = {}\n"
-                + "for _, k in ipairs({'load', 'loadfile', 'dofile', 'loadstring', 'require', 'io', 'os', 'package',\n"
+                + "for _, k in ipairs({'load', 'loadfile', 'dofile', 'loadstring', 'require', 'io', 'package',\n"
                 + "                     'debug', 'coroutine', 'collectgarbage', 'rawget', 'rawset', 'rawequal'}) do\n"
                 + "  if _G[k] ~= nil then present[#present + 1] = k end\n"
                 + "end\n"
                 + "log('present:' .. table.concat(present, ','))\n"
-                + "log('libs:' .. type(string) .. type(table) .. type(math) .. type(utf8) .. type(bit32))"));
+                + "log('libs:' .. type(string) .. type(table) .. type(math) .. type(utf8) .. type(bit32))\n"
+                + "log('os:' .. type(os.clock()) .. type(os.time()) .. type(os.difftime(2, 1)) .. type(os.execute) .. type(os.getenv))"));
         assertEquals("0:present:    ", logged("present:"));
         assertEquals("0:libs:tabletabletabletabletable    ", logged("libs:"));
+        // os.clock, os.time and os.difftime only (Multiverse's tutorial reads os.clock); nothing of the process or files.
+        assertEquals("0:os:numbernumbernumbernilnil    ", logged("os:"));
     }
 
     @Test

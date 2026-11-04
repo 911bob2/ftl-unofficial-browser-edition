@@ -1,6 +1,7 @@
 /*
-** The standard libraries Hyperspace opens (its lua/linit.c, an edited copy of Lua 5.3's linit.c):
-** base, table, string, math, utf8 and, with LUA_COMPAT_BITLIB, bit32. No package, coroutine, io, os or debug.
+** The standard libraries of this runtime: base, table, string, math, utf8 and, with LUA_COMPAT_BITLIB, bit32 (Hyperspace's
+** lua/linit.c lists these, an edited copy of Lua 5.3's linit.c, but its Windows build does not compile that file and has
+** them all, os, io, debug, coroutine and package too); hslua.c adds a part of os.
 ** Copyright (C) 1994-2018 Lua.org, PUC-Rio. MIT license, see third_party/notices/Lua-LICENSE.txt.
 */
 #define linit_c

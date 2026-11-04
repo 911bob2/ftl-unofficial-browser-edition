@@ -408,7 +408,11 @@ object BrowserTutorialEncounterDiagnostics {
 
             check(main.doSaveLoadGame()) { "BrowserTutorialEncounterDiagnostics.kt:407" }
             state = main.currentState as InGameState
-            check(state.enemy == null) { "Defeated crew enemy did not clear active target after restore" }
+            // The crew-killed ship is still at the beacon after the restore, as before it: WorldManager::SaveGame (1.6.14
+            // 0x61a3a0) writes the beacon's ship unless it is destroyed, crew or none. It no longer gates the lesson.
+            check(state.enemy != null && !adapter2.observation(state).enemyPresent) {
+                "Defeated crew enemy was not restored as a defeated ship"
+            }
             check(state.shipUI.tutorialDialogueOpen) { "BrowserTutorialEncounterDiagnostics.kt:410" }
             check(state.player.fuelCount == fuelBeforeCrew && state.player.missilesCount == missilesBeforeCrew &&
                 state.player.scrap == scrapBeforeCrew && totalWeapons(state.player).count { it == "BEAM_2" } == beamsBeforeCrew) { "BrowserTutorialEncounterDiagnostics.kt:411" }
@@ -422,7 +426,7 @@ object BrowserTutorialEncounterDiagnostics {
             check(totalWeapons(state.player).count { it == "BEAM_2" } == beamsBeforeCrew + 1) {
                 "BEAM_2 weapon reward missing after crew death"
             }
-            check(state.enemy == null) { "Active enemy must remain null after crew reward resolution" }
+            check(!adapter2.observation(state).enemyPresent) { "Defeated crew enemy blocked the lesson after crew reward resolution" }
 
             val fuelAfterCrew = state.player.fuelCount
             val missilesAfterCrew = state.player.missilesCount

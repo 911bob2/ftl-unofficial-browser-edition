@@ -38,6 +38,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
@@ -53,6 +54,7 @@ import androidx.core.graphics.drawable.toBitmap
 import ftl.android.app.BuildConfig
 import ftl.android.app.FtlApplication
 import ftl.android.app.ScreenDialog
+import ftl.android.app.game.Magnifier
 import ftl.android.app.game.ScreenFit
 import ftl.android.app.icons.AppIcon
 import ftl.android.app.icons.AppIcons
@@ -67,6 +69,8 @@ import ftl.android.app.ui.Panel
 import ftl.android.app.ui.Tick
 import ftl.android.app.ui.Txt
 import ftl.android.app.ui.clock
+import ftl.android.app.update.UpdateCheck
+import ftl.android.app.update.Updates
 import java.io.IOException
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -90,10 +94,15 @@ private fun OptionRow(title: String, value: String, onClick: () -> Unit, picture
     }
 }
 
-/** A row that turns something on or off, the whole row being the target. */
+/**
+ * A row that turns something on or off, the whole row being the target; dimmed while it has no effect ([active]); [framed]:
+ * in a frame like the option rows beside it.
+ */
 @Composable
-private fun SwitchRow(title: String, text: String, on: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().toggleable(on, role = Role.Switch, onValueChange = onChange),
+internal fun SwitchRow(title: String, text: String, on: Boolean, active: Boolean = true, framed: Boolean = false, onChange: (Boolean) -> Unit) {
+    val frame = if (framed) Modifier.border(1.dp, Ftl.line) else Modifier
+    Row(Modifier.fillMaxWidth().then(frame).toggleable(on, role = Role.Switch, onValueChange = onChange)
+        .then(if (framed) Modifier.padding(horizontal = 12.dp, vertical = 10.dp) else Modifier).alpha(if (active) 1f else 0.45f),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Txt(title, Ftl.label)
@@ -133,10 +142,14 @@ fun SettingsPage(withSaves: Boolean, onChanged: () -> Unit, onClose: () -> Unit)
                     if (withSaves) SavesSection(onChanged, onClose)
                     version()
                 }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(18.dp)) { LogSection() }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                    UpdatesSection()
+                    LogSection()
+                }
             } else Column(page, verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 GeneralSection()
                 if (withSaves) SavesSection(onChanged, onClose)
+                UpdatesSection()
                 LogSection()
                 version()
             }
@@ -154,6 +167,8 @@ private fun GeneralSection() {
     var dialog by remember { mutableStateOf<String?>(null) }
     var fit by remember { mutableStateOf(ScreenFit.load(context)) }
     var language by remember { mutableStateOf(GameLanguage.read(app.store.settings())) }
+    var haptics by remember { mutableStateOf(hapticsValue(context)) }
+    var magnifier by remember { mutableStateOf(Magnifier.enabled(context)) }
     Panel(tab = "General") {
         val mode = when (fit.mode) {
             ScreenFit.Mode.DEFAULT -> "Default"
@@ -161,11 +176,17 @@ private fun GeneralSection() {
             ScreenFit.Mode.CUSTOM -> "Custom ${fit.ratio?.label ?: ""}".trim()
         }
         OptionRow("Screen", mode + if (ScreenFit.screenSize(context).second >= ScreenFit.SHARP_FROM) " · " + (if (fit.sharp) "Sharp" else "Standard") else "", { dialog = "screen" })
+        OptionRow("Haptics", haptics, { dialog = "haptics" })
+        SwitchRow("Magnifier", "While a finger is held on the game, shows what is under it, larger. Slide onto a small button, then lift. From the next time a game starts.", magnifier, framed = true) { on ->
+            Magnifier.setEnabled(context, on)
+            magnifier = on
+        }
         OptionRow("Language", GameLanguage.label(language), { dialog = "language" })
         if (icons.supported) OptionRow("App icon", if (icons.random) "Random, now ${icons.current.title}" else icons.current.title, { dialog = "icon" }) { IconImage(icons.current, 36) }
     }
     when (dialog) {
         "screen" -> ScreenDialog { dialog = null; fit = ScreenFit.load(context) }
+        "haptics" -> HapticsDialog { dialog = null; haptics = hapticsValue(context) }
         "language" -> FtlDialog("Language", { dialog = null }, { FtlButton("Cancel", { dialog = null }) }) {
             Txt("The game's language, from the next time a game starts. This launcher stays in English.", Ftl.small)
             val shown = GameLanguage.CHOICES + listOfNotNull(language?.takeIf { code -> code != "en" && GameLanguage.CHOICES.none { it.first == code } }?.let { it to it })
@@ -302,6 +323,40 @@ private fun SavesSection(onChanged: () -> Unit, onClose: () -> Unit) {
     files.dialogs()
 }
 
+/** Check for updates (now, whatever the switch) and the automatic check's switch (docs/ANDROID.md, "Updates"). */
+@Composable
+private fun UpdatesSection() {
+    val context = LocalContext.current
+    val updates = FtlApplication.app.updates
+    val scope = rememberCoroutineScope()
+    var auto by remember { mutableStateOf(updates.auto) }
+    var checking by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<UpdateCheck.Result?>(null) }
+    Panel(tab = "Updates") {
+        val mine = updates.current
+        OptionRow("Check for updates", when (val r = result) {
+            null -> if (checking) "Version $mine · asking GitHub…" else "Version $mine · tap to check now"
+            UpdateCheck.Result.UpToDate -> "Version $mine · You have the latest version"
+            is UpdateCheck.Result.Available -> "Version ${r.release.version} is available (you have $mine)"
+            is UpdateCheck.Result.Failed -> "Version $mine · ${r.reason}"
+        }, {
+            if (!checking) {
+                checking = true
+                result = null
+                scope.launch {
+                    result = withContext(Dispatchers.IO) { updates.checkNow() }
+                    checking = false
+                }
+            }
+        })
+        (result as? UpdateCheck.Result.Available)?.let { a -> FtlButton("Download", { Updates.open(context, a.release) }, kind = ButtonKind.PRIMARY) }
+        SwitchRow("Check for updates automatically",
+            if (auto) "On. Once a day the launcher asks GitHub whether a newer version is out. Only this app's version is sent, nothing about you or this device."
+            else "Off: no request is made. Check for updates asks GitHub when you tap it.",
+            auto, framed = true) { on -> updates.auto = on; auto = on }
+    }
+}
+
 @Composable
 private fun LogSection() {
     val context = LocalContext.current
@@ -353,5 +408,11 @@ private fun LogSection() {
             FtlButton("Clear", { DebugLog.clear(); tick++ }, kind = ButtonKind.GHOST, enabled = bytes > 0)
         }
         problem?.let { Txt(it, Ftl.small.copy(color = Ftl.error)) }
+        // docs/CONSOLE.md: the debug console and its floating >_ button, from the next game started
+        var console by remember { mutableStateOf(ftl.android.app.game.ConsoleButton.enabled(context)) }
+        SwitchRow("Enable debug console",
+            if (console) "On. A >_ button over the game opens the console; drag it where it suits you. Its commands can change your profile for good, and that syncs."
+            else "For testing: a console for cheats and test commands during a run. Takes effect when a game starts.",
+            console) { console = it; ftl.android.app.game.ConsoleButton.setEnabled(context, it) }
     }
 }

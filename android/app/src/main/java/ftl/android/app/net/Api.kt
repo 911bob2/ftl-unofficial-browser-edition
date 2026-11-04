@@ -221,4 +221,13 @@ class Api(val base: String, private val identity: Identity, private val secure: 
     fun unlock(id: String) {
         request("POST", "/api/saves/$id/unlock")
     }
+
+    /** The save's recovery snapshots, newest first. */
+    fun snapshots(id: String): List<ftl.saves.Snapshot> = ftl.saves.Snapshots.parse(request("GET", "/api/saves/$id/snapshots").json)
+
+    /** Makes a snapshot the save's newest revision (this device must hold the lock); the new revision. */
+    fun restore(id: String, revision: Long, current: Long): Long {
+        val r = request("POST", "/api/saves/$id/snapshots/$revision/restore", null, mapOf("If-Match" to "\"$current\""))
+        return ((r.json as Json.Obj)["revision"] as Json.Num).value.toLong()
+    }
 }

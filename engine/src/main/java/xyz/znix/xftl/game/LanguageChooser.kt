@@ -98,8 +98,8 @@ object LanguageSwitch {
  * it on black under "choose_language" (font 12, centred on 640 at 165); once a language is picked CApp::OnLoop
  * runs OnLanguageChange and MainMenu::Open.
  *
- * Automated runs (navigator.webdriver) stand for the reference captures' setup, whose settings.ini already has
- * `language=en`, so they start at the main menu as before.
+ * Automated runs (navigator.webdriver, and the Tests page's temporary runs) stand for the reference captures' setup,
+ * whose settings.ini already has `language=en`, so they start at the main menu as before.
  */
 class LanguageSelectState(private val main: MainGame) : MainGame.GameState() {
     private lateinit var context: SettingsContext

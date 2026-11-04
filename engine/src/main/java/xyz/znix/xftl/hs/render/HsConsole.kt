@@ -1,6 +1,6 @@
 // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/UserInterface/CommandConsole.cpp (CommandConsole::RunCommand,
-// the CommandGui::KeyDown / InputBox::StartInput / TextEvent / TextInput / OnRender hooks, PrintHelper stays in HsLua.kt)
-// and the original 1.6.14 InputBox / CommandGui::RunCommand (command words read from the executable, behaviour fixed by
+// the CommandGui::RunCommand and MouseControl::OnRender hooks; the input box is the port's DebugConsole, PrintHelper stays
+// in HsLua.kt) and the original 1.6.14 CommandGui::RunCommand (command words read from the executable, behaviour fixed by
 // oracle sessions wp7-ui-console / wp7-ui-misc); the browser engine is AGPL-3.0, see docs/HYPERSPACE.md.
 package xyz.znix.xftl.hs.render
 
@@ -10,7 +10,6 @@ import xyz.znix.xftl.crew.CrewBlueprint
 import xyz.znix.xftl.crew.LivingCrew
 import xyz.znix.xftl.crew.LivingCrewInfo
 import xyz.znix.xftl.crew.Skill
-import xyz.znix.xftl.f
 import xyz.znix.xftl.game.GameOverWindow
 import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.hs.HS
@@ -22,143 +21,19 @@ import xyz.znix.xftl.hs.ship.HsAchievements
 import xyz.znix.xftl.hs.ship.HsShipUnlocks
 import xyz.znix.xftl.hs.ship.HsStores
 import xyz.znix.xftl.rendering.Colour
-import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.rendering.NativeFonts
-import xyz.znix.xftl.sys.Input
 import xyz.znix.xftl.weapons.AbstractWeaponBlueprint
 import xyz.znix.xftl.weapons.DroneBlueprint
 
 /**
- * Hyperspace's command console (`<console enabled="true"/>`): the `console` hotkey (default `\`) opens the original's
- * InputBox (a 530x260 window frame at (356, 210), "Command Prompt:" and a left-aligned text line with a 1 px cursor),
- * which pauses the game like any focus window. Return runs the text through [run] (HS's RunCommand first, then the
- * original's own commands) in the next frame once no event box is open, Escape cancels, Up recalls the history.
- *
- * Gated as HS gates it (CommandGui::KeyDown hook): the option on, no write-error dialog / menu / game over screen /
- * jump / open focus window, and the console key not also the options key. Under Hyperspace the port's own
- * development console does not open on backtick (that is HS's `speed` hotkey).
+ * Hyperspace's command console commands (CommandConsole::RunCommand) and the original's (CommandGui::RunCommand), as the
+ * one debug console runs them ([xyz.znix.xftl.devutil.ConsoleRegistry], docs/CONSOLE.md). The console itself is the
+ * port's DebugConsole: HS's InputBox (the 530x260 "Command Prompt:" box) is not drawn any more. Without Hyperspace the
+ * commands that make sense in vanilla run on vanilla's own data (the original's EVENT, SYS, ACH; LOADEVENT through the
+ * base event), and the ones that need HS answer so before they get here.
  */
 object HsConsole {
-    /** InputBox::bOpen. */
-    @JvmField var open = false
-
-    /** InputBox::finished: Return was pressed and the command waits for [update]. */
-    private var finished = false
-
-    private var text = ""
-    private var cursor = 0
-
-    /** For the diagnostics probe: the box and its text. */
-    @JvmStatic fun debugState(): String = "open=$open text=$text cursor=$cursor"
-    private val history = ArrayList<String>()
-    private var historyIndex = 0
-
-    /** TextInput's blink timer (1 s, restarted when the cursor moves). */
-    private var blink = 0f
-    private var blinkCursor = -1
-
-    private const val MAX_LENGTH = 480
-    private const val X = 381
-    private const val Y = 235
-
     private var squishy = ""
-
-    /** `CommandConsole::enabled`. */
-    @JvmStatic
-    fun enabled() = HS.active && HS.cfg().consoleEnabled
-
-    @JvmStatic
-    fun reset() {
-        open = false; finished = false; text = ""; cursor = 0; history.clear(); historyIndex = 0; squishy = ""
-    }
-
-    /**
-     * CommandGui::KeyDown hook for the `console` hotkey: opens the box when HS would (InputBox::StartInput: the text
-     * is cleared, the history gets "LOAD PIRATE" first if empty and the index points at its last entry).
-     */
-    @JvmStatic
-    fun tryOpen(game: InGameState, optionsKey: Boolean) {
-        if (!enabled() || open) return
-        if (game.shipUI.isWindowOpen || game.player?.browserJumping == true || optionsKey) return
-        open = true; finished = false; text = ""; cursor = 0
-        if (history.isEmpty()) history += "LOAD PIRATE"
-        historyIndex = history.size - 1
-    }
-
-    private fun choiceBoxOpen(game: InGameState) = game.shipUI.hsChoiceBoxOpen()
-
-    /**
-     * CEvent text events and typed characters while the box is open (CommandGui::OnTextEvent / OnTextInput ignore them
-     * while an event box is open). Returns true when the key was consumed.
-     */
-    @JvmStatic
-    fun key(game: InGameState, key: Int, c: Char): Boolean {
-        if (!open) return false
-        if (finished || choiceBoxOpen(game)) return true
-        when (key) {
-            Input.KEY_ENTER -> {
-                finished = true
-                if (history.size > 50) history.clear()
-                history += text
-            }
-            Input.KEY_ESCAPE -> { text = ""; cursor = 0; finished = true }
-            Input.KEY_BACK -> if (cursor > 0) { text = text.removeRange(cursor - 1, cursor); cursor-- }
-            Input.KEY_DELETE -> if (cursor < text.length) text = text.removeRange(cursor, cursor + 1)
-            Input.KEY_LEFT -> cursor = (cursor - 1).coerceAtLeast(0)
-            Input.KEY_RIGHT -> cursor = (cursor + 1).coerceAtMost(text.length)
-            Input.KEY_HOME -> cursor = 0
-            Input.KEY_END -> cursor = text.length
-            Input.KEY_UP -> {
-                if (history.isNotEmpty()) {
-                    text = history[historyIndex.coerceIn(0, history.size - 1)]
-                    cursor = text.length
-                    historyIndex = if (historyIndex > 0) historyIndex - 1 else history.size - 1
-                }
-            }
-            else -> if (c.code >= 32 && c.code != 127 && text.length < MAX_LENGTH) {
-                var ch = c
-                if (HS.cfg().consoleInvertCaps) {
-                    if (ch in 'a'..'z') ch -= 32 else if (ch in 'A'..'Z') ch += 32
-                }
-                text = text.substring(0, cursor) + ch + text.substring(cursor)
-                cursor++
-            }
-        }
-        return true
-    }
-
-    /** CommandGui::OnLoop: a finished box closes and a non-empty text runs, once no event box is open. */
-    @JvmStatic
-    fun update(game: InGameState, delta: Float) {
-        if (!open) return
-        if (cursor != blinkCursor) { blinkCursor = cursor; blink = 0f }
-        blink += delta
-        if (blink > 1f) blink = 0f
-        if (!finished || choiceBoxOpen(game)) return
-        open = false; finished = false
-        val command = text
-        text = ""; cursor = 0
-        if (command.isNotEmpty()) run(game, command)
-    }
-
-    /** InputBox::OnRender (CommandConsole.cpp hook). */
-    @JvmStatic
-    fun draw(game: InGameState, g: Graphics) {
-        if (!open) return
-        game.windowRenderer.render(X - 25, Y - 25, 530, 260)
-        val font = NativeFonts.font(game::getFont, 8)
-        val white = Colour.white
-        // freetype::easy_printAutoNewlines(8, 381, 235, 490, mainText)
-        val lines = font.font.wrapString("Command Prompt:", 490)
-        lines.forEachIndexed { i, line -> font.print(X.f, (Y + i * font.lineHeight).f, line, white) }
-        val top = Y + 20
-        if (text.isNotEmpty()) font.print(X.f, top.f, text, white)
-        // TextInput::OnRender: the cursor bar (255, 255, 50), 1 px wide after HS's GL_DrawRect hook, over the middle 80 % of the line
-        if (blink < 0.5f) {
-            g.colour = Colour(255, 255, 50)
-            g.fillRect((X + font.advance(text.take(cursor))).f, top + 2f, 1f, 12f)
-        }
-    }
 
     /** The SQUISHY text (MouseControl::OnRender hook): right aligned at the top right in font 51. */
     @JvmStatic
@@ -178,7 +53,7 @@ object HsConsole {
     fun run(game: InGameState, command: String) {
         if (runHs(game, command)) return
         runVanilla(game, command)
-        if (command.uppercase() == "GOD") {
+        if (HS.active && command.uppercase() == "GOD") {
             // HS: PowerManager currentPower.second = the ship definition's maxReactorLevel
             val ship = game.player ?: return
             val max = xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name)?.maxReactorLevel
@@ -250,7 +125,7 @@ object HsConsole {
                 return true
             }
             name == "DEBUG" -> return true
-            command == "SHIP ALL" -> { HsShipUnlocks.unlockAllShips(); return true }
+            command == "SHIP ALL" -> { unlockAllShips(game); return true }
             name == "SHIP_CUSTOM" -> {
                 val ship2 = if (command.length > 11) arg(11) else ""
                 if (HsShipUnlocks.customShipHasUnlock(ship2)) HsShipUnlocks.unlockShip(ship2, false, true, false)
@@ -283,7 +158,11 @@ object HsConsole {
                 return true
             }
             name == "LOADEVENT" -> {
-                if (command.length > 10) HsFlow.loadEvent(game, game.shipUI.hsHost, arg(10), true, -1, null)
+                if (command.length > 10) {
+                    if (game.eventManager.hs != null) HsFlow.loadEvent(game, game.shipUI.hsHost, arg(10), true, -1, null)
+                    // vanilla: CustomEventsParser::LoadEvent without aliases or load lists is GetBaseEvent, then UpdateLocation
+                    else baseEvent(game, arg(10))?.let { game.shipUI.hsHost.hsUpdateLocation(it) }
+                }
                 return true
             }
             name == "CREDITS" || name == "VICTORY" -> {
@@ -293,7 +172,7 @@ object HsConsole {
             }
             name == "VARIABLE" || name == "VAR" -> { variable(command, HsEvents.playerVariables); return true }
             name == "METAVARIABLE" || name == "METAVAR" || name == "MVAR" -> { variable(command, HsEvents.metaVariables); return true }
-            name == "ACH" && command.length > 3 -> { HsAchievements.setAchievement(arg(4), false); return true }
+            name == "ACH" && command.length > 3 -> { achievement(game, arg(4)); return true }
             name == "ACH_LOCK" && command.length > 8 -> { HsAchievements.removeAchievement(arg(9)); return true }
             name == "SWITCHALL" && command.length > 9 -> { HsSwitchShip.switchShipTransfer(game, arg(10), 1); return true }
             name == "SWITCH" && command.length > 6 -> { HsSwitchShip.switchShip(game, arg(7)); return true }
@@ -315,6 +194,33 @@ object HsConsole {
         }
     }
 
+    /** The original's base event of [name] at this sector's level, unique ones too (GetBaseEvent; vanilla runs). */
+    private fun baseEvent(game: InGameState, name: String): xyz.znix.xftl.sector.CreatedEvent? {
+        val root = game.eventManager.getOrNull(name) ?: return null
+        return game.eventCreator.createSeeded(root, HsFlow.level(game), true, -1)
+    }
+
+    /**
+     * ACH: HS's CustomAchievementTracker::SetAchievement; without HS the original's AchievementTracker::SetAchievement
+     * (CommandGui::RunCommand's ACH) at the run's difficulty.
+     */
+    private fun achievement(game: InGameState, name: String) {
+        if (HS.active) { HsAchievements.setAchievement(name, false); return }
+        val ach = game.content.achievements.achievements[name] ?: return
+        game.mainGame.profile.unlockAchievement(ach, game.difficulty)
+    }
+
+    /**
+     * SHIP ALL: CustomShipUnlocks::UnlockAllShips (ShipUnlocks.cpp): every layout of every vanilla ship
+     * (ScoreKeeper::UnlockShip(id, type, true, true), no popups), then the mod's own ships.
+     */
+    private fun unlockAllShips(game: InGameState) {
+        val profile = game.mainGame.profile
+        for (family in game.content.shipFamilies.families) for (layout in family.ships)
+            profile.unlockLayout(layout, xyz.znix.xftl.game.Difficulty.EASY, popup = false)
+        if (HS.active) HsShipUnlocks.unlockAllShips()
+    }
+
     /** SYS ALL: every vanilla system, temporal and the custom ones the ship lacks and nothing replaces. */
     private fun sysAll(ship: Ship) {
         val ids = (0 until 16) + listOf(xyz.znix.xftl.hs.systems.HsSystems.SYS_TEMPORAL) +
@@ -326,6 +232,13 @@ object HsConsole {
     private fun addSystem(ship: Ship, id: Int) {
         val name = xyz.znix.xftl.hs.systems.HsSystems.idToName(id)
         if (name.isEmpty() || ship.systems.any { it.codename == name }) return
+        if (!HS.active) {
+            // vanilla AddSystem: the room the layout has for it, while nothing else is there
+            val slot = ship.systemSlots.firstOrNull { it.system.name == name && it.room.system == null } ?: return
+            slot.room.setSystem(slot)
+            slot.room.system?.let { ship.browserPowerNewSystem(it) }
+            return
+        }
         if (xyz.znix.xftl.hs.systems.HsSystemInstall.willReplace(ship, name) != null) return
         xyz.znix.xftl.hs.lua.LuaAdaptersWP5Ship.luaAddSystem(ship, id)
     }
@@ -375,8 +288,8 @@ object HsConsole {
             }
             "EXIT" -> game.shipUI.openSectorMap()
             "EVENT" -> consoleEvent(game, rest)
-            "SHIP" -> if (rest.uppercase() == "ALL") HsShipUnlocks.unlockAllShips()
-            "ACH" -> HsAchievements.setAchievement(rest, false)
+            "SHIP" -> if (rest.uppercase() == "ALL") unlockAllShips(game)
+            "ACH" -> achievement(game, rest)
             else -> printf("unknown command")
         }
     }
@@ -389,7 +302,7 @@ object HsConsole {
      * sw2-ebtn: the start beacon's station is gone after EVENT WP7R_BTN).
      */
     private fun consoleEvent(game: InGameState, name: String) {
-        val created = HsFlow.getEvent(game, name, true, -1) ?: return
+        val created = (if (game.eventManager.hs != null) HsFlow.getEvent(game, name, true, -1) else baseEvent(game, name)) ?: return
         HsFlow.beforeCreateLocation(null)
         game.clearLocation()
         val beacon = game.currentBeacon ?: return

@@ -81,8 +81,33 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
    const back=await restarted.newPage();await back.goto(origin);await ready(back);
    assert.equal(await back.evaluate(()=>document.body.dataset.authState),'authenticated');assert.equal(await back.locator('#username').textContent(),user);
    check(name+': the sign-in survives a browser restart (only persistent cookies are kept)');
+   // Sign out always asks first (web/sign-out.mjs, the Android launcher's words): Cancel keeps the account.
+   const signedIn=p=>p.evaluate(async()=>(await fetch('/api/auth/me',{cache:'no-store'})).status===200);
+   await back.locator('#logout').click();await back.locator('dialog#logout-dialog[open]').waitFor();
+   assert.equal(await back.locator('#logout-dialog-title').textContent(),'Sign out?');assert.match(await back.locator('#logout-dialog').innerText(),/Sign in again to play this account's saves here\./);
+   assert.equal(await back.locator('#logout-dialog-warning').count(),0,'no unsynced line without unsynced progress');
+   assert.equal(await back.locator('#logout-dialog-no').textContent(),'Cancel');assert.equal(await back.locator('#logout-dialog-yes').textContent(),'Sign out');
+   await back.screenshot({path:'.build/sign-out/'+name.toLowerCase()+'-asked.png'});
+   await back.locator('#logout-dialog-no').click();await back.locator('#logout-dialog').waitFor({state:'detached'});
+   assert.equal(await back.evaluate(()=>document.body.dataset.authState),'authenticated');assert.equal(await signedIn(back),true,'Cancel keeps the account');
+   // A save of this account with progress the account does not have: the stronger line (offline, so it stays unsynced).
+   const account=await back.evaluate(()=>document.body.dataset.account);
+   await restarted.setOffline(true);
+   await back.evaluate(async account=>{const {deviceStore}=await import('/web/device-store.mjs');await deviceStore(account).put({id:'sign-out-unsynced',name:'Unsynced',setup:{mods:[]},createdUtc:new Date().toISOString(),meta:{},base:0,dirty:true,hasRun:true,run:'<xftlSaveGame/>',profile:null,hasProfile:false,nameDirty:false,overridden:null});},account);
+   await back.locator('#logout').click();await back.locator('dialog#logout-dialog[open]').waitFor();
+   assert.match(await back.locator('#logout-dialog-warning').textContent(),/^Your latest progress is saved on this device but not in your account yet\. It syncs the next time you sign in here\.$/);
+   await back.screenshot({path:'.build/sign-out/'+name.toLowerCase()+'-unsynced.png'});
+   await back.locator('#logout-dialog-no').click();await back.locator('#logout-dialog').waitFor({state:'detached'});
+   await back.evaluate(async account=>{const {deviceStore}=await import('/web/device-store.mjs');await deviceStore(account).remove('sign-out-unsynced');},account);
+   await restarted.setOffline(false);assert.equal(await signedIn(back),true);
+   // The other pages' header (web/shell.mjs) asks the same.
+   const other=await restarted.newPage();await other.goto(origin+'/Licenses');await other.locator('#logout').click();await other.locator('dialog#logout-dialog[open]').waitFor();
+   assert.equal(await other.locator('#logout-dialog-title').textContent(),'Sign out?');await other.screenshot({path:'.build/sign-out/'+name.toLowerCase()+'-licenses.png'});
+   await other.locator('#logout-dialog-no').click();await other.locator('#logout-dialog').waitFor({state:'detached'});assert.equal(await signedIn(other),true);await other.close();
+   check(name+': Sign out asks first on the play page and the other pages, Cancel keeps the account, unsynced progress adds the stronger line');
    // Sign out clears it; the mode cookie keeps the next visit on the sign-in screen.
-   await Promise.all([back.waitForEvent('load'),back.locator('#logout').click()]);await ready(back);assert.deepEqual(await visiblePanels(back),['login-panel']);
+   await back.locator('#logout').click();await back.locator('dialog#logout-dialog[open]').waitFor();
+   await Promise.all([back.waitForEvent('load'),back.locator('#logout-dialog-yes').click()]);await ready(back);assert.deepEqual(await visiblePanels(back),['login-panel']);
    assert.equal((await restarted.cookies()).some(c=>c.name==='ftl-local-'+port&&c.value),false);
    // Account panel
    const again=await restarted.newPage();await again.goto(origin);await ready(again);await again.locator('#login-form [name=username]').fill(user);await again.locator('#login-form [name=password]').fill(password);await again.locator('#login-form button[type=submit]').click();

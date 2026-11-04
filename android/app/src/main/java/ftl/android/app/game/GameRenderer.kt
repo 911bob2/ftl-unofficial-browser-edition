@@ -22,6 +22,9 @@ class GameRenderer(
     private val onError: (Throwable) -> Unit,
     private val onKeyboard: (Boolean, Int) -> Unit,
     private val onDropped: (List<String>) -> Unit,
+    /** Settings > Magnifier, or null when it is off (then nothing here looks at the fingers); [onMagnifier]: it came up. */
+    val magnifier: Magnifier? = null,
+    private val onMagnifier: () -> Unit = {},
 ) {
     private var lastDropped: List<String> = xyz.znix.xftl.savegame.MissingContent.dropped
     val events = ConcurrentLinkedQueue<Runnable>()
@@ -155,11 +158,67 @@ class GameRenderer(
         val b = (viewH - frameTop - shown.h * frameScaleY).toInt()
         GLES30.glBlitFramebuffer(0, 0, shown.w * pixels, shown.h * pixels, l, b, l + (shown.w * frameScaleX).toInt(), b + (shown.h * frameScaleY).toInt(),
             GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
+        magnifier?.let { m ->
+            val lens = m.lens(android.os.SystemClock.uptimeMillis(), area(shown))
+            if (m.appeared(lens)) {
+                if (ftl.android.app.BuildConfig.DEBUG) Log.i("FTL-Magnifier", "shown at ${lens!!.markX.toInt()},${lens.markY.toInt()} lens ${lens.x.toInt()},${lens.y.toInt()} ${lens.size.toInt()}")
+                onMagnifier()
+            }
+            if (lens != null) drawLens(lens, shown)
+        }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, shown.id)
         if (!readyReported) {
             readyReported = true
             onReady()
         }
+    }
+
+    /** Where the frame lies on the view. */
+    private fun area(f: Frame) = Magnifier.Area(frameLeft, frameTop, f.w * frameScaleX, f.h * frameScaleY)
+
+    /** A finger event for the magnifier, in view pixels (game thread, before the engine gets it). */
+    fun magnifierTouch(action: Int, id: Int, x: Float, y: Float, time: Long) {
+        val m = magnifier ?: return
+        val f = frame ?: return
+        m.touch(action, id, x, y, time, area(f))
+    }
+
+    /** The lens over the picture on the view: a frame, the frame's pixels around the finger twice as large, the touch mark. */
+    private fun drawLens(lens: Magnifier.Lens, shown: Frame) {
+        fun fill(x: Float, y: Float, w: Float, h: Float, r: Float, g: Float, b: Float) {
+            GLES30.glScissor(x.toInt(), (viewH - y - h).toInt(), w.toInt().coerceAtLeast(1), h.toInt().coerceAtLeast(1))
+            GLES30.glClearColor(r, g, b, 1f)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        }
+        GLES30.glEnable(GLES30.GL_SCISSOR_TEST)
+        val e = lens.border
+        fill(lens.x - e, lens.y - e, lens.size + 2 * e, lens.size + 2 * e, 0.55f, 0.85f, 0.95f)
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        // The picture's pixels around the finger: view pixels to the frame's (rows counted from the bottom in GL).
+        val fx = (lens.srcX - frameLeft) / frameScaleX * pixels
+        val fy = (lens.srcY - frameTop) / frameScaleY * pixels
+        val fw = lens.srcSize / frameScaleX * pixels
+        val fh = lens.srcSize / frameScaleY * pixels
+        val fullH = shown.h * pixels
+        GLES30.glBlitFramebuffer(fx.toInt(), (fullH - fy - fh).toInt(), (fx + fw).toInt(), (fullH - fy).toInt(),
+            lens.x.toInt(), (viewH - lens.y - lens.size).toInt(), (lens.x + lens.size).toInt(), (viewH - lens.y).toInt(),
+            GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
+        // The touch point: a dark-edged amber square ring.
+        GLES30.glEnable(GLES30.GL_SCISSOR_TEST)
+        val r = lens.markSize / 2
+        val t = (lens.border * 0.6f).coerceAtLeast(2f)
+        for ((grow, colour) in listOf(t to floatArrayOf(0f, 0f, 0f), 0f to floatArrayOf(1f, 0.85f, 0.3f))) {
+            val x0 = lens.markX - r - grow
+            val y0 = lens.markY - r - grow
+            val s = 2 * (r + grow)
+            val w = t + grow
+            fill(x0, y0, s, w, colour[0], colour[1], colour[2])
+            fill(x0, y0 + s - w, s, w, colour[0], colour[1], colour[2])
+            fill(x0, y0, w, s, colour[0], colour[1], colour[2])
+            fill(x0 + s - w, y0, w, s, colour[0], colour[1], colour[2])
+        }
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
     }
 
     private fun graphicsMemoryGone(): Boolean {

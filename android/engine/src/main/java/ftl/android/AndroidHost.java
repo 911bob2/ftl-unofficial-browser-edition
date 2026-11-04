@@ -29,6 +29,9 @@ public interface AndroidHost {
 
     default void toggleFullscreen() {}
 
+    /** Haptic feedback of the touch HUD: count ticks of a TouchHaptics kind, in one gesture step. Called on the game thread. */
+    default void haptic(int kind, int count) {}
+
     default void openUrl(String url) {}
 
     default void setWindowTitle(String title) {}

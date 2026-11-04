@@ -63,6 +63,16 @@ object LuaGraphics {
     fun reset() { textures.clear(); fonts.clear(); current.r = 1f; current.g = 1f; current.b = 1f; current.a = 1f }
 
     /**
+     * The game content was rebuilt (the tutorial and a run switch Advanced Edition) and the old one's images freed: the
+     * textures the scripts hold (MV's speed buttons, the tutorial's Continue base) take the new content's images on
+     * their next use, as FTL's ResourceControl keeps one texture per image for the whole session.
+     */
+    @JvmStatic
+    fun contentReplaced() {
+        for (t in textures.values) if (t !== missingTexture) t.resolved = false
+    }
+
+    /**
      * ResourceControl::GetImageId: `img/<dir>`, cached per path. A missing image is FTL's shared 25x22 placeholder texture (oracle img-missing:
      * every missing name reads 25x22 and two missing names are the same texture); it has no pixels here.
      */

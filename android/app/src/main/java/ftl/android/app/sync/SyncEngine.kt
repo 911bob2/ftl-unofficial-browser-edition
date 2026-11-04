@@ -357,10 +357,58 @@ class SyncEngine(context: Context, private val account: Account, private val sto
         }
     }
 
+    // ---- recovery snapshots (Saves > ⋯ > Recovery snapshots) ----
+
+    class Unavailable(message: String) : IOException(message)
+
+    /** The save's snapshots; [Unavailable] offline or signed out. */
+    suspend fun snapshots(id: String): List<ftl.saves.Snapshot> {
+        val api = me ?: throw Unavailable(SNAPSHOTS_OFFLINE)
+        return try {
+            api.snapshots(id)
+        } catch (e: IOException) {
+            if (e is ApiError) throw e
+            throw Unavailable(SNAPSHOTS_OFFLINE)
+        }
+    }
+
+    /**
+     * Restores a snapshot as the website does: takes the lock (never from another device), makes the snapshot the
+     * newest revision and replaces this device's copy with it, unsynced progress too; then gives the lock back.
+     * [LockResult.Held] when another device has the save open.
+     */
+    suspend fun restore(id: String, revision: Long): LockResult? = mutex.withLock {
+        val api = me ?: throw Unavailable(SNAPSHOTS_OFFLINE)
+        try {
+            val current = api.save(id).cloud.revision
+            try {
+                api.lock(id, false)
+            } catch (e: ApiError) {
+                val lock = LockInfo.fromJson(e.body?.get("lock"))
+                if ((e.code == "locked" || e.code == "lock_overridden") && lock != null) return@withLock LockResult.Held(lock)
+                throw e
+            }
+            try {
+                api.restore(id, revision, current)
+                val (c, run, profile) = api.save(id)
+                if (store.get(id) == null) store.put(ftl.saves.Snapshots.restored(null, c, run, profile))
+                else store.update(id) { ftl.saves.Snapshots.restored(it, c, run, profile) }
+                updateState { it.copy(cloud = it.cloud + (id to c), decisions = it.decisions + (id to SyncDecision(ftl.saves.SyncStatus.SYNCED, SyncAction.NONE))) }
+            } finally {
+                if (playing != id) runCatching { api.unlock(id) }
+            }
+            null
+        } catch (e: IOException) {
+            if (e is ApiError) throw e
+            throw Unavailable("Connect to the internet to restore a recovery snapshot.")
+        }
+    }
+
     fun lockState(cloud: CloudSave?): LockState = Locks.state(cloud?.lock, instanceId)
 
     private companion object {
         const val RETRY_FIRST = 15_000L
         const val RETRY_MAX = 10 * 60_000L
+        const val SNAPSHOTS_OFFLINE = "Recovery snapshots are kept in your account. Connect to the internet to see them."
     }
 }

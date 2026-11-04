@@ -27,6 +27,7 @@ export async function createHsLua(wasm, host, files = null) {
   const env = {
     log: (kind, p, len) => h.log(kind, dec.decode(view().subarray(p, p + len))),
     now: () => performance.now(),
+    epoch: () => Date.now(),
     rand32: () => h.rand32(),
     srand32: seed => h.srand32(seed),
     getn: h.getn,

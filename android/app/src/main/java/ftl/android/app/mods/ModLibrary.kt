@@ -36,6 +36,8 @@ class ModLibrary(root: File, assets: AssetManager) {
     /** The website's pinned catalogue (web/mods/catalogue.json, bundled). */
     private val catalogueJson = runCatching { assets.open("site/catalogue.json").use { it.readBytes().decodeToString() } }.getOrNull()
     val catalogue: List<CatalogueFile> = runCatching { Catalogue.parse(catalogueJson!!) }.getOrDefault(emptyList())
+    /** The catalogue's presets as setups (Multiverse, Hyperspace alone). */
+    val presets: List<ftl.saves.NativeSave.Preset> = catalogueJson?.let { ftl.saves.NativeSave.presets(it) } ?: emptyList()
 
     /** The catalogue's official MEGA links, by catalogue id (Multiverse). */
     val megaLinks: Map<String, String> = runCatching {
@@ -45,6 +47,33 @@ class ModLibrary(root: File, assets: AssetManager) {
             o["mega"].str()?.let { id to it }
         }.toMap()
     }.getOrDefault(emptyMap())
+
+    /** The catalogue's Hyperspace file (mod "hyperspace") and its official release page. */
+    private val hyperspaceIds: Map<String, String?> = runCatching {
+        Json.parse(catalogueJson!!).objOrNull()?.get("files").arr().mapNotNull { f ->
+            val o = f.objOrNull() ?: return@mapNotNull null
+            if (o["mod"].str() == "hyperspace") (o["id"].str() ?: return@mapNotNull null) to o["page"].str() else null
+        }.toMap()
+    }.getOrDefault(emptyMap())
+    val hyperspace: CatalogueFile? = catalogue.firstOrNull { it.id in hyperspaceIds }
+    val hyperspacePage: String = hyperspace?.let { hyperspaceIds[it.id] } ?: "https://github.com/FTL-Hyperspace/FTL-Hyperspace/releases"
+    private val hyperspaceShas = catalogue.filter { it.id in hyperspaceIds }.map { it.sha256 }.toSet()
+    private val markers = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /** Whether an archive uses Hyperspace: data/hyperspace.xml (noted when it was added) or a patch of it (its file list). */
+    fun usesHyperspace(mod: Mod): Boolean = mod.hyperspace || markers.getOrPut(mod.sha256) {
+        runCatching { Zip.open(file(mod.sha256)).use { z -> HyperspaceRule.usesHyperspace(z.entries.map { it.name }) } }.getOrDefault(false)
+    }
+
+    fun isHyperspace(mod: Mod): Boolean = HyperspaceRule.isHyperspace(HyperspaceRule.Mod(mod.sha256, mod.title, false), hyperspaceShas)
+
+    /** Of these files (load order), the one that uses Hyperspace while Hyperspace.ftl is not among them; files not here are not looked into. */
+    fun withoutHyperspace(shas: List<String>): Mod? {
+        val all = list()
+        val mods = shas.mapNotNull { s -> all.firstOrNull { it.sha256 == s } }
+        val hit = HyperspaceRule.without(mods.map { HyperspaceRule.Mod(it.sha256, it.title, usesHyperspace(it)) }, hyperspaceShas) ?: return null
+        return mods.first { it.sha256 == hit.sha256 }
+    }
 
     class Mod(val file: ModFile, val title: String?, val hyperspace: Boolean, val source: String) {
         val sha256 get() = file.sha256

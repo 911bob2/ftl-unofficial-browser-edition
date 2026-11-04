@@ -29,6 +29,9 @@ public final class BrowserEngine {
 
     public static void toggleFullscreen() { AndroidHost.get().toggleFullscreen(); }
 
+    /** A haptic tick of the touch HUD (TouchHaptics): count ticks of one kind, played by the app. */
+    public static void haptic(int kind, int count) { AndroidHost.get().haptic(kind, count); }
+
     private static MainGame game;
     private static final Container container = new Container();
     private static Graphics graphics;
@@ -55,7 +58,8 @@ public final class BrowserEngine {
 
     public static void step(float dt) throws Exception {
         boolean hs = xyz.znix.xftl.hs.HS.luaActive && dt > 0;
-        float step = hs ? xyz.znix.xftl.hs.lua.LuaFps.onLoop(dt) : Math.min(dt, MAX_STEP);
+        // the console's SPEED sets speedLevel in any run (CFPS::OnLoop)
+        float step = hs || dt > 0 && xyz.znix.xftl.hs.lua.LuaFps.speedLevel != 0 ? xyz.znix.xftl.hs.lua.LuaFps.onLoop(dt) : Math.min(dt, MAX_STEP);
         if (hs) xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.frame(step);
         game.update(container, step);
         if (hs) xyz.znix.xftl.hs.lua.LuaEvents.onTick();
@@ -119,6 +123,16 @@ public final class BrowserEngine {
     public static boolean running() { return game != null; }
 
     public static boolean inFlight() { return game.isInFlight(); }
+
+    /** The launcher's "Enable debug console" switch (docs/CONSOLE.md): the console opens on ` and \ in every mode. */
+    public static void consoleConfig(boolean enabled) { xyz.znix.xftl.devutil.ConsoleGate.setting = enabled; }
+
+    /** The >_ button: closes the debug console when it is open (as Back does), opens it otherwise. */
+    public static void consoleToggle() {
+        if (game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state) {
+            if (state.isDebugConsoleVisible()) state.cancelMenu(); else state.openDebugConsole();
+        }
+    }
 
     public static void save() {
         if (game == null) return;

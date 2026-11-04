@@ -56,6 +56,7 @@ source (AGPL section 13).
 | [ftlman](https://github.com/afishhh/ftlman) 0.7.4: mod merge rules (`web/mods/merge.mjs`, `append.mjs`) and the Lua patch-script API (`hs-lua/ftlman.c`, `web/mods/lua.mjs`, in `web/vendor/ftlman-lua.wasm`) ported from its source | afishhh and ftlman contributors | GPL-2.0 (its `LICENSE`) |
 | [FTL Hyperspace](https://github.com/FTL-Hyperspace/FTL-Hyperspace) commit 1b05a07 (behaviour of release 1.23.2): Lua API tables and `%luacode` generated into `hs-lua/gen/` and `LuaApi.kt` from its SWIG `.i` files, and engine code ported from its sources (`xyz.znix.xftl.hs`) | FTL Hyperspace contributors | GPL-3.0-or-later |
 | [FTL Hyperspace](https://github.com/FTL-Hyperspace/FTL-Hyperspace) release v1.23.2 (commit db570d7), `Hyperspace.ftl` unmodified: offered for download by servers whose operator placed it (Mods panel); not in this repository or the image ([notice and credits](Hyperspace-NOTICE.md)) | FTL Hyperspace contributors | GPL-3.0-or-later ([text](GPL-3.0.txt)) |
+| [FTL Profile Editor](https://github.com/Vhati/ftl-profile-editor) | Vhati and contributors | GPL-2.0; read as a description of the save format only, no code used (`NativeSave`, `vanillasave.Native*` are our own) |
 | Android, JDK | Google / OpenJDK contributors | Android SDK & OpenJDK licenses |
 
 `libs/jorbis-core.jar` is JOrbis 0.0.17 repackaged (JOgg + JOrbis without the

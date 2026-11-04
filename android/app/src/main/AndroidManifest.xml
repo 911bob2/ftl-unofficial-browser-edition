@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Only for the Random app icon; its receiver stays disabled unless Random is chosen (docs/ANDROID.md). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Settings > Haptics: a tick when a system's power changes on the touch controls. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen.multitouch" android:required="false" />

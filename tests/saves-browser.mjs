@@ -100,7 +100,7 @@ for (const [name, type, options, users] of [['Chromium', chromium, {channel: 'ch
     const revision = c.revision;
     // The account becomes unreachable: the game goes on and every save lands in this browser.
     await a.route('**/api/saves**', r => r.abort());
-    await a.evaluate(() => window.ftlEngine.consoleExecute('rich')); await a.waitForFunction(() => JSON.parse(window.ftlEngine.debugSnapshot()).scrap === 5000);
+    await a.evaluate(() => window.ftlEngine.consoleExecute('dev-rich')); await a.waitForFunction(() => JSON.parse(window.ftlEngine.debugSnapshot()).scrap === 5000);
     const offline = await a.evaluate(() => window.ftlSaveDurably());
     assert.deepEqual([offline.saved, offline.synced], [true, false]);
     assert.equal((await deviceSave(a, id)).dirty, true); assert.equal((await deviceSave(a, id)).meta.summary.scrap, 5000);

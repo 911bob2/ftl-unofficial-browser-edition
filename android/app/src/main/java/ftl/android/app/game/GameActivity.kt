@@ -76,7 +76,10 @@ class GameActivity : Activity() {
             getSharedPreferences("checkpoints", Context.MODE_PRIVATE).edit().putString(name, xml).apply()
         }
         override fun checkpointGet(name: String): String? = getSharedPreferences("checkpoints", Context.MODE_PRIVATE).getString(name, null)
+        override fun haptic(kind: Int, count: Int) = haptics.play(kind, count)
     }
+    /** Settings > Haptics as it was when this game started. */
+    private val haptics by lazy { Haptics.load(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -171,6 +174,7 @@ class GameActivity : Activity() {
                 val s = session!!
                 val saved = app.store.get(s.id)
                 val run = saved?.run ?: s.runXml
+                BrowserEngine.consoleConfig(ConsoleButton.enabled(this))
                 BrowserEngine.start(run?.contains("enableAE=\"true\"") ?: true, run, saved?.profile ?: s.profileXml, app.store.settings())
             },
             onReady = { runOnUiThread { loading.visibility = View.GONE } },
@@ -186,6 +190,9 @@ class GameActivity : Activity() {
                         .show()
                 }
             },
+            // Settings > Magnifier as it was when this game started; its haptic is Settings > Haptics' Magnifier.
+            magnifier = Magnifier.forGame(Magnifier.enabled(this)),
+            onMagnifier = { haptics.play(xyz.znix.xftl.game.TouchHaptics.MAGNIFIER, 1) },
         )
         input = Input(renderer)
         view = GameView(this, renderer).apply {
@@ -201,13 +208,33 @@ class GameActivity : Activity() {
                 val (w, h) = fit.viewSize(frame.width, frame.height)
                 val now = view.layoutParams
                 if (now.width != w || now.height != h) view.layoutParams = FrameLayout.LayoutParams(w, h, Gravity.CENTER)
+                consoleButton?.place(frame.width, frame.height)
             }
         }
         frame.addView(view, 0, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER))
+        // The debug console's floating >_ button (launcher setting "Enable debug console", docs/CONSOLE.md).
+        if (ConsoleButton.enabled(this)) {
+            consoleButton = ConsoleButton(this) { view.queueEvent { if (BrowserEngine.running()) BrowserEngine.consoleToggle() } }
+            frame.addView(consoleButton)
+            frame.postDelayed(::watchFlight, 400)
+        }
         place()
         frame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> frame.post { place() } }
         AudioMixer.get().start()
         if (resumed) resumeGame()
+    }
+
+    private var consoleButton: ConsoleButton? = null
+
+    /** The >_ button shows while a run is on screen (not in the menus or the hangar). */
+    private fun watchFlight() {
+        val button = consoleButton ?: return
+        if (isDestroyed) return
+        if (resumed) view.queueEvent {
+            val flying = BrowserEngine.running() && BrowserEngine.inFlight()
+            runOnUiThread { button.visibility = if (flying) View.VISIBLE else View.GONE }
+        }
+        frame.postDelayed(::watchFlight, 400)
     }
 
     private var heartbeat: Job? = null
@@ -382,6 +409,7 @@ class GameActivity : Activity() {
         when {
             MemoryNotice.isOutOfMemory(e) -> dialog.setTitle(MemoryNotice.RAN_OUT_TITLE).setMessage(MemoryNotice.RAN_OUT_TEXT)
             e is ModLaunch.MissingMods -> dialog.setTitle(title).setMessage((e.message ?: "") + "\n\nYour last save is kept on this device.")
+            importFailure(e) != null -> dialog.setTitle("This import cannot be played").setMessage(importFailure(e) + "\n\nThe save keeps the files from the original game. Your other saves are not affected.")
             causedByTheRun(e) && id != null -> dialog.setTitle("This run cannot be loaded")
                 .setMessage("It is damaged, or it was made for other game files or mods, so this save cannot go on from it. Your other saves are not affected.\n\nYou can keep this save for now, or delete it.")
                 .setNegativeButton("Delete this save") { _, _ -> deleteAsked = id; finish() }
@@ -389,6 +417,16 @@ class GameActivity : Activity() {
                 "If this keeps happening, export the log from Settings, under Help, and send it with your report.\n\nDetails: " + (e.message ?: e.javaClass.simpleName))
         }
         dialog.show()
+    }
+
+    /** The reason a save imported from the original game does not convert (NativeImport.Failed), for the player. */
+    private fun importFailure(e: Throwable): String? {
+        var t: Throwable? = e
+        repeat(16) {
+            if (t is xyz.znix.xftl.vanillasave.NativeImport.Failed) return t?.message
+            t = t?.cause ?: return null
+        }
+        return null
     }
 
     private fun causedByTheRun(e: Throwable): Boolean {

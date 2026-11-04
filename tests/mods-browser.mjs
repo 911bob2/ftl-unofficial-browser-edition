@@ -455,6 +455,134 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     assert.deepEqual(await page.locator('#mods-panel [aria-label="Mod load order"] .mod-row strong').allTextContents(), ['F1 Content']);
     assert.equal(await page.locator('#launch-label').textContent(), 'Launch FTL with mods');
     pass('two accounts in one browser: B removes a shared file from its own list (kept for A), B deletes it with a warning and it leaves A\'s list too');
+
+    // 11. "Hyperspace mod without Hyperspace" (web/mods/hs-needed.mjs): a mod that patches hyperspace.xml, enabled without
+    // the catalogue's Hyperspace file (F1 Content stands in for it: mod "hyperspace"). One warning per start; Run anyway
+    // carries on; Enable Hyperspace asks before downloading (sign-in, unreachable catalogue and a failed download each say
+    // what to do), puts it first in the picker and carries on; an existing save changes its mods only in Advanced.
+    const shots = (process.env.MODS_SHOTS ?? '.build') + '/hs-warning-' + name + '-'; // MODS_SHOTS: a mounted folder to keep them
+    const usesHs = Buffer.from(zipSync({'mod-appendix/metadata.xml': [new TextEncoder().encode('<?xml version="1.0"?>\n<metadata><title>Uses HS</title><version>1</version></metadata>\n'), {level: 6}],
+      'data/hyperspace.xml.append': [new TextEncoder().encode('<hullBars><maxHull>20</maxHull></hullBars>'), {level: 6}]}, {mtime: new Date(Date.UTC(2026, 0, 2))}));
+    await openMods();
+    await deleteFile('f1-content', 'F1 Content');
+    await page.locator('#mods-panel input[aria-label="Choose mod archives"]').setInputFiles({name: 'uses-hs.zip', mimeType: 'application/zip', buffer: usesHs});
+    await page.locator('#mods-panel [data-hint="hyperspace-missing"]').waitFor();
+    assert.equal(await page.locator('#mods-panel [data-hint="hyperspace-missing"]').textContent(), 'Uses HS uses Hyperspace, but Hyperspace.ftl is not enabled: some Hyperspace images and text will be missing. Enable Hyperspace.ftl above it.');
+    await page.locator('#mods-panel').screenshot({path: shots + '1-hint.png'}).catch(() => {});
+    const hsShas = [sha(content.bytes), sha(usesHs)], hsSet = await modSetHash(hsShas), usesSet = await modSetHash([sha(usesHs)]);
+    const warned = () => page.locator('#hs-missing-dialog[open]');
+    let warnings = 0;
+    // Every warning shown, across page loads.
+    await page.exposeFunction('__hsWarned', () => { warnings++; });
+    const watch = () => { const go = () => new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if (n.id === 'hs-missing-dialog') window.__hsWarned(); }).observe(document.body, {childList: true}); if (document.body) go(); else document.addEventListener('DOMContentLoaded', go); };
+    await context.addInitScript(watch); await page.evaluate(watch);
+    // Cancel: nothing starts.
+    await page.locator('#launch').click(); await warned().waitFor();
+    assert.equal(await page.locator('#hs-missing-dialog-title').textContent(), 'Hyperspace mod without Hyperspace');
+    assert.match(await warned().innerText(), /Uses HS 1 needs Hyperspace\.ftl, Hyperspace's own data, loaded first\. Without it some Hyperspace images and text are missing\./);
+    assert.deepEqual(await warned().locator('button').allTextContents(), ['Cancel', 'Run anyway', 'Enable Hyperspace']);
+    await warned().screenshot({path: shots + '2-warning.png'}).catch(() => {});
+    await page.locator('#hs-missing-cancel').click(); await warned().waitFor({state: 'detached'});
+    assert.equal(await page.locator('dialog[open]').count(), 0); assert.equal(await hasModSave(usesSet), false);
+    // Run anyway: the start goes on (to "No save for ...", once), with the set as it is.
+    await page.locator('#launch').click(); await page.locator('#hs-missing-run').click();
+    await page.locator('#no-save-dialog[open]').waitFor();
+    assert.equal(warnings, 2, 'one warning per start');
+    await page.locator('#no-save-cancel').click(); await page.waitForFunction(() => !document.getElementById('no-save-dialog'));
+    pass('a mod using Hyperspace without Hyperspace.ftl: a quiet hint in the picker, the warning once per start (named mod, Enable Hyperspace / Run anyway / Cancel); Cancel starts nothing, Run anyway carries on');
+
+    // Enable Hyperspace while signed out of the catalogue, then with the catalogue unreachable: a next step each, nothing downloads.
+    const fetchedBefore = requests.filter(r => r.path.startsWith('/api/mods/files/')).length;
+    const signedOut = route => route.fetch().then(async r => { const c = await r.json(); for (const f of c.files) f.server = {available: false, reason: 'sign-in'}; return route.fulfill({response: r, json: c}); });
+    await page.route('**/api/mods/catalogue', signedOut); await play();
+    await page.locator('#launch').click(); await page.locator('#hs-missing-enable').click();
+    await page.locator('#hs-get-dialog[open]').waitFor();
+    assert.equal(await page.locator('#hs-get-dialog-title').textContent(), 'Sign in to download Hyperspace');
+    assert.match(await page.locator('#hs-get-dialog').innerText(), /F1 Content 1 \(f1-content\.ftl, 0\.0 MB\) is not in this browser\. Signed in, you can download it from this server\./);
+    assert.equal(await page.locator('#hs-get-dialog a').getAttribute('href'), 'https://example.invalid/f1-content.ftl');
+    assert.deepEqual(await page.locator('#hs-get-dialog button').allTextContents(), ['Cancel', 'Sign in']);
+    await page.locator('#hs-get-dialog').screenshot({path: shots + '3-signin.png'}).catch(() => {});
+    await page.locator('#hs-get-cancel').click();
+    await page.unroute('**/api/mods/catalogue', signedOut);
+    const unreachable = route => route.abort('internetdisconnected');
+    await page.route('**/api/mods/catalogue', unreachable); await play();
+    await page.locator('#launch').click(); await page.locator('#hs-missing-enable').click();
+    await page.locator('#hs-get-dialog[open]').waitFor();
+    assert.equal(await page.locator('#hs-get-dialog-title').textContent(), 'Hyperspace is not in this browser');
+    assert.match(await page.locator('#hs-get-dialog').innerText(), /cannot be reached right now/);
+    await page.locator('#hs-get-dialog').screenshot({path: shots + '4-offline.png'}).catch(() => {});
+    await page.unroute('**/api/mods/catalogue', unreachable);
+    await page.locator('#hs-get-retry').click();
+    await page.waitForFunction(() => document.getElementById('hs-get-dialog-title')?.textContent === 'Download Hyperspace?');
+    const asked = await page.locator('#hs-get-dialog').innerText();
+    assert.match(asked, /F1 Content 1 \(f1-content\.ftl, 0\.0 MB\) is not in this browser\. Download it from this server\?/); assert.match(asked, /Source: https:\/\/example\.invalid\/f1-content\.ftl/);
+    assert.deepEqual(await page.locator('#hs-get-dialog button').allTextContents(), ['Cancel', 'Download 0.0 MB']);
+    await page.locator('#hs-get-dialog').screenshot({path: shots + '5-download.png'}).catch(() => {});
+    await page.locator('#hs-get-cancel').click();
+    assert.equal(requests.filter(r => r.path.startsWith('/api/mods/files/')).length, fetchedBefore, 'nothing downloaded without Download');
+    pass('Enable Hyperspace without the file: signed out it offers Sign in and the official page; with the catalogue unreachable Try again; then it asks before downloading (size and source); Cancel downloads nothing');
+
+    // The download fails once (Try again), then Hyperspace is first in the picker and the start goes on with it.
+    const failing = route => route.abort('connectionreset');
+    await page.route('**/api/mods/files/f1-content', failing);
+    await page.locator('#launch').click(); await page.locator('#hs-missing-enable').click();
+    await page.locator('#hs-get-download').click();
+    await page.waitForFunction(() => document.getElementById('hs-get-dialog-title')?.textContent === 'Hyperspace did not download', {}, {timeout: 60000});
+    assert.deepEqual(await page.locator('#hs-get-dialog button').allTextContents(), ['Cancel', 'Try again']);
+    await page.locator('#hs-get-dialog').screenshot({path: shots + '6-failed.png'}).catch(() => {});
+    await page.unroute('**/api/mods/files/f1-content', failing);
+    await page.locator('#hs-get-retry').click();
+    await page.locator('#no-save-dialog[open]').waitFor({timeout: 60000});
+    assert.deepEqual(await page.locator('#mods-panel ol[aria-label="Mod load order"] .mod-row').evaluateAll(rs => rs.filter(r => r.dataset.enabled === 'true').map(r => r.querySelector('strong').textContent)), ['F1 Content', 'Uses HS']);
+    assert.equal(await page.locator('#mods-panel .mod-row[data-highlight="true"] strong').textContent(), 'F1 Content');
+    assert.equal(await page.locator('#mods-panel [data-hint="hyperspace-missing"]').count(), 0);
+    await page.screenshot({path: shots + '7-picker.png'}).catch(() => {});
+    await page.locator('#no-save-create').click();
+    await engineUp();
+    assert.equal(await page.evaluate(() => window.ftlModSession.hash), hsSet);
+    assert.equal(warnings, 5, 'still one warning per start');
+    pass('Enable Hyperspace: a failed download offers Try again; then F1 Content is enabled first and shown in the picker, and the start goes on with it ("No save for", Create save, the game)');
+
+    // An existing save of the set without Hyperspace: Enable Hyperspace leads to its Advanced mods, never changing them by itself.
+    await openMods(); await page.getByRole('checkbox', {name: 'Enable F1 Content'}).uncheck();
+    await page.waitForFunction(() => document.getElementById('launch-save-text').textContent === 'Save: none · uses-hs.zip');
+    await page.locator('#launch').click(); await page.locator('#hs-missing-run').click();
+    await page.locator('#no-save-create').click();
+    await engineUp();
+    const [plainSave] = await deviceSaves(usesSet);
+    assert.ok(plainSave, 'Run anyway made the save of the set as it is');
+    await saves();
+    await rowOf(plainSave.id).locator('[data-action="play"]').click();
+    await warned().waitFor();
+    assert.match(await warned().innerText(), new RegExp(plainSave.name + '[\\s\\S]*Saves > Advanced: mods', 'i')); // the save's name is the eyebrow (upper case)
+    await page.locator('#hs-missing-enable').click();
+    await page.locator('#hs-save-dialog[open]').waitFor();
+    assert.deepEqual(await page.locator('#hs-save-dialog button').allTextContents(), ['Cancel', 'New save with Hyperspace', 'Change this save\'s mods']);
+    await page.locator('#hs-save-dialog').screenshot({path: shots + '8-existing.png'}).catch(() => {});
+    await page.locator('#hs-save-advanced').click();
+    await page.locator('#save-mods-dialog[open]').waitFor();
+    assert.deepEqual(await page.locator('#save-mods-list .mod-row strong').allTextContents(), ['F1 Content', 'uses-hs.zip']);
+    assert.equal(await page.locator('#save-mods-added').textContent(), 'F1 Content is added first. Change the mods to keep it.');
+    assert.equal((await deviceSaves(usesSet)).length, 1, 'nothing changed before the player confirms');
+    await page.locator('#save-mods-dialog').screenshot({path: shots + '9-advanced.png'}).catch(() => {});
+    await page.locator('#save-mods-apply').click();
+    await engineUp();
+    assert.equal(await page.evaluate(() => window.ftlModSession.hash), hsSet);
+    assert.equal((await page.evaluate(async id => (await (await import('/web/device-store.mjs')).deviceStore(document.body.dataset.account).get(id)).setup.key, plainSave.id)), hsSet);
+    pass('an existing save without Hyperspace: Enable Hyperspace offers its Advanced mods (Hyperspace added first, applied only on confirm) or a new save; the save then starts with Hyperspace');
+
+    // New save: the warning at Create; Enable Hyperspace shows the change in the dialog, Create goes on.
+    await openMods(); await page.getByRole('checkbox', {name: 'Enable F1 Content'}).uncheck();
+    await page.waitForFunction(() => document.getElementById('launch-save-text').textContent === 'Save: none · uses-hs.zip');
+    await saves(); await openNew();
+    await page.locator('#new-save-name').fill('With HS'); await page.locator('#new-save-create').click();
+    await warned().waitFor(); await page.locator('#hs-missing-enable').click();
+    await page.waitForFunction(() => /Hyperspace\.ftl is enabled now/.test(document.getElementById('new-save-note')?.textContent));
+    assert.deepEqual((await shownMods()).map(t => t.trim()), ['F1 Content 1', 'uses-hs.zip']);
+    await page.locator('#new-save-dialog').screenshot({path: shots + '10-new-save.png'}).catch(() => {});
+    await page.locator('#new-save-create').click(); await page.waitForFunction(() => !document.getElementById('new-save-dialog'));
+    assert.ok((await deviceSaves(hsSet)).some(s => s.name === 'With HS'));
+    pass('New save: the warning at Create; Enable Hyperspace puts it first (shown in the dialog) and Create makes the save with it');
     assert.deepEqual(dialogs, [], 'no native prompt, confirm or alert');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

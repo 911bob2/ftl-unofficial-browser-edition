@@ -22,14 +22,24 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * A development console, to quickly do stuff like load events or get scrap.
+ * The debug console (docs/CONSOLE.md): one input line, the output above it and the command history on Up and Down. It
+ * runs the port's development commands and Hyperspace's console commands alike ([ConsoleRegistry]); the line edits as
+ * Hyperspace's TextInput does (Left, Right, Home, End, Backspace, Delete; at most 480 characters; a mod's
+ * `<console invertCaps="true"/>` swaps the case of typed letters).
  */
 class DebugConsole(var game: InGameState) {
     private val history = ArrayList<String>()
     private var historyCursor: Int = -1
 
     var continued: ContinuedCommand? = null
+
+    /** The line being typed; setting it puts the cursor at its end. */
     var input: String = ""
+        set(value) { field = value; cursor = value.length }
+
+    /** Where typing goes in [input]. */
+    var cursor: Int = 0
+        private set
 
     private var completion: AutoCompleter? = null
     private val parameterHints = ArrayList<String>()
@@ -37,7 +47,7 @@ class DebugConsole(var game: InGameState) {
 
     private val lines = ArrayList<ILine>()
 
-    val font = game.getFont("c&c")
+    val font by lazy { game.getFont("c&c") }
 
     private var flashTimer: Float = 0f
 
@@ -51,10 +61,13 @@ class DebugConsole(var game: InGameState) {
     var eventSearchMessageText = true
     var eventSearchOptions = true
 
-    val commands: List<Cmd> = listOf(
-        DebugCommands(this)
-        // TODO allow modded commands
-    ).flatMap { it.commands }
+    val commands: List<Cmd> = ConsoleRegistry.build(this)
+
+    /** For the diagnostics probes: the line and the cursor. */
+    fun debugState(open: Boolean): String = "open=$open text=$currentLine cursor=${if (historyCursor == -1) cursor else currentLine.length}"
+
+    /** The output lines as text, oldest first (grid lines joined by tabs). */
+    fun outputText(): List<String> = lines.map { it.text }
 
     private val prompt: String get() = continued?.prompt ?: PROMPT
 
@@ -75,10 +88,8 @@ class DebugConsole(var game: InGameState) {
 
         // Draw the prompt line
         val inputWithoutCursur = prompt + currentLine
-        var inputLine = inputWithoutCursur
-        if (flashTimer.rem(FLASH_TIME) > FLASH_TIME / 2) {
-            inputLine += "_"
-        }
+        val inputLine = inputWithoutCursur
+        val shownCursor = if (historyCursor == -1) cursor.coerceIn(0, currentLine.length) else currentLine.length
 
         // Draw the lighter auto-completion suggestion, if applicable
         // This is drawn under the main input line, so the cursor draws on top.
@@ -91,6 +102,9 @@ class DebugConsole(var game: InGameState) {
         }
 
         font.drawString(20f, y.f, inputLine, Colour.white)
+        if (flashTimer.rem(FLASH_TIME) > FLASH_TIME / 2) {
+            font.drawString(20f + font.getWidth(prompt + currentLine.take(shownCursor)), y.f, "_", Colour.white)
+        }
 
         // Draw the remaining (eg parameter name) hints
         for (hint in parameterHints) {
@@ -175,17 +189,30 @@ class DebugConsole(var game: InGameState) {
 
             Input.KEY_BACK -> {
                 selectHistory()
-                if (input != "") {
-                    input = input.substring(0, input.length - 1)
+                if (cursor > 0) {
+                    val at = cursor
+                    input = input.removeRange(at - 1, at)
+                    cursor = at - 1
                 }
             }
 
-            // On a desktop keyboard, delete is very close to enter so it's
-            // easy to press it to clear the current line.
+            // Delete takes the character after the cursor (HS's TextInput). At the end of the line it clears the line:
+            // on a desktop keyboard delete is very close to enter.
             Input.KEY_DELETE -> {
-                historyCursor = -1
-                input = ""
+                selectHistory()
+                if (cursor < input.length) {
+                    val at = cursor
+                    input = input.removeRange(at, at + 1)
+                    cursor = at
+                } else {
+                    input = ""
+                }
             }
+
+            Input.KEY_LEFT -> { selectHistory(); cursor = (cursor - 1).coerceAtLeast(0) }
+            Input.KEY_RIGHT -> { selectHistory(); cursor = (cursor + 1).coerceAtMost(input.length) }
+            Input.KEY_HOME -> { selectHistory(); cursor = 0 }
+            Input.KEY_END -> { selectHistory(); cursor = input.length }
 
             // Triggers autocompletion
             Input.KEY_TAB -> {
@@ -204,10 +231,23 @@ class DebugConsole(var game: InGameState) {
                 if (!font.supportsCharacter(c))
                     return
 
-                selectHistory()
-                input += c
+                type(c)
             }
         }
+    }
+
+    /** A typed character goes in at the cursor (HS's TextInput::OnTextInput, with the InputBox::TextInput hook's invertCaps). */
+    fun type(c: Char) {
+        selectHistory()
+        if (input.length >= MAX_LENGTH)
+            return
+        var ch = c
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.config?.consoleInvertCaps == true) {
+            if (ch in 'a'..'z') ch -= 32 else if (ch in 'A'..'Z') ch += 32
+        }
+        val at = cursor.coerceIn(0, input.length)
+        input = input.substring(0, at) + ch + input.substring(at)
+        cursor = at + 1
     }
 
     fun mousePressed(button: Int, x: Int, y: Int) {
@@ -287,7 +327,15 @@ class DebugConsole(var game: InGameState) {
         }
     }
 
-    fun execute(command: String) { input = command; runCommand() }
+    fun execute(command: String) { historyCursor = -1; input = command; runCommand() }
+
+    /** Closing the console drops the half-typed line, as Escape does in Hyperspace's box. */
+    fun closed() {
+        historyCursor = -1
+        input = ""
+        continued = null
+        completion = null
+    }
 
     private fun runCommand() {
         // Jump the scroll to the bottom when the player runs something.
@@ -324,9 +372,24 @@ class DebugConsole(var game: InGameState) {
         val args = input.split(' ').filter { it.isNotEmpty() }
         val command = args[0]
 
-        val cmd = commands.firstOrNull { it.name == command }
+        val cmd = ConsoleRegistry.find(commands, command)
         if (cmd == null) {
             addLine("Unknown command '${command}', see the help command")
+            return
+        }
+
+        if (cmd.needsHs && !xyz.znix.xftl.hs.HS.active) {
+            addLine(ConsoleRegistry.needsHsMessage(cmd.name))
+            return
+        }
+
+        // A Hyperspace or original command reads the whole line itself, as RunCommand does.
+        cmd.raw?.let { raw ->
+            try { raw(input.trimStart()) }
+            catch (ex: Exception) {
+                addLine("Command failed: ${ex.message}")
+                ftl.browser.BrowserDebug.event("console", "command.failed", "message", ex.toString())
+            }
             return
         }
 
@@ -396,7 +459,7 @@ class DebugConsole(var game: InGameState) {
         val paramIdx = partIdx - 1
 
         val commandName = input.substringBefore(' ')
-        val command = commands.firstOrNull { it.name == commandName }
+        val command = ConsoleRegistry.find(commands, commandName)
 
         // Add hints for all the remaining parameters
         if (command != null) {
@@ -946,7 +1009,13 @@ class DebugConsole(var game: InGameState) {
         val params: List<CmdParameter>,
         val isVarArg: Boolean,
         val func: (List<Any>) -> Unit,
-        val helpText: String
+        val helpText: String,
+        /** A Hyperspace or original command: gets the whole line instead of parsed arguments. */
+        val raw: ((String) -> Unit)? = null,
+        /** Answers [ConsoleRegistry.needsHsMessage] while no Hyperspace mod runs. */
+        val needsHs: Boolean = false,
+        /** The arguments as help shows them. */
+        val args: String = params.joinToString(" ") { it.name },
     )
 
     data class CmdParameter(
@@ -1008,16 +1077,19 @@ class DebugConsole(var game: InGameState) {
 
     // Represents a line of console output
     private interface ILine {
+        val text: String
         fun draw(x: Int, y: Int)
     }
 
     private inner class SimpleLine(val line: String) : ILine {
+        override val text get() = line
         override fun draw(x: Int, y: Int) {
             font.drawString(x.f, y.f, line, Colour.white)
         }
     }
 
     private inner class GridLine(val parts: List<String>, val positions: List<Int>) : ILine {
+        override val text get() = parts.joinToString("\t")
         override fun draw(x: Int, y: Int) {
             for ((index, part) in parts.withIndex()) {
                 val pos = positions[index]
@@ -1028,6 +1100,9 @@ class DebugConsole(var game: InGameState) {
 
     companion object {
         private const val PROMPT = "> "
+
+        /** HS's TextInput(480, ALLOW_ANY). */
+        const val MAX_LENGTH = 480
         private const val FLASH_TIME = 0.65f
 
         // TODO move this to somewhere in appdata (or platform equivalent) when we pick

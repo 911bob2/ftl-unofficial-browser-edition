@@ -254,9 +254,14 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         // (ShipSystem::CheckForRepower1 0x63ac40 leaves the odd total a battery or Zoltan loss produced as it is.)
         // A Zoltan bar that came on top of an even reactor share is the odd one, and natively it stays (SetBonusPower
         // 0x63b180 leaves the reactor power alone while it fits).
-        if (powerSelected.mod(2) == 1 && powerSelected != keptPowerAfterLoss && bonusOnTop == 0)
+        // A script's ShipSystem::IncreasePower(1) adds one bar per call (PowerManager::IncreasePower takes the amount
+        // as it is; HS CustomShips.cpp powers enemy shields over 10 levels one bar a call), so its odd total stays.
+        if (powerSelected.mod(2) == 1 && powerSelected != keptPowerAfterLoss && bonusOnTop == 0 && powerSelected != hsScriptPower)
             powerSelected -= 1
     }
+
+    /** The odd total a Hyperspace script set ([MainSystem.hsSetPower]), kept as it is; -1 for none. */
+    internal var hsScriptPower = -1
 
     /**
      * CheckForRepower1 (0x63ac40) repowers shields with a step of 1 from an odd total and 2 from an even one, and

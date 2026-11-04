@@ -1,6 +1,6 @@
 // The control bar above the engine: Console, Save, Fullscreen, Hide header and Save and close.
 // Everything here only drives buttons; saving and shutting down are injected by app.mjs.
-export function initGameBar({$,getEngine,save,saveAndClose,message}){
+export function initGameBar({$,getEngine,save,saveAndClose,message,consoleEnabled=()=>false}){
   const container=$('game-container'),bar=container.querySelector('.gamebar'),canvas=$('game');
   const fullscreenButton=$('fullscreen'),hideButton=$('hide-header'),showButton=$('show-header'),consoleButton=$('console'),closeButton=$('save-close');
   // The header is hidden only in fullscreen and returns with it. While hidden it slides in when the pointer
@@ -14,6 +14,8 @@ export function initGameBar({$,getEngine,save,saveAndClose,message}){
     if(!full){hidden=false;peek=false;}
     fullscreenButton.textContent=full?'Exit fullscreen':'Fullscreen';
     hideButton.hidden=!full;
+    // The Console button only with the Logs page's "Debug console" setting on (docs/CONSOLE.md).
+    consoleButton.hidden=!consoleEnabled();
     showButton.hidden=!hidden;
     container.classList.toggle('header-hidden',hidden);
     container.classList.toggle('header-peek',hidden&&peek);

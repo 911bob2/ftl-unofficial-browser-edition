@@ -146,13 +146,14 @@ object RunShape {
     fun check(xml: String): String? {
         var depth = 0
         var difficulty: String? = null
+        var wrapped = false
         val found = HashSet<String>()
         try {
             XmlScanner(xml).forEachTag { name, attrs, closing, selfClosing ->
                 if (closing) depth--
                 else {
-                    if (depth == 0) difficulty = attrs["difficulty"]
-                    if (depth == 1 && name in PARTS) found.add(name)
+                    if (depth == 0) { difficulty = attrs["difficulty"]; wrapped = attrs[NativeSave.ELEMENT] != null }
+                    if (depth == 1 && (name in PARTS || wrapped && name == NativeSave.ELEMENT)) found.add(name)
                     if (!selfClosing) depth++
                 }
             }
@@ -160,6 +161,8 @@ object RunShape {
             return "unreadable"
         }
         if (difficulty !in DIFFICULTIES) return "no difficulty"
+        // A run imported from the original game that the engine has not converted yet (NativeSave.wrapRun).
+        if (wrapped && found == setOf(NativeSave.ELEMENT)) return null
         return (PARTS - found).firstOrNull()?.let { "no $it" }
     }
 }

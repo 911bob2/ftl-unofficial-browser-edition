@@ -155,6 +155,7 @@ td button { margin-right: .4rem; }
 .mod-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .6rem; padding: .45rem 0; border-bottom: 1px solid #52676b; min-width: 0; }
 .mod-row .mod-name { overflow-wrap: anywhere; }
 .mod-row[data-enabled="false"] .mod-name { opacity: .6; }
+.mod-row[data-highlight="true"] { background: var(--site-accent-soft); box-shadow: inset 3px 0 0 var(--site-accent); padding-left: .5rem; }
 .mod-row .actions { margin: 0; }
 .mod-hints { margin: .4rem 0; padding-left: 1.2rem; list-style: disc; }
 .mod-heading { margin: 1.3rem 0 .2rem; font-size: 1rem; color: #d1e4e5; }
@@ -197,6 +198,10 @@ td button { margin-right: .4rem; }
 .menu-item:disabled { opacity: .5; cursor: not-allowed; }
 .save-dialog { width: min(420px, calc(100vw - 2rem)); }
 .save-dialog .field { display: grid; gap: .3rem; margin: .8rem 0; }
+#native-import-dialog { width: min(560px, calc(100vw - 2rem)); }
+.native-guide, .native-found { font-size: .9rem; }
+.native-guide .plain-list, .native-found .plain-list { gap: .4rem; margin: .4rem 0 .8rem; font-size: inherit; }
+.native-guide code { overflow-wrap: anywhere; }
 .new-save-mods { list-style: none; margin: 0; padding: .5rem .7rem; display: grid; gap: .35rem; opacity: .6; border: 1px solid rgba(255, 255, 255, .14); }
 .new-save-mods li { display: flex; align-items: center; gap: .5rem; }
 .dialog-foot { justify-content: space-between; align-items: center; margin-top: 1rem; }
@@ -286,31 +291,31 @@ td button { margin-right: .4rem; }
 .diagnostic-canvas { position: relative; display: flex; background: #000; min-height: 0; }
 .diagnostic-canvas #game { width: 100%; height: 100%; aspect-ratio: 16 / 9; }
 #preview-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 1rem; text-align: center; background: #000; color: #bfbfbf; pointer-events: none; }
-.diagnostic-results { display: flex; flex-direction: column; gap: .5rem; min-height: 0; height: 27rem; }
+.diagnostic-results { display: flex; flex-direction: column; gap: .5rem; min-height: 16rem; height: 27rem; resize: vertical; overflow: auto; }
 .diagnostic-progress { display: grid; gap: .4rem; }
 #test-status { overflow-wrap: anywhere; }
 .diagnostic-result-view { display: flex; flex: 1; flex-direction: column; gap: .5rem; min-height: 0; }
 .diagnostic-filter { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; }
 .diagnostic-filter label { display: flex; align-items: center; }
-.diagnostic-case-scroll { overflow: auto; min-height: 0; flex: 1; }
+.diagnostic-case-scroll { overflow: auto; min-height: 8rem; flex: 1; }
 .diagnostic-case-scroll table { font-size: .8rem; }
 .diagnostic-case-scroll th, .diagnostic-case-scroll td { padding: .5rem; }
 .diagnostic-case-scroll td:first-child { min-width: 9rem; overflow-wrap: anywhere; }
 .diagnostic-case-scroll td:not(:first-child) { white-space: nowrap; }
 .diagnostic-case-scroll button { text-align: left; text-decoration: underline; text-underline-offset: .2rem; }
 #case-detail { border-top: 1px solid var(--color-base-300); }
-#case-detail-output { max-height: 7rem; overflow: auto; }
+#case-detail-output { height: 7rem; min-height: 2rem; overflow: auto; resize: vertical; }
 #results { flex: 1; min-height: 0; overflow: auto; }
 @media (min-width: 1000px) and (min-height: 650px) {
   .diagnostics-page { height: 100dvh; min-height: 0; display: flex; flex-direction: column; }
   .diagnostics-page > .navbar { flex: none; }
   .diagnostics-main, #test-app { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .diagnostics-heading { flex: none; }
-  .diagnostics-workspace { flex: 1; min-height: 0; grid-template-columns: 18rem minmax(0,1fr); grid-template-rows: minmax(12rem,1.15fr) minmax(14rem,1fr); }
+  .diagnostics-workspace { flex: 1; min-height: 0; grid-template-columns: 18rem minmax(0,1fr); grid-template-rows: minmax(10rem,1fr) auto; }
   .diagnostic-controls { grid-column: 1; grid-row: 1 / 3; }
   .diagnostic-preview { grid-column: 2; grid-row: 1; min-height: 0; }
   .diagnostic-canvas { flex: 1; }
-  .diagnostic-results { grid-column: 2; grid-row: 2; height: auto; }
+  .diagnostic-results { grid-column: 2; grid-row: 2; height: 24rem; max-height: calc(100dvh - 18rem); }
 }
 
 .site-page .btn:disabled { opacity: .45; }

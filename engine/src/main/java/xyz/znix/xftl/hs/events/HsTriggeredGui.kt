@@ -207,6 +207,30 @@ object HsTriggeredGui {
         renderWarnings(game, g)
     }
 
+    /**
+     * One part of [render] (the touch layout places them apart): [PART_DEFAULT] the boxes of the top bar, [PART_SCRAP] the
+     * box over the scrap counter, [PART_TOP_RIGHT] the top-right boxes, [PART_WARNINGS] the warning messages.
+     */
+    @JvmStatic
+    fun renderPart(game: InGameState, g: Graphics, part: Int, mouseX: Int, mouseY: Int) {
+        if (HsTriggeredEvents.guiReset) createBoxes()
+        val list: List<Box> = when (part) {
+            PART_DEFAULT -> boxes
+            PART_SCRAP -> listOfNotNull(scrapBox)
+            PART_TOP_RIGHT -> topRightBoxes
+            else -> { renderWarnings(game, g); return }
+        }
+        if (list.isEmpty()) return
+        val flash = flashHigh(game)
+        for (b in list) renderBox(game, g, b, flash, 0, 0)
+        for (b in list) hover(game, g, b, mouseX, mouseY)
+    }
+
+    const val PART_DEFAULT = 1
+    const val PART_SCRAP = 2
+    const val PART_TOP_RIGHT = 3
+    const val PART_WARNINGS = 4
+
     /** CombatControl::RenderTarget (after the original): the combat boxes beside the enemy ship's box. */
     @JvmStatic
     fun renderCombat(game: InGameState, g: Graphics, boss: Boolean, mouseX: Int, mouseY: Int) {

@@ -176,6 +176,10 @@ object HsBackgroundObjects {
 
     // ---- definitions (CustomBackgroundObjectManager::defs / namedDefs), rebuilt with the event data ----
     private val defs = ArrayList<Def>()
+
+    /** The definition of an index as a run file of the original names it (vanillasave.NativeImport), or null. */
+    @JvmStatic
+    fun defAt(idx: Int): Def? = defs.getOrNull(idx)
     private val named = HashMap<String, Def>()
     private val byElement = java.util.IdentityHashMap<Element, Def>()
 

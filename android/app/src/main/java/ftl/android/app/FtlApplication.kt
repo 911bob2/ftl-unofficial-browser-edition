@@ -51,6 +51,8 @@ class FtlApplication : Application() {
         private set
     lateinit var sync: SyncEngine
         private set
+    /** Whether a newer release is out (docs/ANDROID.md, "Updates"). */
+    val updates by lazy { ftl.android.app.update.Updates.create(this) }
 
     override fun onCreate() {
         super.onCreate()

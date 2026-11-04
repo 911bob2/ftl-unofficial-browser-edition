@@ -112,7 +112,7 @@ try {
   await row(page, id).locator('[data-action="play"]').click(); await engineUp(page);
   await page.evaluate(() => window.ftlEngine.newRun('PLAYER_SHIP_HARD', 1)); await state(page, 'InGameState');
   await page.waitForTimeout(1000);
-  await page.evaluate(() => window.ftlEngine.consoleExecute('rich'));
+  await page.evaluate(() => window.ftlEngine.consoleExecute('dev-rich'));
   assert.equal((await page.evaluate(() => window.ftlSaveDurably())).saved, true);
   await saveAndClose(page);
 

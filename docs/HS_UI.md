@@ -22,10 +22,10 @@ that sits on its own line. `SILFontLoader.wrapPlain` indents the first line by a
 Verified in the HS oracle (`style1`, "2.   two leading spaces"). A native 1.6.14 row needs a fixture with such a
 text (none of the stock events has one): Left.
 
-## Console (CommandConsole.cpp, decision U4)
-`HsConsole`: 1:1 with HS, gated as HS gates it (option `console`, `enabled` in a hyperspace.xml, the `console` hotkey;
-no website button). Commands HULL, GOD, SYS, REMOVESYS, removeart, rename, aug, SQUISHY, LOADEVENT, STORE and so on;
-input box frames and effects match the oracle sessions `wp7-ui-console2`.
+## Console (CommandConsole.cpp)
+One debug console for vanilla and mods since round 17: [CONSOLE.md](CONSOLE.md) (commands, keys, the gating rule).
+`HsConsole` keeps HS's commands 1:1 (HULL, GOD, SYS, REMOVESYS, SQUISHY, LOADEVENT, STORE and so on); their effects match
+the oracle sessions `wp7-ui-console2`. HS's input box (its frames in those sessions) gave way to the port's console window.
 SWITCH / SWITCHALL (`HsSwitchShip`, `InGameState.hsRebuildPlayerShip`, WorldManager::SwitchShip / SwitchShipTransfer):
 SWITCH builds the player ship again from the blueprint (its crew, weapons, systems; scrap and fuel 0 unless the HS
 definition sets them; the blueprint's missiles, drone parts and reactor; cargo empty; a nameless blueprint reads
@@ -136,6 +136,26 @@ The Mouse shadow lives per frame as MouseControl does (sixth pass below).
 - A finished levelUp tracker is done and stopped with current_time 0 (AnimationTracker::Stop(false) 0x5bbef0; sw4-skill).
 - SettingValues:GetHotkeyName of a printable key is its character, upper case (the backslash key "\", not the
   engine's "# or \" label; swm hotkey rows).
+
+## Event buttons and the touch HUD (hs-hud round)
+- `<eventButton>` (EventButtons.cpp) in the browser = native: Multiverse's storage crate after the ship button (location 2),
+  jukebox (338,46), toggle (105,110) and More Info at the same pixels as oracle frame `arty-ceala/02-60s`; the speed control
+  (MV core.lua in FTL_BUTTON) too.
+- Save and load: the port numbers definitions as their events are parsed, so an index is not the same definition in another
+  session, and Multiverse has three `UI_STORAGE_CHECK_BUTTON` (two at location 2 with `top_storage`, one at 0 with
+  `top_storage_on`, which draws nothing). The save keeps name, location and image with the index and loading takes the
+  definition matching all three (then the index if its name matches, then the name). Before, a Continue could bring the
+  location-0 one back and the crate was gone (both builds).
+- The touch layout's place for these and other desktop HUD elements: [ANDROID.md](ANDROID.md#touch-controls).
+
+## Shield squares past four layers (vanilla and HS)
+- The status box has four squares; ShipStatus::RenderShields draws layer `i` from its charged/uncharged image row without
+  a bound, so layers 5-8 (16 bars, Multiverse's Sylvan Transport) draw over squares 1-4 again with the next row's image
+  (charged: uncharged image, uncharged: hacked image, hacked uncharged: hacked-charged image, hacked charged from the
+  sixth: the super-shield bar segments). Hyperspace does not hook this. Both HUDs draw it through `ShieldSquares`
+  (desktop and touch); before, the port drew squares 5-8 to the right of the box (over the fuel counter on touch).
+  Evidence: oracle session `.build/hs/reports/hs-hud-android/sessions/sh16h.json` (the player's shields raised to 16 by
+  Lua; the Sylvan switch itself hangs the oracle). The enemy's circles are Hyperspace's ten (CustomSuperShield.cpp).
 
 ## Left
 Not reachable or not in HS: rapidxml's memory_pool allocators (`%ignore memory_pool` in rapidxml.i), Animation Save/LoadState (need an FTL file

@@ -24,6 +24,7 @@ import xyz.znix.xftl.systems.Piloting
 import xyz.znix.xftl.systems.Sensors
 import xyz.znix.xftl.systems.Teleporter
 import xyz.znix.xftl.systems.Weapons
+import xyz.znix.xftl.weapons.AbstractWeaponInstance
 import xyz.znix.xftl.weapons.BeamBlueprint
 import xyz.znix.xftl.Utils
 import kotlin.math.abs
@@ -141,6 +142,12 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     private val hudButtons = listOf(jumpButton, shipButton, storeButton, optionsButton, pauseButton)
     private val storeHere get() = game.currentBeacon?.hasStore == true
 
+    /** The desktop HUD's other buttons and Hyperspace's elements (TouchExtras). */
+    val extras = TouchExtras(ui, game)
+
+    /** Where the top row's buttons end: the hazards go between here and the options button. */
+    private var topRowEnd = 0f
+
     private val labelFont = NativeFonts.font(game::getFont, 62)
     private val tabSmallFont = NativeFonts.font(game::getFont, 12)
     private val pauseFont = NativeFonts.font(game::getFont, 64)
@@ -162,6 +169,33 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val blank = img("statusUI/top_optionswrench_on.png").width <= 1
         optionsButton.x = if (blank) 910 else 968
         optionsButton.w = if (blank) 114 else 56
+        layOutExtras()
+    }
+
+    /**
+     * The top row as Hyperspace orders it (ShipStatus::OnLoop): jump, event buttons of location 1, ship, location 2, store,
+     * location 3, then 4 and the other top-bar pieces, all smaller when they would reach the options button. Then the
+     * rest of TouchExtras' places.
+     */
+    private fun layOutExtras() {
+        extras.sync()
+        extras.beginLayout()
+        val zones = listOf(TouchExtras.Zone.BEFORE_SHIP, TouchExtras.Zone.AFTER_SHIP, TouchExtras.Zone.AFTER_STORE, TouchExtras.Zone.TOP_END)
+        val need = zones.sumOf { extras.topWidth(it).toDouble() }.toFloat()
+        val fixed = SHIP_STEP + if (storeHere) STORE_STEP else 0f
+        val room = optionsButton.x - 8f - SHIP_X - fixed
+        val scale = if (need > room && need > 0f) maxOf(0.5f, room / need) else 1f
+        var x = extras.placeTop(TouchExtras.Zone.BEFORE_SHIP, SHIP_X.toFloat(), scale)
+        shipButton.x = x.roundToInt()
+        extras.placeTop(TouchExtras.Zone.SECOND_ROW, x, scale, 80f, 59f)
+        x = extras.placeTop(TouchExtras.Zone.AFTER_SHIP, shipButton.x + SHIP_STEP, scale)
+        if (storeHere) {
+            storeButton.x = (x + 3).roundToInt()
+            x = storeButton.x + STORE_STEP - 3
+        }
+        x = extras.placeTop(TouchExtras.Zone.AFTER_STORE, x, scale)
+        topRowEnd = extras.placeTop(TouchExtras.Zone.TOP_END, x, scale)
+        extras.placeRest(CREW_X, stationButtonsY + 50, CREW_X + 55 + 36, stationButtonsY, TouchMode.canvasW, hudX)
     }
 
     private fun doButtons() {
@@ -301,10 +335,10 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
             shipButton.pressed -> "select2"
             else -> "on"
         }
-        img("statusUI/top_ship_$ship.png").draw(610f, 1f)
+        img("statusUI/top_ship_$ship.png").draw(shipButton.x + 4f, 1f)
         ui.touchDrawInDanger(g)
         if (storeHere) {
-            drawTextTab(g, 687, "button_store", storeButton.pressed)
+            drawTextTab(g, storeButton.x - 6, "button_store", storeButton.pressed)
         }
         if (optionsButton.w == 56) {
             img(if (optionsButton.pressed) "statusUI/top_optionswrench_select2.png" else "statusUI/top_optionswrench_on.png").draw(968f, 1f)
@@ -400,16 +434,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
             else -> "ipad/statusUI/top_shields4_on.png"
         }).draw(-4f, 20f)
         if (shields != null) {
-            for (i in 0 until shields.selectedShieldBars) {
-                val charged = shields.activeShields > i
-                val name = when {
-                    hacked && charged -> "hacked_charged"
-                    hacked -> "hacked"
-                    charged -> "on"
-                    else -> "off"
-                }
-                img("statusUI/top_shieldsquare1_$name.png").draw(3f + 23 * i, 24f)
-            }
+            ShieldSquares.render(game, g, shields.activeShields, shields.selectedShieldBars, hacked, 3f, 24f, 6f, 56f)
             when {
                 ship.superShield != 0 -> {
                     g.colour = Constants.SYS_ENERGY_ACTIVE
@@ -713,11 +738,19 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val rows: Int get() = system.energyLevels
         val raised: Boolean get() = wide && this === selected
 
-        /** The bars go in pairs on the shields box, with a gap between the pairs. */
-        private val pairGaps: Int get() = if (system is xyz.znix.xftl.systems.Shields) (rows - 1).coerceAtLeast(0) / 2 * 8 else 0
+        private val paired: Boolean get() = system is xyz.znix.xftl.systems.Shields
+
+        /** The bars' height on the canvas (TouchPowerDrag): past eight levels the height of eight, so a 16-level shield does not reach the ship. */
+        val barScale: Float get() = TouchPowerDrag.barScale(rows)
+
+        /** One level's drag step on the canvas: the iPad's up to eight levels, the drawn bars' spacing past that. */
+        val barStep: Float get() = TouchPowerDrag.step(rows, paired)
+
+        /** From the bottom bar's top to the top bar's: the bars go in pairs on the shields box, with a gap between the pairs. */
+        private val barsSpan: Int get() = TouchPowerDrag.span(rows, paired).roundToInt()
 
         /** The y of the top power bar. */
-        val barsTop: Int get() = BOX_Y - 4 - (if (raised) 16 else 0) - BAR_STEP * (rows - 1).coerceAtLeast(0) - pairGaps
+        val barsTop: Int get() = BOX_Y - 4 - (if (raised) 16 else 0) - barsSpan
 
         val mannable: Boolean get() = system.info.canBeManned
         val cooldownLevel: Int get() = when (system) {
@@ -730,7 +763,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val rowsHeight: Int get() {
             val used = cooldownLevel * 20 + (if (mannable) 16 else 0)
             val keep = if (!mannable) 0 else if (isMain) 24 else 16
-            return maxOf(used, keep) - 4 + BAR_STEP * (rows - 1).coerceAtLeast(0) + pairGaps
+            return maxOf(used, keep) - 4 + barsSpan
         }
 
         /** The stretch of the open panel above its bottom piece, without any button sections. */
@@ -938,17 +971,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
 
     private fun setPower(system: MainSystem, target: Int) {
         val goal = target.coerceIn(0, system.energyLevels)
-        var guard = 32
-        while (system.powerSelected < goal && guard-- > 0) {
-            val before = system.powerSelected
-            ui.touchChangePower(system, true)
-            if (system.powerSelected == before) break
-        }
-        while (system.powerSelected > goal && guard-- > 0) {
-            val before = system.powerSelected
-            ui.touchChangePower(system, false)
-            if (system.powerSelected == before) break
-        }
+        val moved = TouchHaptics.stepTowards({ system.powerSelected }, goal) { up -> ui.touchChangePower(system, up) }
+        TouchHaptics.play(TouchHaptics.POWER, moved)
     }
 
     private fun extraAt(box: Box, px: Int, py: Int): Button? {
@@ -1042,8 +1066,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
                 flickVelocity = (y - lastY) * 1000f / (time - lastTime).coerceAtLeast(1)
                 lastY = y
                 lastTime = time
-                val rest = abs(dy) % 16
-                if (rest in 2..13) setPower(system, startPower - dy / 16)
+                // A level per bar step, with a dead band at each step's ends so a finger on the line does not flicker.
+                TouchPowerDrag.level(startPower, dy, box.barStep)?.let { setPower(system, it) }
                 return true
             }
             TouchRouter.UP -> {
@@ -1236,7 +1260,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         if (rows > 0) {
             g.pushTransform()
             g.translate(box.x + 17f + shift, BOX_Y + 8f - (if (raised) 16 else 0))
-            g.scale(30f / 16f, 2f)
+            g.scale(30f / 16f, box.barScale)
             system.touchDrawBars(g)
             g.popTransform()
         }
@@ -1470,11 +1494,11 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
             slotIcon(box, i)?.draw(ix, iy)
             val weapon = if (isWeapon) ship.hardpoints.getOrNull(i)?.weapon else null
             if (weapon != null) {
+                val icon = chargeIcon(i, weapon, colour)
                 g.colour = SLOT_BLACK
-                g.fillRect(ix, iy, 5f, 26f)
-                val px = (24f * weapon.chargeProgress).toInt()
-                g.colour = colour
-                g.fillRect(ix + 1f, iy + 25f - px, 3f, px.f)
+                g.fillRect(ix + icon.left.f, iy + icon.top.f, icon.width.f, icon.height.f)
+                g.colour = icon.barColour
+                g.fillRect(ix + icon.barLeft.f, iy + icon.barBottom.f - icon.bar, icon.barWidth.f, icon.bar.f)
             }
         }
     }
@@ -1561,15 +1585,11 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
 
         val cellsX = if (isWeapon) x + 14 else x + 6
         if (weapon != null) {
+            val column = chargeColumn(i, weapon, colour)
             g.colour = SLOT_BLACK
-            g.fillRect(x + 4f, y + 4f, 6f, 33f)
-            val barH = (31f * weapon.chargeTime / ui.touchMaxChargeTime).toInt()
-            val px = (barH * weapon.chargeProgress).toInt()
-            g.colour = when {
-                ship.weapons!!.selectedTargets.getTarget(i) != null -> if (ship.weapons!!.isAutofire(i)) Constants.WEAPONS_ITEM_AUTOFIRE else Constants.WEAPONS_ITEM_TARGETING
-                else -> Constants.TEXT_BUTTON_HOVER
-            }
-            g.fillRect(x + 5f, y + 36f - px, 4f, px.f)
+            g.fillRect(x + 4f, y + column.top.f, 6f, column.height.f)
+            g.colour = column.barColour
+            g.fillRect(x + 5f, y + 36f - column.bar, 4f, column.bar.f)
         }
         val required = weapon?.type?.power ?: drone?.type?.power ?: 0
         g.colour = SLOT_BLACK
@@ -1585,6 +1605,47 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
             slotFont.drawString(x + 5f, lineY, line, colour)
             lineY += 14f
         }
+    }
+
+    /** A closed weapon column's charge frame (left, top, size in the icon) and the bar in it (left, bottom, width, height). */
+    internal class ChargeIcon(val left: Int, val top: Int, val width: Int, val height: Int, val fullBar: Int,
+                              val barLeft: Int, val barBottom: Int, val barWidth: Int, val bar: Int, val barColour: Colour)
+
+    /**
+     * The closed column shows each box's icon view, which draws the weapon box's charge frame at its small size: the full
+     * bar is [Weapons.chargeBarHeight] out of 22 px, 2 px wide inside a 6 px frame of 1 px lines, its bottom 24 px down
+     * the icon, so a quicker weapon's frame is shorter as in the open slot. The bar takes the box's status colour, or the
+     * aiming colours once the weapon has a target. It used to be a 24 px bar for every weapon.
+     */
+    internal fun chargeIcon(i: Int, weapon: AbstractWeaponInstance, slotColour: Colour): ChargeIcon {
+        val weapons = ship.weapons!!
+        val fullBar = weapons.chargeBarHeight(weapon, 22)
+        val colour = when {
+            weapons.selectedTargets.getTarget(i) != null -> if (weapons.isAutofire(i)) Constants.WEAPONS_ITEM_AUTOFIRE else Constants.WEAPONS_ITEM_TARGETING
+            else -> slotColour
+        }
+        return ChargeIcon(1, 23 - fullBar, 4, fullBar + 2, fullBar, 2, 24, 2,
+            (fullBar * weapon.chargeProgress).toInt().coerceIn(0, fullBar), colour)
+    }
+
+    /** An open weapon slot's charge column: its black frame (top and height in the slot) and the bar in it. */
+    internal class ChargeColumn(val top: Int, val height: Int, val fullBar: Int, val bar: Int, val barColour: Colour)
+
+    /**
+     * The weapon box's charge frame at its large size, as the iPad's open slot draws it: the full bar is
+     * [Weapons.chargeBarHeight] out of 33 px, so a quicker weapon's frame is shorter, and the frame holds that bar with
+     * a pixel above it and below it, its bottom 36 px down the slot. The bar takes the box's status colour, or the aiming
+     * colours once the weapon has a target (WeaponBox::RenderBox). The frame used to be 33 px for every weapon, so a full
+     * Defense Laser on a ship with a slower weapon looked two thirds charged.
+     */
+    internal fun chargeColumn(i: Int, weapon: AbstractWeaponInstance, slotColour: Colour): ChargeColumn {
+        val weapons = ship.weapons!!
+        val fullBar = weapons.chargeBarHeight(weapon, 33)
+        val colour = when {
+            weapons.selectedTargets.getTarget(i) != null -> if (weapons.isAutofire(i)) Constants.WEAPONS_ITEM_AUTOFIRE else Constants.WEAPONS_ITEM_TARGETING
+            else -> slotColour
+        }
+        return ChargeColumn(35 - fullBar, fullBar + 2, fullBar, (fullBar * weapon.chargeProgress).toInt().coerceIn(0, fullBar), colour)
     }
 
     private fun drawArmamentOpen(g: Graphics, box: Box) {
@@ -1815,6 +1876,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         if (down || hudConsumed || pendingRedown) {
             var consumed = false
             for (b in hudButtons) if (b.touch(action, x, y)) consumed = true
+            if (extras.touch(action, x, y)) consumed = true
             hudConsumed = consumed
         }
         if (!hudConsumed && !down && beamGesture) {
@@ -1914,6 +1976,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         ui.touchDropBeamIfTargetGone()
         updateFocus(dt)
         updateButtons()
+        extras.update()
         updateAutoPause()
         advancePulse(dt)
         advanceDrawers(dt)
@@ -1925,7 +1988,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         g.translate(hudX.f, 0f)
         drawCrew(g)
         drawSystems(g)
-        val right = if (storeHere) storeButton.x + storeButton.w else shipButton.x + shipButton.w - 10
+        val right = maxOf(if (storeHere) storeButton.x + storeButton.w else shipButton.x + shipButton.w - 10, topRowEnd.roundToInt())
         ui.touchDrawHazards(g, (right + optionsButton.x) / 2)
         // The banners sit over the open box, except door control's: its panel and drawer stay readable.
         if (commandMode && commandReason != REASON_DOORS) {
@@ -1937,6 +2000,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         }
         drawCrystal()
         drawStatus(g)
+        extras.render(g)
         if (primary == -1) statusTip = null
         statusTip?.let { g.tooltip = it }
         g.popTransform()
@@ -1944,8 +2008,10 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
 
     private companion object {
         const val FOCUS_TIME = 0.1f
+        const val SHIP_X = 606
+        const val SHIP_STEP = 84f
+        const val STORE_STEP = 95f
         const val BOX_Y = 689
-        const val BAR_STEP = 16
         const val PANEL_BASE = BOX_Y + 50
         const val SECTION_STEP = 68
         const val STATUS_GAP = 4

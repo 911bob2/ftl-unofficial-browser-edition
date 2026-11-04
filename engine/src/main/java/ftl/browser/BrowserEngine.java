@@ -15,6 +15,8 @@ public final class BrowserEngine {
     @JSBody(script="if(document.fullscreenElement)document.exitFullscreen().catch(function(){});"
         +"else{var c=document.getElementById('game-container');if(c&&c.requestFullscreen)c.requestFullscreen().catch(function(){});}")
     public static native void toggleFullscreen();
+    /** A haptic tick of the touch HUD (TouchHaptics); the browser has none. */
+    public static void haptic(int kind,int count){}
     private static MainGame game;private static final Container container=new Container();private static Graphics graphics;
     public static void main(String[] args){}
     @JSExport public static void start(boolean ae,String run,String profile)throws Exception{
@@ -26,8 +28,8 @@ public final class BrowserEngine {
     }
     /** CFPS::OnLoop (0x5ba020) caps a frame at half a speed unit, 1/32 s: a slower frame slows the game down. */
     static final float MAX_STEP = 1f / 32f;
-    /** With HS scripts a real frame (dt > 0) goes through Hyperspace.FPS (CFPS::OnLoop: speedLevel scales the step), MouseControl::Reset and OnLoop, and fires ON_TICK once. */
-    @JSExport public static void step(float dt)throws Exception{boolean hs=xyz.znix.xftl.hs.HS.luaActive&&dt>0;float step=hs?xyz.znix.xftl.hs.lua.LuaFps.onLoop(dt):Math.min(dt,MAX_STEP);if(hs)xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.frame(step);game.update(container,step);if(hs)xyz.znix.xftl.hs.lua.LuaEvents.onTick();if(dt>0)BrowserDebug.tick++;container.input.clearInputPressedRecord();if(BrowserDebug.enabled)BrowserDebug.record("simulation","state", "{\"dt\":"+dt+",\"state\":"+BrowserDebug.snapshot(game)+"}");}
+    /** With HS scripts a real frame (dt > 0) goes through Hyperspace.FPS (CFPS::OnLoop: speedLevel scales the step), MouseControl::Reset and OnLoop, and fires ON_TICK once. The console's SPEED sets speedLevel in any run. */
+    @JSExport public static void step(float dt)throws Exception{boolean hs=xyz.znix.xftl.hs.HS.luaActive&&dt>0;float step=hs||dt>0&&xyz.znix.xftl.hs.lua.LuaFps.speedLevel!=0?xyz.znix.xftl.hs.lua.LuaFps.onLoop(dt):Math.min(dt,MAX_STEP);if(hs)xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.frame(step);game.update(container,step);if(hs)xyz.znix.xftl.hs.lua.LuaEvents.onTick();if(dt>0)BrowserDebug.tick++;container.input.clearInputPressedRecord();if(BrowserDebug.enabled)BrowserDebug.record("simulation","state", "{\"dt\":"+dt+",\"state\":"+BrowserDebug.snapshot(game)+"}");}
     @JSExport public static void render()throws Exception{game.render(container,graphics);}
     /** Diagnostics that render frames (BrowserWp4DroneOrderDiagnostics). */ static Graphics diagnosticGraphics(){return graphics;}
     /** Diagnostics that move or click the pointer (BrowserHsSweepWorldDiagnostics): type 0 move, 1 press, 2 release. */ static void diagnosticMouse(int x,int y,int type,int button){mouse(x,y,type,button);}
@@ -82,6 +84,7 @@ public final class BrowserEngine {
     @JSExport public static void parityNoBackground(boolean value){BrowserDebug.parityNoBackground=value;}
     /** UI parity captures only: start the original's continue.sav (base64). */
     @JSExport public static void parityImportVanillaSave(String base64){game.startVanillaSaveForParity(java.util.Base64.getDecoder().decode(base64));}
+    @JSExport public static String nativeImportProbe(String run,String profile,String prefix){return BrowserNativeImportDiagnostics.INSTANCE.run(game,run,profile,prefix);}
     @JSExport public static String parityDescribeSave(String base64){return BrowserParity.INSTANCE.describeSave(game.parseVanillaSaveForParity(java.util.Base64.getDecoder().decode(base64)));}
     @JSExport public static boolean parityShowEvent(String name,String needle){return game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state && BrowserParity.INSTANCE.showEvent(state,name,needle);}
     @JSExport public static void focusChanged(boolean focused){if(game!=null)game.setBrowserFocus(focused);}
@@ -152,6 +155,12 @@ public final class BrowserEngine {
         return state.isDebugConsoleVisible();
     }
     @JSExport public static void consoleExecute(String command){if(game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state)state.getDebugConsole().execute(command);}
+    /** The device's "Debug console" setting (docs/CONSOLE.md): the console opens on ` and \ in every mode. */
+    @JSExport public static void consoleConfig(boolean enabled){xyz.znix.xftl.devutil.ConsoleGate.setting=enabled;}
+    /** Tests (tests/console.mjs): what the console's commands change, as JSON. */
+    @JSExport public static String consoleProbe(){return game==null?"{}":BrowserConsoleDiagnostics.INSTANCE.state(game);}
+    /** Tests: the console's last output lines, newest last. */
+    @JSExport public static String consoleOutput(){if(!(game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state))return "";java.util.List<String> l=state.getDebugConsole().outputText();return String.join("\n",l.subList(Math.max(0,l.size()-200),l.size()));}
     @JSExport public static void menuCancel(){
         MainGame.GameState current = game.getCurrentState();
         if(current instanceof xyz.znix.xftl.game.InGameState state) state.cancelMenu();

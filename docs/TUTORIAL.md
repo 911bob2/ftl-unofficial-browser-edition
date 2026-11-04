@@ -328,3 +328,19 @@ These runs found direct hangar hit-test and cancelled primed-shot save bugs,
 corrected with focused no-draw/depower/restore/re-power regressions. Tutorial
 saves skip serialization while preserving ordinary checkpoints. Firefox
 closed-context gesture/launch audio cancellation has a shared regression.
+
+## Multiverse tutorial
+
+Multiverse 5.5.1 turns the lesson list off (`<disableDefaultTutorial>`) and teaches from `data/mv_scripts/tutorial.lua`:
+its first lesson starts in `script.on_init`, which Hyperspace fires from `WorldManager::CreateNewGame` for the tutorial
+as for a run (`lua/LuaLibScript.cpp`), and its text boxes pulse with `os.clock()`. With the default tutorial off,
+`TutorialManager::AllowJumping` / `AllowUpgrades` return `CustomTutorialState`'s flags, which the script sets through
+`Hyperspace.Tutorial.bAllowJumping` / `bAllowUpgrades` (`lua/modules/hyperspace.i`): the JUMP button stays locked, out of
+fuel and red until the fight lesson.
+
+`tests/hs-mv-tutorial.mjs` plays the tutorial from the main menu with the clicks and keys of oracle session
+`bt-mv-tutorial4` (`tools/hs-oracle/sessions/bugs-tests.json`) and compares the lesson and first text box logged at each
+step, and on every change of lesson, with the original's (start, crew power, toggle 1 and 2, info button, crew order,
+tile control, storage initial and main, fight start). The original's console does not open over a choice box, so the
+toggle and storage lessons are read by the change watcher only. Screenshots of each step go to `MVT_OUT` for comparison
+with the oracle's. Lessons after the first jump (fight, quest, map) are not compared yet.

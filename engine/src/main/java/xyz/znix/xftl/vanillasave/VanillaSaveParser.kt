@@ -46,6 +46,9 @@ class VanillaSaveData {
     // The nearby (encounter) ship, when the parse was asked to find it in the tail.
     var enemyShip: ShipData? = null
 
+    /** What a Hyperspace run adds (NativeHsRun); null for a run of the game without mods. */
+    var hs: NativeHsRun? = null
+
     // Map
     var currentBeaconId: Int = 0
     var hiddenCrystalWorld: Boolean = false
@@ -58,6 +61,8 @@ class VanillaSaveData {
 
     class ShipData {
         var blueprint: String = ""
+        /** A nearby ship: whether it is at war with the player (a neutral one can be talked to). */
+        var hostile: Boolean = true
         var name: String = ""
         var gfx: String = ""
         var hull: Int = 30
@@ -79,7 +84,7 @@ class VanillaSaveData {
         var cloakTicks: Int = 0
         var cloakGoal: Int = 0
         var cloakActive: Boolean = false
-        val breaches = ArrayList<Triple<Int, Int, Int>>() // room, square, health
+        val breaches = ArrayList<Triple<Int, Int, Int>>() // x, y (ship squares, the layout's offset included), health
         val roomOxygen = ArrayList<Float>()
         val doors = ArrayList<VanillaDoor>()
         val weapons = ArrayList<Pair<String, Boolean>>() // id to armed
@@ -101,6 +106,7 @@ class VanillaSaveData {
         var savedRoom: Int = 0
         val skills = HashMap<String, Int>() // slot name to xp actions
         var colour: Int = 0
+        var hs: NativeHsRun.Crew? = null
     }
 
     class VanillaSystem {
@@ -177,9 +183,19 @@ object VanillaSaveParser {
         data: ByteArray,
         layoutFor: (String) -> Pair<List<Int>, Int>,
         isShipBlueprint: (String) -> Boolean = { false }
-    ): VanillaSaveData {
+    ): VanillaSaveData = parse(data, object : NativeContent {
+        override fun layout(blueprint: String) = layoutFor(blueprint)
+        override fun isShipBlueprint(name: String) = isShipBlueprint(name)
+    }, false)
+
+    /**
+     * Parses a run of the original game; [hyperspace] for a run Hyperspace wrote (a save prefix), which reads the
+     * Hyperspace data where its hooks put it (NativeHsRun) and asks [content] what its layout depends on.
+     */
+    fun parse(data: ByteArray, content: NativeContent, hyperspace: Boolean): VanillaSaveData {
         val r = VanillaSaveReader(data)
         val out = VanillaSaveData()
+        val hs = if (hyperspace) NativeHsReader(r, content, NativeHsRun()).also { out.hs = it.run } else null
 
         val fmt = r.int()
         require(fmt == VanillaSaveFormat.FILE_FORMAT) { "Unsupported vanilla save format $fmt" }
@@ -202,15 +218,18 @@ object VanillaSaveParser {
         repeat(r.int()) {
             out.stateVars[r.string()] = r.int()
         }
+        hs?.afterStateVars()
 
-        val (roomTiles, doorCount) = layoutFor(out.blueprintName)
+        val (roomTiles, doorCount) = content.layout(out.blueprintName)
         trace?.invoke(r.pos, "beforeShip")
-        readShip(r, out.ship, roomTiles, doorCount)
+        hs?.beforeShip(true)
+        readShip(r, out.ship, roomTiles, doorCount, content, hs, true)
 
         trace?.invoke(r.pos, "afterShip/beforeCargo")
         repeat(r.int()) { out.cargo.add(r.string()) }
 
         trace?.invoke(r.pos, "afterCargo/beforeSeeds")
+        hs?.beforeStarMap()
         out.sectorTreeSeed = r.int()
         out.sectorLayoutSeed = r.int()
         out.fleetOffset = r.int()
@@ -253,7 +272,10 @@ object VanillaSaveParser {
             beacon.fleetPresence = r.int()
             beacon.underAttack = r.bool()
             beacon.storePresent = r.bool()
-            if (beacon.storePresent) {
+            if (beacon.storePresent && hs?.storeIsCustom(out.beacons.size) == true) {
+                // A Hyperspace store: the beacon keeps a store, which the import fills like a new one.
+                beacon.store = null
+            } else if (beacon.storePresent) {
                 val store = VanillaSaveData.VanillaStore()
                 repeat(r.int()) {
                     val shelf = VanillaSaveData.VanillaShelf()
@@ -288,6 +310,7 @@ object VanillaSaveParser {
             out.questEvents.add(event to r.int())
         }
         repeat(r.int()) { out.distantQuests.add(r.string()) }
+        hs?.afterStarMap()
 
         // Preserve the encounter tail verbatim (kept for diagnostics and
         // possible future use; the writer now generates its own tail from
@@ -297,7 +320,8 @@ object VanillaSaveParser {
         // the mu int), matching VanillaSaveFormat.TEMPLATE_TAIL's
         // convention.
         out.tail = data.copyOfRange(r.pos, data.size)
-        out.enemyShip = findNearbyShip(data, r.pos, layoutFor, isShipBlueprint)
+        // The tail's ship sections hold Hyperspace data of their own, and are not read for a Hyperspace run.
+        if (hs == null) out.enemyShip = findNearbyShip(data, r.pos, content)
         return out
     }
 
@@ -306,11 +330,7 @@ object VanillaSaveParser {
      * with its blueprint id like the player's. Find the first length-prefixed string
      * naming a ship blueprint and read the section from there.
      */
-    private fun findNearbyShip(
-        data: ByteArray, start: Int,
-        layoutFor: (String) -> Pair<List<Int>, Int>,
-        isShipBlueprint: (String) -> Boolean
-    ): VanillaSaveData.ShipData? {
+    private fun findNearbyShip(data: ByteArray, start: Int, content: NativeContent): VanillaSaveData.ShipData? {
         for (p in start until data.size - 4) {
             val len = (data[p].toInt() and 0xFF) or ((data[p + 1].toInt() and 0xFF) shl 8) or
                     ((data[p + 2].toInt() and 0xFF) shl 16) or (data[p + 3].toInt() shl 24)
@@ -327,12 +347,12 @@ object VanillaSaveParser {
             }
             if (!ascii) continue
             val name = String(chars)
-            if (!isShipBlueprint(name)) continue
+            if (!content.isShipBlueprint(name)) continue
             return try {
                 val r = VanillaSaveReader(data)
                 r.seek(p)
-                val (tiles, doors) = layoutFor(name)
-                VanillaSaveData.ShipData().also { readShip(r, it, tiles, doors) }
+                val (tiles, doors) = content.layout(name)
+                VanillaSaveData.ShipData().also { readShip(r, it, tiles, doors, content, null, false) }
             } catch (e: Exception) {
                 null
             }
@@ -340,13 +360,16 @@ object VanillaSaveParser {
         return null
     }
 
-    private fun readShip(r: VanillaSaveReader, ship: VanillaSaveData.ShipData, roomTiles: List<Int>, doorCount: Int) {
+    private fun readShip(
+        r: VanillaSaveReader, ship: VanillaSaveData.ShipData, roomTiles: List<Int>, doorCount: Int,
+        content: NativeContent, hs: NativeHsReader?, player: Boolean
+    ) {
         ship.blueprint = r.string()
         ship.name = r.string()
         ship.gfx = r.string()
 
         repeat(r.int()) { r.string(); r.string() } // starting crew (hangar display)
-        r.bool() // hostile
+        ship.hostile = r.bool()
         ship.ftlProgressTicks = r.int()
         r.bool() // jumping
         r.int() // jump anim ticks
@@ -359,7 +382,7 @@ object VanillaSaveParser {
         ship.scrap = r.int()
 
         trace?.invoke(r.pos, "afterResources")
-        repeat(r.int()) { ship.crew.add(readCrew(r)) }
+        repeat(r.int()) { ship.crew.add(readCrew(r, content, hs, player)) }
 
         trace?.invoke(r.pos, "afterCrew")
         ship.reactor = r.int()
@@ -476,11 +499,12 @@ object VanillaSaveParser {
 
         trace?.invoke(r.pos, "afterDrones")
         repeat(r.int()) { ship.augments.add(r.string()) }
+        hs?.afterShip(player, (ship.systems["oxygen"]?.capacity ?: 0) > 0, roomTiles)
     }
 
     /** The doors have no count in the file; the loader knows the layout's
      * door count and calls this once per door. */
-    private fun readCrew(r: VanillaSaveReader): VanillaSaveData.VanillaCrew {
+    private fun readCrew(r: VanillaSaveReader, content: NativeContent, hs: NativeHsReader?, player: Boolean): VanillaSaveData.VanillaCrew {
         val crew = VanillaSaveData.VanillaCrew()
         crew.name = r.string()
         crew.race = r.string()
@@ -508,6 +532,8 @@ object VanillaSaveParser {
         }
         r.bool() // male
         repeat(5) { r.int() } // repairs, kills, evasions, jumps, masteries
+        // CrewMember::SaveState starts here; Hyperspace writes its part first.
+        if (hs != null) crew.hs = hs.crew(player)
         r.int() // stun ticks
         r.int() // health boost
         r.int() // clonebay priority
@@ -519,7 +545,7 @@ object VanillaSaveParser {
         r.bool(); r.bool() // animation running flags
         repeat(5) { r.int() } // animation timers
         r.int() // unknown
-        if (crew.race == "crystal") {
+        if (content.hasCrystalTimers(crew.race)) {
             r.int(); r.int(); r.int() // lockdown recharge
         }
         return crew

@@ -44,6 +44,8 @@ RUN dotnet publish server/Ftl.Server.csproj -c Release -o /app --no-restore
 COPY tests/server-security/ tests/server-security/
 RUN dotnet publish tests/server-security/Ftl.SecurityTests.csproj -c Release -o /security-tests
 COPY web/ /app/wwwroot/web/
+# The Tests page's mod merge and Lua patch-script checks (web/self-tests-mods.mjs): our own fixtures and ftlman's answers.
+COPY tests/fixtures/mods/append-cases.mjs tests/fixtures/mods/append-expected.json tests/fixtures/mods/f1.mjs tests/fixtures/mods/f1-expected.json tests/fixtures/mods/lua-cases.mjs tests/fixtures/mods/lua-expected.json tests/fixtures/mods/l1.mjs /app/wwwroot/web/test-vectors/mods/
 COPY --from=web-build /workspace/web/style.css /app/wwwroot/web/style.css
 COPY --from=engine-build /engine-output/ /app/wwwroot/engine/
 COPY --from=engine-build /savecore-output/ /app/wwwroot/savecore/

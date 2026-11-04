@@ -37,7 +37,7 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
 
   await page.locator('[data-preset="quick"]').click();await page.locator('#custom-selection').evaluate(element=>element.open=true);
   for(const input of await page.locator('#suite-options input').all())await input.uncheck();await page.locator('#suite-units').check();assert.ok(await page.locator('#run-tests').isEnabled());
-  await page.locator('#run-tests').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Completed');assert.equal(await page.locator('#test-results tr').count(),3);
+  await page.locator('#run-tests').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Completed');assert.equal(await page.locator('#test-results tr').count(),6);
   await page.locator('#measure-browser').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing measured');pass('Browser modules and callback measurement work without game files');
 
   await page.locator('#local-assets input').setInputFiles({name:'ftl.dat',mimeType:'application/octet-stream',buffer:Buffer.from('invalid fixture')});await page.waitForFunction(()=>document.querySelector('[data-local-status]').textContent.includes('does not match'));await page.locator('[data-preset="quick"]').click();assert.ok(await page.locator('#run-tests').isDisabled());pass('Invalid file selection cannot enable engine tests');

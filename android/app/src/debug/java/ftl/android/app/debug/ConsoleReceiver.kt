@@ -9,8 +9,9 @@ import ftl.browser.BrowserEngine
 import xyz.znix.xftl.game.InGameState
 
 /**
- * Debug builds only: runs a debug console command on the game thread, for driving the app on an emulator. The console's
- * own key is a game hotkey under Hyperspace.
+ * Debug builds only: runs a debug console command on the game thread, for driving the app on an emulator. A command none
+ * of the cases below takes goes to the debug console's one registry (devutil/ConsoleRegistry.kt, docs/CONSOLE.md), as if
+ * typed there; the release build has the console behind the launcher's "Enable debug console" switch.
  *   adb shell am broadcast -n dev.ftl911bob.unofficial/ftl.android.app.debug.ConsoleReceiver --es cmd "'store'"
  */
 class ConsoleReceiver : BroadcastReceiver() {
@@ -53,6 +54,26 @@ class ConsoleReceiver : BroadcastReceiver() {
         }
         if (cmd.startsWith("iconrefused ")) {
             context.getSharedPreferences(ftl.android.app.icons.AppIcons.PREFS, Context.MODE_PRIVATE).edit().putBoolean("refused", cmd.endsWith("on")).apply()
+            return
+        }
+        if (cmd.startsWith("hapticdevice ")) {
+            // Pretends a weaker vibrator (PRIMITIVES, AMPLITUDE, ON_OFF, NONE) for Settings > Haptics; "auto" is the real one.
+            val k = cmd.substringAfter(' ').uppercase()
+            ftl.android.app.game.Haptics.setTestKind(context, ftl.android.app.game.Haptics.Kind.entries.firstOrNull { it.name == k })
+            val h = ftl.android.app.game.Haptics.load(context)
+            Log.i(ftl.android.app.game.Haptics.TAG, "device kind=${h.kind} strength=${h.strength}")
+            return
+        }
+        if (cmd.startsWith("updateurl ") || cmd == "updatereset" || cmd == "updatestate") {
+            // The update check against a stub server instead of GitHub (docs/ANDROID.md, "Updates"): updateurl <url>|clear;
+            // updatereset forgets the last check, its ETag, the release seen and Not now; updatestate logs what is stored.
+            val prefs = context.getSharedPreferences(ftl.android.app.update.Updates.PREFS, Context.MODE_PRIVATE)
+            val u = ftl.android.app.update.UpdateCheck
+            when {
+                cmd.startsWith("updateurl ") -> prefs.edit().putString(ftl.android.app.update.Updates.TEST_URL, cmd.substringAfter(' ').takeIf { it != "clear" }).commit()
+                cmd == "updatereset" -> prefs.edit().apply { for (k in listOf(u.LAST, u.ETAG, u.ETAG_URL, u.TAG, u.URL, u.OFFERED, u.DISMISSED)) remove(k) }.commit()
+            }
+            Log.i(ftl.android.app.update.Updates.TAG, "state " + prefs.all.toSortedMap())
             return
         }
         if (cmd.startsWith("iconrandom ")) {
@@ -153,6 +174,16 @@ class ConsoleReceiver : BroadcastReceiver() {
                 }
             }
             else if (cmd.startsWith("showevent ")) state.debugShowEvent(cmd.substring(10))
+            else if (cmd == "power") {
+                // Each player system's power (selected/max, ion limit, ion timer) and the free reactor power, for the haptics checks.
+                Log.i("FTL-Haptic", "power free=${state.player.powerAvailable} " + state.player.systems.filterIsInstance<xyz.znix.xftl.systems.MainSystem>()
+                    .joinToString(" ") { "${it.codename}=${it.powerSelected}/${it.energyLevels}" + (it.ionPowerLimit?.let { l -> "(ion$l,${it.ionTimer.toInt()}s)" } ?: "") })
+            }
+            else if (cmd.startsWith("ion ")) {
+                // ion <system codename> <units>: ion damage to a player system, as a hit would deal it.
+                val (name, units) = cmd.substring(4).split(' ')
+                state.player.systems.first { it.codename == name }.dealDamage(0, units.toInt())
+            }
             else if (cmd == "state") {
                 Log.i("FTL-State", "ship=${state.player.type.name} hull=${state.player.health} scrap=${state.player.scrap} sector=${state.currentBeacon.sector.sectorNumber} " +
                     "enemy=${state.enemy?.type?.name} weapons=${state.player.hardpoints.map { it.weapon?.type?.name }} crew=${state.player.crew.size} dialogue=${state.shipUI.isWindowOpen}")
@@ -196,6 +227,41 @@ class ConsoleReceiver : BroadcastReceiver() {
             else if (cmd == "enemyleave") {
                 // The enemy jumps away, as one running from a fight does.
                 state.hsEnemyJumpLeave()
+            }
+            else if (cmd.startsWith("hscmd ")) {
+                // A Hyperspace console command (LUA, LOADEVENT, SYS ALL, ...), as if typed into the console.
+                state.debugConsole.execute(cmd.substring(6))
+            }
+            else if (cmd.startsWith("modbutton ")) {
+                // A made-up mod's event button (`modbutton <name> <location>`, or `modbutton <name> <x> <y>` for a
+                // customLocation), with the ship button's art and an event of its own name, for the touch HUD tests.
+                val a = cmd.split(' ')
+                val place = if (a.size >= 4) "<customLocation x=\"${a[2]}\" y=\"${a[3]}\"/>" else "<location>${a.getOrElse(2) { "4" }}</location>"
+                val xml = "<eventButton name=\"${a[1]}\"><event load=\"${a[1]}_EVENT\"/><image>statusUI/top_ship</image>$place" +
+                    "<tooltip>Made-up mod button</tooltip><jumpClear>false</jumpClear></eventButton>"
+                val node = ftl.browser.BrowserXml.parse(xml).rootElement
+                xyz.znix.xftl.hs.render.HsEventButtons.parse(node) { e, _ -> e.getAttributeValue("load") ?: "" }
+                xyz.znix.xftl.hs.render.HsEventButtons.apply(emptyList(), listOf(node))
+            }
+            else if (cmd.startsWith("weaponpower ")) {
+                // weaponpower <slot>: powers that weapon, as a tap on its unpowered slot does.
+                val w = state.player.hardpoints[cmd.substring(12).trim().toInt()].weapon
+                if (w != null) Log.i("FTL-Debug", "weaponpower ${w.type.name} ${state.player.weapons?.setWeaponPower(w, true)}")
+            }
+            else if (cmd.startsWith("weaponcharge ")) {
+                // weaponcharge <slot> <fraction>: that weapon's charge, as a fraction of its charge time.
+                val (slot, f) = cmd.substring(13).trim().split(' ')
+                state.player.hardpoints[slot.toInt()].weapon?.let { it.timeCharged = it.chargeTime * f.toFloat() }
+            }
+            else if (cmd == "touchweapons") {
+                // Opens the touch HUD's weapon column, as a tap on the weapons system does.
+                val hud = state.shipUI.touch
+                if (hud != null) {
+                    val boxes = hud.javaClass.getDeclaredMethod("boxes").apply { isAccessible = true }.invoke(hud) as List<*>
+                    val box = boxes.firstOrNull { b -> b!!.javaClass.getDeclaredMethod("getSystem").apply { isAccessible = true }.invoke(b) is xyz.znix.xftl.systems.Weapons }
+                    hud.javaClass.getDeclaredField("selected").apply { isAccessible = true }.set(hud, box)
+                    Log.i("FTL-Debug", "touchweapons ${box != null}")
+                }
             }
             else if (cmd == "clearstations") {
                 for (crew in state.player.crew) crew.savedPosition = null

@@ -198,6 +198,9 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         touchSelectedPos = if (landed) to else from
     }
 
+    /** The touch layout's store sell tab: the over-capacity items sit in its info column, without the boxes' texts. */
+    private val touchSellTab: Boolean get() = sellUI && TouchMode.enabled
+
     /** Where the over-capacity box goes: the touch layout has no room left of the window, so it uses the info column. */
     private val overBoxPos: ConstPoint get() = if (TouchMode.enabled) ConstPoint(621, 330) else ConstPoint(-275 - 7, 100)
 
@@ -261,7 +264,7 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             }
         }
 
-        if (sellUI && ship.cargoBlueprints.drop(4).any { it != null }) sectionFont.drawString(position.x + (if (TouchMode.enabled) 646f else -250f), position.y + (if (TouchMode.enabled) 360f else 280f), "OVER CAPACITY", Constants.JUMP_DISABLED_TEXT)
+        if (touchSellTab && ship.cargoBlueprints.drop(4).any { it != null }) sectionFont.drawString(position.x + (if (TouchMode.enabled) 646f else -250f), position.y + (if (TouchMode.enabled) 360f else 280f), "OVER CAPACITY", Constants.JUMP_DISABLED_TEXT)
         for (button in buttons) {
             button.draw(g)
         }
@@ -426,10 +429,12 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         // augment box (aug_text1, 65 px, aug_text2) with an augment box 19 px in and 4 px lower, both at the
         // DropBox body offset (DropBox::GetBodySpaceOffset 0x4e80c0: title and text1 + 65). A box stays, emptied,
         // until the next jump once something was put in it (Equipment +0x3e0/+0x3e1, Ship.overCapacityBoxShown).
+        // The store's sell tab draws the same boxes (Equipment::OnRender checks bOverCapacity/bOverAugCapacity, not
+        // bStoreMode; oracle bt-store-over 05-store-sell); only the touch sell tab keeps them in its info column.
         cargoButtons.clear()
         cargoSlots.clear()
         overCapacityBoxes.clear()
-        if (!sellUI) {
+        if (!touchSellTab) {
             if (overCapacityShown(4))
                 overCapacityBoxes += OverCapacityBox("overcapacity_item_title", "overcapacity_item_text1", 100, "overcapacity_item_text2")
             if (overCapacityShown(5))
@@ -450,13 +455,18 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         }
         cargoIds += listOf(4, 5)
         for (i in cargoIds) {
-            if (i in 4..5 && (if (sellUI) ship.cargoBlueprints.drop(4).all { it == null } else !overCapacityShown(i))) continue
+            if (i in 4..5 && (if (touchSellTab) ship.cargoBlueprints.drop(4).all { it == null } else !overCapacityShown(i))) continue
             val blueprint = slotGet(i)
             val ordinal = if (i >= 100) i - 100 + 4 else i
 
-            if (i == 5 && !sellUI) {
-                val box = overCapacityBoxes.last()
-                val augmentBox = augmentButton(ConstPoint(box.basePos.x + 19, box.basePos.y + box.bodySpaceOffset + 4), blueprint, true)
+            // The over-capacity augment is an AugmentEquipBox wherever it shows, the store included: a weapon/drone box
+            // cannot draw an augment.
+            if (i == 5) {
+                val augmentPos = if (touchSellTab) ConstPoint(646, 373 + 80) else {
+                    val box = overCapacityBoxes.last()
+                    ConstPoint(box.basePos.x + 19, box.basePos.y + box.bodySpaceOffset + 4)
+                }
+                val augmentBox = augmentButton(augmentPos, blueprint, true)
                 buttons += augmentBox
                 cargoButtons += augmentBox
                 cargoSlots[augmentBox] = i
@@ -473,7 +483,7 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             )
 
             val itemBox = overCapacityBoxes.firstOrNull()
-            val buttonPos = if (i == 4 && !sellUI && itemBox != null)
+            val buttonPos = if (i == 4 && !touchSellTab && itemBox != null)
                 ConstPoint(itemBox.basePos.x + 80, itemBox.basePos.y + itemBox.bodySpaceOffset)
             else if (i in 4..5) (if (TouchMode.enabled) ConstPoint(646, 373 + 80 * (i - 4)) else ConstPoint(-250, 293 + 80 * (i - 4))) else ConstPoint(
                 23 + 130 * (ordinal % 2),
@@ -525,10 +535,15 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
                 { getHoveredBlueprint() }
             )
 
-            sellBoxLocalPos = sellBoxPlacer?.invoke(sellButton!!.size) ?: ConstPoint(-275, 107)
+            // Hyperspace's CustomEquipment::OnRender moves the sell box below the shown over-capacity box (the item
+            // box before the augment box); in the original the over-capacity box covers it.
+            val shownOverBox = overCapacityBoxes.firstOrNull()
+            sellBoxLocalPos = sellBoxPlacer?.invoke(sellButton!!.size)
+                ?: if (hsUi && shownOverBox != null) ConstPoint(-275, shownOverBox.basePos.y + shownOverBox.size.y + 2) else ConstPoint(-275, 107)
 
-            // The touch layout sells with a button instead, by the info box.
-            if (!TouchMode.enabled) buttons += sellButton!!
+            // The touch layout sells with a button instead, by the info box. Drawn first, under an over-capacity box,
+            // and found first by a drop: in the store a drop on the sell box sells (Equipment::MouseUp, bSellingItem).
+            if (!TouchMode.enabled) buttons.add(0, sellButton!!)
         }
 
         if (hsUi) {

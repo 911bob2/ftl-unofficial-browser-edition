@@ -58,14 +58,14 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   const available=(await api(page,'/tests')).body.available;assert.equal(available,jobs);
   if(name==='Chromium'){
    await page.locator('#run-tests').click();await done(page);
-   const report=await exported(page);assert.equal(report.status,'passed',JSON.stringify(report));assert.equal(report.results.length,16);
+   const report=await exported(page);assert.equal(report.status,'passed',JSON.stringify(report));assert.equal(report.results.length,19);
    assert.equal(report.results.find(r=>r.name.includes('seed 35')).before.rng,'35');
    assert.ok(await page.locator('#test-progressbar').evaluate(p=>p.value===p.max));
    await writeFile('.build/launcher-quick-results.json',JSON.stringify(report,null,2));
    pass('Chrome: Quick checks execute all eleven engine probes, original audio and shared module tests');
   }else{
    await clearSelection(page);await page.locator('#suite-units').check();await page.locator('#run-tests').click();await done(page);
-   const report=await exported(page);assert.equal(report.status,'passed');assert.equal(report.results.length,3);
+   const report=await exported(page);assert.equal(report.status,'passed');assert.equal(report.results.length,6);
    pass(name+': Module checks and JSON report export work');
   }
   await page.locator('.preset[data-preset="all"]').click();assert.ok(await page.locator('#suite-campaign').isChecked());assert.ok(await page.locator('#suite-server').isChecked());assert.ok(!await page.locator('#suite-performance').isChecked());

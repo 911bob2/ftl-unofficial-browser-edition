@@ -363,6 +363,7 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
      * goes to [level] by the engine's rules; [user] also makes it the player's target (ShipSystem::lastUserPower).
      */
     fun hsSetPower(level: Int, user: Boolean): Boolean {
+        if (this is Shields) hsScriptPower = if (level % 2 == 1) level else -1
         val ok = setSystemPower(level)
         if (ok && user) targetPower = powerSelected
         if (!user && powerSelected < targetPower) hsClimbBack = true

@@ -8,6 +8,7 @@ import ftl.saves.LocalSave;
 import ftl.saves.LockInfo;
 import ftl.saves.Locks;
 import ftl.saves.ModsKt;
+import ftl.saves.NativeSave;
 import ftl.saves.OldProfile;
 import ftl.saves.RunSummary;
 import ftl.saves.SaveMeta;
@@ -133,5 +134,37 @@ public final class SaveCoreJs {
     @JSExport
     public static String savecoreSha256(String text) {
         return Sha256.INSTANCE.hex(text);
+    }
+
+    /**
+     * Files of the original game chosen for import ([{name, base64}]): {prefix, setup, from, run: {file, summary},
+     * profile: {file}, wrappedRun, wrappedProfile}, or {error} with the reason for the player.
+     */
+    @JSExport
+    public static String savecoreNativePick(String filesJson) {
+        try {
+            List<NativeSave.Found> found = new ArrayList<>();
+            for (Json j : JsonKt.arr(parse(filesJson))) {
+                String name = JsonKt.str(((Json.Obj) j).get("name"));
+                byte[] bytes;
+                try {
+                    bytes = java.util.Base64.getDecoder().decode(JsonKt.str(((Json.Obj) j).get("base64")));
+                } catch (IllegalArgumentException e) {
+                    throw new NativeSave.Invalid(NativeSave.NOT_A_SAVE);
+                }
+                found.add(NativeSave.INSTANCE.identify(name == null ? "" : name, bytes));
+            }
+            NativeSave.Picked picked = NativeSave.INSTANCE.pick(found);
+            StringBuilder out = new StringBuilder("{\"prefix\":").append(write(new Json.Str(picked.getPrefix())))
+                .append(",\"setup\":").append(write(new Json.Str(picked.getSetup())))
+                .append(",\"from\":").append(write(new Json.Str(NativeSave.INSTANCE.describe(picked.getPrefix()))));
+            if (picked.getRun() != null) out.append(",\"run\":{\"file\":").append(write(new Json.Str(picked.getRun().getFileName())))
+                .append(",\"summary\":").append(write(picked.getRun().getSummary().toJson())).append("},\"wrappedRun\":").append(write(new Json.Str(picked.getWrappedRun())));
+            if (picked.getProfile() != null) out.append(",\"profile\":{\"file\":").append(write(new Json.Str(picked.getProfile().getFileName())))
+                .append("},\"wrappedProfile\":").append(write(new Json.Str(picked.getWrappedProfile())));
+            return out.append("}").toString();
+        } catch (NativeSave.Invalid e) {
+            return "{\"error\":" + write(new Json.Str(e.getMessage())) + "}";
+        }
     }
 }

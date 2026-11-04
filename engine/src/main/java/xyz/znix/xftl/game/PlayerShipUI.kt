@@ -125,7 +125,6 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     internal fun touchDrawCrewBox(g: Graphics, crew: LivingCrew, x: Int, y: Int) = drawCrewBox(g, crew, x, y)
     internal fun touchChangePower(system: MainSystem, up: Boolean) = changeSystemPower(system, up)
     internal val touchArmedSlot: Int? get() = targetingSelectedWeapon?.takeIf { game.clickEvent === selectWeaponClickEvent || beamTargeting != null }
-    internal val touchMaxChargeTime: Float get() = ship.hardpoints.mapNotNull { it.weapon?.chargeTime }.maxOrNull() ?: 1f
     internal val touchArmedBeam: Boolean get() = beamTargeting != null ||
         (game.clickEvent === selectWeaponClickEvent && touchArmedIsBeam) || touchArtilleryDrawsLine
 
@@ -141,6 +140,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             droneHotkeyPressed(slot, false)
             return
         }
+        // A weapon that lost its power since the last frame is no longer armed (WeaponControl::OnLoop), so the tap powers it.
+        disarmUnusableWeapon()
         if (targetingSelectedWeapon == slot && game.clickEvent === selectWeaponClickEvent) {
             if (targetingModifier) onJump() else targetingModifier = true
             return
@@ -253,7 +254,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         spaceMouseDy = -72
         g.pushTransform()
         g.translate(centreX - 690f, -72f)
-        drawSpaceIcons(g)
+        // Hyperspace SPACE_STATUS render event, in the same frame: a script's own hazard icons (Multiverse's
+        // environments) follow the touch spot
+        val luaSpace = if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_SPACE_STATUS) else 0
+        if (luaSpace >= 0) drawSpaceIcons(g)
+        if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_SPACE_STATUS, luaSpace)
         g.popTransform()
         spaceMouseDx = 0
         spaceMouseDy = 0
@@ -745,6 +750,19 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     private var jumpButtonRef: Buttons.JumpButton? = null
     internal val jumpButton: Buttons.JumpButton? get() = jumpButtonRef
     private var shipButtonRef: Buttons.ShipButton? = null
+    private var storeButtonRef: Button? = null
+    private var settingsButtonRef: Button? = null
+
+    /**
+     * The buttons of the desktop HUD the touch layout has no control of its own for (TouchExtras): Hyperspace's event
+     * buttons, the crew list's page arrows, anything a later feature adds to the top bar.
+     */
+    internal val touchForeignButtons: List<Button>
+        get() = buttons.filter { it !== jumpButtonRef && it !== shipButtonRef && it !== storeButtonRef && it !== settingsButtonRef }
+
+    private var touchCrewMaxPage = 0
+    // The crew list's state is not set up yet while the first list is built (init).
+    private var touchButtonsReady = false
     /** HsEventButtons.version the top bar was built for. */
     private var hsEventButtonsVersion = 0
     private var hsEventHideSig = 0
@@ -1090,6 +1108,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             }.apply { renderScale = buttonScale }
             nextPos += ConstPoint(step(88, 17), 0)
             buttons += store
+            storeButtonRef = store
         }
         if (hsButtons != null) {
             nextPos = ConstPoint(hsButtons.optionsX, nextPos.y)
@@ -1106,10 +1125,21 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             showPauseWindow()
         }
         settings.renderScale = buttonScale
+        settingsButtonRef = settings
 
         buttons += jump
         buttons += ship
         buttons += settings
+
+        // The touch layout draws no desktop HUD, which is where the rest of the list is built: the crew list's page
+        // arrows join here, and the list counts as built, so a change of the event buttons builds it again.
+        if (touch != null) {
+            if (touchButtonsReady) {
+                if (HS.active) hsCrewPageButtons()
+                touchCrewMaxPage = hsCrewMaxPage()
+            }
+            updatingButtons = false
+        }
     }
 
     /**
@@ -1155,7 +1185,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
     fun mouseClick(button: Int, x: Int, y: Int, playerShipPosition: IPoint) {
         // Hyperspace More Info button (CommandGui::LButtonDown hook; it does not take the click from the rest)
-        if (HS.active && button == Input.MOUSE_LEFT_BUTTON) xyz.znix.xftl.hs.render.HsMoreInfo.click(game)
+        if (HS.active && touch == null && button == Input.MOUSE_LEFT_BUTTON) xyz.znix.xftl.hs.render.HsMoreInfo.click(game)
         pauseWindow?.let { win ->
             win.mouseClick(button, x, y)
             return
@@ -1490,8 +1520,13 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         return hsVisibleCrew().indexOf(crew)
     }
 
-    private inner class CrewPageButton(private val base: String, pos: ConstPoint, private val down: Boolean) :
-        Button(game, pos, ConstPoint(game.getImg("${base}_on.png").width, game.getImg("${base}_on.png").height)) {
+    /** The crew list's page arrows (the touch layout gives them their own place). */
+    internal interface CrewPage {
+        val down: Boolean
+    }
+
+    private inner class CrewPageButton(private val base: String, pos: ConstPoint, override val down: Boolean) :
+        Button(game, pos, ConstPoint(game.getImg("${base}_on.png").width, game.getImg("${base}_on.png").height)), CrewPage {
         override val makesHoverNoise: Boolean get() = true
 
         private fun applies() = if (down) hsCrewPageNow() < hsCrewMaxPage() else hsCrewPageNow() > 0
@@ -1667,6 +1702,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         if (!weapon.isPowered) {
+            // WeaponControl::SelectArmament (1.6.14 0x569290): an unpowered weapon's box first disarms whatever
+            // weapon was armed, then tries to power this one.
+            disarmWeapon()
             // A weapon without missiles is accepted by the power manager but switched straight back off.
             if (weapons.setWeaponPower(weapon, true) && weapon.isPowered) {
                 weapon.hsUserPowered = true
@@ -1746,6 +1784,31 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         selectWeaponClickEvent = null
         beamTargeting = null
         game.clickEvent = null
+    }
+
+    /** WeaponControl's armedSlot = -1, armedWeapon = null: the armed weapon (and a beam line being drawn) goes. */
+    private fun disarmWeapon() {
+        if (targetingSelectedWeapon == null) return
+        val armed = selectWeaponClickEvent
+        targetingSelectedWeapon = null
+        selectWeaponClickEvent = null
+        beamTargeting = null
+        if (armed != null && game.clickEvent === armed) game.clickEvent = null
+    }
+
+    /**
+     * WeaponControl::OnLoop (1.6.14 0x56c1a0, every frame, paused too): the armed weapon is disarmed as soon as its box
+     * is not powered (WeaponBox::Powered, the weapon's powered flag: ion, damage, a Zoltan leaving or a storm can take
+     * it) or its weapon is hacked (iHackLevel above 1). Without this, a weapon that lost its power while armed stayed
+     * armed, and on touch the next tap on it went to the armed weapon's autofire/disarm steps instead of powering it.
+     */
+    private fun disarmUnusableWeapon() {
+        val slot = targetingSelectedWeapon ?: return
+        if (game.clickEvent !== selectWeaponClickEvent && beamTargeting == null) return
+        val weapon = ship.hardpoints.getOrNull(slot)?.weapon
+        val hacked = ship.weapons?.isHackActive == true || (weapon?.hsLuaHackLevel ?: 0) > 1
+        if (weapon != null && weapon.isPowered && !hacked) return
+        disarmWeapon()
     }
 
     /** The artillery whose beam the player is drawing (Hyperspace targetable artillery). */
@@ -1970,6 +2033,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     fun updateAlways(dt: Float) {
         // Always called, whether or not the player is paused.
         // This is therefore only to be used for UI stuff.
+        if (touch != null && (!touchButtonsReady || touchCrewMaxPage != hsCrewMaxPage())) {
+            touchButtonsReady = true
+            updateButtons()
+        }
+        disarmUnusableWeapon()
         touch?.update(dt)
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.systems.HsSystemBox.playerFrame(game)
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.systems.HsSystemBox.enemyFrame(game)
@@ -2040,14 +2108,6 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             lastSubSysBoxY = subBoxY
             updateButtons()
         }
-
-        // Hyperspace SHIP_STATUS render event around ShipStatus::OnRender
-        val luaStatus = if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP_STATUS) else 0
-        if (luaStatus >= 0) drawTopBar(g)
-        if (HS.active) xyz.znix.xftl.hs.render.HsMoreInfo.render(game, g)
-        // Hyperspace TriggeredEvents.cpp: ShipStatus::OnRender hook (triggered event boxes and warnings)
-        if (HS.active) xyz.znix.xftl.hs.events.HsTriggeredGui.render(game, g, gc.input.mouseX, gc.input.mouseY)
-        if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP_STATUS, luaStatus)
 
         // The systems strip draws in its own coordinate space, anchored to
         // the bottom-left, scaled up on touch so its buttons are easier to
@@ -2127,6 +2187,15 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         val luaSpace = if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_SPACE_STATUS) else 0
         if (luaSpace >= 0) drawSpaceStatus(g)
         if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_SPACE_STATUS, luaSpace)
+        // Hyperspace SHIP_STATUS render event around ShipStatus::OnRender, which CommandGui::RenderStatic (0x535070)
+        // draws after the FTL button, the systems and subsystems, the weapons and SpaceStatus: what a script draws
+        // there (Multiverse's tutorial boxes) lies over the HUD below it (oracle bt-mv-tutorial4, 04-toggle-2).
+        val luaStatus = if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP_STATUS) else 0
+        if (luaStatus >= 0) drawTopBar(g)
+        if (HS.active) xyz.znix.xftl.hs.render.HsMoreInfo.render(game, g)
+        // Hyperspace TriggeredEvents.cpp: ShipStatus::OnRender hook (triggered event boxes and warnings)
+        if (HS.active) xyz.znix.xftl.hs.events.HsTriggeredGui.render(game, g, gc.input.mouseX, gc.input.mouseY)
+        if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP_STATUS, luaStatus)
         if (g.tooltip == null && currentWindow == null && crewSelectionRectangle == null)
             crewTooltip.show(g)
         inDangerWarning.draw(g)
@@ -2344,6 +2413,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                     override val requiredPower: Int get() = weapon!!.hsRequiredPower
                     override val chargeTime: Float get() = weapon!!.chargeTime
                     override val chargeProgress: Float get() = weapon!!.chargeProgress
+                    override fun chargeBarSize(full: Int): Int = ship.weapons!!.chargeBarHeight(weapon!!, full)
                     override val zoltanPower: Int get() = ship.weapons!!.getWeaponForcedPower(i)
                     override val isPowered: Boolean get() = weapon!!.isPowered
                     override val isCharged: Boolean get() = weapon!!.isCharged
@@ -2921,6 +2991,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         if (hacked) {
             game.getImg("img/statusUI/top_shields4_purple.png").draw(31 - 8, shieldY)
         }
+        // The layer squares, then the super-shield or recharge bar over them, as the game orders them.
+        if (shields != null) {
+            ShieldSquares.render(game, g, shields.activeShields, shields.selectedShieldBars, hacked,
+                30f, shieldY + 4f, 33f, shieldY + 34f + 2f)
+        }
 
         if (ship.superShield != 0) {
             // Hyperspace: augment super shields draw their own bar count and colour (CustomSuperShield.cpp).
@@ -2954,25 +3029,6 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         if (shields != null) {
-            // Draw the shield bubble indicators
-            val shieldOnImg = game.getImg("img/statusUI/top_shieldsquare1_on.png")
-            val shieldOffImg = game.getImg("img/statusUI/top_shieldsquare1_off.png")
-            val shieldHackedOnImg = game.getImg("img/statusUI/top_shieldsquare1_hacked_charged.png")
-            val shieldHackedOffImg = game.getImg("img/statusUI/top_shieldsquare1_hacked.png")
-
-            for (i in 0 until shields.selectedShieldBars) {
-                val charged = shields.activeShields > i
-
-                val img = when {
-                    hacked && charged -> shieldHackedOnImg
-                    hacked -> shieldHackedOffImg
-
-                    charged -> shieldOnImg
-                    else -> shieldOffImg
-                }
-                img.draw(30 + 23 * i, shieldY + 4)
-            }
-
             when {
                 broken -> shieldsWarning.startFor(1f)
                 else -> shieldsWarning.stop()
@@ -3503,7 +3559,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         mousePos.set(x, y)
         // Hyperspace More Info button hover (CommandGui::MouseMove hook: not under the pause menu or game over)
-        if (HS.active) xyz.znix.xftl.hs.render.HsMoreInfo.mouseMove(game, null, x, y, pauseWindow != null || currentWindow is GameOverWindow)
+        // The touch layout's More Info button is a TouchExtras piece, which moves its hover.
+        if (HS.active && touch == null) xyz.znix.xftl.hs.render.HsMoreInfo.mouseMove(game, null, x, y, pauseWindow != null || currentWindow is GameOverWindow)
         // Hyperspace event buttons created, cleared or loaded: rebuild the top bar (ShipStatus::OnLoop lays it out)
         if (HS.active && !updatingButtons && (xyz.znix.xftl.hs.render.HsEventButtons.version != hsEventButtonsVersion ||
                 xyz.znix.xftl.hs.render.HsEventButtons.buttons().isNotEmpty() && xyz.znix.xftl.hs.render.HsEventButtons.hideSignature(game) != hsEventHideSig)) updateButtons()
@@ -4585,6 +4642,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         abstract val name: String
         abstract val chargeTime: Float
         abstract val chargeProgress: Float
+
+        /** The charge bar's full height out of [full] pixels (the frame of a weapon's box). */
+        open fun chargeBarSize(full: Int): Int = (full * chargeTime / maxWeaponChargeTime).toInt()
         abstract val requiredPower: Int
         abstract val zoltanPower: Int
         abstract val isPowered: Boolean
@@ -4682,7 +4742,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
             if (hasChargeBar) {
                 val maxBarSize = 35 - 2
-                val barSize = (maxBarSize * chargeTime / maxWeaponChargeTime).toInt()
+                val barSize = chargeBarSize(maxBarSize)
 
                 // The Y position of the inside of the charge bar, relative to the main weapons box
                 val top = maxBarSize - barSize

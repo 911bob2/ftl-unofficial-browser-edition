@@ -66,6 +66,34 @@ single active job limit also applies.
   Each phase warms up for two seconds. The choice affects only the temporary
   benchmark profile. Keep the page visible.
 
+The page's engine runs stand for the reference captures' setup (`window.ftlTestRuns`, read by `LanguageJs`): without
+it a player's browser, which has no `navigator.webdriver`, opened the first-start language list instead of the main menu,
+so on 2.0.1 **Menu & jump warnings** stopped at once on a cast (its error had no message, shown as `Running…`) and
+**Tutorial isolation** failed its main-menu check (`BrowserTutorialDiagnostics.kt:110`). Playwright sets
+`navigator.webdriver`, so the packaged runs never saw it; `tests/diagnostics-ui.mjs` now hides it. A case's error is the
+exception's message or, without one, its text; both probes name the state they found.
+
+Between two categories the page shows its loading screen over the preview for one second before the next engine starts
+(not between the cases of a category, such as encounters). The results pane and the case details are resized by their
+bottom right corner; the case list keeps at least 8rem (about four rows) when the details are open.
+
+- **Browser modules** also run the save sync rules (`web/self-tests-saves.mjs`, shared with `tests/saves-client.mjs`:
+  the page's own `savecore.js` over an in-memory device store and account), the mod merge against ftlman's answers and
+  the ftlman Lua patch scripts (`web/self-tests-mods.mjs`, shared with `tests/mods-merge.mjs`; the fixtures are served
+  as `/web/test-vectors/mods/`). Nothing touches the browser's saves, account, mod library or storage.
+- **Hyperspace core / gameplay** and **Multiverse core, weapons & drones, systems, crew, hazards, Lua, gameplay** run when
+  this browser's mod library holds the catalogue preset's files (Hyperspace 1.23.2; Hyperspace plus both Multiverse
+  files), found by SHA-256; nothing is downloaded or added. Without them they are disabled with a note and left out of
+  All tests. The merge is the Play page's (`prepareModdedLaunch`, its cache included). Core is `hsCoreProbe` (with
+  Multiverse also its `hyperspace.xml` values), weapons/systems/crew/hazards the parts of `tests/hs-weapons.mjs`,
+  `hs-systems.mjs`, `hs-crewui.mjs` and `hs-wp1.mjs` that need nothing but the mod files, Lua `hsLuaProbe`, and gameplay
+  the vanilla probes again on the mod's data, each on a fresh engine (the packaged `p-F2-*`/`p-F3-*` modes). In a
+  packaged fixture the preloaded mod session (`mod-session-preload.mjs`) stands for the library.
+  Each engine the page starts gets its own Lua runtime (`hs-lua.mjs` keeps one per page, bound to the engine it was
+  made with): reusing it sent a later engine's scripts into the stopped one, which failed the Lua parts and kept every
+  earlier engine in memory until Multiverse core stalled the tab. Multiverse core checks the profile and the mod set, not
+  the run round trip, which holds the page for minutes on Multiverse (`tests/hs-core.mjs` with `HS_EXPECT=mv` has it).
+
 Use the checkboxes for a custom selection. Run starts the selection; Stop cancels
 between synchronous engine cases and immediately interrupts an active benchmark
 or server job. The desktop workspace has separate configuration, engine preview
@@ -218,6 +246,22 @@ does not consume simulation RNG or alter serialized gameplay state. Screen shake
 has a separate cosmetic random source. These cases exposed an actual dependence
 of gameplay RNG on drawing frequency, now fixed.
 
+## Saves from the original game
+
+`tests/native-import.mjs` (in the image, through `.build/hs/prod-int/t.sh <label> vanilla|F2|F3 native-import.mjs -e
+NATIVE_DIR=/native -e NATIVE_EXPECT=/native/expect.json -v <dir>:/native:ro`): Saves > Import from FTL (the guide, refusals of
+garbage and truncated files, the found files, the setup they ask for, the new save, the missing mods of a modded one), without
+mods the save played through Continue and saved in the engine's format, then for every file of the session's game
+(`nativeImportProbe`) the converted run and the run saved from it and loaded again against what the original saved: ship,
+name, hull, fuel, missiles, drone parts, scrap, sector, beacons, crew (name, race, health), systems, weapons, drones,
+augments, cargo, and the profile's layouts, achievements, scores and games.
+
+The files are real saves of the original (never in Git): vanilla from `tools/native-capture/` sessions, Hyperspace and
+Multiverse from `tools/hs-oracle/` sessions that play a few beacons and Save and Quit. `expect.json` comes from an independent
+Python reader of the format and, for Hyperspace, the oracle tracer's last `state` line. `NATIVE_SAVES=<dir> ./gradlew
+:savecore:test` identifies and checks every original file below `<dir>`. The 2026-11 set and its sessions are in
+`.build/hs/save-tools/` (report: `.build/hs/reports/save-tools.md`).
+
 ## Engine modes on a modded fixture
 
 Memory: `HS_FULLRUN_PROBE="reload-handles 30" tools/hs-fullrun/run.sh <seed>` loads the same run 30 times on Multiverse data
@@ -232,6 +276,67 @@ mod's. They do not establish parity with native Hyperspace; the full runs and `h
 ship specifications and 340 player ships, so `BASELINE_MODE_TIMEOUT_MS` raises the 180 s limit per mode for `encounters`,
 `ae`, `vanilla` and `campaign`. `BASELINE_ENCOUNTER_BATCH=<n>` runs `encounters` in slices on a fresh page and
 `BASELINE_ENCOUNTER_RANGE=<first>,<end>` limits it to part of the sorted list; a slice with failures does not stop the next.
+
+`gameplay-parity` also runs `GameplayWeapons17Checks` in every mode (vanilla, F2, F3). It covers a weapon armed by touch
+that loses its power (ion, damage, or another weapon taking the bar) being disarmed as in WeaponControl::OnLoop, so the next
+tap powers it; weapons taking power again after an ion runs out, after a repair and in an ion storm; shots queued while
+charging (burst laser, missile, chain laser, beam, by desktop and by touch) firing once charged, also across a reload; ship
+unlock popups for ships without a blueprint (none shown), vanilla variants (Lanius A/B, Stealth C, Crystal B) and an
+F3 unlock whose icon file is missing (text only); and every vanilla `<ship hostile="false">` event, plus a surrender and a
+crew kill, staying neutral and present across a reload. `hs-systems` checks that five Lua `IncreasePower(1, true)` calls on
+shields in one frame add five bars, as `CustomShips.cpp` relies on.
+
+`GameplayWeaponBarChecks` (also in `gameplay-parity`) checks the weapon charge bars against the original's box frame:
+fully charged weapons of three charge times, unmanned and manned, have bars of `33 * cooldown / the longest cooldown *
+cooldown modifier` pixels on desktop and in the touch slot (22 instead of 33 in the closed touch column, as the iPad's
+icon view draws it), the touch frame is as tall as that bar (so a full bar fills it), and the bar takes the box's colour unless the weapon is aimed. It also checks that a save and load keep each
+weapon's charge, charged state and power, and that weapons charge with no ship at the beacon. The native numbers come from
+the Multiverse oracle (`.build/hs/reports/weapons-reload.md`): Burst I 27 px and Defense Laser 20 px when manned.
+
+`gameplay-parity`'s `overflowAugmentStore` step runs under mods too: a fourth augment on a full ship goes to the over-capacity
+box, and the store's buy and sell tabs draw with the mouse and touch layouts. `tests/hs-store-overflow.mjs` (F3) plays the
+reported case: three augments, Multiverse's `SYLVAN_DESTRUCTION_2_SHIELD` (Merchant's Shield), a store, its sell tab. The
+original shows the same over-capacity box there with the sell box below it (oracle session `bt-store-over`).
+`tests/hs-mv-tutorial.mjs` (F3) compares Multiverse's tutorial with the original's, see [TUTORIAL.md](TUTORIAL.md#multiverse-tutorial).
+`tests/diagnostics-full.mjs` runs the Tests page's All tests as a player would (no `navigator.webdriver`), optionally with
+Hyperspace and Multiverse added through the Mods panel (`DIAG_MOD_FILES`, `DIAG_ONLY=<ids>` for a part); it is not in a
+suite and, with Multiverse, takes several GB, so it runs alone.
+
+## Debug console
+
+[CONSOLE.md](CONSOLE.md). `ConsoleTest` (`android :app:testDebugUnitTest`): every command of both consoles is in the
+one list once, the clashes keep Hyperspace's command under the name (ours under `dev-`), names match in any case, the
+Hyperspace-only ones answer so in vanilla, the line edits as HS's TextInput (cursor keys, 480 characters, invertCaps),
+the gating rule, and the `>_` button's place arithmetic. `tests/console.mjs` in the image, vanilla and on a modded
+fixture (`sh $D/t.sh console-vanilla vanilla console.mjs`, `console-F3 F3 console.mjs`, in `hsq.sh`): the setting off
+(vanilla closed; Hyperspace `\` only, ``` ` ``` its speed key, `<console enabled="false"/>` closed), the Logs page's
+setting (Console button, both keys), typing with Left/Home/End, Up, `help`, then the Hyperspace and original commands
+run with their effects read back (`consoleProbe`) and the Hyperspace-only ones; screenshots in `/out`. The Android
+switch and button on the emulator: `.build/hs/reports/console-android/` (one finger through `adb input`).
+
+## Android update check
+
+`UpdateCheckTest` (`android :app:testDebugUnitTest`): version parsing and comparison, the once-a-day rule (failures
+count), Not now per version, the ETag and a 304, the setting off making no request, which releases are offered, and
+GitHub's real answer shape. On the emulator, a debug build against a stub instead of GitHub
+([ANDROID.md](ANDROID.md#updates)):
+
+```
+py -3 tools/android-update/stub.py --tag v2.0.2          # 127.0.0.1:8765, the emulator's 10.0.2.2; prints every request
+adb shell am broadcast -n dev.ftl911bob.unofficial/ftl.android.app.debug.ConsoleReceiver --es cmd "'updateurl http://10.0.2.2:8765/latest'"
+adb shell am broadcast -n dev.ftl911bob.unofficial/ftl.android.app.debug.ConsoleReceiver --es cmd "'updatereset'"
+curl http://127.0.0.1:8765/set/v2.0.1                     # or /set/noapk/<tag>, /set/status/403
+```
+
+Reopening the launcher (`am force-stop`, then `monkey -p dev.ftl911bob.unofficial -c android.intent.category.LAUNCHER 1`)
+runs the automatic check when it is due; `updatereset` makes it due. Check: the banner for a newer tag, Download opening
+the stub's page in the browser, Not now still hidden after a restart, nothing when up to date or offline
+(`cmd connectivity airplane-mode enable`), Settings > Check for updates in both states, the stub's log showing only
+`Accept`, `X-GitHub-Api-Version`, `User-Agent` and from the second request `If-None-Match` (a 304), and `adb logcat -s
+FTL-Update`. Chrome on the read-only AVD starts with its first-run screens each boot; to see the page,
+`adb shell am set-debug-app --persistent com.android.chrome` and `echo '_ --disable-fre --no-first-run' >
+/data/local/tmp/chrome-command-line` (undo with `clear-debug-app`). Phone and tablet shapes through `wm size` and `wm density` (`reset` after). Screenshots:
+`.build/hs/reports/update-check/`.
 
 ## Android multi-touch on the emulator
 
@@ -249,7 +354,8 @@ It needs `ftl.dat` already imported on the device, opens the game itself, and st
 spawned enemy. The debug-only `TouchProbe` answers with the game's state, and `<dir>` gets frames with the fingers shown
 (`show_touches`); look at them, a passing check does not say the picture is right. Exit code 1 on any failure. Beam, odd
 cases, cancels, rotation, border fingers, doors and hold tooltips take about 8 minutes. Keep the screen in its default fit.
-`getevent -lt /dev/input/event2` on the device shows the raw events. `TouchRouterTest` (`:app:testDebugUnitTest`) is the
+`getevent -lt /dev/input/event2` on the device shows the raw events. The touch HUD's desktop elements (TouchExtras) have
+their own one-finger script, `tools/android-touch/extras.mjs` ([ANDROID.md](ANDROID.md#testing)). `TouchRouterTest` (`:app:testDebugUnitTest`) is the
 quick check of finger routing, at the engine's call only.
 
 ## Packaged integration runner
@@ -263,9 +369,9 @@ checks are separate from the current-PC performance measurement.
 
 | Group | Scripts |
 | --- | --- |
-| Browser modules | `audio.mjs`, `frame-pacer.mjs`, `diagnostic-export.mjs`, `resource-cache.mjs`, `dat.mjs`, `mods-merge.mjs` (mod merge against ftlman ground truth, see [mods](MODS.md)), `mods-mega.mjs`, `saves-client.mjs` (the page's syncer over the real `savecore.js` and an in-memory account: offline then sync, conflicts, locks and overrides, tabs, deletions, limits, profiles; see [saves](SAVES.md)) |
+| Browser modules | `audio.mjs`, `frame-pacer.mjs`, `diagnostic-export.mjs`, `resource-cache.mjs`, `dat.mjs`, `mods-merge.mjs` (mod merge against ftlman ground truth, see [mods](MODS.md); also the Hyperspace check's rule and picker hint), `mods-mega.mjs`, `saves-client.mjs` (the page's syncer over the real `savecore.js` and an in-memory account: offline then sync, conflicts, locks and overrides, tabs, deletions, limits, profiles; see [saves](SAVES.md)) |
 | Security | `server-security/Ftl.SecurityTests.csproj`, `security.mjs`, `accounts.mjs`, `account-recovery.mjs`, `onboarding.mjs` (consent and mode cookies, registration, persistent sessions, account deletion, single bootstrap admin), `mods-security.mjs`, `saves-v2.mjs` (save model 2 API: revisions, locks and overrides, snapshots, tombstones, profiles, limits, account isolation) |
-| Browser menus and launcher | `saves-softlock.mjs` (a save locked to its mod files by hash; `SOFTLOCK_HS_FILES=<files>` runs it on real ones, `SOFTLOCK_FILL_QUOTA=1` measures a real quota refusal in Chromium and stops there), `menus.mjs`, `tutorial-ui.mjs`, `launcher.mjs`, `diagnostics-ui.mjs`, `resource-cache-ui.mjs`, `local-mode.mjs` (first visit, local-only saves, move to account, account panel), `mods-ui.mjs` (mod library, modded launch and saves, unchanged vanilla launch), `mods-browser.mjs` (catalogue downloads, local files, saves with mods), `saves-browser.mjs` (save model 2 in the page: offline play then sync, missing content, two tabs, another device's override, both conflict choices, Verified/Custom mods and "missing mod", migration of the old browser stores) |
+| Browser menus and launcher | `saves-softlock.mjs` (a save locked to its mod files by hash; `SOFTLOCK_HS_FILES=<files>` runs it on real ones, `SOFTLOCK_FILL_QUOTA=1` measures a real quota refusal in Chromium and stops there), `menus.mjs`, `tutorial-ui.mjs`, `launcher.mjs`, `diagnostics-ui.mjs`, `resource-cache-ui.mjs`, `local-mode.mjs` (first visit, local-only saves, move to account, account panel, Sign out's question: Cancel and Sign out, the unsynced line, the other pages' header), `mods-ui.mjs` (mod library, modded launch and saves, unchanged vanilla launch), `mods-browser.mjs` (catalogue downloads, local files, saves with mods, the "Hyperspace mod without Hyperspace" warning: both choices, the download permission with sign-in, unreachable and failed cases, an existing save through Advanced, New save), `saves-browser.mjs` (save model 2 in the page: offline play then sync, missing content, two tabs, another device's override, both conflict choices, Verified/Custom mods and "missing mod", migration of the old browser stores) |
 | Diagnostic recording and recovery | `diagnostics.mjs` |
 | Unavailable diagnostic storage | `debug-storage.mjs` |
 | HTTPS production behavior | `production.mjs` |

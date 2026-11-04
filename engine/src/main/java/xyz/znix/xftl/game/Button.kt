@@ -281,7 +281,10 @@ object Buttons {
         // "out of fuel" (bOutOfFuel), with tooltip_jump_noJump on hover.
         private val hsNoJump: Boolean get() = xyz.znix.xftl.hs.ship.HsShipState.enemyNoJump(game, ship)
         private val noJumpTooltip by lazy { HotkeyDelayedTooltip(game, "tooltip_jump_noJump", null) }
-        private val outOfFuel: Boolean get() = ship.fuelCount == 0 && game.getEnemyOf(ship) != null || hsNoJump
+        // CommandGui::OnLoop (0x536770) sets bOutOfFuel whenever the fuel is 0 and makes the button inactive with a
+        // hostile ship and no fuel or while TutorialManager::AllowJumping is false; an inactive button out of fuel shows
+        // it (Multiverse's tutorial starts with no fuel and the jump locked).
+        private val outOfFuel: Boolean get() = ship.fuelCount == 0 && (game.getEnemyOf(ship) != null || tutorialBlocked) || hsNoJump
         // CommandGui::OnLoop (0x536770) sets the button inactive while TutorialManager::AllowJumping (0x4113b0) is
         // false: the tutorial shows a grey JUMP with no READY until the map lesson.
         private val tutorialBlocked: Boolean
@@ -382,8 +385,10 @@ object Buttons {
             // 0 no engines, 1 its text, 2 active, 3 hovered, 4 text, 5 hovered text, 6 no fuel, 7 its text.
             val hs = xyz.znix.xftl.hs.HS.active
             if (outOfFuel) {
-                // If the player is in combat without any fuel, their jump button is disabled.
-                g.colour = if (hs) xyz.znix.xftl.hs.render.HsColors.jump(6) else Constants.WARNING_COLOUR_RED
+                // Out of fuel with a hostile ship, or under the tutorial's jump lock. The button is inactive, so
+                // Hyperspace's jumpNoFuel (an active colour) does not show: the fill stays the original's red and only
+                // the text takes jumpNoFuelText (oracle bt-mv-tutorial4, 01-start).
+                g.colour = Constants.WARNING_COLOUR_RED
                 drawRounded(g, pos.x + 5, pos.y + 6, size.x, size.y, 3)
 
                 val noFuelText = if (hs) xyz.znix.xftl.hs.render.HsColors.jump(7) else Constants.JUMP_DISABLED_TEXT

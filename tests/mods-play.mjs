@@ -160,7 +160,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
       assert.ok((await snapshot(page)).scrap > before.scrap, 'the reward is paid');
       pass('a real mod\'s choice is in the sector start box and pays its reward');
     }
-    await page.evaluate(() => { window.ftlEngine.consoleExecute('weapon MOD_PLAY_LASER'); window.ftlEngine.consoleExecute('spawn-ship MOD_PLAY_ENEMY 1.EASY'); });
+    await page.evaluate(() => { window.ftlEngine.consoleExecute('dev-weapon MOD_PLAY_LASER'); window.ftlEngine.consoleExecute('spawn-ship MOD_PLAY_ENEMY 1.EASY'); });
     assert.equal((await page.evaluate(() => window.ftlSaveDurably())).saved, true);
     assert.match(await page.evaluate(() => window.ftlEngine.runSave()), /MOD_PLAY_SHIP/, 'the new ship is here');
     assert.match(await page.evaluate(() => window.ftlEngine.runSave()), /MOD_PLAY_LASER/, 'the new weapon is on board');

@@ -180,7 +180,8 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
 
     // Reload: the merge comes from the cache and gives the same files.
     await openMods();
-    assert.equal(await page.locator('#mods-panel [aria-label="Mod load order"] .mod-row').count(), 2);
+    // The list is read from storage after the panel opens (and the Hyperspace check reads each archive), so wait for it.
+    await page.waitForFunction(() => document.querySelectorAll('#mods-panel [aria-label="Mod load order"] .mod-row').length === 2, {}, {timeout: 15000});
     await launchModded();
     const again = await fingerprint();
     assert.equal((await page.evaluate(() => window.ftlModLaunchStats)).cached, true);

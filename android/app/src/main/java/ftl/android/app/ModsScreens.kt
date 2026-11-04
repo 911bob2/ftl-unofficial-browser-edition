@@ -189,11 +189,21 @@ fun ModPicker(library: List<ModLibrary.Mod>, chosen: List<String>, onChange: (Li
             }
         }
     }
+    // A quiet hint while the chosen files use Hyperspace without Hyperspace.ftl (HyperspaceRule); starting asks once.
+    val app = FtlApplication.app
+    remember(library, chosen) { app.mods.withoutHyperspace(chosen) }?.let { m ->
+        Txt("${m.label} uses Hyperspace, but Hyperspace.ftl is not chosen: some Hyperspace images and text will be missing. Choose Hyperspace.ftl first.",
+            Ftl.small.copy(color = Ftl.accent))
+    }
 }
 
-/** Saves > a save > Advanced: change the mod files a save is locked to, with a warning. */
+/**
+ * Saves > a save > Advanced: change the mod files a save is locked to, with a warning. first: a file put first for the
+ * player to confirm (Hyperspace.ftl, from the "Hyperspace mod without Hyperspace" warning); onChanged runs once the
+ * change is made.
+ */
 @Composable
-fun AdvancedDialog(id: String, onClose: () -> Unit) {
+fun AdvancedDialog(id: String, first: String? = null, onChanged: () -> Unit = {}, onClose: () -> Unit) {
     val app = FtlApplication.app
     val save = remember { app.store.get(id) }
     val library = remember { app.mods.list() }
@@ -205,7 +215,7 @@ fun AdvancedDialog(id: String, onClose: () -> Unit) {
     }
     val have = library.map { it.sha256 }.toSet()
     // Files this device lacks stay in the list unless removed; they show as missing.
-    var chosen by remember { mutableStateOf(save.setup.mods.map { it.sha256 }) }
+    var chosen by remember { mutableStateOf(save.setup.mods.map { it.sha256 }.let { m -> if (first != null && first in have) listOf(first) + (m - first) else m }) }
     val missing = save.setup.mods.filter { it.sha256 !in have }
     FtlDialog("Mods of ${save.name}", onClose, {
         FtlButton("Cancel", onClose)
@@ -214,8 +224,11 @@ fun AdvancedDialog(id: String, onClose: () -> Unit) {
             app.store.update(id) { val setup = ftl.saves.Setup.of(files); it.copy(setup = setup, dirty = true, run = it.run?.let { run -> ftl.saves.Sync.runForSetup(run, setup.key) }) }
             app.sync.requestSync()
             onClose()
+            onChanged()
         }, kind = ButtonKind.DANGER, enabled = chosen != save.setup.mods.map { it.sha256 })
     }) {
+        if (first != null && first in have && first !in save.setup.mods.map { it.sha256 })
+            Txt("${library.first { it.sha256 == first }.label} is added first. Change mods to keep it.", Ftl.small.copy(color = Ftl.accent))
         Txt("A save is locked to its mod files. Changing them can break the run: content the new files lack is removed when the run loads. The save keeps its own unlocks.", Ftl.small.copy(color = Ftl.error))
         for (m in missing) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             val kept = m.sha256 in chosen

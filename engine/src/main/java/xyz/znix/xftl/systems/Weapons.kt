@@ -105,6 +105,29 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     }
 
     /**
+     * ProjectileFactory::cooldownModifier, which WeaponSystem::OnLoop sets each frame: 1 minus the weapons manning
+     * bonus, or what Hyperspace's WEAPON_COOLDOWN_MOD gave it.
+     */
+    fun cooldownModifier(weapon: AbstractWeaponInstance): Float {
+        val manning = getBoostSkillLevel(Skill.WEAPONS)?.let { SKILL_BONUSES[it.ordinal] / 100f } ?: 0f
+        return if (xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.lua.HsLua.hasInt[xyz.znix.xftl.hs.lua.LuaApi.EV_WEAPON_COOLDOWN_MOD])
+            weapon.hsCooldownMod else 1f - manning
+    }
+
+    /**
+     * The height of a weapon box's charge bar when full, out of [full] pixels. The box frame (WeaponBox, 1.6.14
+     * FUN_00507590; the iPad box draws the same frame) is `full * cooldown.second / the longest cooldown.second of the
+     * ship's weapons * cooldownModifier`, at least 1, where cooldown.second is the charge time scaled by the
+     * modifier (ProjectileFactory::SetCooldownModifier). So a quicker weapon's frame, and its full bar, is shorter.
+     */
+    fun chargeBarHeight(weapon: AbstractWeaponInstance, full: Int): Int {
+        val second = weapon.chargeTime * cooldownModifier(weapon)
+        val longest = ship.hardpoints.mapNotNull { hp -> hp.weapon?.let { it.chargeTime * cooldownModifier(it) } }.maxOrNull() ?: second
+        if (longest <= 0f) return 1
+        return (second / longest * full * cooldownModifier(weapon)).toInt().coerceAtLeast(1)
+    }
+
+    /**
      * Is the weapon in the given hardpoint slot set to fire automatically
      * when charged?
      */

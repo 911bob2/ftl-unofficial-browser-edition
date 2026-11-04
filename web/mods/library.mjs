@@ -11,6 +11,7 @@ import {checkFileSpace, createMeter, discardDownload, downloadFile, importLocalF
 import {formatProgress, progressBar} from '../progress.mjs';
 import {readEnabled, writeEnabled} from '../mods-enabled.mjs';
 import {confirmAction} from '../dialogs.mjs';
+import {isHyperspace, markerOf} from './hs-needed.mjs';
 
 const MiB = n => (n / 1048576).toFixed(1) + ' MiB';
 function el(tag, props = {}, ...children) {
@@ -36,14 +37,19 @@ export function fixedButton(props, label, labels) {
 }
 const SOURCE_LABEL = {server: 'this server', mega: 'mega.nz', local: 'a local file', import: 'a local file'};
 
-/** Ordering hints (not enforced): Hyperspace mods need Hyperspace.ftl first; MV Data needs MV Assets before it. */
-export function orderHints(items) {
+/**
+ * Ordering hints (not enforced): Hyperspace mods need Hyperspace.ftl first (hs-needed.mjs names both); MV Data needs MV
+ * Assets before it. item.marker: the archive uses Hyperspace (else its stored `hyperspace`, data/hyperspace.xml).
+ */
+export function orderHints(items, cat = null) {
   const on = items.filter(i => i.enabled), hints = [];
-  const at = test => on.findIndex(test), hs = at(i => /^hyperspace$/i.test(i.title ?? ''));
+  const at = test => on.findIndex(test), hs = at(i => isHyperspace(i, cat));
   const mvData = at(i => /multiverse/i.test(i.title ?? i.name) && /data/i.test(i.title ?? i.name));
   const mvAssets = at(i => /multiverse/i.test(i.title ?? i.name) && /assets/i.test(i.title ?? i.name));
   on.forEach((item, index) => {
-    if (index !== hs && item.hyperspace && (hs < 0 || hs > index)) hints.push(`${item.title ?? item.name} uses Hyperspace: enable Hyperspace.ftl above it.`);
+    if (index === hs || !(item.marker ?? item.hyperspace)) return;
+    if (hs < 0) hints.push(`${item.title ?? item.name} uses Hyperspace, but Hyperspace.ftl is not enabled: some Hyperspace images and text will be missing. Enable Hyperspace.ftl above it.`);
+    else if (hs > index) hints.push(`${item.title ?? item.name} uses Hyperspace: enable Hyperspace.ftl above it.`);
   });
   if (mvData >= 0 && (mvAssets < 0 || mvAssets > mvData)) hints.push('Multiverse Data needs Multiverse Assets above it (order: Hyperspace, Assets, Data).');
   return hints;
@@ -78,7 +84,7 @@ function describe(error) {
 }
 
 export function mountModLibrary({root, account, role = 'user', local = false, message = () => {}, onChange = () => {}, catalogue = async () => null, fetchServer, core}) {
-  let items = [], busy = false, cat = null, catLoaded = false, archives = new Map();
+  let items = [], busy = false, cat = null, catLoaded = false, archives = new Map(), highlight = null; // highlight: the row enableFirst points at
   const jobs = new Map(); // catalogue id -> {controller, progress, error, source}
   const prefKey = 'ftl-mod-source:' + account;
   const preference = () => { try { return localStorage.getItem(prefKey); } catch { return null; } };
@@ -125,6 +131,8 @@ export function mountModLibrary({root, account, role = 'user', local = false, me
 
   async function load() {
     await saving.catch(() => {});
+    // A catalogue that could not be fetched (offline) is asked for again: it names Verified files and Hyperspace.
+    if (catLoaded && !cat) { try { cat = await catalogue(); } catch { cat = null; } }
     const seen = revision, out = [];
     for (const {sha256, enabled} of await getList(account)) { const a = await getArchive(sha256); if (a) out.push({...a, file: undefined, enabled}); }
     const known = new Map((await listArchives().catch(() => [])).map(a => [a.sha256, {...a, file: undefined}]));
@@ -210,19 +218,21 @@ export function mountModLibrary({root, account, role = 'user', local = false, me
       const toggle = el('input', {type: 'checkbox', className: 'checkbox checkbox-sm', checked: item.enabled, ariaLabel: 'Enable ' + (item.title ?? item.name)});
       // By file, not by this draw's objects or place: a refresh may have re-read the list since this row was drawn.
       const current = () => items.findIndex(i => i.sha256 === item.sha256);
-      toggle.onchange = async () => { const at = current(); if (at >= 0) items[at].enabled = toggle.checked; await save(); render(); };
+      toggle.onchange = async () => { highlight = null; const at = current(); if (at >= 0) items[at].enabled = toggle.checked; await save(); render(); };
       const up = el('button', {className: 'btn btn-sm', type: 'button', disabled: index === 0, ariaLabel: 'Move up ' + (item.title ?? item.name)}, '↑');
       const down = el('button', {className: 'btn btn-sm', type: 'button', disabled: index === items.length - 1, ariaLabel: 'Move down ' + (item.title ?? item.name)}, '↓');
       const remove = el('button', {className: 'btn btn-ghost btn-sm', type: 'button', ariaLabel: 'Remove ' + (item.title ?? item.name)}, 'Remove');
-      const move = async d => { const at = current(); if (at >= 0 && at + d >= 0 && at + d < items.length) items.splice(at + d, 0, ...items.splice(at, 1)); await save(); render(); };
+      const move = async d => { highlight = null; const at = current(); if (at >= 0 && at + d >= 0 && at + d < items.length) items.splice(at + d, 0, ...items.splice(at, 1)); await save(); render(); };
       up.onclick = () => move(-1); down.onclick = () => move(1);
       remove.onclick = () => removeFromList(item);
-      return el('li', {className: 'mod-row', dataset: {enabled: String(item.enabled), sha: item.sha256}},
+      return el('li', {className: 'mod-row', dataset: {enabled: String(item.enabled), sha: item.sha256, ...item.sha256 === highlight ? {highlight: 'true'} : {}}},
         el('label', {className: 'flex items-center gap-2'}, toggle, el('span', {className: 'mod-name'}, el('strong', {}, item.title ?? item.name), item.version ? ' ' + item.version : '', ' ', badge(item), el('span', {className: 'muted text-sm'}, ` · ${item.name} · ${MiB(item.size)} · from ${SOURCE_LABEL[archives.get(item.sha256)?.source ?? item.source] ?? 'a local file'}`))),
         el('span', {className: 'actions'}, up, down, remove));
     }));
-    const h = orderHints(items);
-    hints.replaceChildren(...h.map(t => el('li', {className: 'text-warning text-sm'}, t)));
+    for (const item of items) if (item.enabled && item.marker === undefined) item.marker = await markerOf((await getArchive(item.sha256).catch(() => null)) ?? item);
+    if (seq !== renderSeq) return;
+    const h = orderHints(items, cat);
+    hints.replaceChildren(...h.map(t => el('li', {className: 'text-warning text-sm', dataset: {hint: /not enabled/.test(t) ? 'hyperspace-missing' : 'order'}}, t)));
     const enabled = items.filter(i => i.enabled);
     if (!busy) status.textContent = items.length ? `${enabled.length} of ${items.length} enabled` : 'No mods yet.';
     const id = enabled.length ? 'Id ' + (await modSetHash(enabled.map(i => i.sha256))).slice(0, 12) : '';
@@ -416,5 +426,14 @@ export function mountModLibrary({root, account, role = 'user', local = false, me
         renderDialog(); if (!dialog.open) dialog.showModal();
       });
     },
-    catalogueFor: sha => cat?.files.find(f => f.sha256 === sha) ?? null, download: (entry, source) => run(entry, source ?? defaultSource(entry))};
+    catalogueFor: sha => cat?.files.find(f => f.sha256 === sha) ?? null, download: (entry, source) => run(entry, source ?? defaultSource(entry)),
+    /** Why the last download of a catalogue file failed, or null. */
+    downloadError: entry => jobs.get(entry.id)?.error ? describe(jobs.get(entry.id).error) : null,
+    /** Enable an archive of this browser first in the load order (Hyperspace.ftl, hs-needed.mjs) and point at its row. */
+    async enableFirst(sha256) {
+      await ready; await load();
+      const at = items.findIndex(i => i.sha256 === sha256), item = at >= 0 ? items.splice(at, 1)[0] : {...archives.get(sha256), file: undefined};
+      items.unshift({...item, enabled: true}); highlight = sha256; await save(); await render();
+      status.textContent = `${nameOf(item)} is enabled, first in your mods.`;
+    }};
 }

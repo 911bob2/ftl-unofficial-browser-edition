@@ -62,7 +62,13 @@ object LuaShipApi {
             LuaAdapters.inGame()?.let { if (it.isPlayerPaused != value) it.toggleQuickPause() }
         })
         LuaReg.bool(A.A_CommandGui_bAutoPaused, { LuaAdapters.inGame()?.isFocusPaused == true })
-        LuaReg.bool(A.A_CommandGui_menu_pause, { val ui = LuaAdapters.inGame()?.shipUI; ui != null && ui.isWindowOpen && !ui.tutorialDialogueOpen })
+        // The command console's box (CommandGui::inputBox) is one of CommandGui's focus windows too, so Multiverse's
+        // ON_KEY_DOWN hotkeys ([ and ]) stay out of the text typed into it. That box is the one debug console here.
+        LuaReg.bool(A.A_CommandGui_menu_pause, {
+            val game = LuaAdapters.inGame()
+            val ui = game?.shipUI
+            ui != null && ((ui.isWindowOpen && !ui.tutorialDialogueOpen) || game.isDebugConsoleVisible)
+        })
         LuaReg.bool(A.A_CommandGui_event_pause, { LuaAdapters.inGame()?.shipUI?.tutorialDialogueOpen == true })
         LuaReg.bool(A.A_CommandGui_choiceBoxOpen, { LuaAdapters.inGame()?.shipUI?.tutorialDialogueOpen == true })
 

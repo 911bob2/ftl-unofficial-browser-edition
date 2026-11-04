@@ -15,6 +15,8 @@ import ftl.browser.BrowserEngine
  *
  * The engine must see every finger end. Android does not always say so when the app goes away, so the fingers down are
  * tracked here and ended by hand when they cannot end any other way.
+ *
+ * With Settings > Magnifier on, the renderer's [Magnifier] watches the same finger events; the engine gets them unchanged.
  */
 class Input(private val renderer: GameRenderer) {
     private fun post(action: () -> Unit) {
@@ -43,7 +45,10 @@ class Input(private val renderer: GameRenderer) {
         val rawX = e.getX(index)
         val rawY = e.getY(index)
         if (action == 3 || action == 4) down.remove(id) else down[id] = floatArrayOf(rawX, rawY)
-        post { BrowserEngine.touch(action, id, renderer.gameX(rawX), renderer.gameY(rawY), time) }
+        post {
+            renderer.magnifierTouch(action, id, rawX, rawY, time)
+            BrowserEngine.touch(action, id, renderer.gameX(rawX), renderer.gameY(rawY), time)
+        }
     }
 
     private val down = LinkedHashMap<Int, FloatArray>()
@@ -52,6 +57,7 @@ class Input(private val renderer: GameRenderer) {
     fun releaseFingers(time: Long = android.os.SystemClock.uptimeMillis()) {
         for ((id, at) in down) post { BrowserEngine.touch(4, id, renderer.gameX(at[0]), renderer.gameY(at[1]), time) }
         down.clear()
+        post { renderer.magnifier?.reset() }
     }
 
     // Fingers on the black border around the picture, reaching the frame instead of the view. A second finger there

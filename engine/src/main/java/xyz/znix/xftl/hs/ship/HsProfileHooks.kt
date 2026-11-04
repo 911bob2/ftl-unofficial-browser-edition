@@ -7,7 +7,8 @@ import xyz.znix.xftl.game.SaveProfile
 object HsProfileHooks {
     private fun bind(profile: SaveProfile) {
         HsShipUnlocks.saveProfile = { profile.markDirty() }
-        HsShipUnlocks.vanillaUnlock = { ship, _ -> profile.unlockLayout(ship, Difficulty.EASY); true }
+        // CheckVanillaUnlocks (ShipUnlocks.cpp): ScoreKeeper::UnlockShip(shipId, variant) - the named layout, not the A one.
+        HsShipUnlocks.vanillaUnlock = { ship, variant -> profile.unlockLayout(HsShips.variantName(ship, variant), Difficulty.EASY); true }
         HsShipUnlocks.victoryPopup = { type, ship ->
             flush(profile)
             profile.addHsNotification(SaveProfile.ProgressNotification(hsVictoryShip = ship, hsVictoryType = type))

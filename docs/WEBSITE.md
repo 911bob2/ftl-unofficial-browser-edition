@@ -89,7 +89,9 @@ pins it closed (the panel then shows it as fixed). While closed the screens say 
 account is used and ends 180 days after sign-in at the latest. Rows are purged
 server-side, so there is no session list. Data Protection keys live in the data
 directory, so restarts keep sessions. A password change, role change, disablement or
-revocation still ends them, and Sign out clears the cookie.
+revocation still ends them, and Sign out clears the cookie. Sign out (the header, on every page) always asks first
+(`web/sign-out.mjs`, the Android launcher's words): Cancel or Sign out, and a stronger line when a save of the account in
+this browser has progress or a name the account does not have yet. An open game is saved and sent first.
 
 **Account deletion.** **Account** offers a permanent, irreversible deletion that
 needs the current password, can download a backup of every save first and uses the same

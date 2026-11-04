@@ -3,10 +3,19 @@ import {createFramePacer} from './frame-pacer.mjs';
 import {createBenchmark} from './benchmark.mjs';
 import {zipSync,unzipSync,strToU8,strFromU8} from './vendor/fflate-0.8.3.mjs';
 import {diagnosticArchive,diagnosticCheckpointFiles} from './diagnostic-export.mjs';
-const assert={
- equal(a,b,message='Values differ'){if(a!==b)throw Error(message+': '+a+' != '+b);},
- deepEqual(a,b){if(JSON.stringify(a)!==JSON.stringify(b))throw Error('Structured values differ');},
+// node:assert/strict's subset the shared checks use (self-tests-saves.mjs, self-tests-mods.mjs): deepEqual compares
+// structure, not key order.
+const same=(a,b)=>{if(Object.is(a,b))return true;if(typeof a!=='object'||typeof b!=='object'||!a||!b||Object.getPrototypeOf(a)!==Object.getPrototypeOf(b))return false;
+ if(a instanceof Map||a instanceof Set)return same([...a],[...b]);if(ArrayBuffer.isView(a))return a.length===b.length&&a.every((v,i)=>v===b[i]);
+ const ka=Object.keys(a),kb=Object.keys(b);return ka.length===kb.length&&ka.every(k=>Object.prototype.hasOwnProperty.call(b,k)&&same(a[k],b[k]));};
+const show=v=>{try{return typeof v==='string'?JSON.stringify(v.length>300?v.slice(0,300)+'…':v):JSON.stringify(v)?.slice(0,300)??String(v);}catch{return String(v);}};
+export const assert={
+ equal(a,b,message='Values differ'){if(a!==b)throw Error(message+': '+show(a)+' != '+show(b));},
+ notEqual(a,b,message='Values are equal'){if(a===b)throw Error(message+': '+show(a));},
+ deepEqual(a,b,message='Structured values differ'){if(!same(a,b))throw Error(message+': '+show(a)+' != '+show(b));},
  ok(value,message='Assertion failed'){if(!value)throw Error(message);},
+ match(text,pattern,message){if(!pattern.test(text))throw Error((message??'No match')+': '+show(text)+' !~ '+pattern);},
+ throws(action,pattern){try{action();}catch(e){if(!pattern||pattern.test(e.message))return;throw e;}throw Error('Expected an exception');},
  async rejects(action,pattern){try{await action();}catch(e){if(pattern.test(e.message))return;throw e;}throw Error('Expected rejection');}
 };
 

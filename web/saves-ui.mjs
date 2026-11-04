@@ -191,10 +191,15 @@ async function snapshotsDialog(ctx, r) {
   await shown;
 }
 
-/** Saves > a save > Advanced: its mod files (only here, with a warning: a save is locked to its mods). */
-async function modsDialog(ctx, r) {
+/**
+ * Saves > a save > Advanced: its mod files (only here, with a warning: a save is locked to its mods). first: a mod put at
+ * the top of the list for the player to confirm (Hyperspace.ftl, from the "Hyperspace mod without Hyperspace" warning).
+ * Resolves true when the save's mods changed.
+ */
+export async function modsDialog(ctx, r, {first = null} = {}) {
   const {service} = ctx, core = service.core;
   let mods = r.setup.mods.map(m => ({...m}));
+  if (first && !mods.some(m => m.sha256 === first.sha256)) mods.unshift({...first});
   const library = await ctx.libraryMods().catch(() => []);
   const listBox = el('ol', {className: 'mod-list', id: 'save-mods-list'}), add = el('select', {className: 'select select-sm', id: 'save-mods-add', ariaLabel: 'Mod file to add'}), addButton = el('button', {className: 'btn btn-sm', type: 'button', id: 'save-mods-add-button'}, 'Add');
   const draw = () => {
@@ -212,19 +217,21 @@ async function modsDialog(ctx, r) {
   addButton.onclick = () => { const l = library.find(x => x.sha256 === add.value); if (l) { mods.push({name: l.name, version: l.version ?? '', sha256: l.sha256, size: l.size, verified: !!l.verified}); draw(); } };
   draw();
   const answer = await choose({id: 'save-mods-dialog', title: 'Mods of ' + r.name, eyebrow: 'Advanced', className: 'slot-dialog',
-    text: 'A save is locked to its mods, in this order. Other mod files in this browser can be added here.',
+    text: ['A save is locked to its mods, in this order. Other mod files in this browser can be added here.',
+      first ? el('p', {className: 'text-sm', id: 'save-mods-added'}, first.name + ' is added first. Change the mods to keep it.') : null],
     content: [listBox, el('div', {className: 'actions'}, add, addButton)],
     warning: 'Changing the mods can break this run: what a removed mod added is dropped when the save loads (the game lists it), and Hyperspace data of the old set is not read. The save keeps its unlocks.',
     actions: [{label: 'Cancel', value: false, kind: 'ghost', id: 'save-mods-cancel'}, {label: 'Change the mods', value: true, kind: 'danger', id: 'save-mods-apply'}], cancel: false});
-  if (!answer) return;
+  if (!answer) return false;
   const setup = service.setupOf(mods);
-  if (setup.key === r.setup.key && JSON.stringify(setup.mods) === JSON.stringify(r.setup.mods)) return;
+  if (setup.key === r.setup.key && JSON.stringify(setup.mods) === JSON.stringify(r.setup.mods)) return false;
   if (!r.local) await service.sync.prepare(r.id);
   const changed = await service.store.update(r.id, cur => ({...cur, setup, dirty: true, run: cur.run == null ? cur.run : service.runForSetup(cur.run, setup.key)}));
   if (!changed) throw Error('Download this save first: connect and open it once.');
   service.choose(setup.key, r.id);
   service.sync.requestSync(); refreshSaves();
-  ctx.message('The mods of ' + r.name + ' changed.');
+  if (!first) ctx.message('The mods of ' + r.name + ' changed.'); // from the Hyperspace warning the save starts next
+  return true;
 }
 
 /**
@@ -234,14 +241,17 @@ async function modsDialog(ctx, r) {
  */
 export async function newSave({ctx, onLeave = null}) {
   const {service} = ctx;
-  const [rows, enabled] = await Promise.all([service.rows(), ctx.enabled()]);
+  const [rows, firstEnabled] = await Promise.all([service.rows(), ctx.enabled()]);
+  let enabled = firstEnabled, hsAsked = false;
   return new Promise(resolve => {
     document.getElementById('new-save-dialog')?.remove();
     const dialog = el('dialog', {className: 'user-dialog save-dialog', id: 'new-save-dialog', ariaLabelledby: 'new-save-title'});
     document.body.append(dialog);
-    const mods = el('ul', {className: 'new-save-mods', id: 'new-save-mods', ariaLabel: 'Enabled mods'}, ...(enabled.mods.length
+    const mods = el('ul', {className: 'new-save-mods', id: 'new-save-mods', ariaLabel: 'Enabled mods'});
+    const drawMods = () => fill(mods, enabled.mods.length
       ? enabled.mods.map(m => el('li', {}, el('input', {type: 'checkbox', className: 'checkbox checkbox-sm', checked: true, disabled: true, tabIndex: -1, ariaHidden: 'true'}), modName(m)))
-      : [el('li', {}, 'No mods: the game as it ships.')]));
+      : [el('li', {}, 'No mods: the game as it ships.')]);
+    drawMods();
     const name = el('input', {className: 'input w-full', id: 'new-save-name', maxLength: 40, autocomplete: 'off', value: service.core.nextName(rows.map(r => r.name))});
     const note = el('p', {className: 'text-sm text-warning', id: 'new-save-note', role: 'status'});
     const create = el('button', {className: 'btn btn-primary', type: 'button', id: 'new-save-create'}, 'Create');
@@ -259,7 +269,19 @@ export async function newSave({ctx, onLeave = null}) {
     create.onclick = async () => {
       if (!service.core.cleanName(name.value)) { note.textContent = 'Use a name of 1 to 40 characters.'; return; }
       create.disabled = true; note.className = 'muted text-sm'; note.textContent = 'Creating…';
-      try { const made = await service.create(enabled, name.value); refreshSaves(); done(made); }
+      try {
+        // A mod that uses Hyperspace without Hyperspace.ftl: asked once (app.mjs, mods/hs-needed.mjs).
+        if (!hsAsked && enabled.mods.length && ctx.hyperspace) {
+          const step = await ctx.hyperspace(enabled);
+          if (step === 'stop') { note.textContent = ''; create.disabled = false; return; }
+          hsAsked = true;
+          if (step === 'again') {
+            enabled = await ctx.enabled(); drawMods();
+            note.className = 'text-sm'; note.textContent = 'Hyperspace.ftl is enabled now, first in your mods. Create to go on.'; create.disabled = false; return;
+          }
+        }
+        const made = await service.create(enabled, name.value); refreshSaves(); done(made);
+      }
       catch (e) { note.className = 'text-sm text-warning'; note.textContent = e.message; create.disabled = false; }
     };
     name.addEventListener('keydown', e => { if (e.key === 'Enter' && !create.disabled) { e.preventDefault(); create.click(); } });

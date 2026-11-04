@@ -26,7 +26,7 @@ and `android.util.Log` are the platform's own. Browser test probes (`*Diagnostic
 
 `cd android && ./gradlew --offline :app:assembleRelease` (APK) or `:app:bundleRelease` (AAB). R8 and resource shrinking
 are on; `android/app/proguard-rules.pro` and `android/engine/src/main/jni/jni-keep.pro` hold the rules. ABIs: arm64-v8a
-and x86_64, native libraries with 16 KB page alignment. Permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `RECEIVE_BOOT_COMPLETED` (for Random only, see App icon). Plain HTTP and
+and x86_64, native libraries with 16 KB page alignment. Permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `RECEIVE_BOOT_COMPLETED` (for Random only, see App icon), `VIBRATE` (Haptics). Plain HTTP and
 the adb console command receiver exist only in debug builds (`app/src/debug`).
 
 Signing needs the owner's key, in `android/signing.properties` (ignored by Git; `storeFile`, `storePassword`, `keyAlias`,
@@ -113,11 +113,22 @@ daisyUI colours and spacing from `web/styles.css`). Steps, each one screen:
    **Play offline** (no account). Each account's saves are kept apart on the device (`accounts/<scope>/`, scope =
    hashed server and user id; play without an account uses `local-device`, as the browser does); the settings
    (language, volumes, hotkeys) are the device's (`settings.xml`). Signing in moves the
-   saves made while playing offline into the account, where they upload ("Enable cloud saves").
+   saves made while playing offline into the account, where they upload ("Enable cloud saves"). **Sign out** (the top
+   bar, the only place it is) always asks first, with the website's words (`SignOut.kt`, `web/sign-out.mjs`): Cancel or
+   Sign out, and a stronger line when a save of the account has progress or a name the account does not have yet. Then
+   it gives back the locks this game holds and signs out.
 2. **Game data**: Admin/User download the server's prepared assets once; External users and offline players import
    their own `ftl.dat` (Storage Access Framework). It is checked against the expected SHA-256 and never uploaded.
-3. **Saves**: the one list of [SAVES.md](SAVES.md) with sync status, locks, New save, Advanced.
-4. **Mods**: catalogue files (server or MEGA, pinned) and any local `.ftl`/`.zip` (badged Verified or Custom).
+3. **Saves**: the one list of [SAVES.md](SAVES.md) with sync status, locks, New save, Advanced. **Import from FTL** (on the
+   empty list and in New save) takes the files of FTL on a computer, copied to the device, through the system's file picker
+   ([SAVES.md](SAVES.md#saves-from-the-original-game)). Each save's ⋯ menu has **Recovery snapshots** when the save is in the
+   account: the last 10 versions (`GET /api/saves/{id}/snapshots`), each but the current one with Restore, as on the website.
+   Restore takes the lock (never from another device: it names the device instead), posts
+   `/snapshots/{rev}/restore` with `If-Match`, replaces this device's copy with the result (unsynced progress too, after a
+   warning) and gives the lock back. Offline or signed out the dialog says the snapshots are in the account.
+4. **Mods**: catalogue files (server or MEGA, pinned) and any local `.ftl`/`.zip` (badged Verified or Custom). A set that uses
+   Hyperspace without Hyperspace.ftl gets a hint in the picker and a warning on Play, Start and New save's Create
+   ([MODS.md](MODS.md#hyperspace-mod-without-hyperspace)).
    Back returns to the saves; a file being added carries on, its progress shown on the saves list and again on coming back.
    MEGA uses our own reader (`android/mods/.../Mega.kt`, the Kotlin twin of `web/mods/mega.mjs`): 16 MiB ranges
    decrypted on the device, resumable after the last whole range, accepted only when the catalogue's SHA-256 matches.
@@ -130,13 +141,47 @@ it; dialogs scroll inside what the bars and keyboard leave, with their buttons a
 The cog in the header, on every launcher screen after the notice, so the log can be reached even if sign-in or the game files
 fail. All of it belongs to the device, not to a save or an account. Settings lies over the screen it was opened from, which stays
 as it was (typed text, a mod download, the place in the list). One page in the launcher's frames, two columns where it is wide
-enough: **General** (Screen, Language, App icon, each a row that opens its dialog), **Saves** (not before the game files are in),
-**Help** (debug log). The title and Back stay on screen while the page scrolls; Back, the system's back or the cog return. The
+enough: **General** (Screen, Haptics, Language, App icon, each a row that opens its dialog, and the Magnifier switch), **Saves** (not before the game files are in),
+**Updates** (Check for updates, the automatic check's switch), **Help** (debug log, Enable debug console). The title and Back stay on screen while the page scrolls; Back, the system's back or the cog return. The
 launcher's strings are plain English in the code: it has no translation system.
 
 **Language** writes the same `language` value the game's own list writes into `settings.xml` (`GameLanguage`); the game reads it
 at its next start and no longer asks at the first. Options in the game still changes it, and its choice shows here. A language a
 mod adds is chosen in the game and is kept here as it stands. The launcher itself stays in English.
+
+### Haptics
+
+Settings > **Haptics** (`game/Haptics.kt`, its own preferences file, never synced): Off, Light, Medium (the default) or Strong,
+then a switch per action, each on by default (`Haptics.Action`). Off turns every action off; an action switched off plays
+nothing at any strength. The Settings row adds which actions are off. A new action is a `TouchHaptics` kind and an entry in
+`Haptics.Action`. There are two. **System power**: a tick on the touch controls for each power step a system box actually
+gains or loses (a drag, or the flick for all or nothing; for shields a layer). Nothing when the game refuses the step: no free
+reactor power, at the cap, ionised, or a finger held on the same step. **Magnifier**: a tick when the magnifier comes up
+(below). The engine calls `AndroidHost.haptic` (`TouchHaptics`, next to the touch HUD's power change); the browser build
+plays nothing. FTL on iPad has no haptics at all (no haptic or vibration API in its binary), so there is no native setting.
+
+The strength comes from what the vibrator can do: a click primitive at scale 0.35, 0.65 or 1 (Android 11 and later, where the
+vibrator has it), else a 10, 15 or 20 ms pulse at amplitude 90, 170 or 255, else a plain 20 ms pulse: then the setting says
+the device cannot vary the strength and offers Off and On. A device without a vibrator shows "This device cannot vibrate".
+Choosing a strength plays one tick. The vibrations are touch feedback (`USAGE_TOUCH`), so Android's Touch feedback setting
+applies on top. Several steps at once (a flick) play that many ticks, 45 ms apart, at most 16.
+
+### Magnifier
+
+Settings > **Magnifier** (`game/Magnifier.kt`, its own preferences file, off by default, from the next game started). Neither
+FTL on iPad nor on Windows has one; it follows the third-party ftl-android runner's magnifier (GPL-3.0, behaviour only, none of
+its code). While the first finger is held on the game for 0.22 s, or once it has moved 3 % of the picture's height, a square
+32 % of the picture's height shows the picture under it at twice the size, 10 % above the finger (beside it, away from the
+nearer edge, when there is no room above), kept on the picture, with an amber mark on the touch point; lifting the finger
+hides it. `GameRenderer` copies it from the frame it shows (a framebuffer blit), over everything.
+
+It only looks: the engine gets every finger event exactly as without it (`Input` hands the same events to both), so the power
+drags, the beam, crew selection, doors and the held finger's hover all stay as they are, and a slide then lift does what it
+always did. That is a press where the touch HUD already takes a finger sliding onto something: the HUD buttons, a system box
+(it opens), doors in door control (a drag over them toggles them), a window's buttons (they act on lift), a room. A crew box
+does not take a finger that slides onto it (box selection starts instead), so the magnifier does not help there. It
+comes up during drags too, as the runner's does. Settings > Haptics' **Magnifier** switch: one tick when it comes up. With
+the setting off there is no magnifier at all (`Magnifier.forGame`). The website has no touch layout turned on, so it has none.
 
 ### App icon
 
@@ -198,6 +243,45 @@ Off by default, works in release builds. `DebugLog`, in app-private `files/log/`
   no credentials itself, and neither the username nor the device id; this is the second line for an exception text or a mod's print.
 - It leaves only by Export log, with a header of versions, model and memory, no account or device id. Clear deletes it.
 
+### Debug console
+
+Help, **Enable debug console**: off by default, a device setting (shared preferences `debug-console`), in release builds
+too, read when a game starts. On, a floating `>_` button (`ConsoleButton`, 48 dp) lies over a run, not over the menus or
+the hangar: a tap opens the debug console with the keyboard (another tap closes it; Back first hides the keyboard, as
+Android does, then closes it), a drag moves it. Its place is
+kept as fractions of the screen's free room, so it comes back after a restart or a rotation and never leaves the screen;
+the default is the right edge a little below the middle, clear of Jump, Options and Pause. It is an Android view of its
+own, so only its square takes touches. The commands and the gating rule: [CONSOLE.md](CONSOLE.md).
+
+### Updates
+
+The app asks GitHub itself whether a newer release is out, never our server (`update/UpdateCheck.kt`, `update/Updates.kt`):
+`GET https://api.github.com/repos/911bob2/ftl-unofficial-browser-edition/releases/latest`, the public repo's latest
+release, which is never a draft or a pre-release.
+
+- **What it sends**: `Accept`, `X-GitHub-Api-Version` and `User-Agent: FTL-Unofficial-Android/<versionName>`, plus
+  `If-None-Match` with the last answer's ETag. No cookie, account, email or device id. GitHub sees the device's IP address,
+  as with any request.
+- **How often**: the launcher asks when it comes to the front (`MainActivity.onResume`), in the background, after the notice
+  is agreed, never with a game open, and at most once a day, counted from the last attempt (failed ones too, so nothing is
+  retried before the next day; a clock set back allows the next one). An unchanged release answers 304, which does not count
+  against GitHub's 60 an hour for unauthenticated requests. Offline, rate-limited (403, 429), another status, or an answer
+  that does not read: nothing shows, one `FTL-Update` debug log line, and the last answer stays.
+- **What counts as newer**: the tag against `versionName`, numeric parts only, `v` optional, a missing part 0 (`2.0` equals
+  `2.0.0`). A version name with a suffix after `-` or `+` (`2.0.1-beta`) is a build before that release, so `v2.0.1`
+  is offered to it. A tag with a suffix, or anything that does not parse, never prompts. Offered only with an APK asset (name
+  `*.apk` or the APK content type) and a page on `https://github.com/`.
+- **The launcher**: a row above the screen's content, after the notice: "Version X is available", **Not now** and **Download**.
+  Download opens the release's page (`html_url`) in the browser; the app never installs anything (no install-packages
+  permission). Not now hides that version until a newer release appears, through restarts. Up to date: nothing.
+- **Settings > Updates**: **Check for updates** shows this version, asks at once (whatever the switch and the day), then
+  "You have the latest version", "Version X is available" with Download (Not now does not hide this), or why it failed.
+  **Check for updates automatically**: on by default, a device setting (preferences `updates`); off, no request is made but
+  Check for updates'. The banner still shows a release already seen.
+- Debug builds take a stand-in for GitHub (`tools/android-update/stub.py`): debug console `updateurl <url>|clear`,
+  `updatereset` (forgets the last check, ETag, release and Not now), `updatestate` (logs them). A test server's pages may be
+  plain `http`; the release build has no way to change the address.
+
 ## Screen
 
 Settings > **Screen**, the device's setting (`game/ScreenFit.kt`, its own preferences file; it never reaches a save or a mod
@@ -241,6 +325,24 @@ on yet.
 - Windows take a finger as the left mouse button, acting on lift; two-step store buying, map and hangar as on the iPad.
 - Art and text come from the player's `ftl.dat` (`img/ipad/...`, `*_ipad` ids). A mod that blanks the wrench icon
   (Multiverse) gets a labelled Options tab instead.
+- A Hyperspace system over eight levels (Multiverse's shields go to 16) keeps the height of eight in its box: the bars
+  shrink, so the column does not reach the ship. The iPad's drag (a level per 16 px) holds up to eight levels; past eight a
+  drag step is the drawn bars' spacing (for shields with their pair gaps), so the finger stays on the bar it set
+  (`TouchPowerDrag`, `TouchPowerDragTest`).
+- **Desktop HUD elements** the iPad never had (`game/TouchExtras.kt`), with no code per element: every button of the desktop
+  HUD's list that the touch HUD does not draw itself (Hyperspace's event buttons, from any mod; the crew list's page
+  arrows), the Lua drawing of the FTL_BUTTON and SHIP_STATUS render stages (Multiverse's speed control and addon icons),
+  Hyperspace's More Info button and triggered-event boxes. (SPACE_STATUS drawing follows the touch hazards spot.) Each is drawn by its own desktop code under a transform that
+  puts it in its touch place; what it drew is measured (`rendering/DrawProbe`) and fitted there the next frame. A tap is the
+  desktop click at the matching desktop point: a button's own mouseDown, or for Lua drawing the mouse resting there for a
+  drawn frame, then ON_MOUSE_L_BUTTON_DOWN and UP. A held finger shows the hover image and tooltip.
+  Places: event buttons by their `<location>` in the top row, in Hyperspace's order (1 before the ship button, 2 after it,
+  3 after the store, 4 on; 0 a second row), all smaller when they would reach Options; the hazards go in the gap left.
+  Anything else by where the desktop draws it: top bar to the top row, status corner (Multiverse's jukebox, toggle and
+  recall buttons, the addon icons) to a shelf under the touch status, the FTL_BUTTON drawing at the shelf's right end
+  under the scrap counter, the crew corner under the station buttons (page arrows beside them), the rest (More Info, a
+  mod's customLocation button) to a dock above Pause. A piece drawn in several far places, or larger than a button, keeps
+  the desktop layout fitted to the canvas.
 - Names are typed on the system keyboard, which sends single characters; the game slides up to keep the field in view
   (`TouchMode.keyboardFocusY`). A mouse's left button acts as a finger.
 
@@ -250,6 +352,11 @@ on yet.
   fixtures), `:engine:testDebugUnitTest`, `:app:testDebugUnitTest`.
 - Emulator: AVD on the android-36 x86_64 image; `adb` installs `app-debug.apk`.
 - Multi-touch: real fingers through the input stack on the emulator, [TESTS.md](TESTS.md#android-multi-touch-on-the-emulator).
+- Desktop HUD elements on touch: `TouchExtrasTest` (places, the event button restore) and, on the emulator,
+  `node tools/android-touch/extras.mjs --serial <serial> --out <dir>` (one finger through `adb input`, no gRPC): in flight on
+  a Hyperspace save it adds a made-up mod's two event buttons (debug console `modbutton <name> <location>` or
+  `modbutton <name> <x> <y>`), checks their places and that a tap runs each one's click; on Multiverse also the storage crate,
+  the speed control and More Info. `hscmd <command>` runs a Hyperspace console command (`hscmd LUA ...`, `hscmd STORE`).
 - Lua patch runtime (a JVM test cannot load the `.so`, so a debug-only `main` runs on the device): lua-cases and L1
   against ftlman's results, parity against the website's runtime and merge (recorded when the vectors are exported),
   security, bombs. After `:mods:modVectors` and installing the debug APK:
@@ -259,6 +366,26 @@ on yet.
   adb shell "CLASSPATH=$APK app_process / ftl.android.app.debug.LuaVectors /data/local/tmp/mod-vectors.json '$APK!/lib/x86_64/libftlmanlua.so' [cases|l1|parity|security|native|bombs|smallstack]"
   ```
   It prints PASS/FAIL per case and a total. In git bash, `export MSYS_NO_PATHCONV=1` first.
+- Haptics: `HapticsTest` (when the power tick fires, what each strength plays, which action plays with which switch) and, on
+  the emulator, logcat's `FTL-Haptic` lines (debug builds log every tick, and `skip ... action off` for a switched-off one; `adb shell dumpsys vibrator_manager` lists what the vibrator played). Debug console:
+  `power` logs each system's power and the free reactor power, `ion <system> <units>` ionises one, `hapticdevice
+  PRIMITIVES|AMPLITUDE|ON_OFF|NONE|auto` pretends a weaker vibrator for the setting's texts.
+- Sign out: `SignOutTest` (the unsynced line's rule, the words equal `web/sign-out.mjs`'s); the dialog on the emulator through
+  `uiautomator` taps on Sign out, Cancel and Sign out.
+- Magnifier: `MagnifierTest` (when it shows: never for a quick tap, after the hold or a move, once per hold for its haptic;
+  only the first finger; where it sits and what it shows; off by default and absent when off). On the emulator: debug
+  builds log `FTL-Magnifier shown at ...` with the haptic's `FTL-Haptic` line; `adb shell input motionevent DOWN|MOVE|UP x y`
+  holds a finger for screenshots.
+- Power drag past eight levels: `TouchPowerDragTest` (the iPad's step up to eight; past eight the finger on the drawn bar,
+  up and down, on every count to 20 with and without pairs).
+- Updates: `UpdateCheckTest` (versions: equal, newer, older, `v`, `2.0` against `2.0.0`, junk; once a day, failures
+  included; Not now per version; the ETag and a 304; the setting off makes no request; only an APK with a GitHub page). On
+  the emulator, against `tools/android-update/stub.py`: [TESTS.md](TESTS.md#android-update-check).
 - Settings on the emulator: icons, Random, files and the log are driven by the debug console too: `appicon NN`, `iconrandom on|off`, `iconhome <package>|clear` (pretend another home app), `iconrefused on|off`, `crash-main`, `crash-thread`, `crash-native`, `logspam N`. `am crash` works in release builds. Open the app with `monkey -p <package> -c android.intent.category.LAUNCHER 1`, as the launcher entry's name changes.
-- Debug console from adb (debug builds): `adb shell am broadcast -n dev.ftl911bob.unofficial/ftl.android.app.debug.ConsoleReceiver --es cmd "'store'"`.
+- Debug console from adb (debug builds): `adb shell am broadcast -n dev.ftl911bob.unofficial/ftl.android.app.debug.ConsoleReceiver --es cmd "'STORE'"`; the same commands as the in-game console ([CONSOLE.md](CONSOLE.md)).
+  Debug-only extras for the weapon bars: `weaponpower <slot>`, `weaponcharge <slot> <fraction>`, `touchweapons` (opens the
+  touch weapon column); `reload` saves and loads the run as Continue does.
+- The in-game console (release builds too): Settings, Help, **Enable debug console** (off by default, from the next game started)
+  puts a floating `>_` button over a run; a tap opens the console with the keyboard, a drag moves the button (kept for the next
+  start, clamped to the screen). `ConsoleTest` checks the place arithmetic; the emulator check is in [CONSOLE.md](CONSOLE.md).
 - Hyperspace Lua bridge under ASan on the emulator: [tools/hs-lua-fuzz](../tools/hs-lua-fuzz/README.md).

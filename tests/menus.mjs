@@ -230,7 +230,7 @@ for(const [name,type,options,user] of [['Chromium',chromium,{channel:'chromium'}
   await warningUiChecks(page,{snapshot,state,windowIs,click,pass,name});
   await optionsUiChecks(page,{snapshot,state,windowIs,click,pass,name});
   await page.evaluate(async()=>{if(document.fullscreenElement)await document.exitFullscreen();});await page.locator('#console').click();await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).console);
-  await page.locator('#game').pressSequentially('rich');await page.locator('#game').press('Enter');await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).scrap===5000);
+  await page.locator('#game').pressSequentially('dev-rich');await page.locator('#game').press('Enter');await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).scrap===5000);
   await back(page);await page.locator('#game').press('Backquote');await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).console);
   pass('Console typing consumes gameplay shortcuts and physical backquote opens it');
   await consoleToggleUiCheck(page,{pass,name});

@@ -105,7 +105,13 @@ player/meta variables.
   callbacks in reverse from there; PREEMPT skips the original render.
 - `script.on_init`, `script.on_load`, `script.on_game_event(name, onLoad, fn)`: stop at the first error, as HS.
 - Removed globals as in HS: `collectgarbage dofile load loadfile newproxy rawequal rawget rawset`. Libraries:
-  base, table, string, math, utf8, bit32 (LUA_COMPAT_5_2). `print` and `log` join arguments with four spaces;
+  base, table, string, math, utf8, bit32 (LUA_COMPAT_5_2) and `os.clock`, `os.time` (no date table), `os.difftime`.
+  HS 1.23.2's own `lua/linit.c` lists only the first six, but its Windows build does not compile that file: the original
+  has every standard library, `os`, `io`, `debug`, `coroutine` and `package` with `require` too (oracle session
+  `bt-mv-tutorial2`, `os.clock()` 36.9 s into the process). Multiverse's `tutorial.lua` reads `os.clock()` for its pulsing
+  outlines, the only standard-library use in MV 5.5.1. The rest of `os`, `io`, `package` and `debug` (processes, files,
+  loaders) and `coroutine` are not provided: no MV script uses them. `os.clock` counts seconds from the runtime's first
+  start, as MSVC's `clock()` counts from the process start. `print` and `log` join arguments with four spaces;
   `print` also feeds `Hyperspace.PrintHelper` (on-screen text).
 - `math.random`: FTL's `random32` with HS's formula; NativeRandom while generation callbacks run
   (`LuaEvents.generation`), BrowserRandom otherwise.

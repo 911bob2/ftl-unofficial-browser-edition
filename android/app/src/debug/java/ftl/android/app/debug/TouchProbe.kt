@@ -67,6 +67,8 @@ object TouchProbe {
             val ui = game.shipUI as PlayerShipUI
             val hud = ui.touch as TouchHud
             out["paused"] = game.isPaused
+            out["console"] = game.isDebugConsoleVisible
+            out["keyboard"] = xyz.znix.xftl.game.TouchMode.keyboardWanted
             out["jumping"] = game.isPlayerJumping
             out["hudPrimary"] = field(hud, "primary")
             out["extra"] = field(hud, "extraFingers").let { (it as List<*>).toList() }
@@ -77,6 +79,22 @@ object TouchProbe {
             out["window"] = field(ui, "currentWindow")?.javaClass?.simpleName
             out["beam"] = (field(ui, "beamTargeting") as? SelectedTarget.BeamAim)?.let(::aim)
             val player = game.player
+            // TouchExtras: each desktop HUD piece, where it is on the canvas (HUD x + hudX), its zone and what drew there
+            out["extras"] = hud.extras.all.map { p ->
+                val placed = p.placed && p.desk != null
+                mapOf("key" to p.key, "zone" to p.zone.name, "placed" to placed,
+                    "x0" to if (placed) (p.x0() + xyz.znix.xftl.game.TouchMode.hudX).roundToInt() else null,
+                    "y0" to if (placed) p.y0().roundToInt() else null,
+                    "x1" to if (placed) (p.x1() + xyz.znix.xftl.game.TouchMode.hudX).roundToInt() else null,
+                    "y1" to if (placed) p.y1().roundToInt() else null,
+                    "desk" to p.desk?.map { it.roundToInt() })
+            }
+            out["eventButtonClicked"] = xyz.znix.xftl.hs.render.HsEventButtons.lastClicked
+            out["speedLevel"] = xyz.znix.xftl.hs.lua.LuaFps.speedLevel
+            out["speedEnabled"] = xyz.znix.xftl.hs.lua.LuaFps.speedEnabled
+            out["moreInfo"] = xyz.znix.xftl.hs.render.HsOverlay.altMode
+            out["hsActive"] = xyz.znix.xftl.hs.HS.active
+            out["luaActive"] = xyz.znix.xftl.hs.HS.luaActive
             out["doors"] = player.doors.map { d -> mapOf("x" to d.offsetX, "y" to d.offsetY, "v" to d.isVertical, "open" to d.open) }
             out["shipOrigin"] = Point(0, 0).let { game.convertScreenToPlayerShip(it); listOf(it.x, it.y) }
             out["crewSel"] = (field(ui, "selectedCrew") as List<*>).size
