@@ -120,7 +120,7 @@ class GameActivity : Activity() {
                 }
                 // A modded save: its archives merged over the game data first (web/mods/boot.mjs does the same).
                 val launch = if (save.setup.vanilla) null else withContext(Dispatchers.IO) {
-                    ModLaunch.prepare(app.filesDir, app.gameData, app.mods, save.setup) { msg -> runOnUiThread { loading.text = msg } }
+                    ModLaunch.prepare(app.filesDir, app.gameData, app.mods, save.setup, app.assets) { msg -> runOnUiThread { loading.text = msg } }
                 }
                 modLaunch = launch
                 launch?.warnings?.forEach { Log.i("FTL", "Mod merge: $it") }

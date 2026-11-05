@@ -64,6 +64,7 @@ class Translator {
     /** TextLibrary::SetLanguage: later lookups (and [translations]) answer in [lang]. */
     fun setLanguage(lang: String) {
         language = lang
+        touchKeys.clear()
         val dict = dictionary(lang)
         if (dict == null) {
             current = english
@@ -137,12 +138,31 @@ class Translator {
     }
 
     /** A text with its surrounding whitespace kept, as TextLibrary stores it. */
-    fun untrimmed(key: String): String = untrimmed[key] ?: get(key)
+    fun untrimmed(key: String): String = touchKey(key).let { untrimmed[it] ?: get(it) }
 
     operator fun get(key: String): String {
         // Make it really obvious if a translation is missing
-        return current[key] ?: "Could not find: $key"
+        return current[touchKey(key)] ?: "Could not find: $key"
     }
+
+    /**
+     * The touch layout (TouchMode) reads `<name>_TOUCH` in place of `name` where the files have one, else `<name>_IPAD`
+     * (the original's own iPad lines, tutorial_*_IPAD beside tutorial_*_PC), so a mod, or a patch of ours over a mod, can
+     * give a line its touch wording. A language's own text for `name` comes before an English-only touch line.
+     */
+    private fun touchKey(key: String): String {
+        if (!xyz.znix.xftl.game.TouchMode.enabled) return key
+        touchKeys[key]?.let { return it }
+        val dict = dictionaries[language]
+        val use = TOUCH_SUFFIXES.map { key + it }.firstOrNull { touch ->
+            useTouchLine(touch in current, dict != null && key in dict, dict != null && touch in dict)
+        } ?: key
+        touchKeys[key] = use
+        return use
+    }
+
+    /** [touchKey]'s answers for the current language. */
+    private val touchKeys = HashMap<String, String>()
 
     /** TextLibrary::GetText(name, lang): [lang]'s text, else English. */
     fun getIn(lang: String, key: String): String {
@@ -159,6 +179,18 @@ class Translator {
 
     companion object {
         fun isEnglish(lang: String) = lang.isEmpty() || lang == "en"
+
+        /** The touch lines' suffixes, first found first: ours (any touch layout), then the original's iPad lines. */
+        @JvmField
+        val TOUCH_SUFFIXES = listOf("_TOUCH", "_IPAD")
+
+        /**
+         * [touchKey]'s rule: the touch line is read when the files have one ([haveTouch], in the current language or
+         * English), unless the language translates the line itself ([langHasKey]) but not its touch line ([langHasTouch]).
+         */
+        @JvmStatic
+        fun useTouchLine(haveTouch: Boolean, langHasKey: Boolean, langHasTouch: Boolean) =
+            haveTouch && !(langHasKey && !langHasTouch)
     }
 }
 

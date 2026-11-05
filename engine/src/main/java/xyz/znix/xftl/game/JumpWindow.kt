@@ -33,6 +33,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         if (TouchMode.enabled) ConstPoint(0, -17)
         else if (PlatformSpecific.INSTANCE.isTouchUi) ConstPoint(0, -75) else ConstPoint(76, -10)
 
+    override val desktopCentreOffset: IPoint get() = ConstPoint(76, -10)
+
     // Tap-to-arm: first tap on a beacon/button highlights it, second tap
     // confirms (see Window.tapToArm). Runtime-gated on isTouchUi.
     override val tapToArm = true

@@ -39,6 +39,19 @@ abstract class Window {
      */
     open val windowCentreOffset: IPoint get() = ConstPoint.ZERO
 
+    /** [windowCentreOffset] in the desktop layout, where the touch layout (TouchMode) places the window elsewhere. */
+    open val desktopCentreOffset: IPoint get() = windowCentreOffset
+
+    /**
+     * The point of the window under ([x], [y]) as it is placed now, where the desktop layout (1280 x 720) has that point
+     * of the window: the window moved to its desktop place.
+     */
+    fun desktopPoint(x: Int, y: Int): IPoint {
+        val p = scaleWindowPoint(x, y)
+        val d = desktopCentreOffset
+        return ConstPoint(p.x - position.x + d.x + (1280 - size.x) / 2, p.y - position.y + d.y + (720 - size.y) / 2)
+    }
+
     /**
      * Touch ergonomics: a scale factor the window is drawn at, anchored
      * at the window's centre. renderSingleMenu places the SCALED window

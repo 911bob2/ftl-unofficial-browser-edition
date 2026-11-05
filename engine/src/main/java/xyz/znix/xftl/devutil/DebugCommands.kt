@@ -41,58 +41,58 @@ class DebugCommands(console: DebugConsole) : ConsoleCommandProvider(console) {
     // fuel, missiles, drones and crew did what those do and went (ConsoleRegistry.FOLDED).
     @Suppress("UNCHECKED_CAST")
     override val commands: List<DebugConsole.Cmd> = listOf(
-        DebugConsole.Cmd("dev-rich", listOf(), false, { cmdRich() }, "Set scrap to 5000 and fuel, drone parts and missiles to 99"),
-        DebugConsole.Cmd("dev-poor", listOf(), false, { cmdPoor() }, "Set scrap, fuel, drone parts and missiles to 0"),
-        DebugConsole.Cmd("dev-weapon", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(AbstractWeaponBlueprint::class.java), "name")), false, { a -> cmdWeapon(a[0] as AbstractWeaponBlueprint) }, "Select a weapon, and add it to the ship's cargo area"),
-        DebugConsole.Cmd("dev-drone", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(DroneBlueprint::class.java), "drone")), false, { a -> cmdDrone(a[0] as DroneBlueprint) }, "Select a drone, and add it to the ship's cargo area"),
-        DebugConsole.Cmd("dev-aug", listOf(), false, { cmdAugment() }, "Pick an augment from a list, and add it to the ship's cargo area"),
-        DebugConsole.Cmd("dev-store", listOf(), false, { cmdStore() }, "Give this beacon a store (opened from the Store button)"),
-        DebugConsole.Cmd("dev-event", listOf(), false, { cmdEvent() }, "Search the events, and load the one picked at this beacon"),
-        DebugConsole.Cmd("fix", listOf(), true, { a -> cmdFix(a[0] as List<String>) }, "Fix the ship's hull and all systems, clearing ion damage"),
-        DebugConsole.Cmd("cld", listOf(), false, { cmdClearDrones() }, "CLear all Drones - destroys all currently-deployed drone instances"),
-        DebugConsole.Cmd("ecrew", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(CrewBlueprint::class.java), "race")), false, { a -> cmdEnemyCrew(a[0] as CrewBlueprint) }, "Spawn a new crewmember on the enemy ship, same args as 'CREW'"),
-        DebugConsole.Cmd("boarder", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(CrewBlueprint::class.java), "race")), false, { a -> cmdBoarder(a[0] as CrewBlueprint) }, "Spawn a hostile intruder on the player ship, same args as 'CREW'"),
-        DebugConsole.Cmd("skills", listOf(), false, { cmdSkills() }, "Edit the crew's skills"),
-        DebugConsole.Cmd("dev-kill", listOf(), false, { cmdKill() }, "Destroy the enemy ship (100 hull damage, then 0 hull)"),
-        DebugConsole.Cmd("killcrew", listOf(), false, { cmdKillCrew() }, "Kill one all of your crewmembers"),
-        DebugConsole.Cmd("sectors", listOf(), false, { cmdSectors() }, "Open the sector map, regardless of the current beacon"),
-        DebugConsole.Cmd("boss", listOf(), false, { cmdBoss() }, "Spawn the sector boss (flagship) at the current beacon"),
-        DebugConsole.Cmd("kill-ecrew", listOf(), false, { cmdKillEnemyCrew() }, "Kill all crew aboard the enemy ship (including any boarding you)"),
-        DebugConsole.Cmd("system", listOf(DebugConsole.CmdParameter(SystemArgCompleter, "name")), false, { a -> cmdSystem(a[0] as String) }, "Unlock a system on the current ship, or 'list' or 'all'"),
-        DebugConsole.Cmd("spawn-ship", listOf(DebugConsole.CmdParameter(EnemyShipSpecProcessor, "spec"), DebugConsole.CmdParameter(StringTypeProcessor, "difficulty/seed")), false, { a -> cmdSpawnShip(a[0] as EnemyShipSpec, a[1] as String) }, "Spawn an enemy ship directly from a seed"),
-        DebugConsole.Cmd("enemy-weapon", listOf(), true, { a -> cmdEnemyWeapon(a[0] as List<String>) }, "Add or remove (the the remove argument) an enemy weapon"),
-        DebugConsole.Cmd("upall", listOf(), false, { cmdUpgradeAll() }, "UPgrade ALL systems on the player ship to the maximum level"),
-        DebugConsole.Cmd("downall", listOf(), false, { cmdDowngradeAll() }, "Downgrade all systems on the player ship to their starting level"),
-        DebugConsole.Cmd("set", listOf(DebugConsole.CmdParameter(DebugFlagProcessor, "flag")), false, { a -> cmdSet(a[0] as String) }, "Turn on or off debug flags"),
-        DebugConsole.Cmd("damage", listOf(DebugConsole.CmdParameter(IntTypeProcessor, "amount")), false, { a -> cmdDamage(a[0] as Int) }, "Apply a given amount of damage to the player ship (or negative to heal)"),
-        DebugConsole.Cmd("breach", listOf(), false, { cmdBreach() }, "Spawn a hull breach in a random room of the player ship"),
-        DebugConsole.Cmd("ion", listOf(DebugConsole.CmdParameter(IntTypeProcessor, "amount")), false, { a -> cmdIon(a[0] as Int) }, "Apply ion damage to a random system of the player ship, like a weapon hit"),
-        DebugConsole.Cmd("wreck", listOf(DebugConsole.CmdParameter(SystemArgCompleter, "system")), true, { a -> cmdWreck(a[0] as String, a[1] as List<String>) }, "Break a system of the player ship ('wreck doors'), or ionise it ('wreck doors ion [bars]'). 'fix' repairs it"),
-        DebugConsole.Cmd("autofire", listOf(), true, { a -> cmdAutofire(a[0] as List<String>) }, "Toggle autofire globally, or for one weapon slot (1-4)"),
-        DebugConsole.Cmd("hurt", listOf(DebugConsole.CmdParameter(IntTypeProcessor, "amount")), false, { a -> cmdHurt(a[0] as Int) }, "Damage all of the player's crewmembers by a given amount (negative heals)"),
-        DebugConsole.Cmd("dev-skill", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "skill")), true, { a -> cmdSkill(a[0] as String, a[1] as List<String>) }, "Give the first player crewmember experience in a skill: 'dev-skill shields [count]'. Names: piloting/engines/shields/weapons/repairs/combat"),
-        DebugConsole.Cmd("force-hack", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(SystemBlueprint::class.java), "system")), false, { a -> cmdForceHack(a[0] as SystemBlueprint) }, "Forces the enemy to hack a given player system"),
-        DebugConsole.Cmd("super-shield", listOf(), true, { a -> cmdSuperShield(a[0] as List<String>) }, "Give the player (or enemy) a super-shield (see help sub-cmd)"),
-        DebugConsole.Cmd("env", listOf(), false, { cmdEnvironment() }, "Change the environment at the current beacon"),
-        DebugConsole.Cmd("dump-save", listOf(), false, { cmdDumpSave() }, "Save the game to XML, and print it to standard output"),
-        DebugConsole.Cmd("save-load", listOf(), false, { cmdSaveLoad() }, "Save the game to XML, and load it back in."),
-        DebugConsole.Cmd("gc", listOf(), false, { cmdGC() }, "Manually trigger Java's Garbage Collector."),
-        DebugConsole.Cmd("save", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "name")), false, { a -> cmdSave(a[0] as String) }, "Save a named browser checkpoint: save name"),
-        DebugConsole.Cmd("load", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "name")), false, { a -> cmdLoad(a[0] as String) }, "Load a named browser checkpoint: load name"),
-        DebugConsole.Cmd("download", listOf(), false, { cmdDownload() }, "Download the current run as an XML checkpoint"),
-        DebugConsole.Cmd("import", listOf(), false, { cmdImport() }, "Choose and import a browser XML checkpoint"),
-        DebugConsole.Cmd("inspect", listOf(), false, { cmdInspect() }, "Inspect current input, UI, weapons, RNG and recording state"),
-        DebugConsole.Cmd("mark", listOf(), false, { cmdMark() }, "Mark an issue in the active diagnostic recording"),
-        DebugConsole.Cmd("gameover", listOf(DebugConsole.CmdParameter(EnumTypeProcessor(GameOverWindow.Outcome::class.java), "outcome")), false, { a -> cmdGameOver(a[0] as GameOverWindow.Outcome) }, "End the game with the win/loose screen."),
-        DebugConsole.Cmd("ach-set", listOf(DebugConsole.CmdParameter(AchievementProcessor, "achievement"), DebugConsole.CmdParameter(EnumTypeProcessor(Difficulty::class.java), "difficulty")), false, { a -> cmdAchSet(a[0] as Achievement, a[1] as Difficulty) }, "Set the difficulty an achievement was achieved with"),
-        DebugConsole.Cmd("ach-del", listOf(DebugConsole.CmdParameter(AchievementProcessor, "achievement")), false, { a -> cmdAchSet(a[0] as Achievement) }, "Remove an achievement"),
-        DebugConsole.Cmd("ship-unlock", listOf(DebugConsole.CmdParameter(ShipFamilyProcessor, "ship"), DebugConsole.CmdParameter(EnumTypeProcessor(Difficulty::class.java), "difficulty")), false, { a -> cmdUnlockShip(a[0] as ShipFamily, a[1] as Difficulty) }, "Set the difficulty a ship family's unlock quest was completed with"),
-        DebugConsole.Cmd("ship-lock", listOf(DebugConsole.CmdParameter(ShipFamilyProcessor, "ship")), false, { a -> cmdLockShip(a[0] as ShipFamily) }, "Un-completes a ship unlock quest"),
-        DebugConsole.Cmd("layout-unlock", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "ship"), DebugConsole.CmdParameter(EnumTypeProcessor(Difficulty::class.java), "difficulty")), false, { a -> cmdUnlockLayout(a[0] as String, a[1] as Difficulty) }, "Unlock an official ship layout"),
-        DebugConsole.Cmd("reset-ftl", listOf(), false, { cmdResetFTL() }, "Reset the player's FTL charge timer"),
-        DebugConsole.Cmd("reload-console", listOf(), false, { cmdReloadConsole() }, "Reload the console (useful with Java HotSwap)"),
-        DebugConsole.Cmd("reload-flags", listOf(), false, { cmdReloadFlags() }, "Reload the debug flags (useful with Java HotSwap)"),
-        DebugConsole.Cmd("help", listOf(), false, { cmdHelp() }, "Show every command, a line each")
+        DebugConsole.Cmd("dev-rich", listOf(), false, { cmdRich() }, "Set scrap to 5000 and fuel, drone parts and missiles to 99", group = ConsoleRegistry.Groups.RESOURCES),
+        DebugConsole.Cmd("dev-poor", listOf(), false, { cmdPoor() }, "Set scrap, fuel, drone parts and missiles to 0", group = ConsoleRegistry.Groups.RESOURCES),
+        DebugConsole.Cmd("dev-weapon", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(AbstractWeaponBlueprint::class.java), "name")), false, { a -> cmdWeapon(a[0] as AbstractWeaponBlueprint) }, "Select a weapon, and add it to the ship's cargo area", group = ConsoleRegistry.Groups.GEAR, examples = listOf("dev-weapon LASER_BURST_2")),
+        DebugConsole.Cmd("dev-drone", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(DroneBlueprint::class.java), "drone")), false, { a -> cmdDrone(a[0] as DroneBlueprint) }, "Select a drone, and add it to the ship's cargo area", group = ConsoleRegistry.Groups.GEAR),
+        DebugConsole.Cmd("dev-aug", listOf(), false, { cmdAugment() }, "Pick an augment from a list, and add it to the ship's cargo area", group = ConsoleRegistry.Groups.GEAR),
+        DebugConsole.Cmd("dev-store", listOf(), false, { cmdStore() }, "Give this beacon a store (opened from the Store button)", group = ConsoleRegistry.Groups.WORLD),
+        DebugConsole.Cmd("dev-event", listOf(), false, { cmdEvent() }, "Search the events, and load the one picked at this beacon", group = ConsoleRegistry.Groups.WORLD),
+        DebugConsole.Cmd("fix", listOf(), true, { a -> cmdFix(a[0] as List<String>) }, "Fix the ship's hull and all systems, clearing ion damage", group = ConsoleRegistry.Groups.SHIP),
+        DebugConsole.Cmd("cld", listOf(), false, { cmdClearDrones() }, "CLear all Drones - destroys all currently-deployed drone instances", group = ConsoleRegistry.Groups.ENEMY),
+        DebugConsole.Cmd("ecrew", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(CrewBlueprint::class.java), "race")), false, { a -> cmdEnemyCrew(a[0] as CrewBlueprint) }, "Spawn a new crewmember on the enemy ship, same args as 'CREW'", group = ConsoleRegistry.Groups.ENEMY, examples = listOf("ecrew mantis")),
+        DebugConsole.Cmd("boarder", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(CrewBlueprint::class.java), "race")), false, { a -> cmdBoarder(a[0] as CrewBlueprint) }, "Spawn a hostile intruder on the player ship, same args as 'CREW'", group = ConsoleRegistry.Groups.ENEMY, examples = listOf("boarder mantis")),
+        DebugConsole.Cmd("skills", listOf(), false, { cmdSkills() }, "Edit the crew's skills", group = ConsoleRegistry.Groups.GEAR),
+        DebugConsole.Cmd("dev-kill", listOf(), false, { cmdKill() }, "Destroy the enemy ship (100 hull damage, then 0 hull)", group = ConsoleRegistry.Groups.ENEMY),
+        DebugConsole.Cmd("killcrew", listOf(), false, { cmdKillCrew() }, "Kill one all of your crewmembers", group = ConsoleRegistry.Groups.GEAR),
+        DebugConsole.Cmd("sectors", listOf(), false, { cmdSectors() }, "Open the sector map, regardless of the current beacon", group = ConsoleRegistry.Groups.WORLD),
+        DebugConsole.Cmd("boss", listOf(), false, { cmdBoss() }, "Spawn the sector boss (flagship) at the current beacon", group = ConsoleRegistry.Groups.ENEMY),
+        DebugConsole.Cmd("kill-ecrew", listOf(), false, { cmdKillEnemyCrew() }, "Kill all crew aboard the enemy ship (including any boarding you)", group = ConsoleRegistry.Groups.ENEMY),
+        DebugConsole.Cmd("system", listOf(DebugConsole.CmdParameter(SystemArgCompleter, "name")), false, { a -> cmdSystem(a[0] as String) }, "Unlock a system on the current ship, or 'list' or 'all'", group = ConsoleRegistry.Groups.SHIP, examples = listOf("system list", "system all", "system cloaking")),
+        DebugConsole.Cmd("spawn-ship", listOf(DebugConsole.CmdParameter(EnemyShipSpecProcessor, "spec"), DebugConsole.CmdParameter(StringTypeProcessor, "difficulty/seed")), false, { a -> cmdSpawnShip(a[0] as EnemyShipSpec, a[1] as String) }, "Spawn an enemy ship directly from a seed", group = ConsoleRegistry.Groups.ENEMY, examples = listOf("spawn-ship PIRATE_INTERCEPTOR 3.normal")),
+        DebugConsole.Cmd("enemy-weapon", listOf(), true, { a -> cmdEnemyWeapon(a[0] as List<String>) }, "Add or remove (the the remove argument) an enemy weapon", group = ConsoleRegistry.Groups.ENEMY, examples = listOf("enemy-weapon add", "enemy-weapon clear")),
+        DebugConsole.Cmd("upall", listOf(), false, { cmdUpgradeAll() }, "UPgrade ALL systems on the player ship to the maximum level", group = ConsoleRegistry.Groups.SHIP),
+        DebugConsole.Cmd("downall", listOf(), false, { cmdDowngradeAll() }, "Downgrade all systems on the player ship to their starting level", group = ConsoleRegistry.Groups.SHIP),
+        DebugConsole.Cmd("set", listOf(DebugConsole.CmdParameter(DebugFlagProcessor, "flag")), false, { a -> cmdSet(a[0] as String) }, "Turn on or off debug flags", group = ConsoleRegistry.Groups.DEV, examples = listOf("set help", "set vis")),
+        DebugConsole.Cmd("damage", listOf(DebugConsole.CmdParameter(IntTypeProcessor, "amount")), false, { a -> cmdDamage(a[0] as Int) }, "Apply a given amount of damage to the player ship (or negative to heal)", group = ConsoleRegistry.Groups.SHIP, examples = listOf("damage 5", "damage -5")),
+        DebugConsole.Cmd("breach", listOf(), false, { cmdBreach() }, "Spawn a hull breach in a random room of the player ship", group = ConsoleRegistry.Groups.SHIP),
+        DebugConsole.Cmd("ion", listOf(DebugConsole.CmdParameter(IntTypeProcessor, "amount")), false, { a -> cmdIon(a[0] as Int) }, "Apply ion damage to a random system of the player ship, like a weapon hit", group = ConsoleRegistry.Groups.SHIP, examples = listOf("ion 2")),
+        DebugConsole.Cmd("wreck", listOf(DebugConsole.CmdParameter(SystemArgCompleter, "system")), true, { a -> cmdWreck(a[0] as String, a[1] as List<String>) }, "Break a system of the player ship ('wreck doors'), or ionise it ('wreck doors ion [bars]'). 'fix' repairs it", group = ConsoleRegistry.Groups.SHIP, examples = listOf("wreck doors", "wreck shields ion 2")),
+        DebugConsole.Cmd("autofire", listOf(), true, { a -> cmdAutofire(a[0] as List<String>) }, "Toggle autofire globally, or for one weapon slot (1-4)", group = ConsoleRegistry.Groups.SHIP, examples = listOf("autofire", "autofire 1")),
+        DebugConsole.Cmd("hurt", listOf(DebugConsole.CmdParameter(IntTypeProcessor, "amount")), false, { a -> cmdHurt(a[0] as Int) }, "Damage all of the player's crewmembers by a given amount (negative heals)", group = ConsoleRegistry.Groups.GEAR, examples = listOf("hurt 20")),
+        DebugConsole.Cmd("dev-skill", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "skill")), true, { a -> cmdSkill(a[0] as String, a[1] as List<String>) }, "Give the first player crewmember experience in a skill: 'dev-skill shields [count]'. Names: piloting/engines/shields/weapons/repairs/combat", group = ConsoleRegistry.Groups.GEAR, examples = listOf("dev-skill shields 2")),
+        DebugConsole.Cmd("force-hack", listOf(DebugConsole.CmdParameter(BlueprintTypeProcessor(SystemBlueprint::class.java), "system")), false, { a -> cmdForceHack(a[0] as SystemBlueprint) }, "Forces the enemy to hack a given player system", group = ConsoleRegistry.Groups.ENEMY, examples = listOf("force-hack shields")),
+        DebugConsole.Cmd("super-shield", listOf(), true, { a -> cmdSuperShield(a[0] as List<String>) }, "Give the player (or enemy) a super-shield (see help sub-cmd)", group = ConsoleRegistry.Groups.ENEMY, examples = listOf("super-shield 5", "super-shield help")),
+        DebugConsole.Cmd("env", listOf(), false, { cmdEnvironment() }, "Change the environment at the current beacon", group = ConsoleRegistry.Groups.WORLD),
+        DebugConsole.Cmd("dump-save", listOf(), false, { cmdDumpSave() }, "Save the game to XML, and print it to standard output", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("save-load", listOf(), false, { cmdSaveLoad() }, "Save the game to XML, and load it back in.", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("gc", listOf(), false, { cmdGC() }, "Manually trigger Java's Garbage Collector.", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("save", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "name")), false, { a -> cmdSave(a[0] as String) }, "Save a named browser checkpoint: save name", group = ConsoleRegistry.Groups.DEV, examples = listOf("save before-boss")),
+        DebugConsole.Cmd("load", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "name")), false, { a -> cmdLoad(a[0] as String) }, "Load a named browser checkpoint: load name", group = ConsoleRegistry.Groups.DEV, examples = listOf("load before-boss")),
+        DebugConsole.Cmd("download", listOf(), false, { cmdDownload() }, "Download the current run as an XML checkpoint", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("import", listOf(), false, { cmdImport() }, "Choose and import a browser XML checkpoint", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("inspect", listOf(), false, { cmdInspect() }, "Inspect current input, UI, weapons, RNG and recording state", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("mark", listOf(), false, { cmdMark() }, "Mark an issue in the active diagnostic recording", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("gameover", listOf(DebugConsole.CmdParameter(EnumTypeProcessor(GameOverWindow.Outcome::class.java), "outcome")), false, { a -> cmdGameOver(a[0] as GameOverWindow.Outcome) }, "End the game with the win/loose screen.", group = ConsoleRegistry.Groups.WORLD, examples = listOf("gameover WIN")),
+        DebugConsole.Cmd("ach-set", listOf(DebugConsole.CmdParameter(AchievementProcessor, "achievement"), DebugConsole.CmdParameter(EnumTypeProcessor(Difficulty::class.java), "difficulty")), false, { a -> cmdAchSet(a[0] as Achievement, a[1] as Difficulty) }, "Set the difficulty an achievement was achieved with", group = ConsoleRegistry.Groups.PROFILE, examples = listOf("ach-set ACH_FULL_ARSENAL HARD")),
+        DebugConsole.Cmd("ach-del", listOf(DebugConsole.CmdParameter(AchievementProcessor, "achievement")), false, { a -> cmdAchSet(a[0] as Achievement) }, "Remove an achievement", group = ConsoleRegistry.Groups.PROFILE),
+        DebugConsole.Cmd("ship-unlock", listOf(DebugConsole.CmdParameter(ShipFamilyProcessor, "ship"), DebugConsole.CmdParameter(EnumTypeProcessor(Difficulty::class.java), "difficulty")), false, { a -> cmdUnlockShip(a[0] as ShipFamily, a[1] as Difficulty) }, "Set the difficulty a ship family's unlock quest was completed with", group = ConsoleRegistry.Groups.PROFILE, examples = listOf("ship-unlock PLAYER_SHIP_CIRCLE NORMAL")),
+        DebugConsole.Cmd("ship-lock", listOf(DebugConsole.CmdParameter(ShipFamilyProcessor, "ship")), false, { a -> cmdLockShip(a[0] as ShipFamily) }, "Un-completes a ship unlock quest", group = ConsoleRegistry.Groups.PROFILE),
+        DebugConsole.Cmd("layout-unlock", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "ship"), DebugConsole.CmdParameter(EnumTypeProcessor(Difficulty::class.java), "difficulty")), false, { a -> cmdUnlockLayout(a[0] as String, a[1] as Difficulty) }, "Unlock an official ship layout", group = ConsoleRegistry.Groups.PROFILE, examples = listOf("layout-unlock PLAYER_SHIP_HARD_2 EASY")),
+        DebugConsole.Cmd("reset-ftl", listOf(), false, { cmdResetFTL() }, "Reset the player's FTL charge timer", group = ConsoleRegistry.Groups.SHIP),
+        DebugConsole.Cmd("reload-console", listOf(), false, { cmdReloadConsole() }, "Reload the console (useful with Java HotSwap)", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("reload-flags", listOf(), false, { cmdReloadFlags() }, "Reload the debug flags (useful with Java HotSwap)", group = ConsoleRegistry.Groups.DEV),
+        DebugConsole.Cmd("help", listOf(DebugConsole.CmdParameter(HelpTopicProcessor, "search")), true, {}, "The command reference: every command by group, with its usage, what it does and examples. Type after help to search it; tap or click a command to fill it in", raw = { line -> cmdHelp(line.substringAfter(' ', "").trim()) }, args = "[search]", group = ConsoleRegistry.Groups.DEV, examples = listOf("help", "help get"))
     )
 
     @ConsoleCommand(name = "dev-rich")
@@ -1238,9 +1238,20 @@ class DebugCommands(console: DebugConsole) : ConsoleCommandProvider(console) {
     }
 
     @ConsoleCommand(name = "help")
-    @CmdHelp("Show every command, a line each")
-    private fun cmdHelp() {
-        addLine("Commands (any case; the upper-case ones are Hyperspace's and the original game's):")
+    @CmdHelp("The command reference")
+    private fun cmdHelp(search: String) {
+        // The reference (ConsoleReference) is the completer of help's argument: it opens with the line "help ".
+        console.input = if (search.isEmpty()) "help " else "help $search"
+        val shown = ConsoleReference.matching(console.commands, search)
+        if (search.isNotEmpty()) {
+            if (shown.isEmpty()) addLine("No command matches '$search'.")
+            for (cmd in shown) {
+                addLine(cmd.usage + "  -  " + cmd.helpText + if (cmd.needsHs) " (needs Hyperspace)" else "")
+                if (cmd.examples.isNotEmpty()) addLine("    e.g. " + cmd.examples.joinToString("   "))
+            }
+            return
+        }
+        addLine("Commands (any case; the upper-case ones are Hyperspace's and the original game's). The reference is open below:")
 
         val grid = ArrayList<List<String>>()
         for (cmd in console.commands) {

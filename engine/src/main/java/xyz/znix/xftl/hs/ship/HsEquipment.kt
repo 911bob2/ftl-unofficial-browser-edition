@@ -125,6 +125,13 @@ object HsEquipment {
     @JvmStatic
     fun overCount(ship: Ship): Int = state(ship)?.over?.size ?: 0
 
+    /** The items of every over-capacity page (multipleOverCapacity), the shown page's as its box holds it now. */
+    @JvmStatic
+    fun overItems(ship: Ship): List<Blueprint> {
+        syncOver(ship)
+        return state(ship)?.over?.filterNotNull().orEmpty()
+    }
+
     /** Equipment::Jump: the list and the shown boxes are cleared. */
     @JvmStatic
     fun onJump(ship: Ship) {

@@ -72,12 +72,30 @@ class BrowserTutorialAdapter(definition: BrowserTutorialDefinition) {
         return controller.equipmentAcceptAllowed(state) && controller.upgradeAcceptAllowed(state)
     }
 
+    /**
+     * The iPad lessons' system boxes, as the iPad game opens and closes them: the
+     * tooltip lesson opens the engines' box and keeps it open, the damage lesson closes every box, the first weapon lesson
+     * opens the weapons' box and keeps it open, the equipment and upgrade lessons open it again, and closing the
+     * equipment window closes every box.
+     */
+    private fun touchBoxes(game: InGameState, transition: BrowserTutorialController.Transition) {
+        val hud = game.shipUI.touch ?: return
+        if (transition.previous == "INVENTORY_2") hud.tutorialCloseBoxes()
+        when (transition.next) {
+            "IPAD_TOOLTIPS" -> hud.tutorialOpenBox(game.player.engines, true)
+            "DAMAGE_SYSTEM_1" -> hud.tutorialCloseBoxes()
+            "COMBAT_1" -> hud.tutorialOpenBox(game.player.weapons, true)
+            "INVENTORY_1", "COMBAT_5" -> hud.tutorialOpenBox(game.player.weapons, false)
+        }
+    }
+
     private fun applyEntry(game: InGameState) {
         if (!controller.completed && entryEffects.supports(controller.step.id)) entryEffects.apply(game, controller.step.id)
         events.enter(game)
     }
 
     private fun record(game: InGameState, transition: BrowserTutorialController.Transition?): BrowserTutorialController.Transition? {
+        if (transition != null) touchBoxes(game, transition)
         if (transition != null) applyEntry(game)
         if (transition != null) BrowserDebug.record("tutorial", "step.changed",
             "{\"previous\":${BrowserDebug.quote(transition.previous)},\"next\":${BrowserDebug.quote(transition.next)},\"sequence\":${transition.sequence}}")

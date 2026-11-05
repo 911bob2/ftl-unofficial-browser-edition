@@ -303,6 +303,7 @@ object LuaAdaptersSweepUi {
             if (parts and 4 != 0) { wr.drawOutline(x, y, w, h); glState.flush() }
         }
         val draw = LuaMethod { n ->
+            xyz.znix.xftl.game.TouchPointers.panel()
             when (n) {
                 2 -> frame(arg.obj(1) as LuaStruct, 0, 0, arg.int(2), 7)
                 3 -> frame(arg.obj(1) as LuaStruct, arg.int(2), arg.int(3), 0x80, 7)
@@ -599,18 +600,24 @@ object LuaAdaptersSweepUi {
             val size = LuaStructs.fields(sub(s, A.A_TutorialArrow_blitSize))
             val rot = num(s, A.A_TutorialArrow_rotation).toFloat()
             fun colourOf(a: Int): Colour { val c = LuaStructs.fields(sub(s, a)); return Colour(c[0].toFloat(), c[1].toFloat(), c[2].toFloat(), c[3].toFloat()) }
-            LuaGraphics.drawImage(g, s.values[A.A_TutorialArrow_arrow] as? LuaTexture, pos[0].toFloat(), pos[1].toFloat(),
-                size[0].toFloat(), size[1].toFloat(), rot, false, colourOf(A.A_TutorialArrow_arrow_color))
-            // arrow2_color.a = G_->GetTutorialManager()->tracker.GetAlphaLevel(false), written back as HS does
-            val tracker = LuaReg.objGet[A.A_TutorialManager_tracker]?.get(LuaTutorial) as? LuaStruct
-            val time = tracker?.let { num(it, A.A_AnimationTracker_time).toFloat() } ?: 0f
-            val ct = tracker?.let { num(it, A.A_AnimationTracker_current_time).toFloat() } ?: 0f
-            val alpha = 1f - Math.abs(1f - 2f * (if (time == 0f) 0f else ct / time))
-            val c2 = sub(s, A.A_TutorialArrow_arrow2_color)
-            c2.values[LuaStructs.attrsOf(c2.luaType)[3]] = alpha.toDouble()
-            LuaGraphics.drawImage(g, s.values[A.A_TutorialArrow_arrow2] as? LuaTexture, pos[0].toFloat(), pos[1].toFloat(),
-                size[0].toFloat(), size[1].toFloat(), rot, false, colourOf(A.A_TutorialArrow_arrow2_color))
+            fun render(x: Float, y: Float, rot: Float) {
+                LuaGraphics.drawImage(g, s.values[A.A_TutorialArrow_arrow] as? LuaTexture, x, y,
+                    size[0].toFloat(), size[1].toFloat(), rot, false, colourOf(A.A_TutorialArrow_arrow_color))
+                // arrow2_color.a = G_->GetTutorialManager()->tracker.GetAlphaLevel(false), written back as HS does
+                val tracker = LuaReg.objGet[A.A_TutorialManager_tracker]?.get(LuaTutorial) as? LuaStruct
+                val time = tracker?.let { num(it, A.A_AnimationTracker_time).toFloat() } ?: 0f
+                val ct = tracker?.let { num(it, A.A_AnimationTracker_current_time).toFloat() } ?: 0f
+                val alpha = 1f - Math.abs(1f - 2f * (if (time == 0f) 0f else ct / time))
+                val c2 = sub(s, A.A_TutorialArrow_arrow2_color)
+                c2.values[LuaStructs.attrsOf(c2.luaType)[3]] = alpha.toDouble()
+                LuaGraphics.drawImage(g, s.values[A.A_TutorialArrow_arrow2] as? LuaTexture, x, y,
+                    size[0].toFloat(), size[1].toFloat(), rot, false, colourOf(A.A_TutorialArrow_arrow2_color))
+                LuaGraphics.flushQuads()
+            }
+            // The touch layout draws it at the touch place of what it points at (TouchPointers).
             LuaGraphics.flushQuads()
+            if (!xyz.znix.xftl.game.TouchPointers.arrow(g, pos[0].toFloat(), pos[1].toFloat(), size[0].toFloat(), size[1].toFloat(), rot, ::render))
+                render(pos[0].toFloat(), pos[1].toFloat(), rot)
             0
         })
     }

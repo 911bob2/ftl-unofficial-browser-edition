@@ -46,6 +46,9 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
         /** The separate places it drew in (rectangles more than [CLUSTER_GAP] apart). */
         var clusters = 0
 
+        /** Those places, desktop coordinates (x0, y0, x1, y1 each). */
+        var parts: List<FloatArray> = emptyList()
+
         /** How often its touch place changed from one drawn frame to the next (for the checks: a settled piece stays). */
         var moves = 0
         private var lastS = Float.NaN
@@ -90,6 +93,10 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
 
         fun contains(x: Int, y: Int): Boolean {
             if (!placed || desk == null) return false
+            // The desktop layout fitted to the canvas takes fingers only where it drew, not between its far-apart parts.
+            if (zone == Zone.OVERLAY) return parts.any { r ->
+                x >= r[0] * s + ox && x < r[2] * s + ox && y >= r[1] * s + oy && y < r[3] * s + oy
+            }
             // A small piece takes fingers a little around it.
             val padX = maxOf(0f, (MIN_TARGET - (x1() - x0())) / 2)
             val padY = maxOf(0f, (MIN_TARGET - (y1() - y0())) / 2)
@@ -133,11 +140,26 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
 
     /** A render stage's Lua drawing (its pre and post callbacks; the touch HUD draws its own original). */
     inner class LuaPiece(private val ev: Int) : Piece("lua:$ev") {
-        override val zone: Zone get() = if (ev == A.RE_FTL_BUTTON) Zone.SHELF_RIGHT else zoneByPlace(this)
+        override val zone: Zone get() = when {
+            ev == A.RE_FTL_BUTTON -> Zone.SHELF_RIGHT
+            // A script's own window (a text box, a panel) keeps the desktop layout, fitted to the canvas.
+            drewPanel -> Zone.OVERLAY
+            else -> zoneByPlace(this)
+        }
+
+        /** It drew a Hyperspace.WindowFrame in the last drawn frame. */
+        private var drewPanel = false
 
         override fun draw(g: Graphics, mx: Int, my: Int) {
-            val i = HsRenderEvents.pre(ev)
-            HsRenderEvents.post(ev, i)
+            // Its pointers and highlights go to the touch places of what they point at (TouchPointers).
+            TouchPointers.anchors = anchorsBut(this)
+            TouchPointers.enterPiece(g, s, ox, oy, parts)
+            try {
+                val i = HsRenderEvents.pre(ev)
+                HsRenderEvents.post(ev, i)
+            } finally {
+                drewPanel = TouchPointers.leavePiece()
+            }
         }
 
         override fun tap(dx: Int, dy: Int) = luaClick(dx, dy)
@@ -205,6 +227,19 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
 
     private fun zoneByPlace(p: Piece): Zone = zoneForPlace(p.desk, p.clusters)
 
+    /** The HUD elements in both layouts ([TouchPointers]): the touch HUD's own ([hudAnchors]) and the placed pieces but [except]. */
+    var hudAnchors: List<TouchPointers.Anchor> = emptyList()
+
+    private fun anchorsBut(except: Piece?): List<TouchPointers.Anchor> {
+        val out = ArrayList(hudAnchors)
+        for (p in pieces.values) {
+            val d = p.desk ?: continue
+            if (p === except || !p.placed || p.zone == Zone.OVERLAY) continue
+            out += TouchPointers.Anchor("piece:" + p.key, d, p.s, p.s, p.ox, p.oy)
+        }
+        return out
+    }
+
     // ---- layout --------------------------------------------------------------------------------------------------
 
     /** Width of a top-row piece at scale 1 (0 before it is measured). */
@@ -257,12 +292,18 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
         // Dock: right to left above the pause button.
         rowRight(zoned(Zone.DOCK), DOCK_LEFT, DOCK_RIGHT, DOCK_BOTTOM, DOCK_H, 1.25f)
         // The desktop layout fitted to the canvas.
-        val fs = minOf(canvasW / 1280f, TouchMode.HUD_H / 720f)
+        val o = overlayPlace(canvasW, hudX)
         for (p in zoned(Zone.OVERLAY)) {
-            p.s = fs
-            p.ox = (canvasW - 1280 * fs) / 2 - hudX
-            p.oy = (TouchMode.HUD_H - 720 * fs) / 2
+            p.s = o[0]
+            p.ox = o[1]
+            p.oy = o[2]
         }
+    }
+
+    /** The desktop layout fitted to the canvas: scale, x and y offsets in HUD block coordinates. */
+    private fun overlayPlace(canvasW: Int = TouchMode.canvasW, hudX: Int = TouchMode.hudX): FloatArray {
+        val fs = minOf(canvasW / 1280f, TouchMode.HUD_H / 720f)
+        return floatArrayOf(fs, (canvasW - 1280 * fs) / 2 - hudX, (TouchMode.HUD_H - 720 * fs) / 2)
     }
 
     private fun zoned(zone: Zone) = pieces.values.filter { it.zone == zone && it.desk != null }.onEach { it.placed = true }
@@ -323,6 +364,8 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
     /** Draws every piece and measures it; call in HUD block coordinates. */
     fun render(g: Graphics) {
         drawn++
+        TouchPointers.frameAnchors = anchorsBut(null)
+        TouchPointers.overlay = overlayPlace()
         for (p in pieces.values.toList()) {
             if (!p.placed || p.desk == null) { p.ox = OFFSCREEN; p.oy = 0f; p.s = 1f }
             val mine = held === p
@@ -350,6 +393,7 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
             p.desk = null
             p.solid = null
             p.clusters = 0
+            p.parts = emptyList()
             p.placed = false
             return
         }
@@ -357,6 +401,7 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
         val groups = cluster(rects)
         val desk = settle(p.desk, union(groups))
         p.desk = desk
+        p.parts = groups
         p.solid = if (probe.solids.isEmpty()) desk else settle(p.solid, union(probe.solids.map { unmapRect(g, it) }))
         p.clusters = groups.size
     }
@@ -372,7 +417,11 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
     // ---- fingers -------------------------------------------------------------------------------------------------
 
     /** The topmost piece under ([x], [y]) in HUD coordinates. */
-    fun at(x: Int, y: Int): Piece? = pieces.values.lastOrNull { it.contains(x, y) && it !is TriggeredPiece }
+    fun at(x: Int, y: Int): Piece? {
+        // A button under the edge of a script's text box still takes the finger, as the mouse reaches it on the desktop.
+        val under = pieces.values.filter { it.contains(x, y) && it !is TriggeredPiece }
+        return under.lastOrNull { it.zone != Zone.OVERLAY } ?: under.lastOrNull()
+    }
 
     /** True while a piece holds the finger. */
     fun touch(action: Int, x: Int, y: Int): Boolean {
@@ -429,7 +478,7 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
 
     private fun luaMouse(x: Int, y: Int) {
         if (!HS.luaActive) return
-        LuaEvents.mouse(x, y, LuaEvents.mouseX, LuaEvents.mouseY, 0, 0, false, false, false)
+        LuaEvents.mouseDesk(x, y, LuaEvents.mouseX, LuaEvents.mouseY, 0, 0, false, false, false)
     }
 
     /**
@@ -443,8 +492,8 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
             if (drawn > click[2]) {
                 luaClickAt = null
                 if (HS.luaActive) {
-                    LuaEvents.mouse(click[0], click[1], click[0], click[1], 1, 0, true, false, false)
-                    LuaEvents.mouse(click[0], click[1], click[0], click[1], 2, 0, false, false, false)
+                    LuaEvents.mouseDesk(click[0], click[1], click[0], click[1], 1, 0, true, false, false)
+                    LuaEvents.mouseDesk(click[0], click[1], click[0], click[1], 2, 0, false, false, false)
                 }
                 luaMouse(-1, -1)
             }

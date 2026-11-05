@@ -46,15 +46,21 @@ class ModLaunch private constructor(
                 ?: if (name.endsWith(".xml") || name.endsWith(".txt")) ByteArray(0)
                 else throw IllegalStateException("$name is not available to patch scripts here")
 
-        fun prepare(root: File, gameData: GameData, library: ModLibrary, setup: Setup, progress: (String) -> Unit): ModLaunch {
+        fun prepare(root: File, gameData: GameData, library: ModLibrary, setup: Setup, assets: android.content.res.AssetManager? = null,
+                    progress: (String) -> Unit): ModLaunch {
             val missing = missingMods(setup, library.list().map { it.sha256 }.toSet())
             if (missing.isNotEmpty()) throw MissingMods(missing)
             val mods = setup.mods.map { library.get(it.sha256)!! }
             val zips = ArrayList<Zip>()
             try {
                 for (m in mods) zips.add(Zip.open(library.file(m.sha256)))
+                // Our touch wording over the mods it was written for, merged after them (TouchPatches).
+                val patches = if (assets != null) TouchPatches.forMods(mods.map { it.sha256 }) else emptyList()
+                val patchArchives = patches.map { TouchPatches.archive(assets!!, it) }
+                for (a in patchArchives) zips.add(a.zip)
                 val version = gameData.info?.version ?: throw IllegalStateException("No game files")
-                val key = Sha256.hex(listOf("merge", MERGE_VERSION, FTLMAN_VERSION, version, *mods.map { it.sha256 }.toTypedArray()).joinToString("|"))
+                val key = Sha256.hex((listOf("merge", MERGE_VERSION, FTLMAN_VERSION, version, *mods.map { it.sha256 }.toTypedArray()) +
+                    (if (patches.isEmpty()) emptyList() else listOf("touch", TouchPatches.key(patches)))).joinToString("|"))
                 val cache = File(root, "merged/$key")
                 val index = File(cache, "index.json")
                 val text = LinkedHashMap<String, File>()
@@ -71,7 +77,7 @@ class ModLaunch private constructor(
                 } else {
                     progress("Merging mods…")
                     val result = mergeMods(gameData.baseNames(), { readBase(gameData, it) },
-                        mods.mapIndexed { i, m -> MergeArchive(m.label, zips[i]) }, lazyBinary = true,
+                        mods.mapIndexed { i, m -> MergeArchive(m.label, zips[i]) } + patchArchives, lazyBinary = true,
                         onProgress = { progress("Merging ${it.name}… ${it.file * 100 / maxOf(1, it.files)}%") },
                         baseSize = { gameData.baseSize(it) }, patchNative = FtlmanLua,
                         onLuaLog = { _, text -> Log.i("FTL", "[mod script] $text") })

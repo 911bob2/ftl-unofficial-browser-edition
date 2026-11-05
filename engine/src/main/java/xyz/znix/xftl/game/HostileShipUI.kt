@@ -419,6 +419,10 @@ class HostileShipUI(private val game: InGameState, private val enemy: Ship) {
      */
     private val touchSystemTooltips = HashMap<String, xyz.znix.xftl.rendering.AboveFingerTooltip>()
 
+    /** The target box in both layouts, from the last drawn touch frame (TouchPointers). */
+    var touchAnchor: TouchPointers.Anchor? = null
+        private set
+
     private fun renderTouch(gc: GameContainer, g: Graphics, hud: TouchHud, hoveredRoom: Room?, interiorVisible: Boolean, isHostile: Boolean) {
         val boss = enemy.isUsingBossUI
         val rect = hud.targetBox(boss)
@@ -473,6 +477,9 @@ class HostileShipUI(private val game: InGameState, private val enemy: Ship) {
         val rightMargin = if (boss) 10 else 18
         val vanillaBoxY = if (boss) 11 else 54
         val desktopLeft = 1280 - (box.width - rightGlow) - rightMargin + leftGlow
+        // The touch box is the desktop's moved by this (TouchPointers): the hull, shields and icons keep their offsets.
+        touchAnchor = TouchPointers.Anchor.shift("target", floatArrayOf(desktopLeft.f, vanillaBoxY.f,
+            (desktopLeft + box.width - leftGlow - rightGlow).f, (vanillaBoxY + box.height).f), (x - desktopLeft).f, (y - vanillaBoxY).f)
         drawHullAndShields(g, x + 4, y - 7, filter, textColour, isHostile, (x - desktopLeft).f, (y - vanillaBoxY).f)
 
         // The class and relationship fade out as the box shrinks.

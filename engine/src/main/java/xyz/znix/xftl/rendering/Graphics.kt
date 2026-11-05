@@ -392,6 +392,21 @@ class Graphics {
         out[1] = (-t.m10 * dx + t.m00 * dy) / det
     }
 
+    /** The framebuffer pixel the point ([x], [y]) of the current coordinates is drawn at, into [out] as x, y. */
+    fun map(x: Float, y: Float, out: FloatArray) {
+        val t = transform
+        out[0] = t.m00 * x + t.m01 * y + t.m02
+        out[1] = t.m10 * x + t.m11 * y + t.m12
+    }
+
+    /** A copy of the live transform, for [loadTransform]. */
+    fun copyTransform(): Matrix3f = Matrix3f(transform)
+
+    /** Makes a copy of [m] the live transform (inside a [pushTransform] / [popTransform] pair). */
+    fun loadTransform(m: Matrix3f) {
+        transform = Matrix3f(m)
+    }
+
     /**
      * Use this instance's transform matrix for image rendering.
      */

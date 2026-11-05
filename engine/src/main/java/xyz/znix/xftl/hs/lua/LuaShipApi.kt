@@ -202,7 +202,7 @@ object LuaShipApi {
         LuaReg.bool(A.A_TutorialManager_bRunning, { HsLua.game?.tutorialOverlay != null })
         LuaReg.obj(A.A_module_Mouse, ObjGet { LuaMouse })
         val mouse = PointValue(0, 0)
-        LuaReg.obj(A.A_MouseControl_position, ObjGet { mouse.x = LuaEvents.mouseX; mouse.y = LuaEvents.mouseY; mouse })
+        LuaReg.obj(A.A_MouseControl_position, ObjGet { mouse.x = LuaEvents.deskX; mouse.y = LuaEvents.deskY; mouse })
 
         // ProjectileFactory::blueprint (the weapon's blueprint), Blueprint::name, ShipSystem::iHackEffect
         // (0 not hacked, 1 hacking drone attached, 2 hack pulse active)

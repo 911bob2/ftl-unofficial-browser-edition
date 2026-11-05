@@ -24,58 +24,66 @@ abstract class AutoCompleter(val console: DebugConsole) : DebugConsole.Overlay {
 }
 
 abstract class BasicCompletionEngine<T>(console: DebugConsole, val owner: ArgumentTypeProcessor?) :
-    AutoCompleter(console) {
+    AutoCompleter(console), ConsolePanel {
 
     abstract val items: List<T>
 
     // A little caching for the search
     private var lastInput: String? = null
     private val sortedEntries = ArrayList<T>()
-    private var lastLeftClick = false
     private var positionInInput: Int = 0
+
+    /** The suggestions in their order now. */
+    val entries: List<T> get() = sortedEntries
+
+    /** What is being completed now. */
+    protected val lastToken: String? get() = lastInput
+
+    /** The next [update] searches again (the items changed). */
+    fun invalidate() { lastInput = null }
 
     protected abstract fun getItemName(item: T): String
     protected open fun getCompletionString(item: T): String = getItemName(item)
+
+    /** Shown after the name, dimmer. */
+    protected open fun note(item: T): String? = null
+
+    /** The new commands' suggestions glow (ConsoleUi.rainbow). */
+    protected open fun isFeatured(item: T): Boolean = false
 
     override val autoCompleteSuggestion: String? get() = bestSuggestion?.let { priorCommandText + getItemName(it) }
     protected val bestSuggestion: T? get() = sortedEntries.firstOrNull()
     protected val priorCommandText: String
         get() {
             if (console.input.length <= positionInInput)
-                return ""
+                return console.input
             return console.input.substring(0, positionInInput)
         }
 
-    override fun render(gc: GameContainer, g: Graphics, height: Float) {
-        val mouseX = gc.input.mouseX
-        val mouseY = gc.input.mouseY
+    override val contentKey: Any? get() = lastInput
 
-        val leftDown = gc.input.isMouseButtonDown(Input.MOUSE_LEFT_BUTTON)
-        val clicking = leftDown && !lastLeftClick
-        lastLeftClick = leftDown
-
-        val x = 30
-        val blockHeight = 15
-        val width = gc.width - x - 40
-
+    /** One row a suggestion, scrolled with the wheel or a drag; a tap or click completes it. */
+    override fun draw(g: Graphics, ui: ConsoleUi, area: Area, scroll: Int): Int {
+        val rowH = ui.rowH
         for ((i, item) in sortedEntries.withIndex()) {
-            val y = height.toInt() + 10 + i * blockHeight
-
-            if (y > gc.height)
-                break
-
-            val hovering = mouseX in x until x + width && mouseY in y until y + blockHeight
-
-            val shade = if (hovering) 140 else 100
+            val y = area.y + i * rowH - scroll
+            if (y < area.y) continue
+            if (y + rowH > area.bottom) break
+            val row = Area(area.x, y, area.w, rowH - 1)
+            val shade = if (ui.hovered(row)) 140 else 100
             g.colour = Colour(shade, shade, shade, 180)
-            g.fillRect(x.f, y.f, width.f, blockHeight.f)
-
-            console.font.drawString(x + 5f, y + 10f, getItemName(item), Colour.white)
-
-            if (clicking && hovering) {
-                itemSelected(item)
+            g.fillRect(row.x.f, row.y.f, row.w.f, row.h.f)
+            val name = getItemName(item)
+            val base = ui.baseline(row.y, row.h).f
+            if (isFeatured(item)) ConsoleUi.rainbow(ui.font, row.x + ui.pad.f, base, name, ui.time)
+            else ui.font.drawString(row.x + ui.pad.f, base, name, Colour.white)
+            note(item)?.takeIf { it.isNotEmpty() }?.let { n ->
+                val nx = row.x + ui.pad * 3f + ui.font.getWidth(name)
+                ui.small.drawStringTruncated(nx, ui.baseline(row.y, row.h, ui.small).f, row.right - nx - ui.pad, n, Colour(210, 210, 210))
             }
+            ui.hit(row) { itemSelected(item) }
         }
+        return sortedEntries.size * rowH
     }
 
     override fun update(currentToken: String, positionInInput: Int) {
@@ -109,7 +117,7 @@ abstract class BasicCompletionEngine<T>(console: DebugConsole, val owner: Argume
     protected open fun itemUpdateFinished(sortedEntries: List<T>) = Unit
 
     protected open fun itemSelected(item: T) {
-        console.input = console.input.substring(0, positionInInput) + getCompletionString(item) + " "
+        console.input = priorCommandText + getCompletionString(item) + " "
     }
 
     override fun applyAutoCompletion() {
@@ -125,6 +133,10 @@ class CommandCompleter(console: DebugConsole) : BasicCompletionEngine<DebugConso
     override fun getItemName(item: DebugConsole.Cmd): String {
         return item.name
     }
+
+    override fun note(item: DebugConsole.Cmd) = (if (item.args.isNotEmpty()) item.args + "   " else "") + item.helpText
+
+    override fun isFeatured(item: DebugConsole.Cmd) = item.featured
 
     override fun sortEntries(entries: ArrayList<DebugConsole.Cmd>, currentToken: String) {
         // Use fuzzy-search as a backup
@@ -148,7 +160,6 @@ class BlueprintCompleter(console: DebugConsole, owner: ArgumentTypeProcessor?, v
     private val isWeapons = AbstractWeaponBlueprint::class.java.isAssignableFrom(type)
     private val isDrones = DroneBlueprint::class.java.isAssignableFrom(type)
 
-    private var lastLeftClick = false
     private var buttons: List<CompletionButton> = emptyList()
 
     override val items = console.game.blueprintManager.blueprints.values
@@ -174,55 +185,31 @@ class BlueprintCompleter(console: DebugConsole, owner: ArgumentTypeProcessor?, v
         }
     }
 
-    override fun render(gc: GameContainer, g: Graphics, height: Float) {
-        if (isWeapons || isDrones) {
-            renderButtons(gc, g, height)
-        } else {
-            super.render(gc, g, height)
-        }
-    }
-
-    fun renderButtons(gc: GameContainer, g: Graphics, height: Float) {
-        val mouseX = gc.input.mouseX
-        val mouseY = gc.input.mouseY
-
-        val leftDown = gc.input.isMouseButtonDown(Input.MOUSE_LEFT_BUTTON)
-        val clicking = leftDown && !lastLeftClick
-        lastLeftClick = leftDown
-
-        val baseX = 10
-        var x = baseX
-        var y = height.toInt() + 10
-
+    /** Weapons and drones as the store's boxes, scrolled; the rest as rows. */
+    override fun draw(g: Graphics, ui: ConsoleUi, area: Area, scroll: Int): Int {
+        if (!isWeapons && !isDrones) return super.draw(g, ui, area, scroll)
+        val first = buttons.firstOrNull() ?: return 0
+        val w = first.image.normal.width
+        val h = first.image.normal.height
+        val gap = 5
+        val columns = maxOf(1, (area.w + gap) / (w + gap))
         for ((i, button) in buttons.withIndex()) {
+            val x = area.x + (i % columns) * (w + gap)
+            val y = area.y + (i / columns) * (h + gap) - scroll
+            if (y < area.y) continue
+            if (y + h > area.bottom) break
             button.windowOffset = ConstPoint(x, y)
-            button.update(mouseX, mouseY)
+            button.update(if (ui.touch) -1 else ui.mouseX, if (ui.touch) -1 else ui.mouseY)
             button.draw(g)
-
-            if (clicking) {
-                button.mouseDown(Input.MOUSE_LEFT_BUTTON, mouseX, mouseY)
-            }
-
-
-            // Move along to the next position
-            val img = button.image.normal
-            x += img.width + 5
-
-            // Wrap around
-            if (x + img.width > gc.width) {
-                x = baseX
-                y += img.height + 5
-            }
-
-            if (y > gc.height) {
-                break
-            }
+            ui.hit(Area(x, y, w, h)) { itemSelected(button.blueprint) }
         }
+        return (buttons.size + columns - 1) / columns * (h + gap)
     }
 
     // Use BlueprintButton's rendering for weapons/drones
     private inner class CompletionButton(override val blueprint: Blueprint, images: ButtonImageSet) :
         Buttons.BlueprintButton(ConstPoint.ZERO, console.game, images) {
+        override val makesHoverNoise: Boolean get() = false
 
         override fun click(button: Int) {
             itemSelected(blueprint)

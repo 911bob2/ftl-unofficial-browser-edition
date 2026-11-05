@@ -486,6 +486,11 @@ return false;
         currentState.update(gc, dt);
         if (tutorialSession != null && currentState instanceof InGameState state)
             tutorialSession.adapter.update(state);
+        // TutorialManager::bQuitTutorial (set by a script): back to the main menu, as from the last lesson's Continue.
+        if (xyz.znix.xftl.hs.tutorial.HsTutorial.quitTutorial) {
+            xyz.znix.xftl.hs.tutorial.HsTutorial.quitTutorial = false;
+            if (tutorialSession != null) endTutorialSession();
+        }
         progressNotifications.update(dt);
 
         // If the profile needs saving, do that now. This means that if there's

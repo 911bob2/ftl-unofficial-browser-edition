@@ -239,7 +239,8 @@ class BrowserTutorialOverlay(private val main: MainGame) {
                 g.popTransform()
             }
         }
-        if (TouchMode.enabled) drawHand(game, step.id)
+        // The hand shows until the lesson's action is done (as on the iPad, it goes when Continue is enabled).
+        if (TouchMode.enabled && !controller.canContinue) drawHand(game, step.id)
         g.popTransform()
     }
 
@@ -330,7 +331,8 @@ class BrowserTutorialOverlay(private val main: MainGame) {
         private val HAND_PATHS = mapOf(
             "POWER_SYSTEM_2" to floatArrayOf(215f, 700f, 215f, 630f),
             "IPAD_TOOLTIPS" to floatArrayOf(235f, 671f, 300f, 671f),
-            "FIRE_IPAD_1" to floatArrayOf(635f, 320f, 712f, 320f),
+            // As on the iPad: a drag across the crew where the lesson adds them.
+            "DAMAGE_SYSTEM_2" to floatArrayOf(635f, 320f, 712f, 320f),
         )
 
         const val BOX_WIDTH = 323

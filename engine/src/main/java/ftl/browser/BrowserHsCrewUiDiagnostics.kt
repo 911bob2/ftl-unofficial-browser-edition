@@ -21,6 +21,8 @@ import xyz.znix.xftl.sys.Input
  *   off): CommandCrewMoveRoom leaves a crew member whose slot is already in the room; a right click on a door
  *   toggles it and orders nobody (CrewControl::RButton 0x502b10). HS with alternateCrewMovement (MV): the clicked
  *   tile, swaps inside a room and from another room (TileBasedCrewMovement.cpp).
+ *   HS also checks the crew list reorder: the dragged order survives a save and load (native oracle ro-main, ro-sq,
+ *   ro-sq2: HS 1.23.2 saves the crew in CrewMemberFactory order).
  * - `tooltip`: the crew hover tooltip (vanilla text, or HS advancedCrewTooltips / the multi-crew separator).
  * - `clone` (HS): the enhancedCloneUI queue paging, pick-up and reorder, height modifier, a rendered frame.
  * - `lua` (HS with Lua): CONSTRUCT_CREWMEMBER, CREW_CLONE and the CREW_MEMBER_HEALTH render event fire.
@@ -34,7 +36,7 @@ object BrowserHsCrewUiDiagnostics {
         val out = ArrayList<String>()
         try {
             when (part) {
-                "move" -> move(main, container, out)
+                "move" -> { move(main, container, out); if (HS.active) reorder(main, container, out) }
                 "tooltip" -> tooltip(main, container, out)
                 "clone" -> clone(main, container, graphics, out)
                 "lua" -> lua(main, container, graphics, out)
@@ -187,6 +189,26 @@ object BrowserHsCrewUiDiagnostics {
         rightClick(state, dx, dy)
         check(!door.open) { "right click with a crew member selected toggled the door" }
         out += "door right click toggles without a selection, orders with one"
+    }
+
+    /** HS: a crew list reorder (MoveCrewMemberToSpot) shows at once and stays after a save and load. */
+    private fun reorder(main: MainGame, container: GameContainer, out: ArrayList<String>) {
+        val state = start(main, container, "PLAYER_SHIP_HARD")
+        state.updatePlayerCrew()
+        val names = { s: InGameState -> s.shipUI.touchBoxCrew.map { it.info.name } }
+        val before = names(state)
+        check(before.size >= 3) { "need three crew in the list, have $before" }
+        val first = state.shipUI.touchBoxCrew[0]
+        check(state.shipUI.touchCrewMoveToSpot(first, 2)) { "the first crew member did not move" }
+        val moved = names(state)
+        val want = listOf(before[1], before[2], before[0]) + before.drop(3)
+        check(moved == want) { "reordered list $moved, want $want" }
+        main.loadSavedGame(BrowserXml.parse(BrowserXml.write(state.saveGameState())))
+        val loaded = main.currentState as InGameState
+        loaded.updatePlayerCrew()
+        val after = names(loaded)
+        check(after == want) { "after a save and load the list is $after, want $want" }
+        out += "reorder ${before.joinToString(",")} -> ${after.joinToString(",")}"
     }
 
     private fun tooltip(main: MainGame, container: GameContainer, out: ArrayList<String>) {

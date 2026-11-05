@@ -37,6 +37,8 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
 
     override val renderScale = if (PlatformSpecific.INSTANCE.isTouchUi) 1.2f else 1f
 
+    override val desktopCentreOffset: IPoint get() = ConstPoint(-11, -63)
+
     // Tap-to-arm: first tap highlights (and shows the item description),
     // second tap confirms (runtime-gated on isTouchUi). Selling already
     // happens via mouseReleased (drop), which the gate never sees.

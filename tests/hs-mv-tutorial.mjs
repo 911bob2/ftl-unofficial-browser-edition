@@ -112,7 +112,11 @@ try{
  // The console opens only once the start jump's fly-in is over (HS: not while the ship jumps), as in the original.
  const consoleOpen=()=>page.evaluate(()=>/^open=true/.test(window.hsWp7UiProbe('console')));
  const command=async c=>{for(let i=0;!await consoleOpen();i++){assert.ok(i<40,'the console opens');await key('Backslash');await page.waitForTimeout(250);}
-  await page.keyboard.type('LUA '+c,{delay:5});await key('Enter');await page.waitForTimeout(500);};
+  await page.keyboard.type('LUA '+c,{delay:5});await key('Enter');await page.waitForTimeout(500);
+  // HS's console box closes on Enter (InputBox::TextEvent, TEXT_CONFIRM); the port's console stays open to show its
+  // output (docs/CONSOLE.md), so it is closed here before the next click goes to the game, as in the oracle session.
+  if(await consoleOpen()){await key('Escape');await page.waitForTimeout(250);}
+  assert.ok(!await consoleOpen(),'the console closes');};
  // Lua runs through HS's console command LUA, as the oracle's lua step types it.
  await command(BOX);await command(CONT);await command(WATCH);
  for(const step of STEPS){

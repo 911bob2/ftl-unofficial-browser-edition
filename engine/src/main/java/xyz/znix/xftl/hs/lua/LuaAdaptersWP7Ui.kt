@@ -357,7 +357,7 @@ object LuaAdaptersWP7Ui {
         }
         val lp = attr("MouseControl.lastPosition")
         val lastPos = PointValue(0, 0)
-        LuaReg.obj(lp, ObjGet { lastPos.x = LuaEvents.mouseX; lastPos.y = LuaEvents.mouseY; lastPos })
+        LuaReg.obj(lp, ObjGet { lastPos.x = LuaEvents.deskX; lastPos.y = LuaEvents.deskY; lastPos })
         mouseMethods()
 
         // CommandGui: the members nothing else serves
@@ -420,13 +420,15 @@ object LuaAdaptersWP7Ui {
         wrapNames(listOf("TabbedWindow.bBlockClose", "TabbedWindow.bTutorialMode", "TabbedWindow.bWindowLock"), shadow = { o -> shadowAny(o, A.T_TabbedWindow) })
 
         // TutorialManager
-        wrapNames(listOf("TutorialManager.bGamePaused", "TutorialManager.bQuitTutorial", "TutorialManager.tracker"),
+        wrapNames(listOf("TutorialManager.bGamePaused", "TutorialManager.tracker"),
             ro = setOf("TutorialManager.tracker"))
         // hyperspace.i: bAllowJumping / bAllowUpgrades are CustomTutorialState::allowJumping / allowUpgrades, which
         // TutorialManager::AllowJumping / AllowUpgrades return under <disableDefaultTutorial> (Multiverse's tutorial.lua
         // opens the map and the ship window with them).
         LuaReg.bool(A.A_TutorialManager_bAllowJumping, { HsTutorial.allowJumping }, { _, v -> HsTutorial.allowJumping = v })
         LuaReg.bool(A.A_TutorialManager_bAllowUpgrades, { HsTutorial.allowUpgrades }, { _, v -> HsTutorial.allowUpgrades = v })
+        // bQuitTutorial ends the tutorial (MainGame.update; Multiverse's last lesson sets it).
+        LuaReg.bool(A.A_TutorialManager_bQuitTutorial, { HsTutorial.quitTutorial }, { _, v -> HsTutorial.quitTutorial = v })
         val tm = LuaTutorial
         LuaReg.obj(attr("TutorialManager.playerShip"), ObjGet { if (it === tm) LuaAdapters.inGame()?.player else null })
         LuaReg.obj(attr("TutorialManager.gui"), ObjGet { LuaGui })

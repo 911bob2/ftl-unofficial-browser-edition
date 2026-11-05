@@ -228,6 +228,27 @@ class ConsoleReceiver : BroadcastReceiver() {
                 // The enemy jumps away, as one running from a fight does.
                 state.hsEnemyJumpLeave()
             }
+            else if (cmd == "conprobe") {
+                // the debug console's state (tests/console.mjs's consoleProbe): its line, its panel, the ship's gear
+                val c = state.debugConsole
+                val p = state.player
+                Log.i("FTL-Console", c.debugState(state.isDebugConsoleVisible) + " panel=" + c.debugPanel() +
+                    " keyboardTop=" + xyz.znix.xftl.game.TouchMode.keyboardTop + " weapons=" + p.hardpoints.mapNotNull { it.weapon?.type?.name } +
+                    " cargo=" + p.allCargo().map { it.name } + " augments=" + p.augments.map { it.name } + " crew=" + p.crew.size +
+                    " last=" + c.outputText().lastOrNull())
+            }
+            else if (cmd == "overcap") {
+                // the open ship window's over-capacity and crew boxes, as laid out now (tests/overcap.mjs's overcapProbe)
+                Log.i("FTL-Overcap", state.shipUI.diagnosticOpenShipWindow?.diagnosticOverCapacity ?: "{\"window\":null}")
+            }
+            else if (cmd == "overcappage") state.shipUI.diagnosticOpenShipWindow?.diagnosticTurnOverPage()
+            else if (cmd.startsWith("conitems ")) {
+                // conitems <get|unlock> <kind>: a picker's items (count, keys)
+                val a = cmd.split(' ')
+                val kind = xyz.znix.xftl.devutil.ConsoleCheats.kindOf(a[1], a[2])
+                val list = if (kind == null) emptyList() else xyz.znix.xftl.devutil.ConsoleItems.items(state, kind)
+                Log.i("FTL-Console", "items ${a[1]} ${a[2]} ${list.size}: " + list.take(40).joinToString(" ") { it.key + it.tags })
+            }
             else if (cmd.startsWith("hscmd ")) {
                 // A Hyperspace console command (LUA, LOADEVENT, SYS ALL, ...), as if typed into the console.
                 state.debugConsole.execute(cmd.substring(6))

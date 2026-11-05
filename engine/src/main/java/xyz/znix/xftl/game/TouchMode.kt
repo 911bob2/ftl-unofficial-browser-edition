@@ -21,6 +21,11 @@ object TouchMode {
     @JvmField
     var keyboardFocusY = 0
 
+    /** Where the host's on-screen keyboard begins on the 768 high canvas ([HUD_H] while it is hidden; set by the host). */
+    @JvmField
+    @Volatile
+    var keyboardTop = HUD_H
+
     /** The flight canvas width for the screen's aspect ratio (set by the host). */
     @JvmField
     var canvasW = HUD_W

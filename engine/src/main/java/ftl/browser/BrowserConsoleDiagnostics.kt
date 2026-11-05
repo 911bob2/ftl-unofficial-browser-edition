@@ -43,6 +43,47 @@ object BrowserConsoleDiagnostics {
                 val e = game.eventManager.getOrNull(n) as? xyz.znix.xftl.sector.Event
                 e != null && !e.unique && e.text != null && e.choices.size >= 2 && !n.contains("SHIP") && !n.contains("STORE")
             })}" +
-            ",\"gate\":${xyz.znix.xftl.devutil.ConsoleGate.allowed()}}"
+            ",\"gate\":${xyz.znix.xftl.devutil.ConsoleGate.allowed()}" +
+            ",\"multipleOver\":${xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)}" +
+            ",\"panel\":${q(game.debugConsole.debugPanel())}}"
+    }
+
+    /** The blueprint element of each item kind, as the data files hold it. */
+    private val ELEMENTS = mapOf("weapon" to "weaponBlueprint", "drone" to "droneBlueprint", "augment" to "augBlueprint",
+        "crew" to "crewBlueprint", "system" to "systemBlueprint")
+
+    /**
+     * `get`/`unlock` [command] [kind]: the picker's items (id, key, English and current-language name, tags), and for the
+     * blueprint kinds the names read straight from the run's blueprint files (BlueprintManager's files: the base ones,
+     * the AE ones with OVERRIDE_ taken off in an AE run), for tests/console.mjs to hold the two against each other.
+     */
+    fun items(main: MainGame, command: String, kind: String): String {
+        val game = main.currentState as? InGameState ?: return "{}"
+        val k = xyz.znix.xftl.devutil.ConsoleCheats.kindOf(command, kind) ?: return "{\"error\":\"no such kind\"}"
+        val items = xyz.znix.xftl.devutil.ConsoleItems.items(game, k)
+        val json = items.joinToString(",", "[", "]") {
+            "{\"id\":${q(it.id)},\"key\":${q(it.key)},\"english\":${q(it.english)},\"local\":${q(it.local)},\"tags\":${list(it.tags)},\"layout\":${it.layout}}"
+        }
+        val element = ELEMENTS[kind]
+        val data = if (element == null) "null" else {
+            val df = game.content.datafile
+            val ae = game.content.enableAdvancedEdition
+            val files = listOf("blueprints.xml", "autoBlueprints.xml", "bosses.xml", "dlcPirateBlueprints.xml") +
+                if (ae) listOf("dlcBlueprints.xml", "dlcBlueprintsOverwrite.xml") else emptyList()
+            val names = LinkedHashSet<String>()
+            for (f in files) {
+                val file = df.getOrNull("data/$f") ?: continue
+                for (e in df.parseXML(file).rootElement.children) {
+                    if (e.name != element) continue
+                    var n = e.getAttributeValue("name") ?: continue
+                    if (n.startsWith(xyz.znix.xftl.BlueprintManager.AE_PREFIX)) { if (!ae) continue; n = n.removePrefix(xyz.znix.xftl.BlueprintManager.AE_PREFIX) }
+                    // the picker leaves out crew without a title (drone and other internal crew: CREW makes nothing of them)
+                    if (element == "crewBlueprint" && e.getChild("title") == null) continue
+                    names += n
+                }
+            }
+            list(names.toList())
+        }
+        return "{\"items\":$json,\"data\":$data}"
     }
 }

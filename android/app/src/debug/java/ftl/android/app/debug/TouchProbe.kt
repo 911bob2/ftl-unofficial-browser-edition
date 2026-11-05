@@ -94,6 +94,17 @@ object TouchProbe {
                     "s" to Math.round(p.s * 10000) / 10000.0, "moves" to p.moves,
                     "active" to (p as? xyz.znix.xftl.game.TouchExtras.ButtonPiece)?.button?.disabled?.not())
             }
+            // TouchPointers: each pointer a script drew last frame, desktop and canvas places, and the element's canvas place
+            val hx = xyz.znix.xftl.game.TouchMode.hudX
+            fun canvas(r: FloatArray) = r.mapIndexed { i, v -> Math.round((v + if (i % 2 == 0) hx else 0) * 10) / 10.0 }
+            out["pointers"] = xyz.znix.xftl.game.TouchPointers.drawn.map { d ->
+                mapOf("kind" to d.kind, "desk" to d.desk.map { Math.round(it * 10) / 10.0 }, "at" to canvas(d.touch),
+                    "anchor" to d.anchor, "anchorAt" to canvas(d.anchorTouch))
+            }
+            val tut = BrowserEngine.getGame()?.tutorialAdapter?.controller
+            out["tutorial"] = tut?.let { mapOf("step" to it.step.id, "continue" to it.canContinue, "done" to it.completed) }
+            out["crewOrder"] = hud.crewOrderNames
+            out["crewHeld"] = hud.heldCrewName
             out["danger"] = game.isInDanger
             out["eventButtonClicked"] = xyz.znix.xftl.hs.render.HsEventButtons.lastClicked
             out["speedLevel"] = xyz.znix.xftl.hs.lua.LuaFps.speedLevel

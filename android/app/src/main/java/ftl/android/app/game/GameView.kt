@@ -61,6 +61,9 @@ class GameView(context: Context, private val renderer: GameRenderer) : SurfaceVi
         val focus = top + keyboardFocusY * height / 768 + height / 40
         val above = (parent as? android.view.View)?.height ?: height
         translationY = if (keyboardHeight > 0 && keyboardFocusY > 0) -(focus - (above - keyboardHeight)).coerceAtLeast(0).toFloat() else 0f
+        // where the keyboard begins on the canvas: the full-screen debug console fits its content above it
+        xyz.znix.xftl.game.TouchMode.keyboardTop = if (keyboardHeight > 0 && height > 0)
+            ((above - keyboardHeight - top - translationY) * 768 / height).toInt().coerceIn(0, 768) else 768
     }
 
     override fun onCheckIsTextEditor() = true
@@ -90,7 +93,9 @@ class GameView(context: Context, private val renderer: GameRenderer) : SurfaceVi
     fun showKeyboard(show: Boolean, focusY: Int) {
         keyboardFocusY = focusY
         placeOverKeyboard()
-        if (show == keyboardShown) return
+        // as asked already, unless the keyboard went its own way (put away by the player, or brought up by the system):
+        // the debug console asks again for the one it needs
+        if (show == keyboardShown && (keyboardHeight > 0) == show) return
         keyboardShown = show
         val ime = context.getSystemService(InputMethodManager::class.java)
         if (show) {

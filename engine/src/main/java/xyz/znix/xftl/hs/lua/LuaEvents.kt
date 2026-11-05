@@ -108,13 +108,34 @@ object LuaEvents {
     fun mouse(x: Int, y: Int, oldX: Int, oldY: Int, type: Int, button: Int, l: Boolean, r: Boolean, m: Boolean): Boolean {
         val moved = x != mouseX || y != mouseY
         mouseX = x; mouseY = y
+        // A script reads the mouse where the desktop layout has what the finger is on (TouchPointers.deskMouse).
+        val desk = if (xyz.znix.xftl.game.TouchMode.enabled && !deskGiven) xyz.znix.xftl.game.TouchPointers.deskMouse(x, y) else null
+        deskX = desk?.get(0) ?: x; deskY = desk?.get(1) ?: y
         if (type == 0) LuaAdaptersWP7Ui.mouseMoved(moved)
         return mouseEvent(x, y, oldX, oldY, type, button, l, r, m)
     }
 
-    /** The last pointer position the engine received (MouseControl::position). */
+    /** The last pointer position the engine received. */
     @JvmField var mouseX = 0
     @JvmField var mouseY = 0
+
+    /** MouseControl::position, what a script reads: [mouseX], [mouseY] in the desktop layout's coordinates. */
+    @JvmField var deskX = 0
+    @JvmField var deskY = 0
+
+    /** The caller's position is in desktop coordinates already (TouchExtras' pieces). */
+    @JvmField var deskGiven = false
+
+    /** [mouse] with a position in desktop coordinates. */
+    @JvmStatic
+    fun mouseDesk(x: Int, y: Int, oldX: Int, oldY: Int, type: Int, button: Int, l: Boolean, r: Boolean, m: Boolean): Boolean {
+        deskGiven = true
+        try {
+            return mouse(x, y, oldX, oldY, type, button, l, r, m)
+        } finally {
+            deskGiven = false
+        }
+    }
 
     private fun mouseEvent(x: Int, y: Int, oldX: Int, oldY: Int, type: Int, button: Int, l: Boolean, r: Boolean, m: Boolean): Boolean = when (type) {
         0 -> mouseMove(x, y, x - oldX, y - oldY, l, r, m)

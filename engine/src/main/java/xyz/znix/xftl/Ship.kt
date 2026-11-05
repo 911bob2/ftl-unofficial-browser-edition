@@ -238,6 +238,10 @@ class Ship(
      */
     val overCapacityBoxShown = BooleanArray(2)
 
+    /** The over-capacity slot (4 the item box, 5 the augment box) that took an item last, and how many it took, for the touch layout's pager. */
+    var overCapacityLastSlot = 4
+    var overCapacityAdds = 0
+
     /**
      * The ship's augment slots. This should only be used for UI relating
      * to the augment objects as seen on the ship screen - in the future,
@@ -3031,6 +3035,8 @@ class Ship(
         if (cargoBlueprints[slot] == null) {
             cargoBlueprints[slot] = item
             overCapacityBoxShown[slot - 4] = true
+            overCapacityLastSlot = slot
+            overCapacityAdds++
             cargoUpdated()
         } else {
             sys.eventCreator.create(sys.eventManager["EQUIP_FULL"], sys.eventCreator.currentLevel())
@@ -3526,7 +3532,8 @@ class Ship(
         SaveUtil.addAttrRef(elem, "bossManager", refs, boss)
 
         val crewListElem = Element("crew")
-        for (crew in this.crew) {
+        // Hyperspace: a crew list reorder is kept (PlayerShipUI.hsSaveCrewOrder)
+        for (crew in if (isPlayerShip) sys.shipUI?.hsSaveCrewOrder(this) ?: this.crew else this.crew) {
             // We save drones separately
             if (crew is AbstractIndoorsDrone.Pawn)
                 continue

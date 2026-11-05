@@ -97,6 +97,8 @@ class PauseWindow(val game: InGameState, val close: () -> Unit) : Window() {
         if (TouchMode.enabled) ConstPoint(481 + (if (tutorial) 150 else 0) - (TouchMode.HUD_W - menuWidth) / 2, 420 - (TouchMode.HUD_H - menuImage.height) / 2)
         else ConstPoint(menuX - (1280 - menuWidth) / 2, menuY - (720 - menuImage.height) / 2)
 
+    override val desktopCentreOffset: IPoint get() = ConstPoint(menuX - (1280 - menuWidth) / 2, menuY - (720 - menuImage.height) / 2)
+
     init {
         // Save transfer buttons are only offered when the platform can't
         // expose the save directory directly (Android's SAF); on desktop the

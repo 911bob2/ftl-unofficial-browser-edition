@@ -56,8 +56,28 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     // What the tutorial watches.
     val doorsSelected: Boolean get() = selected?.system is Doors
     val weaponsSelected: Boolean get() = selected?.system is Weapons
-    var drawerOpened = false
-        private set
+
+    /** The open box has an info drawer open (as on the iPad, a box with its tooltip out counts). */
+    val drawerOpened: Boolean get() = selected?.let { box -> allDrawers(box).any { it.isOpen } } == true
+
+    /**
+     * The tutorial's iPad lessons open a system's box (the box of that system is selected, as
+     * on the iPad); [keep] holds it open against a finger elsewhere and the lift after a power drag, as the box's own flag
+     * does there. Nothing happens when the ship has no box for [system].
+     */
+    fun tutorialOpenBox(system: AbstractSystem?, keep: Boolean) {
+        val box = boxes().firstOrNull { it.system === system } ?: return
+        if (selected !== box) closeBox()
+        selected = box
+        boxDragging = false
+        keepOpen = keep
+    }
+
+    /** Every box closed and none kept open (as the iPad tutorial closes them all). */
+    fun tutorialCloseBoxes() = closeBox()
+
+    private var keepOpen = false
+    private var strayFinger = false
 
     private fun updateFocus(dt: Float) {
         val enemy = game.enemy
@@ -495,7 +515,10 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     private fun drawCrew(g: Graphics) {
         ui.touchClearPowerButtons()
         val tooltip = g.tooltip
-        for ((i, crew) in boxCrew.withIndex()) ui.touchDrawCrewBox(g, crew, CREW_X, crewBoxY(i))
+        val lifted = reorderCrew
+        for ((i, crew) in boxCrew.withIndex()) if (crew !== lifted) ui.touchDrawCrewBox(g, crew, CREW_X, crewBoxY(i))
+        // The crew member a held finger picked up follows it up and down the list (CrewBox::OnRender hook).
+        if (lifted != null && lifted in boxCrew) ui.touchDrawCrewBox(g, lifted, CREW_X, reorderFingerY - CREW_H / 2)
         // A crew box's tooltip lasts as long as the finger stays down.
         if (primary == -1) g.tooltip = tooltip
         if (boxCrew.isEmpty()) return
@@ -558,7 +581,89 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         return best
     }
 
+    // ---- Hyperspace's crew list reorder on touch: hold a crew box, then slide it up or down ---------------------------
+    // The desktop drags a box with the right button (CustomCommandGui.cpp: CrewControl::RButton picks the crew member up,
+    // MouseMove moves it to the box under the mouse with CrewMemberFactory::MoveCrewMemberToSpot, the button's release
+    // drops it). Touch has no right button: a finger held still on a box for REORDER_HOLD picks it up; then the same
+    // move runs for the box under the finger. Until the finger moves the crew member to another box, the touch does what
+    // it always did (lifted, the box is selected; its tooltip shows while held), so a long press to read a box still works.
+
+    /** The box a finger went down on, while it may still become a hold (-1: none). */
+    private var reorderBox = -1
+    private var reorderDownNanos = 0L
+    private var reorderDownX = 0
+    private var reorderDownY = 0
+
+    /** The finger's y while it holds a crew member. */
+    private var reorderFingerY = 0
+
+    /** The crew member a held finger picked up; null when none. */
+    internal var reorderCrew: LivingCrew? = null
+        private set
+
+    /** For the checks: the crew list's names top to bottom, and the held crew member's. */
+    val crewOrderNames: List<String> get() = boxCrew.map { it.info.name }
+    val heldCrewName: String? get() = reorderCrew?.info?.name
+
+    /** The held crew member moved to another box during this touch. */
+    private var reordered = false
+
+    /** Reorder's part of a crew list touch; true when it took the touch. */
+    private fun reorderTouch(action: Int, x: Int, y: Int): Boolean {
+        when (action) {
+            TouchRouter.DOWN -> {
+                reorderCrew = null
+                reordered = false
+                reorderBox = if (xyz.znix.xftl.hs.HS.active) boxCrew.indices.firstOrNull { i ->
+                    val by = crewBoxY(i)
+                    x > CREW_X && x < CREW_X + CREW_W && y > by && y < by + CREW_H
+                } ?: -1 else -1
+                reorderDownNanos = System.nanoTime()
+                reorderDownX = x
+                reorderDownY = y
+                return false
+            }
+            TouchRouter.MOVE -> {
+                val crew = reorderCrew
+                if (crew == null) {
+                    if (reorderBox >= 0 && Math.hypot((x - reorderDownX).toDouble(), (y - reorderDownY).toDouble()) > REORDER_SLOP)
+                        reorderBox = -1
+                    return false
+                }
+                reorderFingerY = y
+                // CrewControl::MouseMove hook: (mY - top) / spacing, truncated towards zero, clamped to the boxes
+                if (ui.touchCrewMoveToSpot(crew, (y - CREW_TOP) / CREW_SPACING)) {
+                    reordered = true
+                    ui.touchSkillsCrew = null
+                    ui.touchPotential.clear()
+                }
+                return true
+            }
+            else -> {
+                val took = reorderCrew != null && reordered
+                reorderCrew = null
+                reorderBox = -1
+                if (!took) return false
+                dragging = false
+                touchedBox = -1
+                ui.touchPotential.clear()
+                ui.touchSkillsCrew = null
+                return true
+            }
+        }
+    }
+
+    /** A finger held still on a crew box long enough picks its crew member up (from [update]). */
+    private fun updateReorder() {
+        if (reorderBox < 0 || reorderCrew != null || primary == -1) return
+        if ((System.nanoTime() - reorderDownNanos) / 1e9f < REORDER_HOLD) return
+        reorderCrew = boxCrew.getOrNull(reorderBox)
+        reorderFingerY = reorderDownY
+        reorderBox = -1
+    }
+
     private fun crewControl(action: Int, x: Int, y: Int, cx: Int, cy: Int) {
+        if (reorderTouch(action, x, y)) return
         if (action == TouchRouter.CANCEL) {
             dragging = false
             ui.touchPotential.clear()
@@ -961,6 +1066,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         }
         drawerOwner = null
         selected = null
+        keepOpen = false
+        strayFinger = false
         boxDragging = false
         pressedExtra = null
         slotFinger = false
@@ -1026,6 +1133,12 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     }
 
     private fun boxTouch(box: Box, action: Int, x: Int, y: Int, time: Long): Boolean {
+        // A finger that came down away from a box kept open is not the box's.
+        if (action == TouchRouter.DOWN) strayFinger = false
+        else if (strayFinger) {
+            if (action == TouchRouter.UP || action == TouchRouter.CANCEL) strayFinger = false
+            return false
+        }
         when (action) {
             TouchRouter.DOWN -> {
                 startX = x
@@ -1041,7 +1154,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
                 // A finger on the panel around the buttons does nothing; it does not close the box.
                 val panelTop = box.buttonTops.firstOrNull()
                 if (panelTop != null && x > box.x + 6 && x < box.x + 58 && y > panelTop && y < BOX_Y + 66) return true
-                closeBox()
+                // A box the tutorial keeps open stays open; the finger goes on to what is under it.
+                if (keepOpen) strayFinger = true else closeBox()
                 return false
             }
             TouchRouter.MOVE -> {
@@ -1075,7 +1189,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
                 if (boxDragging) {
                     val system = box.system as? MainSystem
                     if (system != null && abs(flickVelocity) >= 1200f) setPower(system, if (flickVelocity <= 0f) system.energyLevels else 0)
-                    closeBox()
+                    if (keepOpen) boxDragging = false else closeBox()
                 }
                 return true
             }
@@ -1103,10 +1217,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         if (!onTab && !d.onPanel(x, y)) return false
         beginDrawerDrag(box, d, x)
         d.tapped = onTab && !d.isOpen
-        if (d.tapped) {
-            d.isOpen = true
-            drawerOpened = true
-        }
+        if (d.tapped) d.isOpen = true
         return true
     }
 
@@ -1135,7 +1246,6 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
                     !d.isOpen -> d.open.toInt() >= d.w / 10
                     else -> d.open.toInt() > d.w * 9 / 10
                 }
-                if (d.isOpen) drawerOpened = true
                 d.dragging = false
                 drawerOwner = null
             }
@@ -1812,6 +1922,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         primary = -1
         primarySpent = false
         extraFingers.clear()
+        reorderCrew = null
+        reorderBox = -1
         if (beamGesture) ui.touchAbortBeam()
         lastBeamX = Int.MIN_VALUE
     }
@@ -1903,6 +2015,11 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
                 returnPressed = false
             }
 
+            // A held crew member goes with the finger wherever it is, until it lifts.
+            if (reorderCrew != null && reorderTouch(action, x, y)) {
+                doButtons()
+                return
+            }
             if (crewPanelTouch(action, x, y)) {
                 doButtons()
                 return
@@ -1980,6 +2097,50 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         updateAutoPause()
         advancePulse(dt)
         advanceDrawers(dt)
+        updateReorder()
+    }
+
+    /**
+     * The HUD elements in both layouts (TouchPointers), HUD block coordinates: the crew boxes (with the strip of
+     * Hyperspace's power buttons to their right), the jump, ship, store and options buttons, the player's ship and the
+     * target box. TouchExtras adds its pieces.
+     */
+    fun anchors(): List<TouchPointers.Anchor> {
+        val out = ArrayList<TouchPointers.Anchor>()
+        // PlayerShipUI's desktop crew list: boxes from y 155 (the oxygen box's 96 + 59), 30 apart, at x 10, 86 x 27,
+        // Hyperspace's power buttons up to 83 px right of them; the touch list has the same boxes from CREW_TOP.
+        for (i in boxCrew.indices) {
+            val y = DESK_CREW_TOP + CREW_SPACING * i
+            out += TouchPointers.Anchor.shift("crew:$i", floatArrayOf(CREW_X.f, y.f, CREW_X + CREW_W + 83f, y + CREW_H.f),
+                0f, (crewBoxY(i) - y).f)
+        }
+        val desk = ui.touchDesktopButtons
+        for ((i, b) in listOf(jumpButton, shipButton, storeButton, optionsButton).withIndex()) {
+            val d = desk.getOrNull(i) ?: continue
+            if (i == 2 && !storeHere) continue
+            val dr = floatArrayOf(d.pos.x.f, d.pos.y.f, d.pos.x + d.size.x * d.renderScale, d.pos.y + d.size.y * d.renderScale)
+            out += TouchPointers.Anchor.fit(listOf("button:jump", "button:ship", "button:store", "button:options")[i], dr,
+                floatArrayOf(b.x.f, b.y.f, (b.x + b.w).f, (b.y + b.h).f))
+        }
+        // The player's ship: InGameState's desktop origin (350, 200 beside an enemy, 150 beside a boss, y 170, plus the
+        // layout's shift), the touch one scaled by the focus.
+        val player = game.player
+        if (player.rooms.isNotEmpty()) {
+            val shift = player.type.layoutShift
+            val enemy = game.enemy
+            val dx = (if (enemy == null) 350 else if (enemy.isUsingBossUI) 150 else 200) + shift.x
+            val dy = 170 + shift.y
+            val off = player.offset
+            val x0 = player.rooms.minOf { it.x + off.x } * Constants.ROOM_SIZE + dx
+            val y0 = player.rooms.minOf { it.y + off.y } * Constants.ROOM_SIZE + dy
+            val x1 = player.rooms.maxOf { it.x + it.width + off.x } * Constants.ROOM_SIZE + dx
+            val y1 = player.rooms.maxOf { it.y + it.height + off.y } * Constants.ROOM_SIZE + dy
+            val s = game.playerShipRenderScale
+            val o = game.playerShipOffsetPoint
+            out += TouchPointers.Anchor("ship:player", floatArrayOf(x0.f, y0.f, x1.f, y1.f), s, s, o.x - hudX - dx * s, o.y - dy * s)
+        }
+        if (game.enemy != null) game.enemyShipUI?.touchAnchor?.let { out += it }
+        return out
     }
 
     /** The HUD proper, over the world; the top buttons and target box were drawn before. */
@@ -2000,6 +2161,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         }
         drawCrystal()
         drawStatus(g)
+        TouchPointers.beginFrame()
+        extras.hudAnchors = anchors()
         extras.render(g)
         if (primary == -1) statusTip = null
         statusTip?.let { g.tooltip = it }
@@ -2019,7 +2182,14 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         const val EMPTY_SLOT_ALPHA = 0.5f
         const val CREW_X = 10
         const val CREW_TOP = 116
+        const val DESK_CREW_TOP = 155
         const val CREW_SPACING = 30
+
+        /** How long a finger stays still on a crew box to pick it up for reordering (Android's long press is 0.4-0.5 s). */
+        const val REORDER_HOLD = 0.5f
+
+        /** How far (HUD px) a finger may wander and still be held still. */
+        const val REORDER_SLOP = 8.0
         const val CREW_W = 86
         const val CREW_H = 27
         const val REASON_CREW_DRAG = 0

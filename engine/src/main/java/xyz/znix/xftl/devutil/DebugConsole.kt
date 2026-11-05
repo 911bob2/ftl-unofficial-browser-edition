@@ -66,6 +66,13 @@ class DebugConsole(var game: InGameState) {
     /** For the diagnostics probes: the line and the cursor. */
     fun debugState(open: Boolean): String = "open=$open text=$currentLine cursor=${if (historyCursor == -1) cursor else currentLine.length}"
 
+    /** For the diagnostics probes: what the panel shows (its class, a picker's kind), its taps, height and scroll. */
+    fun debugPanel(): String {
+        val o = overlay ?: return "none"
+        val kind = (o as? ItemPicker)?.let { " kind=${it.kind.name} tab=${it.layoutTab} shown=${it.entries.size}" } ?: ""
+        return "${o.javaClass.simpleName}$kind hits=${uiCache?.hits?.size ?: 0} height=$panelHeight scroll=${panelScroll.roundToInt()} touch=${uiCache?.touch}"
+    }
+
     /** The output lines as text, oldest first (grid lines joined by tabs). */
     fun outputText(): List<String> = lines.map { it.text }
 
@@ -75,7 +82,50 @@ class DebugConsole(var game: InGameState) {
         get() = if (historyCursor == -1) input
         else history[historyCursor]
 
+    // ---- drawing (docs/CONSOLE.md, "The window"): the desktop's half screen, or the touch layout's full screen
+
+    private var uiCache: ConsoleUi? = null
+
+    /** The look for this screen: the touch layout under TouchMode (Android), the desktop one otherwise. */
+    fun ui(): ConsoleUi {
+        val touch = xyz.znix.xftl.game.TouchMode.enabled
+        uiCache?.let { if (it.touch == touch && it.game === game) return it }
+        return ConsoleUi(game, touch).also { uiCache = it }
+    }
+
+    /** The scroll of the panel (suggestions, picker, reference) in pixels, reset when its content changes. */
+    private var panelScroll = 0f
+    private var panelKey: Any? = null
+    private var panelArea: Area? = null
+    private var panelHeight = 0
+    private var outputArea: Area? = null
+    private var chipArea: Area? = null
+    private var chipScroll = 0f
+    private var chipWidth = 0
+    /** The picker or reference the touch layout put the keyboard away for. */
+    private var keyboardHidFor: ConsolePanel? = null
+    private var screenH = 720
+
     fun render(gc: GameContainer, g: Graphics) {
+        val ui = ui()
+        ui.time = flashTimer
+        ui.mouseX = gc.input.mouseX
+        ui.mouseY = gc.input.mouseY
+        ui.hits.clear()
+        screenH = gc.height
+
+        // Cut down the history so it doesn't get too crazy.
+        while (lines.size > 1000) {
+            lines.removeAt(0)
+        }
+
+        // Make sure we're using a suitable auto-completion engine
+        updateAutoCompleter()
+
+        if (ui.touch) renderTouch(gc, g, ui) else renderDesktop(gc, g, ui)
+    }
+
+    private fun renderDesktop(gc: GameContainer, g: Graphics, ui: ConsoleUi) {
         val height = gc.height / 2
 
         g.colour = Colour(127, 127, 127, 180)
@@ -86,32 +136,7 @@ class DebugConsole(var game: InGameState) {
         val fontHeight = 7
         val lineSpacing = fontHeight + 5 // Some letters are a bit outside the font height
 
-        // Draw the prompt line
-        val inputWithoutCursur = prompt + currentLine
-        val inputLine = inputWithoutCursur
-        val shownCursor = if (historyCursor == -1) cursor.coerceIn(0, currentLine.length) else currentLine.length
-
-        // Draw the lighter auto-completion suggestion, if applicable
-        // This is drawn under the main input line, so the cursor draws on top.
-        var hintPos = 20f + font.getWidth(inputWithoutCursur) + 1f
-        val suggestion = overlay?.autoCompleteSuggestion
-        if (suggestion != null && suggestion.startsWith(currentLine)) {
-            val additional = suggestion.removePrefix(currentLine)
-            font.drawString(hintPos, y.f, additional, Colour.lightGray)
-            hintPos += font.getWidth(additional)
-        }
-
-        font.drawString(20f, y.f, inputLine, Colour.white)
-        if (flashTimer.rem(FLASH_TIME) > FLASH_TIME / 2) {
-            font.drawString(20f + font.getWidth(prompt + currentLine.take(shownCursor)), y.f, "_", Colour.white)
-        }
-
-        // Draw the remaining (eg parameter name) hints
-        for (hint in parameterHints) {
-            hintPos += 10 // Add a gap from the last text
-            font.drawString(hintPos, y.f, hint, Colour.lightGray)
-            hintPos += font.getWidth(hint)
-        }
+        drawInputLine(ui, font, 20f, y.f, gc.width - 40f)
 
         y -= lineSpacing + 4
 
@@ -121,12 +146,13 @@ class DebugConsole(var game: InGameState) {
 
         for (i in lines.size - 1 - offset downTo 0) {
             val line = lines[i]
-            line.draw(20, y)
+            line.draw(font, 1, 20, y, ui.time)
 
             y -= lineSpacing
             if (y < 0)
                 break
         }
+        outputArea = Area(0, 0, gc.width, height)
 
         // Draw a warning if we're scrolled, so the player knows they're not
         // at the latest message.
@@ -138,15 +164,196 @@ class DebugConsole(var game: InGameState) {
             font.drawStringLeftAligned(gc.width - 5f, lineY - 2f, "$offset lines scrolled past", Colour.red)
         }
 
-        // Cut down the history so it doesn't get too crazy.
-        while (lines.size > 1000) {
-            lines.removeAt(0)
+        val panel = overlay as? ConsolePanel
+        if (panel != null) {
+            g.colour = Colour(0, 0, 0, 150)
+            g.fillRect(0f, height.f, gc.width.f, gc.height - height.f)
+            drawPanel(g, ui, panel, Area(30, height + 10, gc.width - 70, gc.height - height - 20))
+        } else {
+            panelArea = null
+            overlay?.render(gc, g, height.f)
+        }
+    }
+
+    /** The prompt and the line, the cursor, the completion's grey rest and the parameter hints; the new commands glow. */
+    private fun drawInputLine(ui: ConsoleUi, f: xyz.znix.xftl.SILFontLoader, x0: Float, y: Float, maxWidth: Float) {
+        val line = currentLine
+        val full = prompt + line
+        val shownCursor = if (historyCursor == -1) cursor.coerceIn(0, line.length) else line.length
+        val suggestion = overlay?.autoCompleteSuggestion?.takeIf { it.startsWith(line) }?.removePrefix(line) ?: ""
+        val hints = parameterHints.joinToString("") { "  $it" }
+        // a line wider than its box shows its end
+        val cursorX = f.getWidth(prompt + line.take(shownCursor)).f
+        val tail = f.getWidth("__")
+        val x = if (cursorX + tail > maxWidth) x0 - (cursorX + tail - maxWidth) else x0
+
+        f.drawString(x + f.getWidth(full) + ui.scale, y, suggestion, Colour.lightGray)
+        f.drawString(x + f.getWidth(full + suggestion) + ui.scale, y, hints, Colour.lightGray)
+
+        val word = line.substringBefore(' ')
+        if (continued == null && word.isNotEmpty() && ConsoleUi.featured(commands, word)) {
+            f.drawString(x, y, prompt, Colour.white)
+            ConsoleUi.rainbow(f, x + f.getWidth(prompt), y, word, ui.time)
+            f.drawString(x + f.getWidth(prompt + word), y, line.substring(word.length), Colour.white)
+        } else f.drawString(x, y, full, Colour.white)
+        if (flashTimer.rem(FLASH_TIME) > FLASH_TIME / 2) {
+            f.drawString(x + cursorX, y, "_", Colour.white)
+        }
+    }
+
+    private fun drawPanel(g: Graphics, ui: ConsoleUi, panel: ConsolePanel, area: Area) {
+        val key = Pair(System.identityHashCode(panel), panel.contentKey)
+        if (key != panelKey) { panelKey = key; panelScroll = 0f }
+        panelScroll = panelScroll.coerceIn(0f, maxOf(0, panelHeight - area.h).f)
+        panelArea = area
+        panelHeight = panel.draw(g, ui, area, panelScroll.roundToInt())
+        // where the panel is scrolled to
+        if (panelHeight > area.h) {
+            val barH = maxOf(20, area.h * area.h / panelHeight)
+            val barY = area.y + ((area.h - barH) * panelScroll / (panelHeight - area.h)).roundToInt()
+            g.colour = Colour(200, 200, 200, 140)
+            g.fillRect(area.right + 4f, barY.f, (if (ui.touch) 8f else 4f), barH.f)
+        }
+    }
+
+    /**
+     * The touch layout (Android): the whole screen, a little transparent. At the top the input line and its buttons,
+     * which the host keeps above its keyboard (TouchMode.keyboardFocusY); under them the recent commands to tap and
+     * the last output line; the rest, down to the keyboard, holds the suggestions, a picker, the reference or the output.
+     */
+    private fun renderTouch(gc: GameContainer, g: Graphics, ui: ConsoleUi) {
+        val w = gc.width
+        val keyboard = xyz.znix.xftl.game.TouchMode.keyboardTop
+        val bottom = if (xyz.znix.xftl.game.TouchMode.keyboardWanted && keyboard in 1 until gc.height) keyboard else gc.height
+        g.colour = Colour(6, 8, 12, 215)
+        g.fillRect(0f, 0f, w.f, gc.height.f)
+
+        // the bar: the line and the buttons
+        val barH = TOUCH_BAR_H
+        val labels = listOf("Clear", "Tab", "Run", "Help", "Keys", "Close")
+        var bx = w - 8
+        // a narrow screen (4:3) keeps room for the line with smaller labels
+        val buttonFont = if (w >= 1400) ui.font else ui.small
+        val buttonAreas = ArrayList<Area>()
+        for (label in labels.reversed()) {
+            val bw = buttonFont.getWidth(label) + ui.pad * 4
+            bx -= bw
+            buttonAreas.add(0, Area(bx, 6, bw, barH - 12))
+            bx -= 6
+        }
+        for ((label, a) in labels.zip(buttonAreas)) ui.button(g, a, label, on = label == "Keys" && bottom < gc.height, f = buttonFont) { touchButton(label) }
+        val box = Area(8, 6, bx - 8, barH - 12)
+        ui.box(g, box, Colour(20, 22, 28, 240), Colour(150, 155, 165, 255))
+        drawInputLine(ui, ui.font, box.x + ui.pad.f, ui.baseline(box.y, box.h).f, box.w - ui.pad * 2f)
+        ui.hit(box) { showKeyboard() }
+
+        // A picker or the reference needs the room: the keyboard goes away when one opens (a tap on the line brings it
+        // back to search); with the keyboard up the recent commands make way.
+        val opened = overlay as? ConsolePanel
+        val big = opened is ItemPicker || opened is ConsoleReference
+        if (big && opened !== keyboardHidFor) { keyboardHidFor = opened; hideKeyboard() }
+        if (!big) keyboardHidFor = null
+        val compact = bottom < 420
+
+        // recent commands to tap
+        val chipsTop = barH
+        val chipH = if (compact) 0 else TOUCH_CHIP_H
+        val recent = if (compact) emptyList() else history.asReversed().distinct().take(30)
+        chipArea = if (compact) null else Area(0, chipsTop, w, chipH)
+        if (!compact) {
+            val label = if (recent.isEmpty()) "Recent commands show here" else "Recent:"
+            ui.small.drawString(10f, ui.baseline(chipsTop, chipH, ui.small).f, label, Colour.lightGray)
+            val chipsLeft = 20 + ui.small.getWidth(label)
+            chipScroll = chipScroll.coerceIn(0f, maxOf(0, chipWidth - (w - chipsLeft)).f)
+            var cx = chipsLeft - chipScroll.roundToInt()
+            for (cmd in recent) {
+                val cw = ui.small.getWidth(cmd) + ui.pad * 3
+                val a = Area(cx, chipsTop + 6, cw, chipH - 12)
+                if (a.x >= chipsLeft - 2 && a.right <= w) {
+                    ui.box(g, a, Colour(35, 45, 60, 230), Colour(110, 130, 160, 255))
+                    val word = cmd.substringBefore(' ')
+                    val tx = a.x + ui.pad * 1.5f
+                    val ty = ui.baseline(a.y, a.h, ui.small).f
+                    if (ConsoleUi.featured(commands, word)) {
+                        ConsoleUi.rainbow(ui.small, tx, ty, word, ui.time, 0f)
+                        ui.small.drawString(tx + ui.small.getWidth(word), ty, cmd.substring(word.length), Colour.white)
+                    } else ui.small.drawString(tx, ty, cmd, Colour.white)
+                    ui.hit(a) { historyCursor = -1; input = cmd }
+                }
+                cx += cw + 6
+            }
+            chipWidth = cx + chipScroll.roundToInt() - chipsLeft
         }
 
-        // Make sure we're using a suitable auto-completion engine
-        updateAutoCompleter()
+        // the last output line, in view while a panel covers the output
+        val statusTop = chipsTop + chipH
+        val statusH = if (compact && opened == null) 0 else TOUCH_STATUS_H
+        if (statusH > 0) {
+            g.colour = Colour(255, 255, 255, 30)
+            g.fillRect(0f, statusTop.f, w.f, statusH.f)
+        }
+        if (statusH > 0) lines.lastOrNull()?.let { last ->
+            ui.small.drawStringTruncated(10f, ui.baseline(statusTop, statusH, ui.small).f, w - 20f, last.text.replace('\t', ' '), Colour.white)
+        }
 
-        overlay?.render(gc, g, height.f)
+        val top = statusTop + statusH + if (statusH > 0 || chipH > 0) 6 else 0
+        val area = Area(10, top, w - 30, bottom - top - 6)
+        val panel = overlay as? ConsolePanel
+        when {
+            continued != null -> { panelArea = null; outputArea = null; continued?.render(gc, g, top - 10f) }
+            panel != null -> { outputArea = null; drawPanel(g, ui, panel, area) }
+            overlay != null -> { panelArea = null; outputArea = null; overlay?.render(gc, g, top - 10f) }
+            else -> {
+                panelArea = null
+                outputArea = area
+                drawOutput(g, ui, area)
+            }
+        }
+    }
+
+    /** The output, newest at the bottom, a drag scrolls it back. */
+    private fun drawOutput(g: Graphics, ui: ConsoleUi, area: Area) {
+        val step = ui.lineH
+        lineScroll = lineScroll.coerceIn(0f, maxScroll.f)
+        val offset = lineScroll.roundToInt()
+        var y = area.bottom - ui.pad
+        for (i in lines.size - 1 - offset downTo 0) {
+            if (y - ui.textH < area.y) break
+            lines[i].draw(ui.font, ui.scale, area.x, y, ui.time)
+            y -= step
+        }
+        if (offset != 0) {
+            g.colour = Colour.red
+            g.drawLine(0f, area.bottom.f, area.right.f, area.bottom.f)
+            ui.small.drawStringLeftAligned(area.right.f, area.bottom - 4f, "$offset lines scrolled past", Colour.red)
+        }
+        if (lines.isEmpty()) ui.font.drawString(area.x.f, area.y + ui.lineH.f, "Type a command, or tap Help.", Colour.lightGray)
+    }
+
+    private fun touchButton(label: String) {
+        when (label) {
+            "Clear" -> { historyCursor = -1; input = "" }
+            "Tab" -> (overlay as? AutoCompleter)?.applyAutoCompletion()
+            "Run" -> { selectHistory(); runCommand() }
+            "Help" -> { historyCursor = -1; input = "help " }
+            "Keys" -> if (xyz.znix.xftl.game.TouchMode.keyboardTop < screenH) hideKeyboard() else showKeyboard()
+            "Close" -> game.cancelMenu()
+        }
+    }
+
+    /** Puts the host's keyboard away, also when the host thinks it is away already. */
+    private fun hideKeyboard() {
+        val t = xyz.znix.xftl.game.TouchMode
+        t.keyboardWanted = false
+        t.keyboardFocusY = if (t.keyboardFocusY == TOUCH_FOCUS_Y) TOUCH_FOCUS_Y + 1 else TOUCH_FOCUS_Y
+    }
+
+    /** Asks the host for its keyboard again (a changed focus makes the host look again, even if it thinks it is up). */
+    private fun showKeyboard() {
+        val t = xyz.znix.xftl.game.TouchMode
+        if (!t.enabled) return
+        t.keyboardWanted = true
+        t.keyboardFocusY = if (t.keyboardFocusY == TOUCH_FOCUS_Y) TOUCH_FOCUS_Y + 1 else TOUCH_FOCUS_Y
     }
 
     fun update(@Suppress("UNUSED_PARAMETER") gc: GameContainer, dt: Float) {
@@ -220,8 +427,9 @@ class DebugConsole(var game: InGameState) {
             }
 
             Input.KEY_GRAVE -> {
-                // This key opens and closes the console, so ignore it to prevent
-                // it ending up in commands.
+                // This key opens and closes the console, so its ` stays out of commands; shifted it types ~ (Lua's
+                // ~=), as HS's console box takes every typed character (InputBox::TextInput).
+                if (c != '`' && c in ' '..'~') type(c)
             }
 
             else -> {
@@ -250,19 +458,55 @@ class DebugConsole(var game: InGameState) {
         cursor = at + 1
     }
 
+    // ---- the mouse and fingers: a press and release in place taps what is under it, a drag scrolls
+
+    private var pressX = 0
+    private var pressY = 0
+    private var pressed = false
+    private var dragging = false
+    /** What the press started on: 1 the panel, 2 the output, 3 the recent commands. */
+    private var dragTarget = 0
+
     fun mousePressed(button: Int, x: Int, y: Int) {
         overlay?.mousePressed(button, x, y)
+        if (button != Input.MOUSE_LEFT_BUTTON) return
+        pressX = x; pressY = y; pressed = true; dragging = false
+        dragTarget = when {
+            panelArea?.contains(x, y) == true -> 1
+            chipArea?.contains(x, y) == true -> 3
+            outputArea?.contains(x, y) == true -> 2
+            else -> 0
+        }
     }
 
     fun mouseReleased(button: Int, x: Int, y: Int) {
         overlay?.mouseReleased(button, x, y)
+        if (button != Input.MOUSE_LEFT_BUTTON || !pressed) return
+        pressed = false
+        if (dragging) return
+        // the hits are those of the last frame drawn, which is what was under the pointer
+        uiCache?.hits?.lastOrNull { it.area.contains(x, y) }?.action?.invoke()
     }
 
     fun mouseDragged(oldX: Int, oldY: Int, newX: Int, newY: Int) {
         overlay?.mouseDragged(oldX, oldY, newX, newY)
+        if (!pressed) return
+        val slop = if (ui().touch) 14 else 4
+        if (!dragging && (Math.abs(newX - pressX) > slop || Math.abs(newY - pressY) > slop)) dragging = true
+        if (!dragging) return
+        when (dragTarget) {
+            1 -> panelScroll -= newY - oldY
+            2 -> { lineScroll += (newY - oldY).f / ui().lineH; lineScroll = lineScroll.coerceIn(0f..maxScroll.f) }
+            3 -> chipScroll -= newX - oldX
+        }
     }
 
     fun mouseWheelMoved(amount: Int) {
+        val ui = uiCache
+        if (ui != null && panelArea?.contains(ui.mouseX, ui.mouseY) == true) {
+            panelScroll -= amount * 0.4f
+            return
+        }
         lineScroll += amount * 0.025f
         lineScroll = lineScroll.coerceIn(0f..maxScroll.f)
     }
@@ -329,6 +573,19 @@ class DebugConsole(var game: InGameState) {
 
     fun execute(command: String) { historyCursor = -1; input = command; runCommand() }
 
+    /**
+     * Runs [line] from a picker: the line goes into the history and the output as if typed, then the input goes back to
+     * [keep] (unless the command left something else there) with the same picker, so the next pick is one tap away.
+     */
+    fun runKeeping(line: String, keep: String) {
+        val panel = completion
+        historyCursor = -1
+        input = line
+        runCommand()
+        if (input.isEmpty()) input = keep
+        if (input == keep) completion = panel
+    }
+
     /** Closing the console drops the half-typed line, as Escape does in Hyperspace's box. */
     fun closed() {
         historyCursor = -1
@@ -350,7 +607,7 @@ class DebugConsole(var game: InGameState) {
         if (history.lastOrNull() != input && input.isNotBlank())
             history.add(input)
 
-        addLine(prompt + input)
+        lines += EchoLine(prompt, input, continued == null && ConsoleUi.featured(commands, input.trimStart().substringBefore(' ')))
 
         // If we're part way through a command that takes multiple
         // lines of input, run that.
@@ -1016,7 +1273,16 @@ class DebugConsole(var game: InGameState) {
         val needsHs: Boolean = false,
         /** The arguments as help shows them. */
         val args: String = params.joinToString(" ") { it.name },
-    )
+        /** The command reference's group ([ConsoleRegistry.Groups]). */
+        val group: String = "",
+        /** Lines that run as they stand; the reference fills one in when it is tapped. */
+        val examples: List<String> = emptyList(),
+        /** One of the new commands: drawn in rainbow colours. */
+        val featured: Boolean = false,
+    ) {
+        /** The command as typed: its name and its arguments. */
+        val usage: String get() = if (args.isEmpty()) name else "$name $args"
+    }
 
     data class CmdParameter(
         val type: ArgumentTypeProcessor,
@@ -1078,28 +1344,51 @@ class DebugConsole(var game: InGameState) {
     // Represents a line of console output
     private interface ILine {
         val text: String
-        fun draw(x: Int, y: Int)
+        /** [scale] is [f]'s, for the grid's columns (measured at scale 1). */
+        fun draw(f: xyz.znix.xftl.SILFontLoader, scale: Int, x: Int, y: Int, time: Float)
     }
 
     private inner class SimpleLine(val line: String) : ILine {
         override val text get() = line
-        override fun draw(x: Int, y: Int) {
-            font.drawString(x.f, y.f, line, Colour.white)
+        override fun draw(f: xyz.znix.xftl.SILFontLoader, scale: Int, x: Int, y: Int, time: Float) {
+            f.drawString(x.f, y.f, line, Colour.white)
+        }
+    }
+
+    /** A run command echoed: the new commands' word glows as it does on the input line. */
+    private inner class EchoLine(val prompt: String, val line: String, val featured: Boolean) : ILine {
+        override val text get() = prompt + line
+        override fun draw(f: xyz.znix.xftl.SILFontLoader, scale: Int, x: Int, y: Int, time: Float) {
+            if (!featured) { f.drawString(x.f, y.f, text, Colour.white); return }
+            val word = line.trimStart().substringBefore(' ')
+            val lead = line.length - line.trimStart().length
+            val before = prompt + line.substring(0, lead)
+            f.drawString(x.f, y.f, before, Colour.white)
+            ConsoleUi.rainbow(f, x + f.getWidth(before).f, y.f, word, time)
+            f.drawString(x + f.getWidth(before + word).f, y.f, line.substring(lead + word.length), Colour.white)
         }
     }
 
     private inner class GridLine(val parts: List<String>, val positions: List<Int>) : ILine {
         override val text get() = parts.joinToString("\t")
-        override fun draw(x: Int, y: Int) {
+        override fun draw(f: xyz.znix.xftl.SILFontLoader, scale: Int, x: Int, y: Int, time: Float) {
             for ((index, part) in parts.withIndex()) {
-                val pos = positions[index]
-                font.drawString(x.f + pos, y.f, part, Colour.white)
+                val pos = positions[index] * scale
+                if (index == 0 && ConsoleUi.featured(commands, part)) ConsoleUi.rainbow(f, x.f + pos, y.f, part, time)
+                else f.drawString(x.f + pos, y.f, part, Colour.white)
             }
         }
     }
 
     companion object {
         private const val PROMPT = "> "
+
+        /** The touch layout: the input bar's height, the recent commands' row, the last output line's strip. */
+        const val TOUCH_BAR_H = 64
+        const val TOUCH_CHIP_H = 48
+        const val TOUCH_STATUS_H = 32
+        /** The bottom of the touch layout's input line: the host keeps it above its keyboard. */
+        const val TOUCH_FOCUS_Y = TOUCH_BAR_H
 
         /** HS's TextInput(480, ALLOW_ANY). */
         const val MAX_LENGTH = 480

@@ -76,6 +76,9 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     /** Hyperspace: while > 0 an event's HS steps are still running, and closing the window waits for them. */
     private var hsDepth = 0
 
+    /** Hyperspace: this window is showing an event (its hooks and on_game_event callbacks are running). */
+    val hsShowing: Boolean get() = hsDepth > 0
+
     init {
         // WorldManager +0x12a0 (the crew-kill seed) is cleared only where a new event sequence starts: CreateLocation's
         // arrival event (1.6.14 0x6183a0, write at 0x61880d; 1.6.9 write at 0x5f30c6) and OnLoop's ship endings, CREW_STUCK and jump (1.6.14 0x61b930, 1.6.9 0x5f6a4a / 0x5f6eca / 0x5f7338), not
@@ -108,6 +111,8 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             if (PlatformSpecific.INSTANCE.isTouchUi) -40 else if (game.enemy != null) -155 else -5,
             if (PlatformSpecific.INSTANCE.isTouchUi) -60 else -24
         )
+
+    override val desktopCentreOffset: IPoint get() = ConstPoint(if (game.enemy != null) -155 else -5, -24)
 
     private val resourceNumFont = game.getFont("JustinFont10")
     private val font = game.getFont("JustinFont11Bold")

@@ -3,6 +3,7 @@ package xyz.znix.xftl.game
 import xyz.znix.xftl.*
 import xyz.znix.xftl.crew.LivingCrew
 import xyz.znix.xftl.math.ConstPoint
+import xyz.znix.xftl.math.IPoint
 import xyz.znix.xftl.rendering.Colour
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.rendering.Image
@@ -38,6 +39,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     )
 
     override val renderScale = if (PlatformSpecific.INSTANCE.isTouchUi) 1.2f else 1f
+
+    override val desktopCentreOffset: IPoint get() = ConstPoint(-4 - if (xyz.znix.xftl.hs.HS.active) 10 else 0, -43)
 
     override val appliesSelfTint: Boolean get() = dismissConfirm != null
 
@@ -179,6 +182,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     // crew box + (-53,86) and tints everything but that box 0.25 under it.
     private var dismissConfirm: ConfirmationWindow? = null
     private val dismissHighlightButtons = ArrayList<Button>()
+    // The crew boxes drawn last (diagnosticOverCapacity); before the init block, whose updateButtons clears it.
+    private val diagnosticCrewBoxes = ArrayList<DiagnosticCrewBox>()
 
     // If non-null, this is the crewmember whose name we're changing
     private var renamingCrew: LivingCrew? = null
@@ -264,6 +269,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     private fun updateButtons() {
         buttons.clear()
         dismissHighlightButtons.clear()
+        diagnosticCrewBoxes.clear()
 
         buttons += closeButton
 
@@ -917,6 +923,45 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         "\"crewLimit\":${if (hsDef != null) hsCrewLimit() else -1},\"renaming\":$renamingShip,\"name\":${ftl.browser.BrowserDebug.quote(ship.displayName ?: "")}," +
         "\"boxes\":${hsCrewBoxes.joinToString(",", "[", "]") { "[${it.first.x},${it.first.y},${it.second}]" }},\"equip\":${equipmentPanel.diagnosticState}}"
 
+    /** A crew box as drawn last: its slot, place (window frame), crew member and whether it is the over-capacity one. */
+    private class DiagnosticCrewBox(val id: Int, val pos: ConstPoint, val crew: LivingCrew?, val over: Boolean)
+
+    /**
+     * Tests (tests/overcap.mjs through BrowserEngine.overcapProbe): the open tab's over-capacity boxes and crew boxes,
+     * relative to the window's origin ([position], given as `origin`): the crew boxes (100 x 86, the dismiss button 92 x 12
+     * at (4, 70)), the crew DropBox, the equipment tab's over-capacity boxes, the other things they must not cover, the
+     * dismiss confirmation's Yes and the screen (the desktop's 1280 x 720, the touch HUD block's 1024 x 768 around the
+     * window's (50, 85)).
+     */
+    val diagnosticOverCapacity: String get() {
+        fun r(x: Int, y: Int, w: Int, h: Int) = "{\"x\":$x,\"y\":$y,\"w\":$w,\"h\":$h}"
+        fun rb(b: Button) = r(b.pos.x - position.x, b.pos.y - position.y, b.size.x, b.size.y)
+        val drop = buttons.firstOrNull { it is ShipEquipmentPanel.SellDropBox }
+        val crew = if (tab != Tab.CREW) "" else diagnosticCrewBoxes.joinToString(",") { b ->
+            "{\"id\":${b.id},\"over\":${b.over},\"crew\":${ftl.browser.BrowserDebug.quote(b.crew?.info?.name)}," +
+                "\"x\":${b.pos.x},\"y\":${b.pos.y},\"w\":100,\"h\":86" +
+                (if (b.crew != null) ",\"dismiss\":${r(b.pos.x + 4, b.pos.y + 70, 92, 12)}" else "") + "}"
+        }
+        val yes = dismissConfirm?.yesCentre
+        val screen = if (TouchMode.enabled) r(-50, -85, 1024, 768) else r(-position.x, -position.y, 1280, 720)
+        val others = "{\"name\":\"window\",\"rect\":${r(-GLOW_WIDTH, -GLOW_WIDTH, 601, 478)}},{\"name\":\"accept\",\"rect\":${rb(closeButton)}}"
+        return "{\"tab\":\"$tab\",\"touch\":${TouchMode.enabled},\"origin\":{\"x\":${position.x},\"y\":${position.y}},\"screen\":$screen," +
+            "\"drop\":${if (tab == Tab.CREW && drop != null) rb(drop) else "null"},\"crew\":[$crew]," +
+            "\"confirmYes\":${if (yes == null) "null" else r(yes.x - position.x - 5, yes.y - position.y - 5, 10, 10)}," +
+            "\"confirm\":${dismissConfirm?.let { r(it.position.x - position.x, it.position.y - position.y, it.size.x, it.size.y) } ?: "null"}," +
+            "\"others\":[$others]," + equipmentPanel.diagnosticOverCapacity(position) + "}"
+    }
+
+    /** Tests: the touch pager of the equipment tab's over-capacity boxes turns. */
+    fun diagnosticTurnOverPage() = equipmentPanel.touchTurnOverPage()
+
+    /** Tests: the buttons made again for the current layout (TouchMode.enabled) and drawn once, which places them. */
+    fun diagnosticRelayout(g: Graphics) {
+        updateButtons()
+        equipmentPanel.diagnosticRelayout()
+        draw(g)
+    }
+
     // ---- Hyperspace crew manifest (CustomCrewManifest.cpp) ----
 
     private var hsCrewPage = 0
@@ -953,6 +998,19 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         return result
     }
 
+    /**
+     * The crew screen's over-capacity DropBox (the sell box widget sits 7 px inside the art, the art at the native
+     * place 7 px left in this window's frame). CrewManifest's constructor (0x4e9f30) puts it at (-275, 100), left of
+     * the window. On touch the window group is pulled left, so that spot is off the screen; the iPad game puts it
+     * at (30, 484) instead, under the window's left half (the window art ends at 471).
+     */
+    private val crewDropBoxPos: ConstPoint
+        get() = when {
+            TouchMode.enabled -> ConstPoint(30, 484 + GLOW_WIDTH)
+            PlatformSpecific.INSTANCE.isTouchUi -> ConstPoint(-60, 250)
+            else -> ConstPoint(-275, CREW_DROP_BOX_Y + GLOW_WIDTH)
+        }
+
     private fun drawCrewHs(g: Graphics) {
         noteFont.print(position.x + 18f, position.y + 55f, game.translator["rename_note"], Colour.white)
 
@@ -962,17 +1020,28 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         val pages = xyz.znix.xftl.hs.render.HsUpgrades.pages(limit, 8)
         hsCrewPage = hsCrewPage.coerceIn(0, pages - 1)
 
+        // CustomCrewManifest::OnRender: the over-capacity DropBox first (while the extra box holds someone), then the
+        // crew boxes over it.
+        val overCrew = listed.getOrNull(limit)
+        if (overCrew != null && updatingButtons) {
+            buttons += ShipEquipmentPanel.SellDropBox.create(
+                game, ShipEquipmentPanel.SellDropBox.Type.TOO_MANY_CREW, crewDropBoxPos, { null }, { null }
+            )
+        }
+
         hsCrewBoxes.clear()
         for (i in hsCrewPage * 8 until minOf(limit, hsCrewPage * 8 + 8)) {
             drawCrewBox(g, listed, positions[i], i)
             hsCrewBoxes += Pair(positions[i], i)
         }
 
-        // The crew past the limit (the first one) goes in the over-capacity box left of the window.
-        val overCrew = listed.getOrNull(limit)
+        // The crew past the limit (the first one) goes in its own box (CustomCrewManifest::OnInit overCrewBox): at x 146 of
+        // the screen, right below the over-capacity DropBox (the manifest's y + the box's y + DropBox::GetHeight). The
+        // touch layout has no room below its DropBox, so the box sits right of it.
         if (overCrew != null) {
-            val overPos = if (TouchMode.enabled) ConstPoint(708, 342) else ConstPoint(-188, 107 + 12)
-            drawCrewBox(g, listed, overPos, limit)
+            val overPos = if (TouchMode.enabled) TOUCH_EXTRA_CREW_BOX
+            else ConstPoint(146 - position.x, CREW_DROP_BOX_Y + ShipEquipmentPanel.dropBoxHeight(game.translator, "overcapacity_crew_title", "overcapacity_crew_text", 0, ""))
+            drawCrewBox(g, listed, overPos, limit, true)
             hsCrewBoxes += Pair(overPos, limit)
         }
 
@@ -980,12 +1049,6 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             if (limit > 8) {
                 buttons += PageCrewArrow(ConstPoint(508, 54), false) { hsCrewPage = (hsCrewPage + pages - 1) % pages; updateButtons() }
                 buttons += PageCrewArrow(ConstPoint(543, 54), true) { hsCrewPage = (hsCrewPage + 1) % pages; updateButtons() }
-            }
-            if (overCrew != null) {
-                buttons += ShipEquipmentPanel.SellDropBox.create(
-                    game, ShipEquipmentPanel.SellDropBox.Type.TOO_MANY_CREW,
-                    if (TouchMode.enabled) ConstPoint(621, 330) else ConstPoint(-275, 107), { null }, { null }
-                )
             }
         }
 
@@ -1070,32 +1133,21 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         }
 
         if (game.playerHasTooManyCrew() && updatingButtons) {
-            // On touch the window group is pulled left to fit the info
-            // panel, so vanilla's left-of-window spot would be off-screen;
-            // tuck the box against the window's left edge instead (it
-            // overlaps one crew box's corner - the per-crew dismiss buttons
-            // remain the primary dismissal path).
-            val sellCrewPos = if (TouchMode.enabled) {
-                ConstPoint(621, 330)
-            } else if (PlatformSpecific.INSTANCE.isTouchUi) {
-                ConstPoint(-60, 250)
-            } else {
-                ConstPoint(-275, 107)
-            }
             buttons += ShipEquipmentPanel.SellDropBox.create(
                 game,
                 ShipEquipmentPanel.SellDropBox.Type.TOO_MANY_CREW,
-                sellCrewPos,
+                crewDropBoxPos,
                 { null },
                 { null }
             )
         }
     }
 
-    private fun drawCrewBox(g: Graphics, crewList: List<LivingCrew>, boxPos: ConstPoint, id: Int) {
+    private fun drawCrewBox(g: Graphics, crewList: List<LivingCrew>, boxPos: ConstPoint, id: Int, over: Boolean = false) {
         val crew = crewList.getOrNull(id)
         // The drop looks these up; the Hyperspace manifest lists its own.
         if (TouchMode.enabled && hsDef == null) hsCrewBoxes += Pair(boxPos, id)
+        if (updatingButtons) diagnosticCrewBoxes += DiagnosticCrewBox(id, boxPos, crew, over)
 
         if (crew == null) {
             val boxEmpty = game.getImg("img/upgradeUI/Equipment/box_crew_off.png")
@@ -1109,8 +1161,13 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         val boxNormal = game.getImg("img/upgradeUI/Equipment/box_crew_on.png")
         val boxHover = game.getImg("img/upgradeUI/Equipment/box_crew_selected.png")
 
-        if (crewToDismiss == crew)
-            dismissConfirm?.position = position + boxPos + ConstPoint(-53, 86)
+        // CrewManifest: the dismiss confirmation at the box + (-53, 86). On touch a box under the window (Hyperspace's
+        // extra crew box) would put it below the screen, so it goes above the box there.
+        if (crewToDismiss == crew) dismissConfirm?.let {
+            val below = boxPos.y + 86
+            val y = if (TouchMode.enabled && below + it.size.y > TOUCH_HUD_BOTTOM) boxPos.y - it.size.y else below
+            it.position = position + ConstPoint(boxPos.x - 53, y)
+        }
 
         if (!updatingButtons)
             return
@@ -1551,6 +1608,19 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
     companion object {
         const val GLOW_WIDTH: Int = 7
+
+        /** CrewManifest's over-capacity DropBox y (its constructor, 0x4e9f30): the art's top in this window's frame. */
+        private const val CREW_DROP_BOX_Y = 100
+
+        /**
+         * Touch layout, Hyperspace: the crew member past the limit, right of the DropBox (whose art ends at x 295) and
+         * level with its body, clear of the Accept button (x 429). Below the DropBox, as on the desktop, it would be off
+         * the screen.
+         */
+        private val TOUCH_EXTRA_CREW_BOX = ConstPoint(310, 484 + GLOW_WIDTH)
+
+        /** Touch layout: the HUD block's bottom (768 high) in this window's frame, whose origin is at its (50, 85). */
+        private const val TOUCH_HUD_BOTTOM = 768 - 85
 
         /** Hyperspace reactor box: an unbought bar (255, 255, 100, 0.25). */
         private val HS_EMPTY_BAR = Colour(1f, 1f, 100 / 255f, 0.25f)

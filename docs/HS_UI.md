@@ -37,7 +37,9 @@ reactor, hull percentage and name. Rows = oracle `sw2-switch`, `sw2-swone`, `sw2
   crew under the player's mind control follow the player's crew, nine on one page when the ninth is one of them, red
   boxes. Right-drag reorder: CrewMemberFactory::MoveCrewMemberToSpot (CustomCrewManifest.cpp) on the box list, kept in
   `PlayerShipUI.hsCrewOrder` (the list is rebuilt every frame); the dragged box follows the mouse without its skills
-  panel. Frames = oracle `sw2-crew`, `sw2-mind`.
+  panel. The save writes the player ship's crew in that order, so it survives Save and Quit or Main Menu, then Continue,
+  as native's save follows the factory order (`PlayerShipUI.hsSaveCrewOrder`; oracle `ro-main`, `ro-sq`, `ro-sq2`).
+  Touch: a 0.5 s hold on a box, then a slide ([ANDROID.md](ANDROID.md#touch-controls)). Frames = oracle `sw2-crew`, `sw2-mind`.
 - Upgrades: a system over eight bars shows two columns of eight (10 px left / 11 px right, the column numbers above
   once the left column is not the first); the levels box shows eight levels scrolled to the reached one. InfoBox takes
   the ship system's maximum (SetSystem 0x563640), not the blueprint's (vanilla too). Frames = oracle `sw2-switch` s-h0.

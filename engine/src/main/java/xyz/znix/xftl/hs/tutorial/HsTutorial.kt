@@ -21,4 +21,11 @@ object HsTutorial {
     /** CustomTutorialState::allowJumping / allowUpgrades (static in HS, false at start). */
     @JvmField var allowJumping = false
     @JvmField var allowUpgrades = false
+
+    /**
+     * TutorialManager::bQuitTutorial, which a script sets to end the tutorial. While the tutorial runs and it is set,
+     * CommandGui's menu command is the main menu's, so CApp::OnLoop leaves for the main menu and stops the tutorial,
+     * which clears it (MainGame.update).
+     */
+    @JvmField var quitTutorial = false
 }

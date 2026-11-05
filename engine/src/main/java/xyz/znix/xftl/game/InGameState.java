@@ -919,7 +919,8 @@ public class InGameState extends MainGame.GameState {
                 HotkeyButton consoleKey = reverseHotkeyBindings.get(getHotkeyManager().getKeyDevConsole());
                 // The debug console blocks all hotkeys
                 if (debugConsoleVisible) {
-                    if (key == Input.KEY_ESCAPE || key == 96 || (consoleKey != null && key == consoleKey.getKeyID())) cancelMenu();
+                    boolean shift = container.getInput().isKeyDown(Input.KEY_LSHIFT) || container.getInput().isKeyDown(Input.KEY_RSHIFT);
+                    if (xyz.znix.xftl.devutil.ConsoleGate.closes(key, c, consoleKey == null ? null : consoleKey.getKeyID(), shift)) cancelMenu();
                     else getDebugConsole().keyPressed(key, c);
                     container.getInput().clearInputPressedRecord();
                     return;
@@ -3134,6 +3135,9 @@ public class InGameState extends MainGame.GameState {
 
     public IPoint getPlayerShipOffsetPoint() { return playerShipOffset; }
 
+    /** The enemy's target box UI, while there is an enemy. */
+    @Nullable public HostileShipUI getEnemyShipUI() { return hostileShipUI; }
+
     /** The touch HUD's room under the finger, for the highlight (the mouse path sets it in updateClickEvent). */
     public void hoverRoomForTouch(@Nullable Room room) { touchHoverRoom = room; }
 
@@ -3193,8 +3197,8 @@ public class InGameState extends MainGame.GameState {
     public void openDebugConsole() {
         getDebugConsole(); debugConsoleVisible = true; queuedHotkeys.clear();
         clickEvent = null; input.clearInputPressedRecord();
-        // Android: the on-screen keyboard, the input line (half way down the 768 high canvas) kept above it
-        if (TouchMode.enabled) { TouchMode.keyboardWanted = true; TouchMode.keyboardFocusY = TouchMode.HUD_H / 2 + 6; }
+        // Android: the on-screen keyboard, the full-screen console's input bar at the top kept above it (DebugConsole)
+        if (TouchMode.enabled) { TouchMode.keyboardWanted = true; TouchMode.keyboardFocusY = xyz.znix.xftl.devutil.DebugConsole.TOUCH_FOCUS_Y; }
         ftl.browser.BrowserDebug.event("ui", "console.open", "window", "console");
     }
     public void cancelMenu() {

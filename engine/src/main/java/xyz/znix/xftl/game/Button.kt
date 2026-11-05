@@ -598,6 +598,12 @@ object Buttons {
          */
         open val customDisabled: Boolean get() = false
 
+        /** The name a weapon's box shows: its short name. */
+        protected open fun weaponName(blueprint: AbstractWeaponBlueprint): String = blueprint.translateShort(game)
+
+        /** Whether the box draws the weapon's or drone's art (the console's picker draws a placeholder where it has none). */
+        protected open val drawsArt: Boolean get() = true
+
         open val empty: Boolean get() = blueprint == null
 
         override val disabled: Boolean get() = empty || customDisabled
@@ -634,7 +640,7 @@ object Buttons {
 
                 is AbstractWeaponBlueprint -> {
                     // Draw the weapon name
-                    val name = blueprint.translateShort(game)
+                    val name = weaponName(blueprint)
                     val nameWindowWidth = 96
                     val nameX = (nameWindowWidth - weaponNameFont.getWidth(name)) / 2
 
@@ -648,7 +654,7 @@ object Buttons {
                     // StoreBox::OnRender (0x0051f4b0) centres the weapon art on (60,34):
                     // the sprite is turned 90 degrees, its halves truncated.
                     val icon = blueprint.getLauncher(game).getChargedImage(game)
-                    blueprint.drawLauncherUI(
+                    if (drawsArt) blueprint.drawLauncherUI(
                         icon, g,
                         (pos.x + 60 - (icon.height - icon.height / 2)).f,
                         (pos.y + 34 - icon.width / 2).f, game
@@ -669,7 +675,7 @@ object Buttons {
                     )
 
                     // Draw the drone icon
-                    blueprint.drawIconUI(game, pos + ConstPoint(60, 35))
+                    if (drawsArt) blueprint.drawIconUI(game, pos + ConstPoint(60, 35))
                 }
 
                 else -> throw Exception("Can't draw blueprint button for $blueprint")

@@ -159,6 +159,12 @@ public final class BrowserEngine {
     @JSExport public static void consoleConfig(boolean enabled){xyz.znix.xftl.devutil.ConsoleGate.setting=enabled;}
     /** Tests (tests/console.mjs): what the console's commands change, as JSON. */
     @JSExport public static String consoleProbe(){return game==null?"{}":BrowserConsoleDiagnostics.INSTANCE.state(game);}
+    /** tests/console.mjs: the get/unlock picker's items of a kind and the data's names (BrowserConsoleDiagnostics.items). */
+    @JSExport public static String consoleItems(String command,String kind){return game==null?"{}":BrowserConsoleDiagnostics.INSTANCE.items(game,command,kind);}
+    /** tests/overcap.mjs: the open ship window's over-capacity and crew boxes for the mouse or touch layout (BrowserOvercapDiagnostics); action "page" turns the touch pager. */
+    @JSExport public static String overcapProbe(boolean touch,String action){return game==null?"{}":BrowserOvercapDiagnostics.INSTANCE.probe(game,touch,action);}
+    /** Whether the profile has that ship layout unlocked, in any state (the hangar too). */
+    @JSExport public static boolean consoleLayoutUnlocked(String ship){return game!=null&&game.getProfile().isShipUnlocked(ship);}
     /** Tests: the console's last output lines, newest last. */
     @JSExport public static String consoleOutput(){if(!(game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state))return "";java.util.List<String> l=state.getDebugConsole().outputText();return String.join("\n",l.subList(Math.max(0,l.size()-200),l.size()));}
     @JSExport public static void menuCancel(){

@@ -308,7 +308,11 @@ The iPad version on phones and tablets (iOS has no separate iPhone layout): a 10
 in the engine (`game/TouchHud.kt`, `game/TouchRouter.kt`, the windows' touch branches); the website does not turn it
 on yet.
 
-- Crew: tap to select, tap a room to move, box select with the buttons by the list.
+- Crew: tap to select, tap a room to move, box select with the buttons by the list. Under Hyperspace a finger held
+  still on a crew box for 0.5 s picks the crew member up and a slide moves them up or down the list: HS's right-drag
+  reorder (CrewMemberFactory::MoveCrewMemberToSpot on the box under the finger), kept and saved as the desktop keeps it
+  (`PlayerShipUI.hsCrewOrder`, [HS_UI.md](HS_UI.md)). The touch only becomes a reorder once the crew member reaches another box; held and
+  lifted on the same box it selects, and the box's tooltip shows while held, as before (`TouchHud.reorderTouch`).
 - Systems: tap a box to open it, tap again or on empty space to close; drag up or down for power, flick for all or
   nothing; drag sideways or tap the tab for the info drawer. Doors: open the box, then tap or drag over doors.
   An open box dims the rest of the bar; an open drawer taller than the box grows the box. Hazards show at the top of the
@@ -323,6 +327,15 @@ on yet.
 - Crew powers: a lone selected crystal shows a lockdown button on its room; Hyperspace's power buttons are on the panel
   beside the touched crew box.
 - Windows take a finger as the left mouse button, acting on lift; two-step store buying, map and hangar as on the iPad.
+- Over capacity (`ShipWindow`, `ShipEquipmentPanel`): the crew screen's over-capacity box sits under the window's left
+  half, where the iPad game puts it (30, 484); Hyperspace's box for the crew member past the limit (on the
+  desktop at x 146 under that box) goes right of it, as below it would be off the screen, and its dismiss confirmation
+  opens above it. The equipment screen's item and augment boxes stay in the info column under the info box, where the
+  iPad has them (its (600, 320) under its info box; ours follow our info box). The original and the iPad draw those two
+  boxes at one place, the augment box over the item box; on touch one shows at a time, with a pager of two arrows over
+  the box (the iPad's `img/ipad/customizeUI/button_arrow`, the art Hyperspace's pager uses at desktop size), turning to
+  the box that took an item last. Multiverse's multipleOverCapacity keeps Hyperspace's own pager. The desktop keeps the
+  original's places and overlap.
 - Art and text come from the player's `ftl.dat` (`img/ipad/...`, `*_ipad` ids). A mod that blanks the wrench icon
   (Multiverse) gets a labelled Options tab instead.
 - A Hyperspace system over eight levels (Multiverse's shields go to 16) keeps the height of eight in its box: the bars
@@ -354,6 +367,21 @@ on yet.
   images' transparent margins differ. The order is the desktop HUD's list (event buttons as Hyperspace keeps them, then the
   Lua drawing). The small grey ship with "TRC" is Multiverse's addon icon for The Renegade Collection, an add-on that is not
   installed (`ADDON_TRC_DISABLED` in `data/events_addon_icon.xml`, drawn by `addon-icon.lua`); a tap shows its info event.
+- **Tutorials** on touch. Vanilla plays the iPad lessons (`BrowserTutorialDefinition`, IPAD order and lines): like the iOS
+  game it opens the engines box for IPAD_TOOLTIPS and the weapons box for COMBAT_1 and keeps them open (a finger elsewhere
+  does not close them), opens the weapons box for INVENTORY_1 and COMBAT_5, closes the boxes at DAMAGE_SYSTEM_1 and after
+  INVENTORY_2, and shows the hand only while a lesson waits for its action. Any text id `<name>` reads `<name>_TOUCH`
+  where the files have one (a mod's or our touch wording, for any touch layout), else `<name>_IPAD` (the original's own
+  iPad lines), unless the language translates `<name>` but not the touch line (`Translator.touchKey`). A script's pointers (`game/TouchPointers.kt`): a `Hyperspace.TutorialArrow` or
+  `GL_DrawRectOutline` drawn by Lua HUD drawing over a desktop HUD element the touch HUD knows (crew boxes, top buttons,
+  the player ship, the target box, the pieces above) is drawn at that element's touch place, an arrow's tip at most 10 px
+  from it, from the side where it covers least of the script's own text boxes; over anything else it keeps the fitted
+  desktop layout. Lua drawing with a `WindowFrame` (a script's text boxes) keeps the fitted desktop layout and takes
+  fingers only on what it drew. `Hyperspace.Mouse.position` and the Lua mouse events give the desktop point of what is
+  under the finger (a window's point where the desktop places it), so a script's hover and click areas work.
+  Mods whose lines name mouse or keys get our own wording as a merge layer over exactly the archive it was written for
+  (`mods/TouchPatches.kt`, `assets/touch-patches/`): Multiverse 5.5.1's tutorial, seven lines. Report and step tables:
+  `.build/hs/reports/touch-tutorial.md` (ignored).
 - Names are typed on the system keyboard, which sends single characters; the game slides up to keep the field in view
   (`TouchMode.keyboardFocusY`). A mouse's left button acts as a finger.
 
@@ -363,6 +391,11 @@ on yet.
   fixtures), `:engine:testDebugUnitTest`, `:app:testDebugUnitTest`.
 - Emulator: AVD on the android-36 x86_64 image; `adb` installs `app-debug.apk`.
 - Multi-touch: real fingers through the input stack on the emulator, [TESTS.md](TESTS.md#android-multi-touch-on-the-emulator).
+- Over capacity on touch: `node tools/android-touch/overcap.mjs --serial <serial> --out <dir> --name <shape> [--multiple]`
+  in flight on a new run (`--multiple` for Multiverse): the debug console's get fills augments, cargo and crew, the
+  receiver's `overcap` gives the open ship window's boxes (`overcappage` turns the equipment pager); checks one box at a
+  time, a tap on the pager's arrow, every crew member's box and dismiss button clear of the over-capacity box, and a
+  dismiss by taps with the confirmation on the screen; phone and tablet shapes through `wm size` ([TESTS.md](TESTS.md#over-capacity-boxes)).
 - Desktop HUD elements on touch: `TouchExtrasTest` (places, the event button restore and the storage crate an older save
   lost, the settled measure, the shelf's alignment, the probe's solid art) and, on the emulator,
   `node tools/android-touch/extras.mjs --serial <serial> --out <dir>` (one finger through `adb input`, no gRPC): in flight on
@@ -391,6 +424,13 @@ on yet.
   only the first finger; where it sits and what it shows; off by default and absent when off). On the emulator: debug
   builds log `FTL-Magnifier shown at ...` with the haptic's `FTL-Haptic` line; `adb shell input motionevent DOWN|MOVE|UP x y`
   holds a finger for screenshots.
+- Tutorial pointers: `TouchPointersTest` (an arrow's element, its place and side; an outline over one element or several;
+  the `_TOUCH` / `_IPAD` rule; the touch layers' archives) and, on the emulator in Multiverse's tutorial,
+  `node tools/android-touch/tutorial.mjs --serial <serial> --out <dir> [--fight]`: starts each lesson with pointers through
+  the debug console and checks every arrow's tip is within 10 px of its element's touch place and every outline on it
+  (`pointers` in `touchstate`: kind, desktop and canvas places, the element). `touchstate` also has `tutorial` (the vanilla
+  lesson, whether Continue shows), `crewOrder` and `crewHeld`. Crew reorder:
+  `node tools/android-touch/reorder.mjs --serial <serial> --out <dir>` on a Hyperspace run with three crew.
 - Power drag past eight levels: `TouchPowerDragTest` (the iPad's step up to eight; past eight the finger on the drawn bar,
   up and down, on every count to 20 with and without pairs).
 - Updates: `UpdateCheckTest` (versions: equal, newer, older, `v`, `2.0` against `2.0.0`, junk; once a day, failures

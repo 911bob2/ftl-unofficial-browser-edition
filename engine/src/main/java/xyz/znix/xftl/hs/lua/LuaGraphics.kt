@@ -286,12 +286,19 @@ object LuaGraphics {
             val g = HsLua.graphics ?: return@LuaMethod ret.bool(true)
             val x = arg.int(1).toFloat(); val y = arg.int(2).toFloat(); val w = arg.int(3).toFloat(); val h = arg.int(4).toFloat()
             val lw = arg.float(6)
-            beginQuads(g)
-            val prev = g.colour
-            g.colour = colour(fill, arg.obj(5) as? GlColorValue)
-            g.fillRect(x, y, w, lw); g.fillRect(x, y + h - lw, w, lw)
-            g.fillRect(x, y + lw, lw, h - 2 * lw); g.fillRect(x + w - lw, y + lw, lw, h - 2 * lw)
-            g.colour = prev
+            val c = colour(fill, arg.obj(5) as? GlColorValue)
+            fun outline(x: Float, y: Float, w: Float, h: Float) {
+                beginQuads(g)
+                val prev = g.colour
+                g.colour = c
+                g.fillRect(x, y, w, lw); g.fillRect(x, y + h - lw, w, lw)
+                g.fillRect(x, y + lw, lw, h - 2 * lw); g.fillRect(x + w - lw, y + lw, lw, h - 2 * lw)
+                g.colour = prev
+            }
+            // The touch layout draws a highlight over a HUD element around its touch place (TouchPointers).
+            if (xyz.znix.xftl.game.TouchPointers.active) flushQuads()
+            if (!xyz.znix.xftl.game.TouchPointers.rect(g, x, y, w, h) { tx, ty, tw, th -> outline(tx, ty, tw, th); flushQuads() })
+                outline(x, y, w, h)
             ret.bool(true)
         })
         // freetype printers: return the pen position after the text (x of the last line's end, y of its top)

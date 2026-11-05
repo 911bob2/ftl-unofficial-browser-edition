@@ -344,3 +344,12 @@ step, and on every change of lesson, with the original's (start, crew power, tog
 tile control, storage initial and main, fight start). The original's console does not open over a choice box, so the
 toggle and storage lessons are read by the change watcher only. Screenshots of each step go to `MVT_OUT` for comparison
 with the oracle's. Lessons after the first jump (fight, quest, map) are not compared yet.
+
+Two Hyperspace rules the later lessons need. `CustomEventsParser::LoadEvent` calls `WorldManager::UpdateLocation`, which
+sets CommandGui's one choice box: an event a script loads while a choice box is showing its event (from an
+`on_game_event` callback) goes into that box (`PlayerShipUI.hsHost`), so LOAD_ATLAS_MARKER's CLOBBER_ATLAS_MENU is
+replaced by the atlas menu as in the original, instead of opening a second box. `TutorialManager.bQuitTutorial` ends the
+tutorial: while it runs with the flag set, CommandGui's menu command is the main menu's and CApp::OnLoop leaves for it,
+stopping the tutorial (Windows 1.6.14); the last lesson's Continue sets it (`HsTutorial.quitTutorial`).
+
+On touch (Android) the lessons and their pointers follow the touch HUD: [ANDROID.md](ANDROID.md#touch-controls).

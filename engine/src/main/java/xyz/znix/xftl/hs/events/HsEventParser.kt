@@ -55,6 +55,15 @@ class HsEventParser(
     private val customReqs = HashMap<String, CustomReq>()
     private val customEventLoadLists = HashMap<String, EventLoadList>()
 
+    /** Every `<hiddenAug>` name the named events give (the console's pickers mark those augments). */
+    fun hiddenAugNames(): Set<String> {
+        val out = LinkedHashSet<String>()
+        for (e in customEvents.values) out += e.hiddenAugs
+        for (e in customRecursiveEvents.values) out += e.hiddenAugs
+        for (list in vCustomEvents.values) for (e in list) out += e.hiddenAugs
+        return out
+    }
+
     /** Named `<loadEventList>`s whose inline events are registered once the event pass starts. */
     private val pendingLoadLists = ArrayList<Pair<Element, EventLoadList>>()
 

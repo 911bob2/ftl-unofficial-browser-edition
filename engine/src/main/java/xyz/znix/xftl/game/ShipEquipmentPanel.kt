@@ -201,8 +201,35 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     /** The touch layout's store sell tab: the over-capacity items sit in its info column, without the boxes' texts. */
     private val touchSellTab: Boolean get() = sellUI && TouchMode.enabled
 
-    /** Where the over-capacity box goes: the touch layout has no room left of the window, so it uses the info column. */
+    /**
+     * Where the over-capacity box goes: the touch layout has no room left of the window, so it uses the info column below
+     * the info box, as the iPad game does (both boxes at (600, 320), under its info box at (600, -25); ours sits at our
+     * info box's place).
+     */
     private val overBoxPos: ConstPoint get() = if (TouchMode.enabled) ConstPoint(621, 330) else ConstPoint(-275 - 7, 100)
+
+    /**
+     * Touch layout: the over-capacity box shown while both are in use. The original and the iPad draw the item box and
+     * the augment box at one place, the augment box over the item box (Equipment::OnRender 0x53a9f0), so neither can be
+     * read; the touch layout shows one at a time with Hyperspace's over-capacity page arrows (the multipleOverCapacity
+     * pager), turning to the box that took an item last. 4 the item box, 5 the augment box.
+     */
+    private var touchOverSlot = ship.overCapacityLastSlot
+    private var touchOverAdds = ship.overCapacityAdds
+
+    /** Both over-capacity boxes are in use and the touch layout pages between them. */
+    private val touchOverPaged: Boolean get() = TouchMode.enabled && !touchSellTab && overCapacityShown(4) && overCapacityShown(5)
+
+    /** Whether the over-capacity box of [slot] (4 or 5) is drawn, with its item. */
+    private fun overBoxDrawn(slot: Int): Boolean = overCapacityShown(slot) && (!touchOverPaged || touchOverSlot == slot)
+
+    /** The touch pager's other box. */
+    fun touchTurnOverPage() {
+        if (!touchOverPaged) return
+        touchOverSlot = if (touchOverSlot == 4) 5 else 4
+        touchSelectedPos = null
+        updateButtons()
+    }
 
     private var draggingBlueprint: Buttons.DragDropBlueprintButton? = null
         set(value) {
@@ -342,6 +369,23 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     val diagnosticState: String get() = "{\"augPage\":$hsAugPage,\"augPages\":$hsAugPageCount,\"cargoPage\":$hsCargoPage,\"cargoPages\":$hsCargoPageCount," +
         "\"over\":${xyz.znix.xftl.hs.ship.HsEquipment.overCount(ship)},\"buttons\":${buttons.size}}"
 
+    /**
+     * Tests (ShipWindow.diagnosticOverCapacity): the over-capacity boxes drawn (kind, place relative to [origin], 272 x
+     * DropBox::GetHeight, the item box in it), how many are in use (the touch pager's pages) and the pager's arrows.
+     */
+    fun diagnosticOverCapacity(origin: IPoint): String {
+        fun r(x: Int, y: Int, w: Int, h: Int) = "{\"x\":${x - origin.x},\"y\":${y - origin.y},\"w\":$w,\"h\":$h}"
+        val boxes = overCapacityBoxes.joinToString(",") { box ->
+            val slot = if (box.augmentBox) 5 else 4
+            val item = cargoButtons.firstOrNull { cargoSlots[it] == slot }
+            "{\"kind\":\"${if (box.augmentBox) "augment" else "item"}\",\"x\":${box.pos.x - origin.x},\"y\":${box.pos.y - origin.y}," +
+                "\"w\":${box.size.x},\"h\":${box.size.y}" + (if (item != null) ",\"slot\":${r(item.pos.x, item.pos.y, item.size.x, item.size.y)}" else "") + "}"
+        }
+        val inUse = if (touchSellTab) 0 else if (xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)) minOf(1, overCapacityBoxes.size) else (4..5).count { overCapacityShown(it) }
+        val arrows = buttons.filterIsInstance<ArrowButton>().filter { it.overPager }.joinToString(",") { r(it.pos.x, it.pos.y, it.size.x, it.size.y) }
+        return "\"over\":[$boxes],\"overPages\":$inUse,\"overArrows\":[$arrows]"
+    }
+
     fun drawDrag(g: Graphics) {
         // Draw the dragged bit of equipment above everything else
         draggingBlueprint?.drawDrag(g)
@@ -350,6 +394,9 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     fun shipModified() {
         updateButtons()
     }
+
+    /** Tests: the boxes made again for the current layout (TouchMode.enabled). */
+    fun diagnosticRelayout() = updateButtons()
 
     private fun updateButtons() {
         buttons.clear()
@@ -435,9 +482,11 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         cargoSlots.clear()
         overCapacityBoxes.clear()
         if (!touchSellTab) {
-            if (overCapacityShown(4))
+            if (touchOverAdds != ship.overCapacityAdds) { touchOverAdds = ship.overCapacityAdds; touchOverSlot = ship.overCapacityLastSlot }
+            if (touchOverSlot !in 4..5 || !overCapacityShown(touchOverSlot)) touchOverSlot = if (overCapacityShown(5) && !overCapacityShown(4)) 5 else 4
+            if (overBoxDrawn(4))
                 overCapacityBoxes += OverCapacityBox("overcapacity_item_title", "overcapacity_item_text1", 100, "overcapacity_item_text2")
-            if (overCapacityShown(5))
+            if (overBoxDrawn(5))
                 overCapacityBoxes += OverCapacityBox("overcapacity_aug_title", "overcapacity_aug_text1", 65, "overcapacity_aug_text2")
             buttons += overCapacityBoxes
         }
@@ -455,7 +504,7 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         }
         cargoIds += listOf(4, 5)
         for (i in cargoIds) {
-            if (i in 4..5 && (if (touchSellTab) ship.cargoBlueprints.drop(4).all { it == null } else !overCapacityShown(i))) continue
+            if (i in 4..5 && (if (touchSellTab) ship.cargoBlueprints.drop(4).all { it == null } else !overBoxDrawn(i))) continue
             val blueprint = slotGet(i)
             val ordinal = if (i >= 100) i - 100 + 4 else i
 
@@ -557,9 +606,17 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
                 buttons += ArrowButton("img/upgradeUI/buttons_system_arrow", ConstPoint(271, 369), true) { hsCargoPage = (hsCargoPage + 1) % hsCargoPageCount; updateButtons() }
             }
             if (xyz.znix.xftl.hs.ship.HsEquipment.overCount(ship) > 1) {
-                buttons += ArrowButton("img/upgradeUI/Equipment/button_crew_arrow", ConstPoint(overBoxPos.x + 180, overBoxPos.y - 30), false) { xyz.znix.xftl.hs.ship.HsEquipment.turnOverPage(ship, false); updateButtons() }
-                buttons += ArrowButton("img/upgradeUI/Equipment/button_crew_arrow", ConstPoint(overBoxPos.x + 215, overBoxPos.y - 30), true) { xyz.znix.xftl.hs.ship.HsEquipment.turnOverPage(ship, true); updateButtons() }
+                buttons += ArrowButton("img/upgradeUI/Equipment/button_crew_arrow", ConstPoint(overBoxPos.x + 180, overBoxPos.y - 30), false, true) { xyz.znix.xftl.hs.ship.HsEquipment.turnOverPage(ship, false); updateButtons() }
+                buttons += ArrowButton("img/upgradeUI/Equipment/button_crew_arrow", ConstPoint(overBoxPos.x + 215, overBoxPos.y - 30), true, true) { xyz.znix.xftl.hs.ship.HsEquipment.turnOverPage(ship, true); updateButtons() }
             }
+        }
+        // The touch pager between the item and the augment box, right-aligned over the box like the multipleOverCapacity
+        // arrows. Hyperspace's arrow art is the original's customizeUI/button_arrow, pixel for pixel; touch uses that
+        // art's iPad version (img/ipad/customizeUI/button_arrow, 47 x 41), a finger's size.
+        if (touchOverPaged) {
+            val art = "img/ipad/customizeUI/button_arrow"
+            buttons += ArrowButton(art, ConstPoint(overBoxPos.x + 175, overBoxPos.y - 44), false, true) { touchTurnOverPage() }
+            buttons += ArrowButton(art, ConstPoint(overBoxPos.x + 225, overBoxPos.y - 44), true, true) { touchTurnOverPage() }
         }
 
         for (button in buttons) {
@@ -822,7 +879,7 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     private fun overCapacityShown(slot: Int) = ship.cargoBlueprints[slot] != null || ship.overCapacityBoxShown[slot - 4]
 
     /** A paging arrow (CustomEquipment's augment, cargo and over-capacity buttons): the `_on` image, `_select2` on hover. */
-    private inner class ArrowButton(private val base: String, pos: ConstPoint, private val mirrored: Boolean, private val action: () -> Unit) :
+    private inner class ArrowButton(private val base: String, pos: ConstPoint, private val mirrored: Boolean, val overPager: Boolean = false, private val action: () -> Unit) :
         Button(game, pos, ConstPoint(game.getImg("${base}_on.png").width, game.getImg("${base}_on.png").height)) {
         override val makesHoverNoise: Boolean get() = true
 
@@ -852,6 +909,9 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         Button(game, overBoxPos, ConstPoint(272, overCapacityHeight(titleKey, text1Key, gap, text2Key))) {
 
         override val makesHoverNoise: Boolean get() = false
+
+        /** The augment box (overAugImage), else the item box (overBox). */
+        val augmentBox = titleKey == "overcapacity_aug_title"
 
         private val title = game.translator[titleKey]
         private val text1 = game.translator[text1Key]
@@ -903,15 +963,24 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
 
     private fun textLines(text: String) = if (text.isEmpty()) 0 else text.count { it == '\n' } + 1
 
-    private fun overCapacityHeight(titleKey: String, text1Key: String, gap: Int, text2Key: String): Int {
-        val titleExtra = if ('\n' in game.translator[titleKey]) 24 else 0
-        val body = textLines(game.translator[text1Key]) * 24 + gap + textLines(game.translator[text2Key]) * 24 - 20
-        return 94 + titleExtra + body
-    }
+    private fun overCapacityHeight(titleKey: String, text1Key: String, gap: Int, text2Key: String): Int =
+        dropBoxHeight(game.translator, titleKey, text1Key, gap, text2Key)
 
-    private companion object {
+    companion object {
         /** How far a finger moves on a selected box before the item comes up with it. */
-        const val TOUCH_DRAG_DIST = 9
+        private const val TOUCH_DRAG_DIST = 9
+
+        private fun lines(text: String) = if (text.isEmpty()) 0 else text.count { it == '\n' } + 1
+
+        /**
+         * DropBox::GetHeight of a box with these texts (an empty key is no text): DropBox::CalcHeight (0x4e8270), 94 px
+         * with a one-line title, 24 more for a second title line, and the body, text1 + gap + text2 in 24 px lines - 20.
+         */
+        fun dropBoxHeight(translator: xyz.znix.xftl.Translator, titleKey: String, text1Key: String, gap: Int, text2Key: String): Int {
+            val titleExtra = if ('\n' in translator[titleKey]) 24 else 0
+            val body = lines(translator[text1Key]) * 24 + gap + (if (text2Key.isEmpty()) 0 else lines(translator[text2Key])) * 24 - 20
+            return 94 + titleExtra + body
+        }
     }
 
     class SellDropBox private constructor(

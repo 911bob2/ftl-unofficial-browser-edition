@@ -74,6 +74,10 @@ object HsShips {
     @JvmStatic
     fun def(name: String): CustomShipDefinition = defs[name] ?: defaultDef
 
+    /** Every `<customShip><hiddenAug>` name of the ship definitions (the console's pickers mark those augments). */
+    @JvmStatic
+    fun hiddenAugNames(): Set<String> = (defs.values + defaultDef).flatMap { it.hiddenAugs.keys }.toSet()
+
     @JvmStatic
     fun hasCustomDef(name: String): Boolean = defs.containsKey(name)
 

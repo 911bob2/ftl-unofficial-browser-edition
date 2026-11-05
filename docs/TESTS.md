@@ -307,12 +307,41 @@ suite and, with Multiverse, takes several GB, so it runs alone.
 [CONSOLE.md](CONSOLE.md). `ConsoleTest` (`android :app:testDebugUnitTest`): every command of both consoles is in the
 one list once, the clashes keep Hyperspace's command under the name (ours under `dev-`), names match in any case, the
 Hyperspace-only ones answer so in vanilla, the line edits as HS's TextInput (cursor keys, 480 characters, invertCaps),
-the gating rule, and the `>_` button's place arithmetic. `tests/console.mjs` in the image, vanilla and on a modded
+the gating rule, the `>_` button's place arithmetic; `get` and `unlock` (the only new commands, the only ones that
+glow), every command's group and examples, the reference generated into CONSOLE.md (rewrite it with
+`CONSOLE_DOCS_WRITE=1`), help's search, the names (English, underscores, ids for shared names, the current language,
+short names, words), where `*` is allowed and what it matches, and `get`/`unlock` without a name or with a wrong kind;
+round 2: no `get ship`, keys `<name>_<ID>` for shared names (each key one item, the shared name the one a store gives),
+the full-equipment refusals (`ConsoleCheats.refusal`: one item and one augment waiting at a time, crew over the limit,
+none under multipleOverCapacity), Escape and the unshifted `` ` ``/hotkey close the console, Shift+`` ` `` types `~`.
+`tests/console.mjs` in the image, vanilla and on a modded
 fixture (`sh $D/t.sh console-vanilla vanilla console.mjs`, `console-F3 F3 console.mjs`, in `hsq.sh`): the setting off
 (vanilla closed; Hyperspace `\` only, ``` ` ``` its speed key, `<console enabled="false"/>` closed), the Logs page's
 setting (Console button, both keys), typing with Left/Home/End, Up, `help`, then the Hyperspace and original commands
-run with their effects read back (`consoleProbe`) and the Hyperspace-only ones; screenshots in `/out`. The Android
+run with their effects read back (`consoleProbe`) and the Hyperspace-only ones; `get` and `unlock`: each picker's
+items against the names read straight from the run's blueprint files (`consoleItems`), the items by name through the old
+commands (each answers "Granted: ..." and where), a shared name (`Fire_Beam`, `Artemis`), the art sweep of every picker
+(vanilla: only ARTILLERY_FED, ARTILLERY_FED_C and CRYSTAL_1 lack art; shared names end in the id; Multiverse's hidden
+augments listed), the full equipment in a new run (a weapon and an augment past capacity wait in the over-capacity
+box with the equipment screen open, a second is refused in vanilla and kept under Multiverse's multipleOverCapacity,
+a crew member past the limit then a refused one), a wildcard unlock, every picker on screen (a click gets one, the wheel scrolls, typing searches), the
+suggestions' scroll, help's reference, and all of it after Save and close and Continue with the unlocked layout in the
+hangar's list; screenshots in `/out`. The Android
 switch and button on the emulator: `.build/hs/reports/console-android/` (one finger through `adb input`).
+
+## Over-capacity boxes
+
+`tests/overcap.mjs` (runner jobs `hs-overcap-vanilla`, `hs-overcap-F2`, `hs-overcap-F3`; `sh $D/t.sh overcap-F2 F2
+overcap.mjs`): a new run, the debug console's get past three augments, past full cargo (both boxes in use) and past the
+crew limit, with screenshots of each. `BrowserEngine.overcapProbe(touch, action)` lays the open ship window out for the
+mouse or the touch layout and gives its boxes (`ShipWindow.diagnosticOverCapacity`). Mouse layout: the item and augment
+boxes at the original's place (Equipment::SetPosition, (-275, 100), both at once as the original draws them; one under
+Multiverse's multipleOverCapacity), the crew DropBox at CrewManifest's (-275, 100), Hyperspace's extra crew box at x 146
+right below it (CustomCrewManifest::OnInit; oracle session `overcap.json` `oc-hs`). Touch layout: one box at a time, the
+pager's two arrows and its other page, every box on the 1024 x 768 HUD block and clear of the window and Accept. Both: a
+box and a dismiss button for every crew member, none under the over-capacity box, the touch layout's dismiss
+confirmation on the screen, and the extra one dismissed with its button and Yes. On the emulator:
+`tools/android-touch/overcap.mjs` ([ANDROID.md](ANDROID.md#testing)); round 21's runs and frames: `.build/hs/reports/overcap.md`.
 
 ## Android update check
 
@@ -356,7 +385,10 @@ spawned enemy. The debug-only `TouchProbe` answers with the game's state, and `<
 cases, cancels, rotation, border fingers, doors and hold tooltips take about 8 minutes. Keep the screen in its default fit.
 `getevent -lt /dev/input/event2` on the device shows the raw events. The touch HUD's desktop elements (TouchExtras) have
 their own one-finger script, `tools/android-touch/extras.mjs` ([ANDROID.md](ANDROID.md#testing)): places, taps, the
-Multiverse storage crate's rule, the shelf's alignment and frame-to-frame stability. `TouchRouterTest` (`:app:testDebugUnitTest`) is the
+Multiverse storage crate's rule, the shelf's alignment and frame-to-frame stability. `tools/android-touch/tutorial.mjs`
+checks a Lua tutorial's arrows and outlines on the touch HUD (Multiverse's lessons, [ANDROID.md](ANDROID.md#testing)),
+and `tools/android-touch/reorder.mjs` the touch crew reorder (a held box slid to another place; a tap, a hold lifted in
+place and a quick slide still select or paint as before). `TouchRouterTest` (`:app:testDebugUnitTest`) is the
 quick check of finger routing, at the engine's call only.
 
 ## Packaged integration runner

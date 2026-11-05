@@ -34,7 +34,7 @@ object TouchRouter {
     }
 
     fun touch(game: MainGame, action: Int, id: Int, x: Int, y: Int, time: Long, mouse: Mouse) =
-        route((game.currentState as? InGameState)?.shipUI?.touch, action, id, x, y, time, mouse)
+        route((game.currentState as? InGameState)?.let { if (it.isDebugConsoleVisible) null else it.shipUI?.touch }, action, id, x, y, time, mouse)
 
     /** [touch] once it knows what is on screen. */
     fun route(hud: Hud?, action: Int, id: Int, x: Int, y: Int, time: Long, mouse: Mouse) {

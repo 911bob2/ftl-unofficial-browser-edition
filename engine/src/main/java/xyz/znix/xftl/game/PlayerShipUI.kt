@@ -117,12 +117,18 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     internal val touchArmedIsBeam: Boolean get() = beamTargeting != null ||
         targetingSelectedWeapon?.let { ship.hardpoints.getOrNull(it)?.weapon is BeamBlueprint.BeamInstance } == true
     internal val isEventOpen: Boolean get() = currentWindow is DialogueWindow
+
+    /** The window on top: the pause menu, else the open window. */
+    val touchTopWindow: Window? get() = pauseWindow ?: currentWindow
     internal val touchEnginesWarningRed: Boolean get() = ftlButtonRed
     internal val touchHullWarningRed: Boolean get() = hullWarning25.isFlashingHigh || hullWarning50.isFlashingHigh || hullWarning75.isFlashingHigh
     internal val touchScrapRed: Boolean get() = insufficientScrapTimer != 0f && (insufficientScrapTimer / INSUFFICIENT_SCRAP_FLASH_TIME).toInt() % 2 == 0
 
     internal fun touchClearPowerButtons() = hsPowerButtons.clear()
     internal fun touchDrawCrewBox(g: Graphics, crew: LivingCrew, x: Int, y: Int) = drawCrewBox(g, crew, x, y)
+
+    /** Hyperspace's crew list reorder from the touch layout: [crew] takes the place of the [index]th visible box. */
+    internal fun touchCrewMoveToSpot(crew: LivingCrew, index: Int): Boolean = hsCrewMoveToSpot(crew, index)
     internal fun touchChangePower(system: MainSystem, up: Boolean) = changeSystemPower(system, up)
     internal val touchArmedSlot: Int? get() = targetingSelectedWeapon?.takeIf { game.clickEvent === selectWeaponClickEvent || beamTargeting != null }
     internal val touchArmedBeam: Boolean get() = beamTargeting != null ||
@@ -757,6 +763,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
      * The buttons of the desktop HUD the touch layout has no control of its own for (TouchExtras): Hyperspace's event
      * buttons, the crew list's page arrows, anything a later feature adds to the top bar.
      */
+    /** The desktop HUD's jump, ship, store and options buttons (null where there is none), for the touch layout's pointers. */
+    internal val touchDesktopButtons: List<Button?> get() = listOf(jumpButtonRef, shipButtonRef, storeButtonRef, settingsButtonRef)
+
     internal val touchForeignButtons: List<Button>
         get() = buttons.filter { it !== jumpButtonRef && it !== shipButtonRef && it !== storeButtonRef && it !== settingsButtonRef }
 
@@ -833,6 +842,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     val diagnosticWindow: String get() = if ((pauseWindow as? PauseWindow)?.helpOpen == true) "ControlsHelp"
         else diagnosticActiveWindow?.javaClass?.simpleName ?: "game"
     val diagnosticPauseWindow: Window? get() = pauseWindow
+    val diagnosticOpenShipWindow: ShipWindow? get() = currentWindow as? ShipWindow
     val diagnosticWindowBounds: String get() = diagnosticActiveWindow?.let {
         "{\"x\":${it.position.x},\"y\":${it.position.y},\"width\":${it.size.x},\"height\":${it.size.y},\"scale\":${it.renderScale}}"
     } ?: "null"
@@ -1577,17 +1587,40 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         val visible = hsVisibleCrew()
         if (visible.isEmpty() || game.input?.isMouseButtonDown(Input.MOUSE_RIGHT_BUTTON) != true) { hsCrewDragging = null; return }
         // (mY - 155) / 30 truncates towards zero, then clamps to the boxes
-        val index = ((mouseY - crewBaseY) / CREW_BOX_SPACING).coerceIn(0, visible.size - 1)
-        val target = visible[index]
-        if (target === dragging) return
+        hsCrewMoveToSpot(dragging, (mouseY - crewBaseY) / CREW_BOX_SPACING)
+    }
+
+    /** [dragging] takes the place of the visible box [index] (clamped to the boxes); false when it is there already. */
+    private fun hsCrewMoveToSpot(dragging: LivingCrew, index: Int): Boolean {
+        val visible = hsVisibleCrew()
+        if (visible.isEmpty()) return false
+        val target = visible[index.coerceIn(0, visible.size - 1)]
+        if (target === dragging) return false
         val all = ArrayList(hsBoxCrew())
         val from = all.indexOf(dragging)
         val to = all.indexOf(target)
-        if (from < 0 || to < 0) return
+        if (from < 0 || to < 0) return false
         all.removeAt(from)
         all.add(to, dragging)
         hsCrewOrder.clear()
         hsCrewOrder.addAll(all)
+        return true
+    }
+
+    /**
+     * The order the save writes [ship]'s crew in. Native writes them in CrewMemberFactory order, so a right-drag reorder
+     * survives Save and Quit or Main Menu, then Continue (oracle sessions ro-main, ro-sq, ro-sq2: the save's crew records
+     * and the reloaded list follow the dragged order). The reordered crew take the places the ship's list holds them in,
+     * in [hsCrewOrder]'s order; the other crew and drones keep theirs.
+     */
+    fun hsSaveCrewOrder(ship: Ship): List<AbstractCrew> {
+        val crew = ship.crew
+        if (!xyz.znix.xftl.hs.HS.active || ship !== this.ship || hsCrewOrder.isEmpty()) return crew
+        val listed = crew.toSet()
+        val ordered = hsCrewOrder.filter { it in listed }
+        val moved = ordered.toSet()
+        val next = ordered.iterator()
+        return crew.map { if (it in moved) next.next() else it }
     }
 
     private fun hsCrewPageButtons() {
@@ -3685,9 +3718,17 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     /** Diagnostics: the HS name of the open choice box event. */
     fun hsOpenEventName(): String? = (currentWindow as? DialogueWindow)?.hsOpenEvent
 
-    /** Hyperspace: events HS loads with no window open show in a new one (UpdateLocation). */
+    /**
+     * Hyperspace: events HS loads with no window open show in a new one (UpdateLocation). One a script loads while a
+     * choice box is showing its event (CustomEventsParser::LoadEvent from an on_game_event callback) goes into that box,
+     * as WorldManager::UpdateLocation replaces the one choice box's event: the event shown after the callbacks then
+     * replaces it in turn (Multiverse's tutorial: CLOBBER_ATLAS_MENU from LOAD_ATLAS_MARKER's callback, then ATLAS_MENU).
+     */
     val hsHost = object : xyz.znix.xftl.hs.events.HsFlow.Host {
-        override fun hsUpdateLocation(event: xyz.znix.xftl.sector.CreatedEvent) = showEventDialogue(event)
+        override fun hsUpdateLocation(event: xyz.znix.xftl.sector.CreatedEvent) {
+            val open = currentWindow as? DialogueWindow
+            if (open != null && open.hsShowing) open.hsUpdateLocation(event) else showEventDialogue(event)
+        }
     }
 
     /** Hyperspace: arrival at a beacon whose event is cleared (CreateLocation's revisit path). */

@@ -1,0 +1,11 @@
+<FTL>
+<!-- Our own touch wording for the Multiverse 5.5.1 tutorial lines that name mouse or keyboard controls (the engine reads
+     <name>_TOUCH in place of <name> in the touch layout). Applied on Android over the Multiverse Data 5.5.1 archive only. -->
+<text name="tutorial_crew_power_TOUCH">Multiverse gives many crew members powers of their own, for boarding and for running your ship.\n\nTAP a crew member's box in the list: the panel beside it holds their power button. TAP the button to use the power.</text>
+<text name="tutorial_toggle_1_TOUCH">Some weapons and drones have a toggle tag: a [TYPE] at the end of their name. In combat they can be switched between their states in the toggle menu.\n\nTAP this button to open the toggle menu.</text>
+<text name="tutorial_toggle_2_TOUCH">This is the toggle menu. Here you can:\n\nSet shipboard drones to run on their own or under your control.\n\nChoose a version of the speed control, which can speed up the game.\n\nTurn instant cloning and healing at the end of a fight on or off.\n\nSwitch your weapons and drones between their states.\n\nClose this menu to go on with the tutorial.</text>
+<text name="tutorial_info_button_TOUCH">Hyperspace can show more about crew and weapons when you hold your finger on them. TAP the information button to turn this on or off.</text>
+<text name="tutorial_crew_order_TOUCH">This is your crew list. You can change its order: HOLD your finger on a crew member until their box lifts, then SLIDE it up or down the list.</text>
+<text name="tutorial_storage_initial_TOUCH">Multiverse adds a second upgrade menu: the storage menu.\n\nTAP this button to open it.</text>
+<text name="tutorial_fight_icon_TOUCH">Enemy ships often have special properties that can decide how a fight goes.\n\nHOLD your finger on the icons in the target box to read them.\n\nNow take care of this pirate.</text>
+</FTL>
