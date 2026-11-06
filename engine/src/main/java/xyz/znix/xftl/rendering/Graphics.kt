@@ -278,6 +278,75 @@ class Graphics {
         lineRenderer.flush()
     }
 
+    // ---- clipping: a scissor rectangle, so a scrolled panel cuts what crosses its edges (the debug console's pickers)
+
+    private val clipStack = ArrayList<ClipRect>()
+    private val clipPoint = FloatArray(2)
+
+    /** The clips pushed now (for the checks). */
+    val clipDepth: Int get() = clipStack.size
+
+    /** The framebuffer rectangle draws are limited to now, or null when nothing is clipped. */
+    val currentClip: ClipRect? get() = clipStack.lastOrNull()
+
+    /**
+     * Limits what is drawn from now on to the rectangle [x], [y], [width] x [height] of the current coordinates (the
+     * transform's translation and scale apply; a rotation takes its bounding box), within any clip already pushed. Every
+     * draw before it keeps its own clip. Undo with [popClip].
+     */
+    fun pushClip(x: Float, y: Float, width: Float, height: Float) {
+        map(x, y, clipPoint)
+        val x0 = clipPoint[0]; val y0 = clipPoint[1]
+        map(x + width, y + height, clipPoint)
+        val x1 = clipPoint[0]; val y1 = clipPoint[1]
+        map(x + width, y, clipPoint)
+        val x2 = clipPoint[0]; val y2 = clipPoint[1]
+        map(x, y + height, clipPoint)
+        val x3 = clipPoint[0]; val y3 = clipPoint[1]
+        val screen = ShaderProgramme.SHADER_SCREEN_SIZE
+        val sw = maxOf(1, screen.x)
+        val sh = maxOf(1, screen.y)
+        val vpW = if (GL11.viewportW > 0) GL11.viewportW else sw
+        val vpH = if (GL11.viewportH > 0) GL11.viewportH else sh
+        val vpX = if (GL11.viewportW > 0) GL11.viewportX else 0
+        val vpY = if (GL11.viewportH > 0) GL11.viewportY else 0
+        var rect = ClipRect.fromScreen(
+            minOf(minOf(x0, x1), minOf(x2, x3)), minOf(minOf(y0, y1), minOf(y2, y3)),
+            maxOf(maxOf(x0, x1), maxOf(x2, x3)), maxOf(maxOf(y0, y1), maxOf(y2, y3)),
+            sw, sh, vpX, vpY, vpW, vpH
+        )
+        clipStack.lastOrNull()?.let { rect = rect.intersect(it) }
+        clipStack.add(rect)
+        applyClip()
+    }
+
+    fun pushClip(x: Int, y: Int, width: Int, height: Int) = pushClip(x.f, y.f, width.f, height.f)
+
+    /** Back to the clip before the last [pushClip] (none: everything is drawn again). */
+    fun popClip() {
+        check(clipStack.isNotEmpty()) { "popClip without pushClip" }
+        clipStack.removeAt(clipStack.size - 1)
+        applyClip()
+    }
+
+    /** Runs [fn] clipped to the rectangle. */
+    inline fun clipped(x: Int, y: Int, width: Int, height: Int, fn: () -> Unit) {
+        pushClip(x, y, width, height)
+        try { fn() } finally { popClip() }
+    }
+
+    private fun applyClip() {
+        // what is queued was drawn under the clip before (the GL wrappers draw the held draws before a state change)
+        flushAll()
+        val r = clipStack.lastOrNull()
+        if (r == null) {
+            GL11.glDisable(GL11.GL_SCISSOR_TEST)
+        } else {
+            GL11.glScissor(r.x, r.y, r.w, r.h)
+            GL11.glEnable(GL11.GL_SCISSOR_TEST)
+        }
+    }
+
     fun pushTransform() {
         transformStack.add(Matrix3f(transform))
     }
@@ -349,6 +418,8 @@ class Graphics {
     }
 
     fun clear(colour: Colour) {
+        // a clip left over (an aborted frame) would also limit the clear
+        if (clipStack.isNotEmpty()) { clipStack.clear(); applyClip() }
         GL11.glClearColor(colour.r, colour.g, colour.b, colour.a)
         // the stencil buffer too (FTL starts each frame with an empty one), so a mask a Lua script left behind does not leak
         GL11.glStencilMask(0xff)
@@ -371,6 +442,7 @@ class Graphics {
      * this every subsequent frame fails checkNoPushedTransforms.
      */
     fun recoverFromAbortedRender() {
+        if (clipStack.isNotEmpty()) { clipStack.clear(); applyClip() }
         transformStack.clear()
         loadIdentityMatrix()
     }

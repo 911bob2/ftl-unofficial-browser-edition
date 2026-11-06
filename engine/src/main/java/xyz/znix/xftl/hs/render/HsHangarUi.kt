@@ -384,9 +384,22 @@ class HsHangarUi(private val state: SelectShipState, private val font: (Int) -> 
         return false
     }
 
-    private fun arrowHover(x: Int, y: Int, name: String): Boolean {
+    private fun arrowHover(x: Int, y: Int, name: String): Boolean = arrowAt(x, y, name, mouse.x, mouse.y)
+
+    private fun arrowAt(x: Int, y: Int, name: String, px: Int, py: Int): Boolean {
         val img = state.getImgOrNull("img/statusUI/button_crew_${name}_on.png") ?: return false
-        return mouse.x >= x && mouse.x < x + img.width && mouse.y >= y && mouse.y < y + img.height
+        return px >= x && px < x + img.width && py >= y && py < y + img.height
+    }
+
+    /** What a finger taps (TouchRouter): the trophy toggle, an augment pager arrow; else null. */
+    fun liftTarget(x: Int, y: Int): Any? {
+        val ax = x - HangarLayout.achievementDx; val ay = y - HangarLayout.achievementDy
+        if (cfg.shipAchievementsToggle && ax > 244 && ax < 276 && ay > 438 && ay < 470) return "hs-trophy"
+        if (maxAugPage > 0 && !state.isShipListVisible) {
+            if (arrowAt(1238 + pagerDx, 575 + pagerDy, "up", x, y)) return "hs-aug-up"
+            if (arrowAt(1238 + pagerDx, 629 + pagerDy, "down", x, y)) return "hs-aug-down"
+        }
+        return null
     }
 
     // ---------------------------------------------------------------- equipment

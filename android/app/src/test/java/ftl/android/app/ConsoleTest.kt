@@ -10,15 +10,19 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import xyz.znix.xftl.devutil.Area
+import xyz.znix.xftl.devutil.CommandCompleter
 import xyz.znix.xftl.devutil.ConsoleCheats
 import xyz.znix.xftl.devutil.ConsoleGate
 import xyz.znix.xftl.devutil.ConsoleItems
 import xyz.znix.xftl.devutil.ConsoleReference
 import xyz.znix.xftl.devutil.ConsoleRegistry
+import xyz.znix.xftl.devutil.ConsoleScroller
 import xyz.znix.xftl.devutil.DebugConsole
 import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.hs.HS
 import xyz.znix.xftl.hs.HsConfig
+import xyz.znix.xftl.rendering.ClipRect
 import xyz.znix.xftl.sys.Input
 
 /**
@@ -411,5 +415,144 @@ class ConsoleTest {
         val (x, y) = ConsoleButton.position(fx, fy, 1280, 720, size)
         assertTrue(x in 0..1280 - size && y in 0..720 - size)
         assertEquals(Pair(1280 - size, 720 - size), ConsoleButton.position(7f, 7f, 1280, 720, size))
+    }
+
+    // ---- the look and the feel (docs/CONSOLE.md "Scrolling", "Keys"): pixel scrolling, flings, the clip
+
+    private fun frames(s: ConsoleScroller, n: Int, dt: Float = 1f / 60): List<Float> = (0 until n).map { s.update(dt); s.pos }
+
+    @Test
+    fun theWheelGlidesByPixelsAndStopsAtTheEnds() {
+        val s = ConsoleScroller()
+        s.setExtent(1000, 300)
+        assertEquals(700f, s.max)
+        s.wheel(96f)
+        val glide = frames(s, 40)
+        assertEquals("a notch ends exactly 96 pixels down", 96f, s.pos)
+        val steps = glide.zipWithNext { a, b -> b - a }
+        assertTrue("never back, never past", steps.all { it >= 0f } && glide.all { it <= 96f })
+        assertTrue("a glide over several frames, not a jump: $steps", steps.first() < 96f * 0.4f && glide.count { it < 96f } >= 4)
+        // a trackpad's small steps add up to their sum
+        repeat(10) { s.wheel(3f); s.update(1f / 120) }
+        frames(s, 30)
+        assertEquals(126f, s.pos)
+        // far past the end: it stops there and stays still
+        s.wheel(5000f)
+        val end = frames(s, 60)
+        assertEquals(700f, s.pos)
+        assertTrue(end.all { it <= 700f })
+        assertEquals(listOf(700f, 700f, 700f), frames(s, 3))
+        s.wheel(-5000f); frames(s, 60)
+        assertEquals(0f, s.pos)
+    }
+
+    @Test
+    fun aDragFollowsTheFingerAndFlingsOnEasedToAStop() {
+        val s = ConsoleScroller()
+        s.setExtent(5000, 400)
+        s.press()
+        // a steady upward drag: 12 pixels a frame at 60 frames a second, 720 pixels a second
+        repeat(10) { s.drag(-12f); s.update(1f / 60) }
+        assertEquals("the content went with the finger", 120f, s.pos)
+        s.release()
+        assertTrue("the fling has the drag's speed: ${s.velocity}", s.velocity in 650f..790f)
+        val fling = frames(s, 240)
+        val steps = fling.zipWithNext { a, b -> b - a }
+        assertTrue("it slows evenly: each step a little smaller", steps.zipWithNext { a, b -> b <= a + 0.001f }.all { it })
+        assertTrue("and stops", s.velocity == 0f && !s.moving)
+        // v / FRICTION pixels on, less what the stop takes off
+        assertTrue("about 180 pixels on: ${s.pos - 120f}", s.pos - 120f in 160f..185f)
+        val rest = frames(s, 5)
+        assertTrue("then stays", rest.all { it == s.pos })
+    }
+
+    @Test
+    fun aFlingStopsDeadAtTheEndWithNoJitter() {
+        val s = ConsoleScroller()
+        s.setExtent(1000, 400)
+        s.jumpTo(540f)
+        s.press()
+        repeat(5) { s.drag(-12f); s.update(1f / 60) }
+        assertEquals(600f, s.pos)
+        s.release()
+        assertEquals("no overshoot to spring back from", listOf(600f, 600f, 600f, 600f), frames(s, 4))
+        assertEquals(0f, s.velocity)
+        // a drag past the top stops there too
+        s.press(); s.drag(2000f); s.update(1f / 60)
+        assertEquals(0f, s.pos)
+        s.release()
+        assertEquals(listOf(0f, 0f), frames(s, 2))
+    }
+
+    @Test
+    fun aPressStopsTheListWhereItWasDrawnAndHeldStillMeansNoFling() {
+        val s = ConsoleScroller()
+        s.setExtent(5000, 400)
+        s.press()
+        repeat(10) { s.drag(-20f); s.update(1f / 60) }
+        s.release()
+        frames(s, 10)
+        val drawnAt = s.pos
+        assertTrue(s.moving)
+        // a tap while it moves: it stops at once where the last frame drew it, so the tap lands on what it hit
+        s.press()
+        assertEquals(drawnAt, s.pos)
+        assertEquals(listOf(drawnAt, drawnAt), frames(s, 2))
+        s.release()
+        assertEquals("a tap is not a fling", 0f, s.velocity)
+        // a drag held still before it is let go does not fling either
+        s.press()
+        repeat(10) { s.drag(-12f); s.update(1f / 60) }
+        frames(s, 8)
+        s.release()
+        assertEquals(0f, s.velocity)
+        // a step with no time (the hosts run one after each input event) moves nothing
+        s.wheel(100f)
+        val p = s.pos
+        s.update(0f)
+        assertEquals(p, s.pos)
+    }
+
+    @Test
+    fun theClipMapsGameUnitsToFramebufferPixelsAndNests() {
+        // the Android frame at two pixels a unit: 1280x720 units on a 2560x1440 framebuffer, rows from the bottom
+        val r = ClipRect.fromScreen(100f, 50f, 300f, 150f, 1280, 720, 0, 0, 2560, 1440)
+        assertEquals(ClipRect(200, 1140, 400, 200), r)
+        // the website: one pixel a unit
+        assertEquals(ClipRect(18, 720 - 700, 1244, 572), ClipRect.fromScreen(18f, 128f, 1262f, 700f, 1280, 720, 0, 0, 1280, 720))
+        // a clip inside another is what both cover; one beside it covers nothing
+        val inner = ClipRect.fromScreen(250f, 100f, 400f, 300f, 1280, 720, 0, 0, 2560, 1440)
+        assertEquals(ClipRect(500, 1140, 100, 100), r.intersect(inner))
+        assertEquals(0, r.intersect(ClipRect(0, 0, 10, 10)).w)
+        // console areas: the same rules for hits
+        assertEquals(Area(10, 20, 5, 5), Area(0, 0, 15, 25).intersect(Area(10, 20, 100, 100)))
+        assertTrue(Area(0, 0, 10, 10).intersect(Area(20, 20, 5, 5)).empty)
+    }
+
+    @Test
+    fun theKeysMoveASelectionThroughTheSuggestions() {
+        val c = console()
+        val list = CommandCompleter(c)
+        list.update("s", 0)
+        assertFalse(list.hasSelection)
+        assertNull("Up with nothing selected is the history's", list.navigate(Input.KEY_UP))
+        assertNull("Left too: it moves the cursor", list.navigate(Input.KEY_LEFT))
+        assertNotNull(list.navigate(Input.KEY_DOWN))
+        val first = list.entries[0].name
+        assertTrue(list.hasSelection)
+        list.navigate(Input.KEY_DOWN)
+        list.navigate(Input.KEY_UP)
+        assertTrue(list.activate())
+        assertEquals("Enter takes the selection as a click does", "$first ", c.input)
+        list.update("s", 0)
+        list.navigate(Input.KEY_UP)
+        assertTrue("Up from the top drops the selection", !list.hasSelection)
+        list.navigate(Input.KEY_DOWN)
+        assertTrue(list.clearSelection())
+        assertFalse("Escape dropped it", list.hasSelection)
+        // a new search drops it too
+        list.navigate(Input.KEY_DOWN)
+        list.update("he", 0)
+        assertFalse(list.hasSelection)
     }
 }

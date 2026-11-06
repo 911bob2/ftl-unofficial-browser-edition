@@ -55,6 +55,20 @@ object BrowserHsWp5CrewDiagnostics {
                     main.render(container, BrowserEngine.diagnosticGraphics())
                     rows += "shot|" + name + "|" + BrowserCanvasShot.png()
                 }
+                // The oracle's movetrace onto a crew member of the player's ship: `movecrew="ally<i>"` or "enemy<i>" (the
+                // i-th of that owner in the crew list, boarders being the enemy's), the mouse to the centre of its square.
+                phase.getAttributeValue("movecrew")?.let { who ->
+                    val st = main.currentState as InGameState
+                    main.render(container, BrowserEngine.diagnosticGraphics())
+                    val owner = if (who.startsWith("ally")) 0 else 1
+                    val crew = st.player.crew.filter { xyz.znix.xftl.hs.crew.HsCrew.shipId(it) == owner }
+                        .getOrNull(who.dropWhile { !it.isDigit() }.toInt()) ?: error("no crew member $who")
+                    val c = crew.getPixelPositionCentre()
+                    val at = st.playerShipRenderToScreen(c.x, c.y)
+                    rows += "movecrew|$who|${at.x},${at.y}"
+                    BrowserEngine.mouse(at.x, at.y, 0, 0)
+                    main.update(container, 0f)
+                }
                 // The oracle's move step: the mouse moves there without a press.
                 phase.getAttributeValue("move")?.let { at ->
                     val (x, y) = at.split(',').map { it.trim().toInt() }

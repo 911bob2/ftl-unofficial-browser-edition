@@ -34,14 +34,41 @@ A device setting, **off by default**: the website's Logs page, "Enable debug con
 
 ## The window
 
-**Desktop (website):** a grey half screen, the output above one input line, Up and Down through the history, Tab
-completes names and arguments. The suggestions, a picker or the reference fill the lower half; the wheel scrolls them
-(and the output, over the upper half), a click picks. **Android (touch):** the whole screen, a little transparent
-(`DebugConsole.renderTouch`): at the top the input line (tap it for the keyboard) and the buttons Clear, Tab, Run, Help,
-Keys (keyboard on and off) and Close; under them the recent commands to tap and the last output line; the rest, down to
-the on-screen keyboard (the host reports where it begins, `TouchMode.keyboardTop`), holds the suggestions as rows to tap,
-a picker, the reference or the output, each scrolled with a drag. The text is three times the desktop's. While the
-console is open every finger goes to it, not to the touch HUD (`TouchRouter`).
+**Desktop (website):** a dark band over the top of the screen, the output above one input line, Up and Down through the
+history, Tab completes names and arguments. The suggestions open in a window over the lower half. A picker or the
+reference takes most of the screen: the band shrinks to a few lines of output and the line (`DESKTOP_BIG_TOP`), and the
+window fills the rest, so the weapon picker shows three and more rows at 1280x720 (a larger browser window shows the
+same 1280x720 layout larger). **Android (touch):** the whole screen, a little transparent (`DebugConsole.renderTouch`):
+at the top the input line (tap it for the keyboard) and the buttons Clear, Tab, Run, Help, Keys (keyboard on and off)
+and Close; under them the recent commands to tap and the last output line; the rest, down to the on-screen keyboard
+(the host reports where it begins, `TouchMode.keyboardTop`), holds the suggestions as rows to tap, a picker, the
+reference or the output. The text is three times the desktop's. While the console is open every finger goes to it, not
+to the touch HUD (`TouchRouter`).
+
+**The look** is the game's own (`ConsoleUi`): a panel sits in the window frame the game's windows use (window_base) with
+the map's title tab (HL2) naming it (WEAPONS, HELP); buttons are the native TextButton (light, yellow under the
+pointer, a deeper yellow while pressed or switched on); rows and chips the sector cutout's blue; the keys' selection the
+crew box's selected green; the rainbow glow stays on `get` and `unlock`. In a panel the header (title, counts, the
+search, the ship picker's type tabs and Unlock every ship) and the footer stay put while the content scrolls between
+them. A picker's tiles keep the game's size and spacing and are centred in the window; a long key is cut with "..." on
+its tile and shown whole in the footer for the tile under the pointer (desktop) or the one tapped or selected last.
+
+**Scrolling** (`ConsoleScroller`) is by pixels, never by rows, and every panel cuts what crosses its edges
+(`Graphics.pushClip`, a scissor rectangle in the WebGL and the Android renderer; nested clips intersect), so a tile or
+an entry half in view is drawn half. The wheel glides to where it points (a trackpad's small steps follow at once; the
+website passes the wheel event's own distance, `BrowserEngine.wheel`, else a notch is 96 pixels); a drag moves the
+content with the finger or the mouse; a finger let go while moving flings on and slows evenly to a stop; both ends stop
+dead (no overshoot, nothing jitters). The scroll bar shows when the content is taller than the view; on the desktop its
+thumb drags and a click on its track pages. A press stops whatever moves where the last frame drew it, so a tap lands
+on what it hit, also while the list is still moving; a press that moves past a few pixels is a drag and taps nothing.
+The output and the recent commands scroll the same way. The scroll advances once a frame with the frame's time, at the
+display's rate.
+
+**Keys** in a picker, the reference or the suggestions: Down selects the first entry in view and moves on, Up moves back
+(from the top row it drops the selection; with nothing selected Up is the history), Left and Right move along a
+picker's row while something is selected, Enter takes the selection as a click does (a picker gets it and stays open;
+the reference fills the command in), Page Up and Page Down scroll a page, typing still searches. Escape drops a
+selection first; the next Escape closes the console.
 
 The line edits as HS's TextInput does: Left, Right, Home, End, Backspace, Delete (the character after the cursor; at the
 end of the line Delete clears it), at most 480 characters, and a mod's `<console invertCaps="true"/>` (Hyperspace.ftl's

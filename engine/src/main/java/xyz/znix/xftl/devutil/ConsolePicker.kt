@@ -99,60 +99,148 @@ class ItemPicker(console: DebugConsole, owner: ArgumentTypeProcessor, val comman
 
     override val contentKey: Any? get() = Pair(lastToken, layoutTab)
 
+    override val big: Boolean get() = true
+
+    override fun title(): String = kind.title.uppercase()
+
     /** Runs the command for [item] and keeps the picker open for the next one. */
     private fun pick(item: Item) {
+        select(item)
         val prior = priorCommandText
         console.runKeeping("$prior${item.key}", prior)
         all = ConsoleItems.items(game, kind)
         invalidate()
     }
 
+    /** Enter on the selection gets it, as a click does (Tab still fills the best name in). */
+    override fun activate(): Boolean {
+        val item = navItems.getOrNull(selectedIndex) ?: return false
+        pick(item)
+        return true
+    }
+
     private val shown: List<Item> get() =
         if (kind == Kind.UNLOCK_SHIP) entries.filter { layoutTab < 0 || it.layout == layoutTab } else entries
 
-    override fun draw(g: Graphics, ui: ConsoleUi, area: Area, scroll: Int): Int {
-        var top = area.y
-        // the header: what this is, the layout tabs of the ship pickers, Unlock every ship
-        val headerH = if (ui.touch) 52 else 20
+    override val navItems: List<Item> get() = shown
+
+    /** The item under the pointer this frame (the footer names it in full). */
+    private var hovered: Item? = null
+
+    /** For the checks: the grid as last drawn. */
+    var gridInfo: String = ""
+        private set
+
+    /** The fixed header beside the title tab: how many are shown, what a tap does; the ship picker's type tabs. */
+    override fun drawHeader(g: Graphics, ui: ConsoleUi, area: Area): Int {
+        val rowH = if (ui.touch) 52 else 30
         val list = shown
-        val title = "${kind.title}: ${list.size}" + (if (list.size != all.size) " of ${all.size}" else "") +
-            if (ui.touch && kind == Kind.UNLOCK_SHIP) "" else if (command == ConsoleCheats.UNLOCK) " - tap one to unlock it" else " - tap one to get it"
-        ui.font.drawString(area.x.f, ui.baseline(top, headerH).f, title, Colour.white)
-        var bx = area.x + ui.font.getWidth(title) + ui.pad * 3
+        val count = if (list.size != all.size) "${list.size} of ${all.size}" else "${all.size}"
+        val verb = if (command == ConsoleCheats.UNLOCK) "unlock" else "get"
+        val hint = if (ui.touch) "tap one to $verb it" else "click one to $verb it; type to search, arrows and Enter pick"
+        val base = ui.baseline(area.y, rowH).f
+        ui.font.drawString(area.x.f, base, count, Colour.white)
+        val x = area.x + ui.font.getWidth(count) + ui.pad * 2
+        var right = area.right
+        var height = rowH
         if (kind == Kind.UNLOCK_SHIP) {
-            val tabs = listOf(-1, 0, 1, 2)
-            for (t in tabs) {
-                val label = if (t < 0) "All" else game.translator["type_" + ('a' + t)].ifBlank { "Type " + ('A' + t) }
-                val w = ui.font.getWidth(label) + ui.pad * 4
-                ui.button(g, Area(bx, top + 2, w, headerH - 4), label, on = layoutTab == t) { layoutTab = t }
-                bx += w + ui.pad
-            }
+            // the hangar's type buttons and Unlock every ship, at the right; on a narrow screen (a 4:3 tablet) in a
+            // second row, so they cover neither the title nor the count
             val label = "Unlock every ship"
+            val tabs = listOf(-1, 0, 1, 2).map { t -> t to (if (t < 0) "All" else game.translator["type_" + ('a' + t)].ifBlank { "Type " + ('A' + t) }) }
+            val width = ui.font.getWidth(label) + ui.pad * 7 + tabs.sumOf { ui.font.getWidth(it.second) + ui.pad * 5 }
+            val ownRow = x + ui.small.getWidth(hint) + ui.pad * 2 + width > area.right
+            val top = if (ownRow) area.y + rowH else area.y
+            if (ownRow) height = rowH * 2
+            var r = area.right
             val w = ui.font.getWidth(label) + ui.pad * 4
-            ui.button(g, Area(bx + ui.pad * 2, top + 2, w, headerH - 4), label) {
+            r -= w
+            ui.button(g, Area(r, top + 3, w, rowH - 6), label) {
                 console.runKeeping("${ConsoleCheats.UNLOCK} ${Kind.UNLOCK_SHIP.word} *", priorCommandText)
                 all = ConsoleItems.items(game, kind); invalidate()
             }
+            r -= ui.pad * 3
+            for ((t, tab) in tabs.reversed()) {
+                val tw = ui.font.getWidth(tab) + ui.pad * 4
+                r -= tw
+                ui.button(g, Area(r, top + 3, tw, rowH - 6), tab, on = layoutTab == t) { layoutTab = t; clearSelection() }
+                r -= ui.pad
+            }
+            if (!ownRow) right = r
         }
-        top += headerH + ui.pad
-        val gridArea = Area(area.x, top, area.w, area.bottom - top)
+        val search = lastToken?.takeIf { it.isNotBlank() }
+        val note = if (search != null) "matching '$search'" else hint
+        ui.small.drawString(x.f, ui.baseline(area.y, rowH, ui.small).f, ui.fit(ui.small, note, right - x - ui.pad), ConsoleUi.DIM)
+        return height
+    }
+
+    override fun footerHeight(ui: ConsoleUi) = if (ui.touch) 46 else 22
+
+    /** The footer: the item under the pointer (desktop) or the one selected (the keys, the last tap) in full. */
+    override fun drawFooter(g: Graphics, ui: ConsoleUi, area: Area) {
+        g.colour = Constants.TEXT_BUTTON_DISABLED
+        g.fillRect(area.x.f, area.y + 2f, area.w.f, 1f)
+        val item = hovered ?: navItems.getOrNull(selectedIndex)
+        val base = ui.baseline(area.y + 3, area.h - 3).f
+        if (item == null) {
+            val verb = if (command == ConsoleCheats.UNLOCK) "unlock" else "get"
+            ui.small.drawString(area.x.f, ui.baseline(area.y + 3, area.h - 3, ui.small).f, if (ui.touch) "Tap an item to $verb it; its full name shows here." else "Point at an item for its full name.", ConsoleUi.DIM)
+            return
+        }
+        val key = item.key
+        ui.font.drawString(area.x.f, base, key, Colour.white)
+        var x = area.x + ui.font.getWidth(key) + ui.pad * 3
+        val rest = listOfNotNull(item.local.takeIf { it != item.english && it != key }, item.id.takeIf { it != key }).joinToString("  ")
+        if (rest.isNotEmpty()) {
+            ui.small.drawString(x.f, ui.baseline(area.y + 3, area.h - 3, ui.small).f, rest, ConsoleUi.DIM)
+            x += ui.small.getWidth(rest) + ui.pad * 3
+        }
+        ui.tags(g, x, area.y + 3 + (area.h - 3 - ui.smallH - 6) / 2, item.tags, area.right - x)
+    }
+
+    /** The grid: the tiles at the game's size and spacing, centred, every one that shows drawn (cut at the edges). */
+    override fun draw(g: Graphics, ui: ConsoleUi, area: Area, scroll: Int): Int {
+        val list = shown
         val (tw, artH) = tileSize(ui)
         // a row under each tile for its tags, so they cover no name
-        val th = artH + TAG_ROW_H + keyRowH(ui)
-        val gap = ui.pad
-        val columns = maxOf(1, (gridArea.w + gap) / (tw + gap))
+        // (a boxed tile, an achievement's, keeps a little room under its tags)
+        val th = artH + TAG_ROW_H + keyRowH(ui) + if (kind == Kind.ACHIEVEMENT) 4 else 0
+        val gap = if (ui.touch) 14 else 10
+        val columns = maxOf(1, (area.w + gap) / (tw + gap))
         val rows = (list.size + columns - 1) / columns
-        for ((i, item) in list.withIndex()) {
-            val x = gridArea.x + (i % columns) * (tw + gap)
-            val y = gridArea.y + (i / columns) * (th + gap) - scroll
-            // only whole tiles: the console has no clipping
-            if (y < gridArea.y) continue
-            if (y + th > gridArea.bottom) break
-            val tile = Area(x, y, tw, th)
-            drawTile(g, ui, item, tile, artH)
-            ui.hit(tile) { pick(item) }
+        val left = area.x + (area.w - (columns * (tw + gap) - gap)) / 2
+        val top = ui.pad
+        navColumns = columns; navScroll = scroll; navRowStep = th + gap; navRowH = th; navTop = top
+        hovered = null
+        var empty: String? = null
+        if (list.isEmpty()) {
+            // nothing to pick: say so where the tiles would be (a search with no match; Hyperspace's own achievements
+            // under a mod that has none)
+            val search = lastToken?.takeIf { it.isNotBlank() }
+            val text = if (search != null) "Nothing matches '$search'." else "This run has none."
+            val w = ui.font.getWidth(text)
+            ui.font.drawString(area.x + (area.w - w) / 2f, area.y + ui.lineH * 2f, text, ConsoleUi.DIM)
+            empty = "${area.x + (area.w - w) / 2},${area.y + ui.lineH * 2},$w empty=$text"
         }
-        return headerH + ui.pad + rows * (th + gap)
+        var drawn = 0
+        for ((i, item) in list.withIndex()) {
+            val x = left + (i % columns) * (tw + gap)
+            val y = area.y + top + (i / columns) * (th + gap) - scroll
+            if (y + th <= area.y) continue
+            if (y >= area.bottom) break
+            val tile = Area(x, y, tw, th)
+            val over = ui.hovered(tile)
+            if (over) hovered = item
+            drawTile(g, ui, item, tile, artH, over)
+            if (ui.pressed(tile)) ui.box(g, tile, Colour(0, 0, 0, 80))
+            if (isSelected(item)) ui.selection(g, tile)
+            ui.hit(tile) { pick(item) }
+            drawn++
+        }
+        val visibleRows = (area.h + gap) / (th + gap).toFloat()
+        gridInfo = "cols=$columns rows=$rows tile=${tw}x$th gap=$gap step=${th + gap} top=$top left=${left - area.x} drawn=$drawn rowsInView=${(visibleRows * 100).toInt() / 100f}" +
+            (empty?.let { " emptyAt=$it" } ?: "")
+        return top * 2 + rows * (th + gap) - gap
     }
 
     // ---- tiles
@@ -203,15 +291,9 @@ class ItemPicker(console: DebugConsole, owner: ArgumentTypeProcessor, val comman
             if (blueprint.short != null) super.weaponName(blueprint) else shortened(blueprint.translateTitle(game))
     }
 
-    private fun shortened(s: String): String {
-        if (crewFont.getWidth(s) <= 94) return s
-        var n = s.length
-        while (n > 0 && crewFont.getWidth(s.substring(0, n) + "..") > 94) n--
-        return s.substring(0, n) + ".."
-    }
+    private fun shortened(s: String): String = ConsoleUi.fitText(crewFont, s, 94)
 
-    private fun drawTile(g: Graphics, ui: ConsoleUi, item: Item, a: Area, artH: Int) {
-        val over = ui.hovered(a)
+    private fun drawTile(g: Graphics, ui: ConsoleUi, item: Item, a: Area, artH: Int, over: Boolean) {
         when (kind) {
             Kind.WEAPON, Kind.DRONE, Kind.SYSTEM -> {
                 val bp = item.blueprint ?: return
@@ -223,7 +305,8 @@ class ItemPicker(console: DebugConsole, owner: ArgumentTypeProcessor, val comman
                 }
                 val b = buttons.getOrPut(item.id) { Tile(bp, images, ConsoleItems.TAG_NO_ART !in item.tags) }
                 b.windowOffset = ConstPoint(a.x, a.y)
-                b.update(if (ui.touch) -1 else ui.mouseX, if (ui.touch) -1 else ui.mouseY)
+                // the store box's own hover art, only while the pointer is on the part of it in view
+                b.update(if (over) ui.mouseX else -1, if (over) ui.mouseY else -1)
                 b.draw(g)
                 b.oversized?.let { drawOversized(g, bp as AbstractWeaponBlueprint, it, a) }
                 if (ConsoleItems.TAG_NO_ART in item.tags) placeholder(g, ui, bp, a)
@@ -255,20 +338,22 @@ class ItemPicker(console: DebugConsole, owner: ArgumentTypeProcessor, val comman
             Kind.UNLOCK_SHIP -> drawShip(g, ui, item, a, over)
             else -> {
                 val img = item.image?.let { game.getImgIfExists(it) }
-                ui.box(g, a, if (over) Colour(70, 70, 75, 220) else Colour(30, 30, 35, 220), Colour(120, 125, 135, 255))
+                ui.box(g, a, if (over) ConsoleUi.ROW_HOT else ConsoleUi.ROW, if (over) Constants.UI_BUTTON_HOVER else Constants.TEXT_BUTTON_DISABLED)
                 if (img != null) {
                     val s = 64f / maxOf(img.width, img.height, 1)
                     img.draw(a.x + (a.w - img.width * s) / 2f, a.y + 6f, a.x + (a.w + img.width * s) / 2f, a.y + 6f + img.height * s,
                         0f, 0f, img.width.f, img.height.f, if (item.unlocked) 1f else 0.45f, Colour.white)
                 }
                 else if (img == null) noArt(ui, a.x, a.y + 26, a.w)
-                labelFont.drawStringCentred(a.x.f, a.y + 64f + 18f, a.w.f, ui.fit(labelFont, item.local, a.w - 6), Colour.white)
+                labelFont.drawStringCentred(a.x.f, a.y + 64f + 18f, a.w.f, ui.fit(labelFont, item.local, a.w - 14), Colour.white)
             }
         }
         // the key under the art, then the tags in their row under it
-        keyRow(item, a.x + 2, a.y + artH + 2, a.w - 4)
+        // inside a boxed tile (achievements) the rows keep the box's padding
+        val inset = if (kind == Kind.ACHIEVEMENT) 7 else 2
+        keyRow(item, a.x + inset, a.y + artH + 2, a.w - 2 * inset)
         // in the store box's small font, like the key, so a tile's tags fit its width on a phone too
-        ui.tags(g, a.x + 2, a.y + artH + keyRowH(ui) + 2, item.tags.filter { it != ConsoleItems.TAG_UNLOCKED || kind == Kind.ACHIEVEMENT }, a.w - 4, keyFont, KEY_LINE_H - 3)
+        ui.tags(g, a.x + inset, a.y + artH + keyRowH(ui) + 2, item.tags.filter { it != ConsoleItems.TAG_UNLOCKED || kind == Kind.ACHIEVEMENT }, a.w - 2 * inset, keyFont, KEY_LINE_H - 3)
     }
 
     /**
@@ -292,7 +377,7 @@ class ItemPicker(console: DebugConsole, owner: ArgumentTypeProcessor, val comman
         return wrapKey(key, w).map { it to Colour.lightGray }
     }
 
-    /** [text] on up to two lines of [w] pixels, split at its underscores, the second cut with ".." when too long. */
+    /** [text] on up to two lines of [w] pixels, split at its underscores, the second cut with "..." when too long. */
     private fun wrapKey(text: String, w: Int): List<String> {
         val words = text.split('_')
         var n = 1
@@ -302,12 +387,7 @@ class ItemPicker(console: DebugConsole, owner: ArgumentTypeProcessor, val comman
         return listOfNotNull(fitKey(first, w), rest.takeIf { it.isNotEmpty() }?.let { fitKey(it, w) })
     }
 
-    private fun fitKey(text: String, w: Int): String {
-        if (keyFont.getWidth(text) <= w) return text
-        var n = text.length
-        while (n > 0 && keyFont.getWidth(text.substring(0, n) + "..") > w) n--
-        return text.substring(0, n) + ".."
-    }
+    private fun fitKey(text: String, w: Int): String = ConsoleUi.fitText(keyFont, text, w)
 
     /**
      * A weapon or drone with no art of its own: the weapon box's icon of its type (systemUI/weapbox_icon_W_*, the icon

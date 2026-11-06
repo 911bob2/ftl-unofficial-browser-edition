@@ -757,16 +757,16 @@ object BrowserDiagnostics {
             main.changeHangarMode(false, "PLAYER_SHIP_HARD_2", Difficulty.NORMAL)
             val locked = main.currentState as xyz.znix.xftl.hangar.SelectShipState
             check(!locked.isSelectedUnlocked) { "BrowserDiagnostics.kt:719" }
-            locked.mouseClicked(0, 1170, 50, 1)
+            locked.mousePressed(0, 1170, 50)
             check(main.currentState === locked) { "Locked Start accepted a click" }
             main.changeHangarMode(false, "PLAYER_SHIP_HARD", Difficulty.HARD)
             val quick = main.currentState as xyz.znix.xftl.hangar.SelectShipState
             // No render/mouse update: difficulty and Start must use current coordinates.
-            quick.mouseClicked(2, 1170, 50, 1)
-            quick.mouseClicked(0, 1170, 130, 1)
+            quick.mousePressed(2, 1170, 50)
+            quick.mousePressed(0, 1170, 130)
             check(main.currentState === quick) { "Off-target/right-click activated Start" }
-            quick.mouseClicked(0, 1050, 26, 1)
-            quick.mouseClicked(0, 1170, 50, 1)
+            quick.mousePressed(0, 1050, 26)
+            quick.mousePressed(0, 1170, 50)
             val launched = main.currentState as? InGameState
             check(launched != null && launched.difficulty == Difficulty.EASY) { "Quick difficulty/Start required a draw" }
         } finally { main.profile.restore(eligibilityProfile) }

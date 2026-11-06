@@ -313,7 +313,12 @@ glow), every command's group and examples, the reference generated into CONSOLE.
 short names, words), where `*` is allowed and what it matches, and `get`/`unlock` without a name or with a wrong kind;
 round 2: no `get ship`, keys `<name>_<ID>` for shared names (each key one item, the shared name the one a store gives),
 the full-equipment refusals (`ConsoleCheats.refusal`: one item and one augment waiting at a time, crew over the limit,
-none under multipleOverCapacity), Escape and the unshifted `` ` ``/hotkey close the console, Shift+`` ` `` types `~`.
+none under multipleOverCapacity), Escape and the unshifted `` ` ``/hotkey close the console, Shift+`` ` `` types `~`;
+round 22 (the look and the feel): the scroll (`ConsoleScroller`: a wheel notch glides to exactly its pixels, never
+back or past, a trackpad's small steps add up at once, the ends stop dead; a drag follows the finger and its fling
+slows evenly to a stop; a press stops a moving list where it was drawn; held still, no fling; no time, no move), the
+clip (`ClipRect`: game units to framebuffer pixels at two pixels a unit and one, rows from the bottom, nested clips
+intersect) and the keys in a list (Down selects, Up from the top drops it, Enter takes it, a new search drops it).
 `tests/console.mjs` in the image, vanilla and on a modded
 fixture (`sh $D/t.sh console-vanilla vanilla console.mjs`, `console-F3 F3 console.mjs`, in `hsq.sh`): the setting off
 (vanilla closed; Hyperspace `\` only, ``` ` ``` its speed key, `<console enabled="false"/>` closed), the Logs page's
@@ -326,8 +331,22 @@ augments listed), the full equipment in a new run (a weapon and an augment past 
 box with the equipment screen open, a second is refused in vanilla and kept under Multiverse's multipleOverCapacity,
 a crew member past the limit then a refused one), a wildcard unlock, every picker on screen (a click gets one, the wheel scrolls, typing searches), the
 suggestions' scroll, help's reference, and all of it after Save and close and Continue with the unlocked layout in the
-hangar's list; screenshots in `/out`. The Android
-switch and button on the emulator: `.build/hs/reports/console-android/` (one finger through `adb input`).
+hangar's list; round 22: at 1280x720 the weapon picker takes most of the screen with three rows and more, its tiles
+centred; scrolled so a row is cut 60 pixels into its art, that row is drawn from the view's top edge exactly as it
+looked unscrolled (read from the canvas), the window's background shows where the gap between rows is, the header
+above the view is unchanged (the clip); the wheel scrolls by the event's pixels and stops at the ends; a mouse drag of
+120 pixels scrolls 120 and gets nothing; the scroll bar's thumb drags and its track pages; Page Up/Down; Down and
+Enter get the selected crew member with the picker staying, Escape drops the selection first; a 2560x1440 window;
+every picker and help scrolled half a row; frame strips of a wheel and a drag (`console-*-strip-*.png`, with the
+engine's per-frame scroll, `consoleProbe().trace`, logged as steps, frame times and pixels per millisecond, checked
+for one direction and no step over half the way); round 23: an empty picker says why, inside the panel (`get weapon`
+then ` zzqx`: "Nothing matches 'zzqx'."; under plain Hyperspace, `console-F2 F2 console.mjs -e CONSOLE_PART=empty`, which
+runs only up to this part: `unlock achievement` has none of Hyperspace's own, "This run has none."; the picker's grid
+probe gives the message and its place as `emptyAt`); screenshots in `/out`. The Android
+switch and button on the emulator: `.build/hs/reports/console-android/` (one finger through `adb input`); round 22's
+emulator checks (phone and tablet shapes, flings, a tap on a moving list, frame strips from `screenrecord`) are in
+`.build/hs/reports/console-polish.md`, the debug build's `console-panel` and `console-trace` broadcasts log the panel
+and the scroll of the last frames.
 
 ## Over-capacity boxes
 
@@ -342,6 +361,18 @@ pager's two arrows and its other page, every box on the 1024 x 768 HUD block and
 box and a dismiss button for every crew member, none under the over-capacity box, the touch layout's dismiss
 confirmation on the screen, and the extra one dismissed with its button and Yes. On the emulator:
 `tools/android-touch/overcap.mjs` ([ANDROID.md](ANDROID.md#testing)); round 21's runs and frames: `.build/hs/reports/overcap.md`.
+
+## Window places
+
+`tests/window-places.mjs` (runner jobs `hs-winpos-vanilla`, `hs-winpos-F2`, `hs-winpos-F3`; `sh $D/t.sh winpos-F2 F2
+window-places.mjs`): a new run on the Kestrel opens the ship window (upgrades and equipment tabs), a store (`STORE`), the
+star map, the pause menu and the options, an event (`EVENT ASTEROID_EXPLORE`), the sector map (`EXIT`) and the game over
+(the crew killed), takes a screenshot of each and reads its rectangle (`debugSnapshot().windowRect`). `consoleProbe().screens`
+gives CommandGui::OnLanguageChange's system levels box widths and the ship and store windows' x
+([HS_UI.md](HS_UI.md)): checked against the rule and against the original's 335 (vanilla, plain Hyperspace) and 325
+(Multiverse) from the oracle (session `winpos.json`; round 23's frames and numbers: `.build/hs/reports/hs-offset.md`),
+the equipment tab's item box (`consoleProbe().screens.equipmentInfo`: x + 600, top 134, 323 wide, the first weapon
+hovered), and every other window at the original's place (their frames' edges measured equal to the oracle's).
 
 ## Android update check
 
@@ -366,6 +397,17 @@ FTL-Update`. Chrome on the read-only AVD starts with its first-run screens each 
 `adb shell am set-debug-app --persistent com.android.chrome` and `echo '_ --disable-fre --no-first-run' >
 /data/local/tmp/chrome-command-line` (undo with `clear-debug-app`). Phone and tablet shapes through `wm size` and `wm density` (`reset` after). Screenshots:
 `.build/hs/reports/update-check/`.
+
+## Hyperspace More Info
+
+- Web: `tests/hs-crewui.mjs`'s `tooltip` part runs `BrowserHsMoreInfoDiagnostics` under Hyperspace (runner job
+  `hs-crewui-F3`): the mode waits for CommandGui::OnLoop; the button's hover tooltip, a click and the right Alt hotkey
+  toggle it; on, the crew tooltip of an own crew member and of a Lua-added boarder lists the race's powers and the
+  weapon slot tooltip is the stat list; off, both follow hyperspace.xml; a save and load keeps the mode.
+- Android: `MoreInfoTest` (unit) and `tools/android-touch/moreinfo.mjs` on the emulator ([ANDROID.md](ANDROID.md#testing)).
+- Native: oracle sessions `tools/hs-oracle/sessions/info-button.json` (`ib-mv` on Multiverse, `ib-hs` on Hyperspace
+  alone; driver `tracer/data/hs_oracle/info-button.lua`, step `movetrace`): every place on and off, and the hangar's
+  reactor box before and after a run.
 
 ## Android multi-touch on the emulator
 
@@ -483,6 +525,26 @@ runs stay in the fixture; its original progress and gameplay RNG are restored.
 needs the packaged display and `RUNNER_FIREFOX_WINDOWED=1` for WebGL2 in this
 container. These functional checks do not establish exact native presentation
 or audible comparison. See [implementation and reference boundaries](HANGAR.md).
+
+## One click acts once
+
+Every screen acts on the press, and a press that closes or replaces a window or screen keeps its release; a finger taps
+a button only when it lifts on the button it went down on ([ORIGINAL_BEHAVIOR.md](ORIGINAL_BEHAVIOR.md#one-click-one-receiver-2026-11-05)).
+`tests/click-through.mjs` (vanilla and a modded fixture: `sh $D/t.sh click-vanilla vanilla click-through.mjs`,
+`click-F3 F3 click-through.mjs`, runner jobs `hs-click-vanilla`, `hs-click-F3`) uses the browser's own mouse: the title
+menu's Close clicked where a menu button lies under it (vanilla: Tutorial under Close's top right corner) and Close held
+and let go on each menu button; Statistics and its Back, and the hangar's List, each pressed and let go elsewhere (they
+act on the press); in a run, the pause menu's Continue let go over an enemy room with a weapon armed (no shot aimed), a
+right click on the pause menu (the weapon stays armed), the debug console closed while its press is held over the Ship
+button; Game Over's Main Menu and Hangar held and let go on the next screen's buttons. The places come from the debug
+snapshot (`buttons` in the main menu, `close` in the title options, `clickTargets` in a run). `ClickThroughTest` and
+`TouchTapTest` (`:app:testDebugUnitTest`) check `HostInput`, the hosts' input, and the touch router's taps (lift on the
+same button, slid off or onto another, a second finger, a cancel, Android's mouse, a tap that closes a screen). On the
+emulator, `node tools/android-touch/click-through.mjs --serial <serial> --out <dir> [--shape phone|tablet]` (one finger
+through `adb input`, from the main menu): Close tapped over a menu button, Close slid onto each menu button (nothing
+acts), Statistics tapped, slid off and slid onto another button, Game Over's Main Menu slid off and tapped, Hangar tapped,
+the hangar's List slid off and tapped. `tools/android-touch/moreinfo.mjs` taps More Info over the open ship screen and
+under the pause menu ([ANDROID.md](ANDROID.md#testing)).
 
 ## Menu and stranded-crew confirmations
 

@@ -174,9 +174,9 @@ object BrowserHsHangarDiagnostics {
                 stage = "list page " + hangar.shipListPage
                 main.render(container, graphics)
                 pages += "{\"page\":${hangar.shipListPage},\"cards\":[${hangar.shipListCards.joinToString(",") { q(it) }}]}"
-                hangar.mouseClicked(0, 1140, 125, 1)
+                hangar.mousePressed(0, 1140, 125)
             }
-            hangar.mouseClicked(0, 5, 700, 1) // outside the list: close
+            hangar.mousePressed(0, 5, 700) // outside the list: close
             stage = "unlock"
             // Unlock by reaching a sector, then a profile round trip.
             val before = hangar.isShipUnlocked(unlockShip)

@@ -13,12 +13,13 @@ import xyz.znix.xftl.sys.Input
 class SettingsMenuState(
     private val main: MainGame, private val returnToMenu: () -> Unit,
     private val background: MainGame.GameState? = null
-) : MainGame.GameState() {
+) : MainGame.GameState(), TouchRouter.LiftTargets {
     private lateinit var context: SettingsContext
     private lateinit var window: Window
     private var lastTooltip: xyz.znix.xftl.rendering.ITooltipProvider? = null
     private val diagnosticActiveWindow get() = (window as? OptionsWindow)?.diagnosticActiveWindow ?: window
     val diagnosticNotice get() = (window as? OptionsWindow)?.diagnosticNotice ?: "null"
+    val diagnosticClose get() = (window as? OptionsWindow)?.takeIf { it.diagnosticActiveWindow === it }?.diagnosticCloseRect ?: "null"
     val diagnosticWindow get() = diagnosticActiveWindow.javaClass.simpleName
     val diagnosticWindowRect get() = "{\"x\":${diagnosticActiveWindow.position.x},\"y\":${diagnosticActiveWindow.position.y},\"width\":${diagnosticActiveWindow.size.x},\"height\":${diagnosticActiveWindow.size.y}}"
 
@@ -66,6 +67,7 @@ class SettingsMenuState(
     }
 
     override fun mousePressed(button: Int, x: Int, y: Int) { window.mouseClick(button, x, y) }
+    override fun liftTarget(x: Int, y: Int): Any? = window.liftTarget(x, y)
     override fun mouseReleased(button: Int, x: Int, y: Int) { window.mouseReleased(button, x, y) }
     override fun mouseWheelMoved(change: Int) { window.mouseScroll(change) }
     override fun keyPressed(key: Int, c: Char) {

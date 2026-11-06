@@ -142,10 +142,9 @@ class DatafileSelectState(private val game: MainGame) : MainGame.GameState() {
         }
     }
 
-    override fun mouseClicked(button: Int, x: Int, y: Int, clickCount: Int) {
+    // On the press, as the game's own menus act (MainMenu::MouseClick).
+    override fun mousePressed(button: Int, x: Int, y: Int) {
         if (button != Input.MOUSE_LEFT_BUTTON)
-            return
-        if (clickCount != 1)
             return
 
         val hovered = hoveredOption ?: return

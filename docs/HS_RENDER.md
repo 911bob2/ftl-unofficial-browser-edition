@@ -66,7 +66,7 @@ Measured with marker scripts against the oracle (`.build/render/sessions/markers
 | `<titleScreen>` splash, logo position, hyperspace menu images; ITB banner removed | HsTitleScreen, MainMenuState | oracle 01-menu |
 | `HS-1.23.2 ` label (altMode) | HsOverlay | oracle frames |
 | `<hullNumbers>`, `<hullBars>`, `<playerHpColorFix>` | HsHullNumbers, PlayerShipUI, HostileShipUI | oracle 10-fight |
-| More Info button, altMode options, the info key (Right Alt) | HsMoreInfo, HsHotkeys | oracle r2-beacon 06-06e |
+| More Info button, altMode options (applied at CommandGui::OnLoop), the info key (Right Alt) | HsMoreInfo, HsHotkeys | oracle r2-beacon 06-06e, ib-mv, ib-hs |
 | `<thrusters>` in layout xml | HsThrusters | oracle r2-militia 11c (phase differs) |
 | `<colors><textButtons>`, `<systemDetails>` | HsColors and the TextButton call sites | oracle 11 (jump), 10 (autofire), 14 (pause) |
 | `<eventButton>`, `<clearEventButton>` | HsEventButtons, PlayerShipUI.updateButtons | oracle 04 (positions), r2-beacon 08/09 (jukebox and toggle clicks) |

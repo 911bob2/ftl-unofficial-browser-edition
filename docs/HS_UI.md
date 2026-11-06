@@ -5,8 +5,8 @@ gated on `HS.active`; vanilla runs are unchanged except the leading-space fix be
 
 ## customTabs (CustomTabbedWindow.cpp)
 - `<customTabs><tab name windowPath hasUndo/>` adds tabs to the ship window (`HsTabs`, `ShipWindow`). Tab buttons draw
-  over the custom window art, the ship window sits 10 px further left (x 332) for 1-3 custom tabs, the Equipment tab
-  uses `equipment_main_2`.
+  over the custom window art (the window sits where the next point says, custom tabs or not), the Equipment tab uses
+  `equipment_main_2`.
 - Tab events (`TabbedWindow` events): CONFIRM carries the tab being left, the undo click fires UNDO only, RE follows
   the new tab. Verified against oracle frames and event rows (sessions `wp7-ui-tabs1..4`).
 
@@ -88,8 +88,21 @@ The Mouse shadow lives per frame as MouseControl does (sixth pass below).
 - ShipSystem.maxLevel is writable from Lua. Upgrade bars past 16: the two shown columns carry their top levels above
   them (16, 24 for a level 17-20 system of 22/24; oracle sw4-up24 u0 with an authored 24-level Torus), 70 px above the
   bottom bar's top. A level past the blueprint's price list cannot be bought (HS reads past the vector: "--" or 0).
-- The ship window sits 10 px left of 1.6.14's under Hyperspace with or without custom tabs (332 against 342: oracle
-  sw2-ship m0/q1, sw2-switch s-h0, sw4-up24 u0).
+- Ship and store window x: CommandGui::OnLanguageChange (CommandGui's constructor and a language change) measures the
+  system levels box of system ids 0-15 (InfoBox::CalcWidthForSystem: the widest GetLevelDescription of the levels below
+  maxPower, one more for sensors and doors, in font 10, plus 143 less details_base_A, in details_base_B pieces, at least
+  one, plus A and C) and puts shipScreens at 682 less the widest (at most 340, at least 150), storeScreens likewise (at
+  least 283). CommandGui's constructor runs it, so its (340, 85) never shows: English vanilla and plain Hyperspace measure
+  347 (sensors' "See enemy weapon charge", 178 px) and sit at 335; Multiverse's mind control level 2 text (189 px)
+  makes 357, so both windows sit 10 px further left at 325; German vanilla at 305. The window art's edge is x + 7.
+  Oracle: hs-offset sessions wp-hs / wp-mv (frames), wp-lua-hs / wp-lua-mv (the level texts measured in font 10 by
+  HS's Lua, equal to ours), wp-lang-hs / wp-lang-mv / wp-lang-de (a language change moves it again); also sw2-ship
+  m0/q1, sw4-up24 u0, bt-store-over. `ShipWindow.shipScreensX` / `storeScreensX`, checked by tests/window-places.mjs.
+  The same width goes to the upgrades window's InfoBox: a hovered system's boxes are 10 px wider under Multiverse
+  (oracle wp-hs2 / wp-mv2 13-sensors-info; ours 333 for 347).
+- The equipment tab's item InfoBox (and the store's sell tab, the same Equipment): Equipment::SetPosition puts it at the
+  window's x + 600, y - 25 (CustomEquipment::SetPosition keeps it), 25 above the upgrades tab's levels box, and an item
+  box is 323 wide (oracle overcap oc-hs 04, info-button ib-mv-eq: top 134). `ShipWindow.drawEquipmentInfo`.
 
 ## Round 14 fifth pass
 - System icons (vanilla and HS): ShipManager::OnRender (0x4a3c00) draws ShipSystem::OnRender after Ship::OnRenderWalls,
@@ -157,6 +170,32 @@ The Mouse shadow lives per frame as MouseControl does (sixth pass below).
   index), so it shows the crate from the start beacon on, active out of danger, after Save and Continue too (oracle
   sessions `hudfix-native-a`/`-b`, `.build/hs/reports/hud-fix/oracle/`).
 - The touch layout's place for these and other desktop HUD elements: [ANDROID.md](ANDROID.md#touch-controls).
+
+## More Info button (MoreInfoButton.cpp; Multiverse's magnifier)
+- The button (`statusUI/moreInfoButtonOn|Off`, 1207,656) and the `info` hotkey (right Alt, Controls page 1) toggle
+  CustomOptionsManager::altMode with the `moreInfoOn`/`moreInfoOff` sound; its hover tooltip is `tooltip_more_info`.
+  Drawn in ShipStatus::OnRender, so it stays lit over an open window's dimming and can be clicked there (the hover
+  is blocked only by the pause menu, options and game over).
+  On by default and never saved: every start of the game has it on, a save and load keeps the running value
+  (`HsOverlay.altMode`, reset in `HS.init`).
+- The mode reaches the options only at CommandGui::OnLoop (`HsMoreInfo.onLoop`, every flight frame): until the first
+  frame of a run they hold hyperspace.xml's values, so a fresh start's hangar shows no reactor box under plain
+  Hyperspace; after a run the hangar shows the mode the run left. The button's image follows the applied value.
+- On: showAllyPowers / showEnemyPowers (the race's powers as `*` lines in the crew tooltip), advancedCrewTooltipRounding
+  2 when the default is 0 or 1, showReactor (hangar), showAllConnections (map, unless splitAllNodeView),
+  showNumericalWeaponCooldown, redesignedWeaponTooltips / DroneTooltips / AugmentTooltips; alternateOxygenRendering is
+  forced off. Off: each back to hyperspace.xml. The `HS-<version>` label (top right) reads altMode itself.
+  Event tooltips do not depend on it: EventTooltip.cpp tests its own `g_eventTooltips`, always true.
+- Under Multiverse (its hyperspace.xml turns the weapon, drone and augment tooltips, the cooldown numbers and the
+  reactor box on) the button changes the crew powers, the map's connections and the label only.
+- Touch: the button is a TouchExtras piece in the dock above Pause (a tap toggles, a held finger shows its tooltip). A
+  finger held still for 0.5 s on a crew member on either ship shows the crew tooltip until it lifts (`TouchHold`; the
+  lift still does what a tap does); the weapon slots' info drawers carry the slot tooltips; the cooldown numbers are
+  drawn over each open weapon slot (`HsCooldownNumbers.drawTouch`); InfoBoxes (equipment, store, events) show under a
+  held finger as on the desktop under the mouse.
+- Checks: hs-crewui `tooltip` part (`BrowserHsMoreInfoDiagnostics`), Android `MoreInfoTest` and
+  `tools/android-touch/moreinfo.mjs`, oracle sessions `info-button.json` (`ib-mv`, `ib-hs`; `ib-mv-eq` visits the ship screen and the map
+  without a boarder, as intruders keep the ship screen shut).
 
 ## Shield squares past four layers (vanilla and HS)
 - The status box has four squares; ShipStatus::RenderShields draws layer `i` from its charged/uncharged image row without

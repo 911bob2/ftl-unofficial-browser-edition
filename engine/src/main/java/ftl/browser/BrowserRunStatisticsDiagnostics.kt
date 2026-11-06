@@ -113,8 +113,8 @@ object BrowserRunStatisticsDiagnostics {
         val stats = BrowserStatisticsState(main, null)
         main.setCurrentState(stats)
         main.render(container, graphics)
-        stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 480, 65, 1)
-        stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 340, 170, 1)
+        stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 480, 65)
+        stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 340, 170)
         // (A mod's ship list has other ships at these places.)
         if (!xyz.znix.xftl.hs.HS.active) check(stats.diagnosticShip == "PLAYER_SHIP_HARD_3") { "BrowserRunStatisticsDiagnostics.kt:115" }
         main.render(container, graphics)

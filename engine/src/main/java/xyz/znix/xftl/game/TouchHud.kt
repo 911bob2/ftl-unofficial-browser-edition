@@ -987,6 +987,9 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         return if (desc == null) title else "$title\n\n$desc"
     }
 
+    /** What weapon slot [i]'s info drawer says (null: no weapon), for the checks. */
+    fun weaponDrawerText(i: Int): String? = boxes().firstOrNull { it.system is Weapons }?.let { slotText(it, i) }
+
     /** The drawers of an open box, with their tabs placed for this frame. */
     private fun drawersOf(box: Box): List<Drawer> {
         val e = if (box.wide) 19 else 11
@@ -1715,6 +1718,12 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
             slotFont.drawString(x + 5f, lineY, line, colour)
             lineY += 14f
         }
+        // Hyperspace <showNumericalWeaponCooldown> (on under More Info): the cooldown above the slot.
+        if (weapon != null && xyz.znix.xftl.hs.weapons.HsCooldownNumbers.enabled()) {
+            val weapons = ship.weapons!!
+            xyz.znix.xftl.hs.weapons.HsCooldownNumbers.drawTouch(game, g, weapon, weapons.selectedTargets.getTarget(i) != null,
+                weapons.isAutofire(i), x, y, 68)
+        }
     }
 
     /** A closed weapon column's charge frame (left, top, size in the icon) and the bar in it (left, bottom, width, height). */
@@ -1914,7 +1923,31 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     override fun takesFinger(canvasX: Int, canvasY: Int): Boolean {
         if (!ui.isWindowOpen) return true
         val x = canvasX - hudX
+        if (moreInfoOverWindow(x, canvasY)) return true
         return ui.isEventOpen && (optionsButton.contains(x, canvasY) || pauseButton.contains(x, canvasY))
+    }
+
+    /**
+     * Hyperspace's More Info button over an open window (HUD coordinates): the desktop's takes clicks over every window
+     * but the menu, the options and game over ([PlayerShipUI.moreInfoBlocked]), so the touch one takes the finger there,
+     * drawn over the window ([renderOverWindow]). The window gets nothing of that finger.
+     */
+    private fun moreInfoOverWindow(x: Int, y: Int): Boolean =
+        ui.isWindowOpen && !ui.moreInfoBlocked && extras.at(x, y) is TouchExtras.MoreInfoPiece
+
+    /** A finger that came down on More Info over an open window ([moreInfoOverWindow]), until it lifts. */
+    private var infoOverWindow = false
+
+    /** After the windows: More Info over the open window, lit, where it takes the finger. */
+    fun renderOverWindow(g: Graphics) {
+        if (!ui.isWindowOpen || ui.moreInfoBlocked || extras.piece("more-info") == null) return
+        val tint = Graphics.tint
+        Graphics.tint = xyz.znix.xftl.rendering.Colour.white
+        g.pushTransform()
+        g.translate(hudX.f, 0f)
+        extras.renderAgain(g, "more-info")
+        g.popTransform()
+        Graphics.tint = tint
     }
 
     /** A new gesture starts (TouchRouter): whatever this HUD still held from an earlier one, the system has ended. */
@@ -1926,6 +1959,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         reorderBox = -1
         if (beamGesture) ui.touchAbortBeam()
         lastBeamX = Int.MIN_VALUE
+        shipHold.up()
     }
 
     /** Called only while no focus window has the finger (TouchRouter). */
@@ -1949,6 +1983,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
                 }
                 primary = -1
                 extraFingers.clear()
+                shipHold.up()
                 if (primarySpent) {
                     primarySpent = false
                     return
@@ -1974,6 +2009,12 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         if (tutorialFinger) {
             if (action == TouchRouter.UP) overlay?.click(game, Input.MOUSE_LEFT_BUTTON, canvasX, canvasY)
             if (action == TouchRouter.UP || action == TouchRouter.CANCEL) tutorialFinger = false
+            return
+        }
+        if (down) infoOverWindow = moreInfoOverWindow(x, y)
+        if (infoOverWindow) {
+            extras.touch(action, x, y)
+            if (action == TouchRouter.UP || action == TouchRouter.CANCEL) infoOverWindow = false
             return
         }
         // A window came up under an aiming finger (an event, or Back's menu): the aim is not what the player is on now.
@@ -2034,6 +2075,12 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
                 val onEnemy = !over && !doorMode && hasTarget && (if (focusOnPlayer) targetBoxContains(x, y) else ui.touchNearEnemyRoom(canvasX, canvasY))
                 val onShip = onPlayer || onEnemy
                 if (down || pendingRedown) shipHit = onShip
+                // A finger resting on a ship shows the crew under it (the desktop's crew hover tooltip).
+                when {
+                    !onShip || (action != TouchRouter.DOWN && action != TouchRouter.MOVE) -> shipHold.up()
+                    down || !shipHold.down -> shipHold.down(canvasX, canvasY, System.nanoTime())
+                    action == TouchRouter.MOVE -> shipHold.move(canvasX, canvasY, System.nanoTime())
+                }
                 if (down && hasTarget && onShip) {
                     val touchedPlayer = onPlayer && (focusOnPlayer || !onEnemy)
                     if (touchedPlayer != focusOnPlayer) {
@@ -2166,7 +2213,41 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         extras.render(g)
         if (primary == -1) statusTip = null
         statusTip?.let { g.tooltip = it }
+        drawCrewHoldTip(g)
         g.popTransform()
+    }
+
+    // ---- a finger held on a crew member on either ship shows the crew tooltip ----------------------------------------
+    // The desktop shows it while the mouse rests on the crew member (CrewControl::OnLoop, ShipManager::GetTooltip): its
+    // health, and under Hyperspace the advanced lines with, while More Info is on, the race's powers. The touch layout
+    // has no hover, so as with its other tooltips (a crew box, the status bar, the iPad's long press on the enemy's system
+    // icons) a finger held still shows it until it lifts; what the finger does on lift is unchanged.
+    private val shipHold = TouchHold(SHIP_TIP_HOLD, REORDER_SLOP)
+    private var crewHoldTipText = ""
+    private val crewHoldTip = object : StandardTooltip(tooltipFont) {
+        override fun getText(): String = crewHoldTipText
+
+        // The box's edge rules are the desktop's 1280 x 720: on a narrower canvas a box right of the finger is kept on
+        // the canvas by putting it left of the finger, as the desktop does at its own edge.
+        override fun drawTooltip(g: Graphics, mouseX: Int, mouseY: Int, firstFrame: Boolean, screenWidth: Int, screenHeight: Int) {
+            val (w, h) = xyz.znix.xftl.rendering.NativeTooltip.measure(null, tooltipFont, null, crewHoldTipText)
+            if (mouseX + 16 + w <= TouchMode.canvasW) return super.drawTooltip(g, mouseX, mouseY, firstFrame, screenWidth, screenHeight)
+            val y = if (mouseY + 22 + h > 758) maxOf(0, mouseY - h - 10) else mouseY + 22
+            xyz.znix.xftl.rendering.NativeTooltip.draw(g, null, tooltipFont, mouseX, mouseY, null, crewHoldTipText, null,
+                maxOf(0, mouseX - w - 15), y, true)
+        }
+    }
+
+    /** The crew tooltip text the resting finger shows now ("" when it shows none); also for the checks. */
+    fun crewHoldText(): String =
+        if (primary != -1 && shipHold.held(System.nanoTime()) && !beamGesture) ui.touchCrewTooltipText(shipHold.x, shipHold.y) else ""
+
+    private fun drawCrewHoldTip(g: Graphics) {
+        if (g.tooltip != null) return
+        val text = crewHoldText()
+        if (text.isEmpty()) return
+        crewHoldTipText = text
+        g.tooltip = crewHoldTip
     }
 
     private companion object {
@@ -2190,6 +2271,9 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
 
         /** How far (HUD px) a finger may wander and still be held still. */
         const val REORDER_SLOP = 8.0
+
+        /** How long a finger rests on a ship before the crew tooltip under it shows (the same long press). */
+        const val SHIP_TIP_HOLD = 0.5f
         const val CREW_W = 86
         const val CREW_H = 27
         const val REASON_CREW_DRAG = 0

@@ -8,7 +8,8 @@ import xyz.znix.xftl.rendering.*
 import xyz.znix.xftl.sys.*
 
 /** Independent score/ship and statistics/achievement panels from the original. */
-class BrowserStatisticsState(private val main: MainGame, private val previous: InGameState?) : MainGame.GameState() {
+class BrowserStatisticsState(private val main: MainGame, private val previous: InGameState?) : MainGame.GameState(),
+    xyz.znix.xftl.game.TouchRouter.LiftTargets {
     private val resources = ResourceContext()
     private val content = main.gameContent
     // Scores remain visible for AE-only ships even when the next new run is
@@ -451,7 +452,22 @@ class BrowserStatisticsState(private val main: MainGame, private val previous: I
         when (key) {
         }
     }
-    override fun mouseClicked(button: Int, x: Int, y: Int, clickCount: Int) {
+    /** What a finger taps (TouchRouter): a tab, Back, a page arrow, a ship control, the ship list's. */
+    override fun liftTarget(x: Int, y: Int): Any? {
+        if (shipList) return nativeList?.liftTarget(x, y)
+        if (y in 38 until 91) when (x) {
+            in 43 until 338 -> return "tab-scores"
+            in 338 until 629 -> return "tab-ships"
+            in 651 until 838 -> return "tab-stats"
+            in 838 until 1225 -> return "tab-achievements"
+        }
+        if (y in 627 until 673 && x in 1086 until 1224) return "close"
+        hsPageButtonAt(x, y)?.let { return listOf("page", it) }
+        return if (shipBest) shipBestControlAt(x, y) else null
+    }
+
+    /** ScoreKeeper::MouseClick: on the press (CApp::OnLButtonDown, MainMenu::MouseClick); the release does nothing. */
+    override fun mousePressed(button: Int, x: Int, y: Int) {
         if (button != Input.MOUSE_LEFT_BUTTON) return
         if (shipList) {
             listHost?.let { it.mousePos.x = x; it.mousePos.y = y }

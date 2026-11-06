@@ -344,6 +344,9 @@ class PauseWindow(val game: InGameState, val close: () -> Unit) : Window() {
 
     private var helpJustOpened = false
 
+    /** What a finger taps (TouchRouter): a button; over the help, nothing (the lift closes it). */
+    override fun liftTarget(x: Int, y: Int): Any? = if (helpOpen) null else super.liftTarget(x, y)
+
     override fun mouseClick(button: Int, x: Int, y: Int) {
         if (helpOpen) return
         super.mouseClick(button, x, y)

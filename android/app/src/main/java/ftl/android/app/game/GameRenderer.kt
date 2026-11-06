@@ -94,7 +94,8 @@ class GameRenderer(
     private fun useFrame(f: Frame) {
         frame = f
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, f.id)
-        GLES30.glViewport(0, 0, f.w * pixels, f.h * pixels)
+        // through the engine's wrapper, which keeps it: Graphics.pushClip maps its clip rectangles to these pixels
+        org.lwjgl.opengl.GL11.glViewport(0, 0, f.w * pixels, f.h * pixels)
     }
 
     /** The frame the current screen draws in; a new one when the screen's canvas changed. */

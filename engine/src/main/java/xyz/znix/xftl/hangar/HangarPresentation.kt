@@ -251,6 +251,12 @@ class HangarPresentation(private val state: SelectShipState) {
         }
     }
 
+    /** What a finger taps (TouchRouter): a Hyperspace hangar button, a control; else null. */
+    fun liftTarget(x: Int, y: Int): Any? {
+        if (hs != null && !isEditing && !isCustomizing) hs.liftTarget(x, y)?.let { return it }
+        return controls().firstOrNull { (!isCustomizing || it.id.startsWith("crew")) && it.contains(x, y) }?.let { "control:" + it.id }
+    }
+
     fun click(button: Int,x: Int,y: Int): Boolean {
         if (button!=Input.MOUSE_LEFT_BUTTON) return false
         refreshHover()

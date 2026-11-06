@@ -92,14 +92,32 @@ object HsScrollingChoiceBox {
     private fun image(game: InGameState, base: String, hover: Boolean): Image =
         game.getImg(if (hover) "${base}_select2.png" else "${base}_on.png")
 
+    /** The scroll button at ([x], [y]): 1 up, 2 down, 0 none. */
+    private fun buttonAt(game: InGameState, x: Int, y: Int): Int {
+        if (maxScroll() <= 0f) return 0
+        val up = game.getImg("img/statusUI/button_crew_up_on.png")
+        if (x < BUTTON_X + dx() || x >= BUTTON_X + dx() + up.width) return 0
+        if (y >= BUTTON_Y1 + touchDy() && y < BUTTON_Y1 + touchDy() + up.height) return 1
+        if (y >= BUTTON_Y2 + touchDy() && y < BUTTON_Y2 + touchDy() + up.height) return 2
+        return 0
+    }
+
+    /** The y the choices see at [y] (the scrolled position), or null outside the box. */
+    @JvmStatic
+    fun choiceY(y: Int): Int? = if (y in 147 + touchDy()..524 + touchDy() + touchExtra) y + scroll.toInt() else null
+
+    /** What a finger taps (TouchRouter): a scroll button, or null (the bar and the rest take the press). */
+    @JvmStatic
+    fun liftTarget(game: InGameState, x: Int, y: Int): Any? = buttonAt(game, x, y).takeIf { it != 0 }?.let { "scroll$it" }
+
     /** ChoiceBox::MouseMove: the y the choices see, or null when outside 147..524. Also the buttons and the bar. */
     @JvmStatic
     fun mouseMove(game: InGameState, x: Int, y: Int): Int? {
         val can = maxScroll() > 0f
         if (can) {
-            val up = game.getImg("img/statusUI/button_crew_up_on.png")
-            upHover = x >= BUTTON_X + dx() && x < BUTTON_X + dx() + up.width && y >= BUTTON_Y1 + touchDy() && y < BUTTON_Y1 + touchDy() + up.height
-            downHover = x >= BUTTON_X + dx() && x < BUTTON_X + dx() + up.width && y >= BUTTON_Y2 + touchDy() && y < BUTTON_Y2 + touchDy() + up.height
+            val b = buttonAt(game, x, y)
+            upHover = b == 1
+            downHover = b == 2
         } else {
             upHover = false; downHover = false; barSelected = false
         }
@@ -110,7 +128,7 @@ object HsScrollingChoiceBox {
             val b = bar()
             barSelected = x >= b.x - 1 && x < b.x + b.w + 1 && y >= b.y && y < b.y + b.h
         }
-        return if (y in 147 + touchDy()..524 + touchDy() + touchExtra) y + scroll.toInt() else null
+        return choiceY(y)
     }
 
     /** ChoiceBox::MouseClick (after the original). */

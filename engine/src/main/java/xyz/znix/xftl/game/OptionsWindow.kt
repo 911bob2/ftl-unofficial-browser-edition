@@ -55,9 +55,11 @@ class OptionsWindow(
         private var grabKnob = 0
         val value get() = ((knob - minKnob).f / (maxKnob - minKnob)).coerceIn(0f, 1f)
 
+        fun contains(mx: Int, my: Int) = mx > x && mx < x + 200 && my > y && my < y + 20
+
         /** SlideBar::MouseMove (0x005829c0): a press on the bar centres the knob there. */
         fun press(mx: Int, my: Int): Boolean {
-            if (mx <= x || mx >= x + 200 || my <= y || my >= y + 20) return false
+            if (!contains(mx, my)) return false
             if (mx <= knob || mx >= knob + 15 || my <= y - 5 || my >= y + 25) knob = mx - 7
             dragging = true
             grabX = mx
@@ -89,6 +91,8 @@ class OptionsWindow(
     private val closeLabel get() = context.translator["button_close"]
     private val closeWidth get() = maxOf(buttonFont.measure(closeLabel) + 6, 0x67)
     private val closePos get() = ConstPoint(792 - closeWidth, 301)
+    /** Where Close takes a click (tests/click-through.mjs). */
+    val diagnosticCloseRect get() = "{\"x\":${position.x + closePos.x},\"y\":${position.y + closePos.y},\"width\":$closeWidth,\"height\":32}"
     private val deleteLabel get() = context.translator["button_delete_profile"]
     private var languages: LanguageChooser? = null
     val diagnosticLanguageChooser: String get() = languages?.diagnosticState ?: "null"
@@ -274,6 +278,18 @@ class OptionsWindow(
     }
 
     override fun mouseReleased(button: Int, x: Int, y: Int) = releaseBars()
+
+    /** What a finger taps (TouchRouter): Close, Delete Profile, a choice, a language; a volume bar takes the press. */
+    override fun liftTarget(x: Int, y: Int): Any? {
+        notice?.let { return it.liftTarget(x, y) }
+        languages?.let { return it.liftTarget(x, y) }
+        return when {
+            inClose(x, y) -> "close"
+            inDelete(x, y) -> "delete"
+            bars.any { it.contains(x - position.x, y - position.y) } -> null
+            else -> rowAt(x, y).takeIf { it >= 0 }
+        }
+    }
 
     private fun releaseBars() {
         if (bars.none { it.dragging }) return

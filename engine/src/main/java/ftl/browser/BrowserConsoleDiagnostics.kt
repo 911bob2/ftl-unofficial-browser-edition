@@ -45,7 +45,10 @@ object BrowserConsoleDiagnostics {
             })}" +
             ",\"gate\":${xyz.znix.xftl.devutil.ConsoleGate.allowed()}" +
             ",\"multipleOver\":${xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)}" +
-            ",\"panel\":${q(game.debugConsole.debugPanel())}}"
+            // CommandGui::OnLanguageChange's widest system levels box and the ship and store windows' x (tests/window-places.mjs)
+            ",\"screens\":{\"box\":${xyz.znix.xftl.game.ShipWindow.systemBoxWidth(game)},\"ship\":${xyz.znix.xftl.game.ShipWindow.shipScreensX(game)},\"store\":${xyz.znix.xftl.game.ShipWindow.storeScreensX(game)},\"boxes\":${xyz.znix.xftl.game.ShipWindow.systemBoxWidths(game).joinToString(",", "[", "]")},\"texts\":${list(xyz.znix.xftl.game.ShipWindow.systemBoxTexts(game))},\"equipmentInfo\":${q(xyz.znix.xftl.game.ShipWindow.diagnosticEquipmentInfo)},\"systemInfo\":${q(xyz.znix.xftl.game.ShipWindow.diagnosticSystemInfo)}}" +
+            ",\"panel\":${q(game.debugConsole.debugPanel())}" +
+            ",\"trace\":${q(game.debugConsole.debugTrace())}}"
     }
 
     /** The blueprint element of each item kind, as the data files hold it. */

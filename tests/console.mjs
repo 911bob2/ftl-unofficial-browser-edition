@@ -6,11 +6,13 @@
 // help, and the Hyperspace and original commands run with their effect read back (BrowserEngine.consoleProbe); the
 // Hyperspace-only ones answer that they need a mod in vanilla; the new get and unlock commands (their pickers' lists
 // against the data, by name, a wildcard, the pickers on screen, the suggestions' scroll, help's reference, all of it
-// through Save and close and Continue, the unlock in the hangar). Test-only. Output: /out/console-*.png, CONSOLE_OUT.
+// through Save and close and Continue, the unlock in the hangar); the look and the feel (round 22: the picker's rows at
+// 1280x720, a cut tile at the view's edge, pixel wheel and drag scrolling, the scroll bar, the keys, frame strips of the
+// scrolling as console-*-strip-*.png). Test-only. Output: /out/console-*.png, CONSOLE_OUT.
 //   [FTL_HS_MOD_SESSION=/assets/mod-session.json NODE_OPTIONS=--import=<preload>] node /app/tests/console.mjs
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdir,readFile} from 'node:fs/promises';
+import {mkdir,readFile,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {chromium} from 'playwright';
 import {withOnboarding} from './lib/onboarding.mjs';
@@ -95,6 +97,38 @@ try{
  await page.locator('#console').click();assert.equal(await isOpen(),false,'and closes it');
  pass(mode+': the setting opens the console on ` and \\ and shows the Console button'+(hs?' (the mod says enabled="false")':''));
  if(hs)console.log(await hsProbe('xml:<console enabled="true"/>'));
+
+ // ---- an empty picker says why (round 22's message, checked on the web in round 23): a search with no match, and
+ // (plain Hyperspace, CONSOLE_PART=empty) a kind the run has none of: Hyperspace's own achievements
+ {
+  const panelText=async()=>(await probe()).panel;
+  const emptyNote=async()=>{const p=await panelText(),m=/ emptyAt=(-?\d+),(-?\d+),(\d+) empty=(.*)$/.exec(p),v=/ view=(-?\d+),(-?\d+),(\d+),(\d+)/.exec(p);
+   return m?{x:+m[1],y:+m[2],w:+m[3],text:m[4],view:v?v.slice(1).map(Number):null,raw:p}:{text:null,raw:p};};
+  const shut=async()=>{for(let i=0;i<4&&await isOpen();i++)await key('Escape');assert.equal(await isOpen(),false);};
+  const visible=n=>assert.ok(n.view&&n.x>=n.view[0]&&n.x+n.w<=n.view[0]+n.view[2]&&n.y>n.view[1]&&n.y<n.view[1]+n.view[3],'the message is inside the panel: '+n.raw);
+  const multiverse=(await probe()).multipleOver,fixture=multiverse?'mv':hs?'hs':'vanilla';
+  await key('Backquote');await page.locator('#game').pressSequentially('get weapon',{delay:15});await key('Enter');await page.waitForTimeout(300);
+  let n=await emptyNote();assert.match(n.raw,/ItemPicker kind=WEAPON/,'get weapon opens the picker');assert.equal(n.text,null,'a picker with items has no message');
+  // the line reads "get weapon " after Enter: the search follows that space
+  const line=/text=(.*) cursor=/.exec((await probe()).console)[1];
+  await page.locator('#game').pressSequentially((line.endsWith(' ')?'':' ')+'zzqx',{delay:15});await flush();await flush();await page.waitForTimeout(300);
+  n=await emptyNote();console.log('no match: '+n.raw);
+  // the search as the line now reads it (plain Hyperspace's <console invertCaps="true"/> types it in capitals)
+  const search=/text=(.*) cursor=/.exec((await probe()).console)[1].split(' ').at(-1);assert.equal(search.toLowerCase(),'zzqx');
+  assert.match(n.raw,/ shown=0 /,'nothing matches zzqx');assert.equal(n.text,"Nothing matches '"+search+"'.",'the message names the search');visible(n);
+  await page.mouse.move(640,40);await shot('r23-nothing-matches');
+  await shut();
+  await key('Backquote');await page.locator('#game').pressSequentially('unlock achievement',{delay:15});await key('Enter');await page.waitForTimeout(300);
+  n=await emptyNote();console.log('achievements: '+n.raw);
+  if(hs&&!multiverse){
+   assert.match(n.raw,/ItemPicker kind=ACHIEVEMENT.* shown=0 /,'plain Hyperspace has no achievements of its own');
+   assert.equal(n.text,'This run has none.','an empty kind says so');visible(n);
+  }else{assert.match(n.raw,/ItemPicker kind=ACHIEVEMENT/);assert.equal(n.text,null,fixture+': the achievements are listed');}
+  await page.mouse.move(640,40);await shot('r23-achievements');
+  await shut();
+  pass(fixture+': an empty picker says why ("Nothing matches \'zzqx\'."'+(hs&&!multiverse?', "This run has none."':'')+'), inside the panel');
+  if(process.env.CONSOLE_PART==='empty'){assert.deepEqual(errors,[],'browser errors');console.log('PASS console empty pickers '+fixture);await browser.close();server.kill('SIGTERM');process.exit(0);}
+ }
 
  // ---- typing, the cursor keys, the history ----------------------------------------------------------------------
  const scrap0=(await snapshot()).scrap;
@@ -213,7 +247,7 @@ try{
   assert.match(await panel(),/^ItemPicker/,line+' opens its picker');
   await shot('picker-'+label);
   if(label==='weapon'){
-   const s0=await probe();await click(70,430);const s1=await probe();
+   const s0=await probe();await click(120,250);const s1=await probe();
    assert.equal(owned(s1).length,owned(s0).length+1,'a click on a weapon gets it');assert.equal(await consoleText(),'get weapon ','the picker stays');
    assert.match((await output()).at(-1),/^Granted: /,'a tap says what it granted');
    await wheel(600,600,400);assert.match(await panel(),/scroll=[1-9]/,'the wheel scrolls the picker');await shot('picker-weapon-scrolled');
@@ -228,13 +262,128 @@ try{
  }
  pass(mode+': each picker opens without a name, a click gets the item and keeps it open, the wheel scrolls, typing searches');
 
+ // ---- the look and the feel (round 22, docs/CONSOLE.md "The window", "Scrolling", "Keys"): the picker takes most of
+ // the screen with as many rows as fit, tiles at the edge draw cut (a clip), the wheel and a drag scroll by pixels and
+ // glide, the scroll bar drags and pages, the keys select and take; frame strips of the scrolling in /out
+ const info=async()=>{const p=await panel(),g=k=>{const m=new RegExp(' '+k+'=([^ ]+)').exec(p);return m?m[1]:null;},xs=k=>(g(k)||'0,0,0,0').split(',').map(Number);
+  return {raw:p,scroll:+g('scroll'),height:+g('height'),max:+g('max'),target:+g('target'),moving:g('moving')==='true',selected:g('selected')==='true',view:xs('view'),thumb:g('thumb')==='null'?null:xs('thumb'),
+   cols:+g('cols'),rows:+g('rows'),gap:+g('gap'),step:+g('step'),top:+g('top'),left:+g('left'),rowsInView:+g('rowsInView'),tile:(g('tile')||'0x0').split('x').map(Number)};};
+ const settle=async()=>{for(let i=0;i<200;i++){const p=await info();if(!p.moving)return p;await flush();}throw Error('the panel never settles: '+(await panel()));};
+ const cssScale=async()=>{const b=await page.locator('#game').boundingBox();return Math.min(b.width/1280,b.height/720);};
+ const pixels=(x,y,w,h)=>page.evaluate(([x,y,w,h])=>{const c=document.querySelector('#game'),o=document.createElement('canvas');o.width=w;o.height=h;const g=o.getContext('2d');g.drawImage(c,x,y,w,h,0,0,w,h);return Array.from(g.getImageData(0,0,w,h).data);},[x,y,w,h]);
+ const same=(a,b)=>{let n=0;for(let i=0;i<a.length;i+=4)if(a[i]===b[i]&&a[i+1]===b[i+1]&&a[i+2]===b[i+2])n++;return n/(a.length/4);};
+ const distinct=a=>{const s=new Set();for(let i=0;i<a.length;i+=4)s.add(a[i]<<16|a[i+1]<<8|a[i+2]);return s.size;};
+ // consecutive frames (each frame's [x,y,w,h], in rows of 6, magenta between) while [act] runs, and their scroll
+ const strip=async(name,region,frames,act)=>{
+  for(let i=0;i<6;i++)await flush(); // still frames first, so the motion stands apart in the trace
+  await page.evaluate(([r,n])=>{const c=document.querySelector('#game'),s={n,frames:[],at:[]};window.__strip=s;
+   const tick=t=>{if(s.frames.length>=n)return;const o=document.createElement('canvas');o.width=r[2];o.height=r[3];o.getContext('2d').drawImage(c,r[0],r[1],r[2],r[3],0,0,r[2],r[3]);s.frames.push(o);s.at.push(t);requestAnimationFrame(tick);};
+   requestAnimationFrame(tick);},[region,frames]);
+  await act();
+  await page.waitForFunction(()=>window.__strip.frames.length>=window.__strip.n,{},{timeout:60000});
+  const url=await page.evaluate(([w,h])=>{const f=window.__strip.frames,cols=6,rows=Math.ceil(f.length/cols),o=document.createElement('canvas');o.width=cols*(w+4)-4;o.height=rows*(h+4)-4;
+   const g=o.getContext('2d');g.fillStyle='#f0f';g.fillRect(0,0,o.width,o.height);f.forEach((c,i)=>g.drawImage(c,(i%cols)*(w+4),Math.floor(i/cols)*(h+4)));return o.toDataURL('image/png');},[region[2],region[3]]);
+  await writeFile(join(out,'console-'+mode+'-'+name+'.png'),Buffer.from(url.split(',')[1],'base64'));
+  const trace=(await probe()).trace.split(' ').map(t=>t.split(':').map(Number));
+  return trace;
+ };
+ // a trace's panel scroll, from the frame it first moved to where it stopped
+ // (the last motion in the trace: back from where it stopped to six still frames before it)
+ const motion=trace=>{const p=trace.map(t=>t[1]);let b=p.length-1;while(b>0&&p[b]===p[b-1])b--;let a=b,still=0;
+  while(a>0){if(p[a-1]===p[a]){if(++still>=6){a+=still-1;break;}}else still=0;a--;}
+  const m=p.slice(a,b+1);m.dt=trace.slice(a+1,b+1).map(t=>t[0]);return m;};
+ const smooth=(what,m,total)=>{const d=m.slice(1).map((v,i)=>v-m[i]);console.log(what+' per frame: '+d.join(' ')+' (frame ms '+(m.dt||[]).join(' ')+'; px/ms '+d.map((x,i)=>(x/((m.dt||[])[i]||1)).toFixed(2)).join(' ')+')');
+  assert.ok(m.length>=5,what+': over several frames, not a jump: '+m.join(' '));
+  assert.ok(d.every(x=>Math.sign(x)===Math.sign(total)||x===0),what+': one way only (no jitter, no spring back): '+d.join(' '));
+  assert.ok(Math.max(...d.map(Math.abs))<=Math.abs(total)*0.5,what+': no step takes half the way: '+d.join(' '));};
+
+ if(!(await isOpen()))await key('Backquote');
+ await type('get weapon');await key('Enter');await page.waitForTimeout(300);
+ await page.mouse.move(...await at(640,40));await flush();
+ let p=await settle();console.log('weapon picker: '+p.raw);
+ const [vx,vy,vw,vh]=p.view;
+ assert.ok(p.rowsInView>=3,'at 1280x720 the weapon picker shows three rows and more, not one: '+p.rowsInView);
+ assert.ok(vy<=200&&vy+vh>=620&&vw>=1150,'the picker takes most of the screen: view '+p.view);
+ const span=p.cols*(p.tile[0]+p.gap)-p.gap,rightGap=vw-p.left-span;
+ assert.ok(p.cols>=8&&Math.abs(rightGap-p.left)<=1,'the tiles keep their size and centre in the view: '+p.cols+' columns, '+p.left+' / '+rightGap);
+ await shot('r22-picker-weapon');
+ // the clip: scrolled so the first row is cut 60 pixels into its art (its name box), that row draws from the view's top edge on,
+ // exactly as it looked 60 pixels lower at the top, and nothing of it lands on the header above the view
+ const sc=await cssScale(),cut=p.top+60,tx=vx+p.left+20;
+ const art0=await pixels(tx,vy+cut,60,6),head0=await pixels(vx,vy-10,vw,10);
+ await wheel(640,400,cut*sc);await page.mouse.move(...await at(640,40));p=await settle();
+ assert.equal(p.scroll,cut,'the wheel scrolls by pixels: '+cut+' asked');
+ const art1=await pixels(tx,vy,60,6),head1=await pixels(vx,vy-10,vw,10);
+ await shot('r22-picker-weapon-cut');
+ // and where the gap between two rows is at the top, only the window's background is there
+ const gapAt=p.top+p.tile[1]+2;await wheel(640,400,(gapAt-cut)*sc);await page.mouse.move(...await at(640,40));p=await settle();
+ assert.equal(p.scroll,gapAt);const bg=await pixels(tx,vy,60,6);
+ console.log('clip: cut row '+(same(art0,art1)*100).toFixed(1)+'% as drawn unscrolled, '+(same(art1,bg)*100).toFixed(1)+'% like the background, '+distinct(art1)+' colours; header '+(same(head0,head1)*100).toFixed(1)+'% unchanged');
+ assert.ok(same(art0,art1)>=0.95&&same(art1,bg)<0.5,'a half-visible tile draws cut at the view\'s edge');
+ assert.equal(same(head0,head1),1,'nothing drawn past the clip into the header');
+ // the wheel: by its distance, glided to, exactly; to the end and no further
+ await wheel(640,400,-2000);p=await settle();assert.equal(p.scroll,0,'back at the top');
+ await wheel(640,400,400);p=await settle();const want=Math.min(p.max,Math.round(400/sc));
+ assert.ok(Math.abs(p.scroll-want)<=1,'the wheel: 400 screen pixels are '+want+' here, scrolled '+p.scroll);
+ await wheel(640,400,100000);p=await settle();assert.equal(p.scroll,p.max,'the wheel stops at the end');
+ await wheel(640,400,-100000);p=await settle();
+ // a mouse wheel's notches glide (a frame strip of the view's top edge, cut tiles included)
+ let tr=await strip('strip-wheel-pc',[vx,vy-12,420,200],24,async()=>{for(let i=0;i<3;i++){await page.mouse.wheel(0,100);}});
+ p=await settle();smooth('wheel',motion(tr),p.scroll);
+ // a drag: the content follows the pointer pixel for pixel; the mouse does not fling; a drag is not a click
+ const own0=owned(await probe()).length,s0=p.scroll;
+ tr=await strip('strip-drag-pc',[vx,vy-12,420,200],24,async()=>{const [px,py]=await at(640,520);await page.mouse.move(px,py);await page.mouse.down();
+  for(let i=1;i<=12;i++){await page.mouse.move(px,py-i*10*sc);await flush();}await page.mouse.up();});
+ p=await settle();
+ assert.equal(p.scroll,s0+120,'a drag of 120 pixels scrolls 120');assert.equal(owned(await probe()).length,own0,'a drag gets nothing');
+ smooth('drag',motion(tr),120);
+ // the scroll bar: its thumb drags, its track pages
+ assert.ok(p.thumb,'a scroll bar while the content is taller than the view');
+ const [bx,by,bw,bh]=p.thumb,thumb0=p.scroll;
+ {const [px,py]=await at(bx+bw/2,by+bh/2);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.move(px,py+40*sc,{steps:4});await flush();await page.mouse.up();}
+ p=await settle();assert.ok(p.scroll>thumb0+20,'dragging the thumb scrolls: '+thumb0+' -> '+p.scroll);await shot('r22-picker-weapon-bar');
+ const s1=p.scroll;await click(bx+bw/2,Math.min(vy+vh-4,p.thumb[1]+p.thumb[3]+30));p=await settle();
+ assert.ok(p.scroll>s1,'a click on the track under the thumb pages down: '+s1+' -> '+p.scroll);
+ // the keys: Page Up and Page Down scroll a page; Down selects the first tile in view, Right the next, Enter gets it
+ // (the picker stays), Escape drops the selection and the console stays; the next Escape closes it. On the crew
+ // picker, so no equipment box fills up for the commands below.
+ const s2=(await settle()).scroll;await key('PageUp');p=await settle();assert.ok(p.scroll<s2,'Page Up scrolls up: '+s2+' -> '+p.scroll);
+ const s3=p.scroll;await key('PageDown');p=await settle();assert.ok(p.scroll>s3,'Page Down scrolls down');
+ await key('ArrowDown');p=await info();assert.ok(p.selected,'Down selects');await shot('r22-picker-weapon-keys');
+ await key('Escape');assert.equal(await isOpen(),true,'Escape drops the selection first');assert.equal((await info()).selected,false);
+ await key('Escape');assert.equal(await isOpen(),false,'then closes');
+ await key('Backquote');await type('get crew');await key('Enter');await page.waitForTimeout(300);
+ await key('ArrowDown');await key('ArrowRight');assert.ok((await info()).selected);
+ const crew1=(await probe()).crew.length;await key('Enter');
+ assert.equal((await probe()).crew.length,crew1+1,'Enter gets the selected item');assert.equal(await consoleText(),'get crew ','the picker stays after Enter');
+ assert.match((await output()).at(-1),/^Granted: /);await shot('r22-picker-crew-keys');
+ await key('Escape');await key('Escape');assert.equal(await isOpen(),false);
+ // a large window: the same layout, larger
+ await page.setViewportSize({width:2560,height:1440});await page.waitForTimeout(500);await key('Backquote');await type('get weapon');await key('Enter');await page.waitForTimeout(300);
+ await shot('r22-picker-weapon-large');assert.ok((await info()).rowsInView>=3);
+ await key('Escape');await page.setViewportSize({width:1440,height:1000});await page.waitForTimeout(500);
+ // every picker and help, one screenshot each, scrolled half a row so the cut shows
+ for(const [line,label] of [['get drone','drone'],['get augment','augment'],['get crew','crew'],['get system','system'],['unlock ship','ship'],['unlock achievement','achievement'],['help','help']]){
+  await key('Backquote');await type(line);await key('Enter');await page.waitForTimeout(300);await page.mouse.move(...await at(640,40));
+  p=await settle();await shot('r22-'+label);
+  if(p.max>0){await wheel(640,400,Math.round((p.step?p.step/2:60)*sc));await page.mouse.move(...await at(640,40));p=await settle();await shot('r22-'+label+'-scrolled');}
+  console.log(label+': '+p.raw);
+  if(label!=='help')assert.ok(p.rowsInView>=2.5,label+': rows in view '+p.rowsInView);
+  await key('Escape');if(await isOpen())await key('Escape');
+ }
+ // help: Down selects the first command, Enter fills it in
+ await key('Backquote');await type('help');await key('Enter');await page.waitForTimeout(200);await key('ArrowDown');await key('Enter');
+ assert.equal(await consoleText(),'get ','help: Enter fills the selected command in');await key('Escape');if(await isOpen())await key('Escape');
+ await key('Backquote');
+ pass(mode+': the picker fills the screen with whole rows, cut tiles at the edges, pixel wheel and drag scrolling, the scroll bar and the keys');
+
  // completion: the suggestions scroll; the new commands glow (screenshots); help is the reference
  await type('s');await shot('suggestions');await wheel(600,600,600);assert.match(await panel(),/CommandCompleter.*scroll=[1-9]/,'the wheel scrolls the suggestions');
  await shot('suggestions-scrolled');await key('Escape');await key('Backquote');
  await type('get');await shot('glow-input');await key('Escape');await key('Backquote');
  await type('help');await key('Enter');assert.match(await panel(),/^ConsoleReference/,'help opens the reference');await shot('help');
  await type('unlock');await shot('help-search');await key('Escape');await key('Backquote');
- await type('help');await key('Enter');await click(100,426);assert.equal(await consoleText(),'get ','a click on a command fills it in');
+ await type('help');await key('Enter');await page.waitForTimeout(200);{const [hx,hy]=(await info()).view;await click(hx+60,hy+30);}assert.equal(await consoleText(),'get ','a click on a command fills it in');
  await key('Enter');await shot('get-kinds');assert.match(await panel(),/^KindCompleter/,'get alone lists the kinds');
  await key('Escape');
  pass(mode+': the suggestions scroll, help is the searchable reference and fills commands in');

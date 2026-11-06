@@ -184,6 +184,9 @@ class ConsoleReceiver : BroadcastReceiver() {
                 val (name, units) = cmd.substring(4).split(' ')
                 state.player.systems.first { it.codename == name }.dealDamage(0, units.toInt())
             }
+            // The debug console's panel (its kind, view, grid, scroll) and the scroll of its last frames, for the frame strips.
+            else if (cmd == "console-panel") Log.i("FTL-Console", "panel " + state.debugConsole.debugPanel())
+            else if (cmd == "console-trace") Log.i("FTL-Console", "trace " + state.debugConsole.debugTrace())
             else if (cmd == "state") {
                 Log.i("FTL-State", "ship=${state.player.type.name} hull=${state.player.health} scrap=${state.player.scrap} sector=${state.currentBeacon.sector.sectorNumber} " +
                     "enemy=${state.enemy?.type?.name} weapons=${state.player.hardpoints.map { it.weapon?.type?.name }} crew=${state.player.crew.size} dialogue=${state.shipUI.isWindowOpen}")

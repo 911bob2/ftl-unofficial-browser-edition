@@ -34,7 +34,7 @@ class SelectShipState(
     private val main: MainGame,
     val advancedEdition: Boolean = ftl.browser.BrowserFiles.enableAE,
     previous: SelectShipState? = null
-) : MainGame.GameState() {
+) : MainGame.GameState(), xyz.znix.xftl.game.TouchRouter.LiftTargets {
     companion object {
         // ShipBuilder's family order table (0x0087b660: ids 0,3,4,7,2,5,6,1,9,8),
         // which the arrows cycle through and the ship list lays out.
@@ -237,6 +237,8 @@ class SelectShipState(
 
     // The first hangar on a new profile, in the touch layout: laid out for the 1280x720 frame, moved to the block's middle.
     private var welcome: xyz.znix.xftl.game.NativeChoiceBox? = null
+    /** The first run's welcome box is up (diagnostics). */
+    val diagnosticWelcome get() = welcome != null
     private val welcomeDx get() = xyz.znix.xftl.game.TouchMode.HUD_W / 2 - 640
     private val welcomeDy get() = xyz.znix.xftl.game.TouchMode.HUD_H / 2 - 360
 
@@ -314,7 +316,7 @@ class SelectShipState(
         screenSize.y = container.height
         val input = container.input
         // A finger only hovers while it is down.
-        if (HangarLayout.touch && !input.isMouseButtonDown(Input.MOUSE_LEFT_BUTTON)) {
+        if (HangarLayout.touch && !xyz.znix.xftl.game.TouchRouter.fingerDown && !input.isMouseButtonDown(Input.MOUSE_LEFT_BUTTON)) {
             mousePos.x = LIFTED
             mousePos.y = LIFTED
         } else {
@@ -341,7 +343,39 @@ class SelectShipState(
         (sounds as? xyz.znix.xftl.game.RealSoundManager)?.let { it.updateLoopedSounds(false); it.updateMusic(delta) }
     }
 
+    /**
+     * ShipBuilder::MouseClick: the hangar acts on the press, as the rest of the title menus (CApp::OnLButtonDown hands
+     * it to MainMenu::MouseClick); MainMenu::MouseUp gives the ship builder nothing. (The unused ship editor keeps its
+     * own press, release and click.)
+     */
+    override fun mousePressed(button: Int, x: Int, y: Int) {
+        hangarPress(button, x, y)
+        if (shipListVisible)
+            return
+
+        if (isShipEdited) {
+            editor.mousePressed(button, x - shipOffset.x, y - shipOffset.y)
+        }
+    }
+
+    /** What a finger taps (TouchRouter): a welcome or ship list choice, the seed field, a control, a difficulty, Start. */
+    override fun liftTarget(canvasX: Int, y: Int): Any? {
+        val x = canvasX - blockX
+        welcome?.let { w -> return w.liftTarget(x - welcomeDx, y - welcomeDy)?.let { listOf("welcome", it) } }
+        if (shipListVisible) return shipList.liftTarget(x, y)
+        if (isShipEdited) return null
+        if (!presentation.isEditing && !presentation.isCustomizing && seedBox?.hits(x, y) == true) return "seed"
+        return presentation.liftTarget(x, y) ?: startGameButton.liftTarget(x, y)
+    }
+
     override fun mouseClicked(button: Int, canvasX: Int, y: Int, clickCount: Int) {
+        if (welcome == null && !shipListVisible && isShipEdited) {
+            val x = canvasX - blockX
+            editor.mouseClicked(button, x - shipOffset.x, y - shipOffset.y, clickCount)
+        }
+    }
+
+    private fun hangarPress(button: Int, canvasX: Int, y: Int) {
         val x = canvasX - blockX
         mousePos.x = x
         mousePos.y = y
@@ -360,24 +394,10 @@ class SelectShipState(
 
         if (presentation.click(button,x,y)) return
 
-        // Block editor interactions if we're only inspecting a ship
-        if (isShipEdited) {
-            editor.mouseClicked(button, x - shipOffset.x, y - shipOffset.y, clickCount)
-        }
-
         startGameButton.mouseClicked(button, x, y)
 
         // No hidden file-editor hit targets.
 
-    }
-
-    override fun mousePressed(button: Int, x: Int, y: Int) {
-        if (shipListVisible)
-            return
-
-        if (isShipEdited) {
-            editor.mousePressed(button, x - shipOffset.x, y - shipOffset.y)
-        }
     }
 
     override fun mouseReleased(button: Int, x: Int, y: Int) {

@@ -56,6 +56,9 @@ class HsSeedBox(private val state: SelectShipState) {
      * ShipBuilder::MouseClick hook: a click in the field starts typing, any other click stops it. Returns true when
      * the click goes no further (the field is active; the hook returns before the original).
      */
+    /** The field is at ([x], [y]) (TouchRouter: a tap there starts typing). */
+    fun hits(x: Int, y: Int): Boolean = enabled && x > left && x < left + WIDTH && y > top && y < top + HEIGHT
+
     fun click(x: Int, y: Int): Boolean {
         if (!enabled) return false
         val wasActive = active

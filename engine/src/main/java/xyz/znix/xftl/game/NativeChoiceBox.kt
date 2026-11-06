@@ -105,19 +105,27 @@ class NativeChoiceBox(
 
     /** ChoiceBox::MouseMove: the row under the pointer, or -1. */
     fun mouseMove(x: Int, y: Int) {
+        hovered = rowAt(x, y)
+    }
+
+    /** The row at ([x], [y]), or -1. */
+    fun rowAt(x: Int, y: Int): Int {
         if (TouchMode.enabled) {
             // Touch bands: half of the gap between rows each way, 10 px past the box at the sides and the ends.
-            hovered = -1
+            var at = -1
             rows.forEachIndexed { i, r ->
                 val above = if (i == 0) 10 else GAP / 2
                 val below = if (i == rows.lastIndex) 10 else GAP / 2
                 if (choices.getOrNull(i)?.type != 1 && x >= r[0] - 10 && x <= r[0] + r[2] + 10 && y >= r[1] - above && y <= r[1] + r[3] + below)
-                    hovered = i
+                    at = i
             }
-            return
+            return at
         }
-        hovered = rows.indexOfFirst { x >= it[0] && x < it[0] + it[2] && y >= it[1] && y < it[1] + it[3] }
+        return rows.indexOfFirst { x >= it[0] && x < it[0] + it[2] && y >= it[1] && y < it[1] + it[3] }
     }
+
+    /** What a finger taps at ([x], [y]) (TouchRouter.LiftTargets): an available choice's index, or null. */
+    fun liftTarget(x: Int, y: Int): Int? = rowAt(x, y).takeIf { it >= 0 && choices[it].type != 1 }
 
     /** The chosen index, if the click lands on an available choice. */
     fun click(x: Int, y: Int): Int? {

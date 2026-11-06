@@ -110,6 +110,35 @@ object HsCooldownNumbers {
         }
     }
 
+    /**
+     * The touch layout's open weapon column (TouchHud), which the iPad never had: the same lines centred over the slot
+     * at ([x], [y]) of [width], the first in the 12 px gap above it, the others 10 px higher each, as on the desktop.
+     * Lines over the slot above get a dark band, so its name stays apart from them.
+     */
+    @JvmStatic
+    fun drawTouch(game: InGameState, g: xyz.znix.xftl.rendering.Graphics, weapon: AbstractWeaponInstance,
+                  targeted: Boolean, autofire: Boolean, x: Int, y: Int, width: Int) {
+        val l = lines(game, weapon, targeted, autofire)
+        if (HS.luaActive && !HsWeaponsLua.renderBox(weapon, l)) return
+        val f = font ?: NativeFonts.font(game::getFont, 51).also { font = it }
+        val cx = x + width / 2f
+        var top = y - 10
+        var first = true
+        for (line in arrayOf(l.first, l.second, l.third)) {
+            if (line.isEmpty()) continue
+            if (!first) {
+                val w = f.width(line) + 4f
+                g.colour = TOUCH_BAND
+                g.fillRect(cx - w / 2, top - 1f, w, 10f)
+            }
+            f.printCenter(cx, top.toFloat(), line, l.colour)
+            top -= 10
+            first = false
+        }
+    }
+
+    private val TOUCH_BAND = Colour(0.06f, 0.02f, 0.03f, 0.85f)
+
     /** std::fixed << setprecision(1). */
     @JvmStatic
     fun fixed1(v: Float): String {

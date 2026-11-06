@@ -109,7 +109,7 @@ object BrowserHsRenderDiagnostics {
                     xyz.znix.xftl.hs.events.HsEvents.eventQueue.addLast(xyz.znix.xftl.hs.events.EventQueueEvent(arg, "", -1))
                     out += "\"event\":\"$arg\""
                 }
-                "altMode" -> { HsOverlay.altMode = arg.toBoolean(); out += "\"altMode\":${HsOverlay.altMode}" }
+                "altMode" -> { HsOverlay.altMode = arg.toBoolean(); HsOverlay.altModeChanged = true; xyz.znix.xftl.hs.render.HsMoreInfo.onLoop(); out += "\"altMode\":${HsOverlay.altMode}" }
                 else -> error("Unknown hsRenderProbe command $op")
             }
         }

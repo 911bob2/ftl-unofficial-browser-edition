@@ -78,6 +78,9 @@ class Slider(provider: UIProvider) : Widget(provider) {
 
     private inner class SliderButton(game: InGameState, val window: Window) : Button(game, position, size) {
         private var dragging = false
+
+        // The finger drags the knob from its press.
+        override val touchLift: Boolean get() = false
         fun getColour(): Colour {
             return when {
                 disabled -> Constants.JUMP_DISABLED

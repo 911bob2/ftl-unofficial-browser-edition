@@ -21,7 +21,7 @@ object TouchPatches {
     val all = listOf(
         // Multiverse 5.5.1's Lua tutorial (data/mv_scripts/tutorial.lua): seven of its lines in data/text_tutorial.xml
         // name the right mouse button, hovering, clicking or a hotkey.
-        Patch("multiverse-5.5.1", 2, listOf("data/text_tutorial.xml.append"),
+        Patch("multiverse-5.5.1", 3, listOf("data/text_tutorial.xml.append"),
             setOf("487f7e198bb12818e655597a55b71a4d7ed1cd5a41f8d31cc270c801b72c68b0")),
     )
 

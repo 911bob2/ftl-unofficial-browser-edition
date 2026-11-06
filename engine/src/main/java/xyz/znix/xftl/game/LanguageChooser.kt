@@ -42,6 +42,9 @@ class LanguageChooser(
         hovered = h
     }
 
+    /** What a finger taps (TouchRouter): a language's index, or null. */
+    fun liftTarget(mx: Int, my: Int): Int? = buttonAt(mx, my).takeIf { it >= 0 }
+
     fun mouseClick(mx: Int, my: Int) {
         val i = buttonAt(mx, my)
         if (i >= 0) choose(codes[i])
@@ -101,7 +104,7 @@ object LanguageSwitch {
  * Automated runs (navigator.webdriver, and the Tests page's temporary runs) stand for the reference captures' setup,
  * whose settings.ini already has `language=en`, so they start at the main menu as before.
  */
-class LanguageSelectState(private val main: MainGame) : MainGame.GameState() {
+class LanguageSelectState(private val main: MainGame) : MainGame.GameState(), TouchRouter.LiftTargets {
     private lateinit var context: SettingsContext
     private lateinit var chooser: LanguageChooser
     private lateinit var title: xyz.znix.xftl.rendering.NativeFonts.NativeFont
@@ -129,9 +132,12 @@ class LanguageSelectState(private val main: MainGame) : MainGame.GameState() {
 
     override fun mouseMoved(oldx: Int, oldy: Int, newx: Int, newy: Int) = chooser.mouseMove(newx, newy)
 
-    override fun mouseClicked(button: Int, x: Int, y: Int, clickCount: Int) {
+    /** LanguageChooser::MouseClick: on the press (CApp::OnLButtonDown). */
+    override fun mousePressed(button: Int, x: Int, y: Int) {
         if (button == xyz.znix.xftl.sys.Input.MOUSE_LEFT_BUTTON) chooser.mouseClick(x, y)
     }
+
+    override fun liftTarget(x: Int, y: Int): Any? = chooser.liftTarget(x, y)
 
     companion object {
         /** Settings::languageSet; the automated runs stand for a settings.ini with a language. */

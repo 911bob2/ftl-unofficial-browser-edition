@@ -62,9 +62,9 @@ object BrowserHsAchievementDiagnostics {
             // The statistics screen: achievements tab, right arrow to the first custom page, drawn.
             val stats = BrowserStatisticsState(main, null)
             stats.render(container, graphics)
-            stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 900, 60, 1)
+            stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 900, 60)
             stats.render(container, graphics)
-            stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 1200, 100, 1)
+            stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 1200, 100)
             stats.update(container, 0f)
             stats.render(container, graphics)
             val page = stats.diagnosticAchievementPage

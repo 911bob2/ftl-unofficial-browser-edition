@@ -7,7 +7,6 @@ package xyz.znix.xftl.hs.sector
 import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.hs.HS
 import xyz.znix.xftl.hs.lua.LuaPrimitive
-import xyz.znix.xftl.hs.render.HsOverlay
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.rendering.FixedDelayedTooltip
 import xyz.znix.xftl.rendering.Image
@@ -18,7 +17,7 @@ import xyz.znix.xftl.rendering.Image
  *   (CustomMap.cpp, priority 9999) sets `outOfFuel = fuel_count < 1 || forceWait`, so a script can hold the player
  *   on the wait/distress controls with fuel left; the script's primitive replaces the NO FUEL text.
  * - showAllConnections.currentValue: with `splitAllNodeView` it follows the superGrid button (on until clicked off,
- *   then the hyperspace.xml default), without it the More Info button's altMode or the default (MoreInfoButton.cpp).
+ *   then the hyperspace.xml default), without it the More Info mode as last applied or the default (MoreInfoButton.cpp).
  */
 object HsStarMap {
     /** CustomMap.cpp `bool forceWait`: never saved, kept across runs until a script clears it. */
@@ -57,7 +56,7 @@ object HsStarMap {
     fun showAllConnections(): Boolean {
         val cfg = HS.cfg()
         return if (cfg.splitAllNodeView) (showAllNodeConnections || cfg.showAllConnections)
-        else HsOverlay.altMode || cfg.showAllConnections
+        else xyz.znix.xftl.hs.render.HsMoreInfo.applied || cfg.showAllConnections
     }
 
     // ---- the superGrid button (StarMap constructor: Button "map/button_supergridOff" at (344, 550), active) ----

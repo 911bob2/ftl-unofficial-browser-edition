@@ -95,7 +95,8 @@ class Input(private val renderer: GameRenderer) {
 
     private var mouseButtons = 0
     private var mouseFinger = false
-    private val MOUSE_FINGER = 1000
+    /** The mouse's left button as a finger: the router keeps it a mouse on the screens (acting on the press). */
+    private val MOUSE_FINGER = xyz.znix.xftl.game.TouchRouter.MOUSE_ID
 
     fun onMouse(e: MotionEvent): Boolean {
         val x = renderer.gameX(e.x)

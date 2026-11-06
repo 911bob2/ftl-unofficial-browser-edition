@@ -1465,7 +1465,8 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         // Hyperspace ScrollingChoiceBox::MouseMove: choices answer only inside the box, at the scrolled position
         val py = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.mouseMove(game, p.x, p.y) ?: return else p.y
         if (TouchMode.enabled) {
-            if (touchFingerDown) hoveredOption = touchRowAt(p.x, py)
+            // The row under a finger that is down, waiting to tap it (TouchRouter) or pressing.
+            if (touchFingerDown || TouchRouter.fingerDown) hoveredOption = touchRowAt(p.x, py)
             return
         }
         for ((i, bb) in optionBoundingBoxes.withIndex()) {
@@ -1473,6 +1474,18 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
                 hoveredOption = i
             }
         }
+    }
+
+    /** What a finger taps (TouchRouter): a choice (its row), a scroll button; the scroll bar takes the press. */
+    override fun liftTarget(x: Int, y: Int): Any? {
+        super.liftTarget(x, y)?.let { return it }
+        val p = scaleWindowPoint(x, y)
+        if (xyz.znix.xftl.hs.HS.active) {
+            xyz.znix.xftl.hs.render.HsScrollingChoiceBox.liftTarget(game, p.x, p.y)?.let { return it }
+            val py = xyz.znix.xftl.hs.render.HsScrollingChoiceBox.choiceY(p.y) ?: return null
+            return touchRowAt(p.x, py)?.let { listOf("choice", it) }
+        }
+        return touchRowAt(p.x, p.y)?.let { listOf("choice", it) }
     }
 
     override fun mouseReleased(button: Int, x: Int, y: Int) {
@@ -1496,6 +1509,15 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         if (button != Input.MOUSE_LEFT_BUTTON) return
         if (TouchMode.enabled) touchFingerDown = true
         updateUI(x, y)
+        // Android's mouse chooses on its press, as the desktop's does (ChoiceBox::MouseClick).
+        if (TouchMode.enabled && TouchRouter.mouseDown) {
+            touchFingerDown = false
+            if (hoveredOption == null && xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.mouseClick(x, y)
+            val idx = hoveredOption ?: return
+            hoveredOption = null
+            if (!choiceInputReady) logChoice("mouse", -1, "delay") else chooseInput("mouse", idx)
+            return
+        }
         // Hyperspace ScrollingChoiceBox::MouseClick (after the original; a choice closes or replaces the box)
         if (xyz.znix.xftl.hs.HS.active && hoveredOption == null) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.mouseClick(x, y)
         if (TouchMode.enabled) return

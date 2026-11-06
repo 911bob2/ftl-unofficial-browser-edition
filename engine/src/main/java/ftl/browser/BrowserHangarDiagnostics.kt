@@ -34,10 +34,10 @@ object BrowserHangarDiagnostics {
                 check(before==BrowserXml.write(main.profile.snapshot())) { "Preview changed progression" }
                 check(seed==BrowserRandom.snapshot()) { "Preview consumed gameplay RNG" }
                 hangar.restoreSelection(ShipProgression.KESTREL,Difficulty.NORMAL)
-                hangar.mouseClicked(0,92,264,1) // Locked Layout B.
+                hangar.mousePressed(0,92,264) // Locked Layout B.
                 check(hangar.selectedShipId==ShipProgression.KESTREL) { "BrowserHangarDiagnostics.kt:38" }
                 hangar.restoreSelection("PLAYER_SHIP_HARD_2",Difficulty.NORMAL)
-                hangar.mouseClicked(0,1170,50,1)
+                hangar.mousePressed(0,1170,50)
                 check(main.currentState===hangar && !hangar.isSelectedUnlocked) { "BrowserHangarDiagnostics.kt:41" }
                 check(hangar.lockReason.contains("2/3")) { "BrowserHangarDiagnostics.kt:42" }
                 if(ae) {
@@ -59,24 +59,24 @@ object BrowserHangarDiagnostics {
             var hangar=main.currentState as SelectShipState
             val ui=hangar.hangarPresentation
             val default=ui.shipName
-            hangar.mouseClicked(2,50,30,1);check(!ui.isEditing) { "BrowserHangarDiagnostics.kt:62" }
-            hangar.mouseClicked(0,50,30,1)
+            hangar.mousePressed(2,50,30);check(!ui.isEditing) { "BrowserHangarDiagnostics.kt:62" }
+            hangar.mousePressed(0,50,30)
             "x".forEach { hangar.keyPressed(0,it) }
             hangar.keyPressed(Input.KEY_ESCAPE,'\u0000');check(ui.shipName==(default+"x").take(16)) { "BrowserHangarDiagnostics.kt:65" }
             fun clearName() { hangar.keyPressed(Input.KEY_END,'\u0000');repeat(16) { hangar.keyPressed(Input.KEY_BACK,'\u0000') } }
-            hangar.mouseClicked(0,50,30,1)
+            hangar.mousePressed(0,50,30)
             clearName()
             "1234567890123456789".forEach { hangar.keyPressed(0,it) }
             hangar.keyPressed(Input.KEY_ENTER,'\u0000');check(ui.shipName=="1234567890123456") { "BrowserHangarDiagnostics.kt:70" }
-            hangar.mouseClicked(0,50,30,1);clearName()
+            hangar.mousePressed(0,50,30);clearName()
             hangar.keyPressed(Input.KEY_ENTER,'\u0000');check(ui.shipName==hangar.translator["nameless_one"]) { "BrowserHangarDiagnostics.kt:72" }
-            hangar.mouseClicked(0,50,30,1);clearName();"Parity ship".forEach { hangar.keyPressed(0,it) };hangar.keyPressed(Input.KEY_ENTER,'\u0000')
-            hangar.mouseClicked(0,100,590,1);check(ui.isCustomizing) { "BrowserHangarDiagnostics.kt:74" }
-            hangar.mouseClicked(0,1170,50,1);check(main.currentState===hangar) { "BrowserHangarDiagnostics.kt:75" }
-            hangar.mouseClicked(0,150,649,1);clearName();"Parity crew".forEach { hangar.keyPressed(0,it) };hangar.keyPressed(Input.KEY_ENTER,'\u0000')
+            hangar.mousePressed(0,50,30);clearName();"Parity ship".forEach { hangar.keyPressed(0,it) };hangar.keyPressed(Input.KEY_ENTER,'\u0000')
+            hangar.mousePressed(0,100,590);check(ui.isCustomizing) { "BrowserHangarDiagnostics.kt:74" }
+            hangar.mousePressed(0,1170,50);check(main.currentState===hangar) { "BrowserHangarDiagnostics.kt:75" }
+            hangar.mousePressed(0,150,649);clearName();"Parity crew".forEach { hangar.keyPressed(0,it) };hangar.keyPressed(Input.KEY_ENTER,'\u0000')
             check(ui.crew.first().name=="Parity crew") { "BrowserHangarDiagnostics.kt:77" }
-            hangar.mouseClicked(0,276,574,1)
-            hangar.mouseClicked(0,253,649,1);check(!ui.isCustomizing) { "BrowserHangarDiagnostics.kt:79" }
+            hangar.mousePressed(0,276,574)
+            hangar.mousePressed(0,253,649);check(!ui.isCustomizing) { "BrowserHangarDiagnostics.kt:79" }
             val choices=ui.crew.map { it.copy() }
             hangar.setRoomsVisible(false)
             val sounds=main.gameContent.sounds

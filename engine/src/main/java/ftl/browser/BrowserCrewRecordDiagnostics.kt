@@ -157,21 +157,21 @@ object BrowserCrewRecordDiagnostics {
         }
         val navigationProfile = BrowserXml.write(profile.snapshot())
         val navigationRandom = BrowserRandom.snapshot()
-        stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 800, 80, 1)
+        stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 800, 80)
         check(stats.diagnosticTab == "STATISTICS") { "BrowserCrewRecordDiagnostics.kt:153" }
         main.render(container, graphics)
-        stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 1000, 80, 1)
+        stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 1000, 80)
         check(stats.diagnosticTab == "ACHIEVEMENTS") { "BrowserCrewRecordDiagnostics.kt:156" }
         main.render(container, graphics)
-        stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 480, 65, 1)
+        stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 480, 65)
         check(stats.diagnosticScoresTab == "SHIP_BEST" && stats.diagnosticTab == "ACHIEVEMENTS") { "BrowserCrewRecordDiagnostics.kt:159" }
         main.render(container, graphics)
-        stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 140, 170, 1)
+        stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 140, 170)
         check(stats.diagnosticShipList) { "BrowserCrewRecordDiagnostics.kt:162" }
         main.render(container, graphics)
         stats.keyPressed(Input.KEY_ESCAPE, '\u0000')
         check(!stats.diagnosticShipList && main.currentState === stats) { "Nested statistics list closed its parent" }
-        stats.mouseClicked(Input.MOUSE_LEFT_BUTTON, 180, 65, 1)
+        stats.mousePressed(Input.MOUSE_LEFT_BUTTON, 180, 65)
         check(stats.diagnosticScoresTab == "TOP_SCORES" && stats.diagnosticTab == "ACHIEVEMENTS") { "BrowserCrewRecordDiagnostics.kt:167" }
         main.render(container, graphics)
         // Ship Best's LIST opens the hangar's ShipSelect, whose Open (0x00529940) marks the list tutorial shown.

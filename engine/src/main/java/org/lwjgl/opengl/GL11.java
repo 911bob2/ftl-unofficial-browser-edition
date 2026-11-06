@@ -65,7 +65,17 @@ public class GL11 {
 
     public static void glClear(int mask) { DrawQueue.drain(); GLES30.glClear(mask); }
 
-    public static void glViewport(int x, int y, int w, int h) { DrawQueue.drain(); GLES30.glViewport(x, y, w, h); }
+    /**
+     * The viewport set through [glViewport], in framebuffer pixels: Graphics.pushClip maps its game-unit rectangles with
+     * it. Width -1: never set (the website draws its 1280x720 canvas one pixel per unit, viewport set by web/gl.mjs).
+     */
+    public static int viewportX = 0, viewportY = 0, viewportW = -1, viewportH = -1;
+
+    public static void glViewport(int x, int y, int w, int h) {
+        DrawQueue.drain();
+        viewportX = x; viewportY = y; viewportW = w; viewportH = h;
+        GLES30.glViewport(x, y, w, h);
+    }
 
     public static void glBlendFunc(int sf, int df) { DrawQueue.drain(); GLES30.glBlendFunc(sf, df); }
 

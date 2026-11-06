@@ -93,7 +93,7 @@ class TouchPatchesTest {
         assertEquals(emptyList<Any>(), ftl.android.app.mods.TouchPatches.forMods(listOf("00".repeat(32))))
         val p = ftl.android.app.mods.TouchPatches.forMods(listOf("11".repeat(32), mv))
         assertEquals(listOf("multiverse-5.5.1"), p.map { it.id })
-        assertEquals("multiverse-5.5.1@2", ftl.android.app.mods.TouchPatches.key(p))
+        assertEquals("multiverse-5.5.1@3", ftl.android.app.mods.TouchPatches.key(p))
         assertEquals("", ftl.android.app.mods.TouchPatches.key(emptyList()))
     }
 }

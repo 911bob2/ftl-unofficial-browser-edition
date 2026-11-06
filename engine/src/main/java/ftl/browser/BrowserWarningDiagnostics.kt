@@ -47,7 +47,7 @@ object BrowserWarningDiagnostics {
         }
         fun titleStart(): MainMenuState {
             val menu = main.currentState as MainMenuState
-            menu.mouseClicked(Input.MOUSE_LEFT_BUTTON, 1180, 353, 1)
+            menu.mousePressed(Input.MOUSE_LEFT_BUTTON, 1180, 353)
             return menu
         }
         fun pauseAction(state: InGameState, restart: Boolean): ConfirmationWindow {

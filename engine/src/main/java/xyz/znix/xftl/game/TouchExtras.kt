@@ -388,6 +388,19 @@ class TouchExtras(private val ui: PlayerShipUI, private val game: InGameState) {
         }
     }
 
+    /** Draws [key]'s piece again where it was placed this frame (over an open window), measuring nothing. */
+    fun renderAgain(g: Graphics, key: String) {
+        val p = pieces[key] ?: return
+        if (!p.placed || p.desk == null) return
+        val mine = held === p
+        g.pushTransform()
+        g.translate(p.ox, p.oy)
+        g.scale(p.s, p.s)
+        p.draw(g, if (mine) heldX else -1, if (mine) heldY else -1)
+        g.flushAll()
+        g.popTransform()
+    }
+
     private fun measure(g: Graphics, p: Piece) {
         if (probe.rects.isEmpty()) {
             p.desk = null

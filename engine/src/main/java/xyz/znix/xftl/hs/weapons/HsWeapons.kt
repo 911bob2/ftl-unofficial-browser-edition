@@ -178,7 +178,7 @@ object HsWeapons {
     @JvmStatic
     fun descriptionOverride(bp: AbstractWeaponBlueprint, tr: xyz.znix.xftl.Translator): String? {
         val def = bp.hs ?: return null
-        if (HS.cfg().redesignedWeaponTooltips) text(def.advancedDescriptionOverride, tr)?.let { return it }
+        if (xyz.znix.xftl.hs.render.HsMoreInfo.redesignedWeaponTooltips()) text(def.advancedDescriptionOverride, tr)?.let { return it }
         return text(def.descriptionOverride, tr)
     }
 
@@ -186,7 +186,7 @@ object HsWeapons {
     @JvmStatic
     fun tooltipOverride(bp: AbstractWeaponBlueprint, tr: xyz.znix.xftl.Translator): String? {
         val def = bp.hs ?: return null
-        if (HS.cfg().redesignedWeaponTooltips) text(def.advancedTooltipOverride, tr)?.let { return it }
+        if (xyz.znix.xftl.hs.render.HsMoreInfo.redesignedWeaponTooltips()) text(def.advancedTooltipOverride, tr)?.let { return it }
         return text(def.tooltipOverride, tr)
     }
 

@@ -306,6 +306,18 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         return nearRoom(ship, p)
     }
 
+    /** The crew hover tooltip's text ([CrewHoverTooltip]) at a canvas point: the player's ship first, then the enemy's. */
+    internal fun touchCrewTooltipText(canvasX: Int, canvasY: Int): String {
+        val p = Point(canvasX, canvasY)
+        game.convertScreenToPlayerShip(p)
+        val text = crewTooltipText(ship, p)
+        if (text.isNotEmpty()) return text
+        val enemy = game.enemy ?: return ""
+        p.set(canvasX, canvasY)
+        game.convertScreenToEnemyShip(p)
+        return crewTooltipText(enemy, p)
+    }
+
     internal fun touchNearEnemyRoom(canvasX: Int, canvasY: Int): Boolean {
         val enemy = game.enemy ?: return false
         val p = Point(canvasX, canvasY)
@@ -847,6 +859,17 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         "{\"x\":${it.position.x},\"y\":${it.position.y},\"width\":${it.size.x},\"height\":${it.size.y},\"scale\":${it.renderScale}}"
     } ?: "null"
     val diagnosticConfirmation: String get() = ((pauseWindow ?: currentWindow) as? ConfirmationWindow)?.diagnosticState ?: "null"
+    /** The open window's buttons and the top bar's Ship and Options buttons, where they take a click, whether a weapon or system waits for a room, the enemy rooms' centres (tests/click-through.mjs). */
+    val diagnosticClickTargets: String get() {
+        fun bounds(button: Button?) = if (button == null) "null"
+            else "{\"x\":${button.pos.x},\"y\":${button.pos.y},\"width\":${button.size.x},\"height\":${button.size.y}}"
+        val window = (pauseWindow ?: currentWindow)?.buttons.orEmpty().joinToString(",", "[", "]") { bounds(it) }
+        return "{\"windowButtons\":$window,\"shipButton\":${bounds(shipButtonRef)},\"settingsButton\":${bounds(settingsButtonRef)}," +
+            "\"armed\":${game.clickEvent != null},\"enemyRooms\":" + (game.enemy?.rooms.orEmpty().joinToString(",", "[", "]") {
+                val p = game.enemyShipRenderToScreen(it.pixelCentre.x, it.pixelCentre.y)
+                "{\"id\":${it.id},\"x\":${p.x},\"y\":${p.y}}"
+            }) + "}"
+    }
     val diagnosticArmaments: String get() {
         fun bounds(button: Button) = "{\"x\":${button.pos.x},\"y\":${button.pos.y},\"width\":${button.size.x},\"height\":${button.size.y}}"
         val autofire = buttons.filterIsInstance<AutofireButton>().firstOrNull()
@@ -1193,15 +1216,42 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         )
     }
 
+    /**
+     * The press of each mouse button went to a window (CommandGui +0x4375): CommandGui::LButtonDown clears it, sets it
+     * when the ChoiceBox or an open focus window takes the press, and CommandGui::LButtonUp, with no window open any
+     * more, then ends that release there instead of handing it to the crew and combat controls. So a click that closes a
+     * window never also selects, moves crew or fires at what was under it.
+     */
+    private val windowTookPress = BooleanArray(3)
+
+    /**
+     * Hyperspace's More Info button takes no hover, and so no click, under the menu, the options or game over (its
+     * CommandGui::MouseMove hook); over any other window it does (CommandGui::LButtonDown hook, before the windows).
+     */
+    val moreInfoBlocked: Boolean get() = pauseWindow != null || currentWindow is GameOverWindow
+
+    /** What a finger taps at ([x], [y]) (TouchRouter.LiftTargets): the pause menu's, else the open window's button. */
+    fun liftTarget(x: Int, y: Int): Any? {
+        pauseWindow?.let { return it.liftTarget(x, y) }
+        if (arrivalHidden) return null
+        return currentWindow?.liftTarget(x, y)
+    }
+
+    /** True while [button]'s current press is one a window took (see [windowTookPress]). */
+    fun windowHasPress(button: Int) = windowTookPress.getOrElse(button) { false }
+
     fun mouseClick(button: Int, x: Int, y: Int, playerShipPosition: IPoint) {
+        if (button in windowTookPress.indices) windowTookPress[button] = false
         // Hyperspace More Info button (CommandGui::LButtonDown hook; it does not take the click from the rest)
         if (HS.active && touch == null && button == Input.MOUSE_LEFT_BUTTON) xyz.znix.xftl.hs.render.HsMoreInfo.click(game)
         pauseWindow?.let { win ->
+            if (button in windowTookPress.indices) windowTookPress[button] = true
             win.mouseClick(button, x, y)
             return
         }
 
         currentWindow?.let { win ->
+            if (button in windowTookPress.indices) windowTookPress[button] = true
             if (!arrivalHidden) win.mouseClick(button, x, y)
             return
         }
@@ -1363,6 +1413,12 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         currentWindow?.let { win ->
             if (!arrivalHidden) win.mouseReleased(button, x, y)
+            return
+        }
+
+        // CommandGui::LButtonUp: the press went to a window that has closed since; its release ends here.
+        if (windowHasPress(button)) {
+            windowTookPress[button] = false
             return
         }
 
@@ -2071,6 +2127,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             updateButtons()
         }
         disarmUnusableWeapon()
+        // Hyperspace CommandGui::OnLoop hook (MoreInfoButton.cpp): a toggled More Info mode reaches the options.
+        if (HS.active) xyz.znix.xftl.hs.render.HsMoreInfo.onLoop()
         touch?.update(dt)
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.systems.HsSystemBox.playerFrame(game)
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.systems.HsSystemBox.enemyFrame(game)
@@ -2225,7 +2283,14 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // there (Multiverse's tutorial boxes) lies over the HUD below it (oracle bt-mv-tutorial4, 04-toggle-2).
         val luaStatus = if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP_STATUS) else 0
         if (luaStatus >= 0) drawTopBar(g)
-        if (HS.active) xyz.znix.xftl.hs.render.HsMoreInfo.render(game, g)
+        if (HS.active) {
+            // drawn inside ShipStatus::OnRender, so lit like the status above a window's dimming (oracle ib-mv-eq
+            // map-on, equip-on: the magnifier stays bright over the map and the ship screen)
+            val tint = Graphics.tint
+            Graphics.tint = statusTint
+            xyz.znix.xftl.hs.render.HsMoreInfo.render(game, g)
+            Graphics.tint = tint
+        }
         // Hyperspace TriggeredEvents.cpp: ShipStatus::OnRender hook (triggered event boxes and warnings)
         if (HS.active) xyz.znix.xftl.hs.events.HsTriggeredGui.render(game, g, gc.input.mouseX, gc.input.mouseY)
         if (HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_SHIP_STATUS, luaStatus)
@@ -2797,6 +2862,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         currentWindow?.let { if (!arrivalHidden) renderSingleMenu(container, g, it) }
         pauseWindow?.let { renderSingleMenu(container, g, it) }
+        touch?.renderOverWindow(g)
 
         // The touch UI's room-selection overlay. Uses the iPad port's own
         // banner art from ftl.dat (img/autopause.png, img/
@@ -3593,7 +3659,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         mousePos.set(x, y)
         // Hyperspace More Info button hover (CommandGui::MouseMove hook: not under the pause menu or game over)
         // The touch layout's More Info button is a TouchExtras piece, which moves its hover.
-        if (HS.active && touch == null) xyz.znix.xftl.hs.render.HsMoreInfo.mouseMove(game, null, x, y, pauseWindow != null || currentWindow is GameOverWindow)
+        if (HS.active && touch == null) xyz.znix.xftl.hs.render.HsMoreInfo.mouseMove(game, null, x, y, moreInfoBlocked)
         // Hyperspace event buttons created, cleared or loaded: rebuild the top bar (ShipStatus::OnLoop lays it out)
         if (HS.active && !updatingButtons && (xyz.znix.xftl.hs.render.HsEventButtons.version != hsEventButtonsVersion ||
                 xyz.znix.xftl.hs.render.HsEventButtons.buttons().isNotEmpty() && xyz.znix.xftl.hs.render.HsEventButtons.hideSignature(game) != hsEventHideSig)) updateButtons()

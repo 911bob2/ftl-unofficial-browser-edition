@@ -203,6 +203,8 @@ public final class BrowserEngine {
     @JSExport public static void performancePreset(int phase){BrowserDiagnostics.INSTANCE.performancePreset(game,container,phase);}
     @JSExport public static String campaignProbe(int difficulty,int seed){return BrowserDiagnostics.INSTANCE.campaignProbe(game,container,graphics,difficulty,seed);}
     @JSExport public static void mouse(int x,int y,int type,int button){BrowserInput in=container.input;if(xyz.znix.xftl.hs.HS.luaActive&&xyz.znix.xftl.hs.lua.LuaEvents.mouse(x,y,in.x,in.y,type,button,in.buttons.contains(0),in.buttons.contains(1),in.buttons.contains(2)))return;in.mouse(x,y,type,button);}
+    /** The wheel with its distance too (web/game.mjs, from deltaY in screen units): the debug console scrolls by it (ConsoleScroller), everything else by the notch [change]. */
+    @JSExport public static void wheel(int x,int y,int change,float pixels){xyz.znix.xftl.devutil.ConsoleScroller.hostWheelPixels=pixels;try{mouse(x,y,3,change);}finally{xyz.znix.xftl.devutil.ConsoleScroller.hostWheelPixels=Float.NaN;}}
     @JSExport public static void key(int key,int character,boolean down){if(xyz.znix.xftl.hs.HS.luaActive&&xyz.znix.xftl.hs.lua.LuaEvents.key(key,down))return;container.input.key(key,(char)character,down);}
     @JSBody(params="path",script="if(window.ftlSetCursor)window.ftlSetCursor(path);") private static native void cursor(String path);
     @JSBody(script="if(window.ftlExit)window.ftlExit();") private static native void exit();
@@ -212,15 +214,6 @@ public final class BrowserEngine {
         public void exit(){BrowserEngine.save();BrowserEngine.exit();}
         public void setCursor(Cursor c){cursor(c==null?null:c.getKey());}
     }
-    private static class BrowserInput implements xyz.znix.xftl.sys.Input {
-        int x,y;final Set<Integer> held=new HashSet<>(),pressed=new HashSet<>(),buttons=new HashSet<>();final List<InputListener> listeners=new ArrayList<>();
-        public int getMouseX(){return x;}public int getMouseY(){return y;}public boolean isMouseButtonDown(int b){return buttons.contains(b);}
-        public boolean isKeyPressed(int k){return pressed.remove(k);}public boolean isKeyDown(int k){return held.contains(k);}
-        public void addListener(InputListener l){listeners.add(l);}public void removeAllListeners(){listeners.clear();}
-        public void clearInputPressedRecord(){pressed.clear();}
-        void reset(){for(int k:new ArrayList<>(held))key(k,(char)0,false);List<Integer> released=new ArrayList<>(buttons);buttons.clear();for(int b:released)for(InputListener l:new ArrayList<>(listeners))l.mouseReleased(b,x,y);held.clear();pressed.clear();}
-        void mouse(int nx,int ny,int type,int b){int ox=x,oy=y;x=nx;y=ny;if(type==1)buttons.add(b);if(type==2&&!buttons.remove(b))return;
-            for(InputListener l:new ArrayList<>(listeners)){if(type==0){l.mouseMoved(ox,oy,x,y);if(!buttons.isEmpty())l.mouseDragged(ox,oy,x,y);}else if(type==1)l.mousePressed(b,x,y);else if(type==2){l.mouseReleased(b,x,y);l.mouseClicked(b,x,y,1);}else if(type==3)l.mouseWheelMoved(b);}}
-        void key(int k,char c,boolean down){if(down){held.add(k);pressed.add(k);}else held.remove(k);for(InputListener l:new ArrayList<>(listeners)){if(down)l.keyPressed(k,c);else l.keyReleased(k,c);}}
-    }
+    /** The mouse and keys, held buttons with the screen that took the press (HostInput). */
+    private static class BrowserInput extends xyz.znix.xftl.sys.HostInput {}
 }

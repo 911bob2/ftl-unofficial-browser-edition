@@ -27,17 +27,21 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
     // raised to -70 after on-device feedback so it keeps a comfortable
     // margin from the screen bottom when scaled (same issue as
     // JumpWindow's CANCEL button).
-    // Desktop: CommandGui's storeScreens share the ship windows' origin (0x00538710),
-    // which puts this window at (335,85).
+    // Desktop: CommandGui's constructor (0x00538710) places storeScreens with the ship windows, and its
+    // CommandGui::OnLanguageChange moves both by the widest system levels box (ShipWindow.storeScreensX): this window
+    // at (335,85) in English vanilla, 10 further left under Multiverse.
     // The touch layout puts the window at (43,85) of the HUD block, with the info box to its right.
     override val windowCentreOffset = ConstPoint(
-        if (TouchMode.enabled) -175 else if (PlatformSpecific.INSTANCE.isTouchUi) -266 else -11,
+        if (TouchMode.enabled) -175 else if (PlatformSpecific.INSTANCE.isTouchUi) -266 else desktopX(),
         if (TouchMode.enabled) -87 else if (PlatformSpecific.INSTANCE.isTouchUi) -70 else -63
     )
 
     override val renderScale = if (PlatformSpecific.INSTANCE.isTouchUi) 1.2f else 1f
 
-    override val desktopCentreOffset: IPoint get() = ConstPoint(-11, -63)
+    override val desktopCentreOffset: IPoint get() = ConstPoint(desktopX(), -63)
+
+    /** The desktop x offset: -11 puts the window at 335, at storeScreens (335 in vanilla). */
+    private fun desktopX() = -11 - (335 - ShipWindow.storeScreensX(game))
 
     // Tap-to-arm: first tap highlights (and shows the item description),
     // second tap confirms (runtime-gated on isTouchUi). Selling already
@@ -1096,7 +1100,7 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         sellPanel.draw(g)
 
         // Draw the information for the currently-hovered blueprint.
-        sellPanel.drawInfoPanel(infoPanel)
+        ShipWindow.drawEquipmentInfo(infoPanel, sellPanel)
         if (TouchMode.enabled) sellPanel.drawTouchSell(g, infoPanel)
     }
 
@@ -1124,6 +1128,16 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         // The sell tab's items live in the sell panel's own button list.
         if (sellTab)
             return sellPanel.buttonAt(x, y)
+        return null
+    }
+
+    /** What a finger taps (TouchRouter): the confirmation's buttons, Buy, an item, a tab; items in the sell tab drag. */
+    override fun liftTarget(x: Int, y: Int): Any? {
+        val p = scaleWindowPoint(x, y)
+        hsConfirm?.let { return it.liftTarget(p.x, p.y) }
+        if (touchBuy?.hits(x, y) == true) return touchBuy
+        super.liftTarget(x, y)?.let { return it }
+        if (sellTab) return sellPanel.buttonAt(p.x, p.y)?.takeIf { it.touchLift }
         return null
     }
 

@@ -12,10 +12,11 @@ import xyz.znix.xftl.weapons.AbstractWeaponBlueprint
 import xyz.znix.xftl.weapons.DroneBlueprint
 
 /**
- * Event tooltips (`<eventTooltips>`, on under the More Info alt mode): while a choice is hovered, the InfoBox for its
+ * Event tooltips: while a choice is hovered, the InfoBox for its
  * reward (ChoiceBox::MouseMove: a weapon without `hideEventTooltip`, else a drone, else an augment, else a crew member when the choice removes no
  * item) is drawn after the choice box (ChoiceBox::OnRender) with its corner at (946, 73), or (796, 73) when the box
- * is not centred.
+ * is not centred. Always on: EventTooltip.cpp tests its own `g_eventTooltips`, which is true and never written; the
+ * `<eventTooltips>` option and the More Info mode that sets it change nothing.
  */
 object HsEventTooltip {
     private var panel: InfoPanel? = null
@@ -37,7 +38,7 @@ object HsEventTooltip {
     /** ChoiceBox::OnRender hook, after the box. */
     @JvmStatic
     fun render(game: InGameState, g: Graphics, reward: Any?, centered: Boolean) {
-        if (reward == null || !HsMoreInfo.eventTooltips()) return
+        if (reward == null) return
         val p = panel?.takeIf { panelGame === game } ?: InfoPanel(game).also { panel = it; panelGame = game }
         p.position = if (TouchMode.enabled) {
             // Right of the box when the canvas has the room, else against the canvas' right edge.

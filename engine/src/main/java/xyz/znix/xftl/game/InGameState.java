@@ -45,7 +45,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
 
-public class InGameState extends MainGame.GameState {
+public class InGameState extends MainGame.GameState implements TouchRouter.LiftTargets {
     public boolean browserRunEnded = false;
     public final ftl.browser.BrowserRunProgress browserProgress = new ftl.browser.BrowserRunProgress(this);
     public final ftl.browser.BrowserAchievementProgress browserAchievements = new ftl.browser.BrowserAchievementProgress(this);
@@ -87,7 +87,11 @@ public class InGameState extends MainGame.GameState {
     private Room touchHoverRoom;
     private RoomClickListener clickEvent;
     private final boolean[] mouseDownPrev = new boolean[3];
-    private final boolean[] tutorialMouseCaptured = new boolean[3];
+    /**
+     * A held button whose press something other than the game took (the tutorial's panel, the debug console): its
+     * release is not the game's.
+     */
+    private final boolean[] mouseCaptured = new boolean[3];
 
     /**
      * The input device from the most recent update() call. Lets UI code read
@@ -920,7 +924,10 @@ public class InGameState extends MainGame.GameState {
                 // The debug console blocks all hotkeys
                 if (debugConsoleVisible) {
                     boolean shift = container.getInput().isKeyDown(Input.KEY_LSHIFT) || container.getInput().isKeyDown(Input.KEY_RSHIFT);
-                    if (xyz.znix.xftl.devutil.ConsoleGate.closes(key, c, consoleKey == null ? null : consoleKey.getKeyID(), shift)) cancelMenu();
+                    boolean closes = xyz.znix.xftl.devutil.ConsoleGate.closes(key, c, consoleKey == null ? null : consoleKey.getKeyID(), shift);
+                    // Escape drops a picker's or the reference's selection first (docs/CONSOLE.md "Keys"), then closes
+                    if (closes && key == Input.KEY_ESCAPE && getDebugConsole().escape()) { /* the selection went */ }
+                    else if (closes) cancelMenu();
                     else getDebugConsole().keyPressed(key, c);
                     container.getInput().clearInputPressedRecord();
                     return;
@@ -1234,28 +1241,37 @@ public class InGameState extends MainGame.GameState {
             boolean now = in.isMouseButtonDown(i);
 
             // Block mouse input while the debug console is open, to avoid
-            // accidentally clicking on something under the console.
+            // accidentally clicking on something under the console. The console
+            // has the press (its own listener): a press the game had ends for it
+            // now, and one the console took stays the console's until it is
+            // released, even when the console closes first (one click, one
+            // receiver, as HostInput does between screens).
             if (debugConsoleVisible) {
-                now = false;
+                if (prev && !mouseCaptured[i]) shipUI.mouseUp(i, in.getMouseX(), in.getMouseY(), playerShipOffset);
+                mouseCaptured[i] = now;
+                mouseDownPrev[i] = now;
+                continue;
             }
 
             if (now && !prev) {
                 if (tutorialOverlay != null && tutorialOverlay.click(this, i, in.getMouseX(), in.getMouseY())) {
-                    tutorialMouseCaptured[i] = true;
+                    mouseCaptured[i] = true;
                     mouseDownPrev[i] = now;
                     // Exit/completion replaces this state and clears held input.
                     if (mainGame.getCurrentState() != this) return;
                     continue;
                 }
-                if (i == Input.MOUSE_RIGHT_BUTTON) {
+                // CommandGui::RButtonDown hands the right press to an open focus window and stops there: it neither
+                // drops the armed weapon nor orders the crew aboard the enemy ship under the window.
+                if (i == Input.MOUSE_RIGHT_BUTTON && !shipUI.isWindowOpen()) {
                     clickEvent = null;
                     rightClicked = true;
                 }
 
                 shipUI.mouseClick(i, in.getMouseX(), in.getMouseY(), playerShipOffset);
             } else if (prev && !now) {
-                if (!tutorialMouseCaptured[i]) shipUI.mouseUp(i, in.getMouseX(), in.getMouseY(), playerShipOffset);
-                tutorialMouseCaptured[i] = false;
+                if (!mouseCaptured[i]) shipUI.mouseUp(i, in.getMouseX(), in.getMouseY(), playerShipOffset);
+                mouseCaptured[i] = false;
             }
             mouseDownPrev[i] = now;
         }
@@ -1319,7 +1335,7 @@ public class InGameState extends MainGame.GameState {
         // highlights a room on the enemy (or their) ship.
         if (clickEvent == null)
             return;
-        if (tutorialMouseCaptured[Input.MOUSE_LEFT_BUTTON]) return;
+        if (mouseCaptured[Input.MOUSE_LEFT_BUTTON]) return;
         if (mainGame != null && mainGame.getTutorialOverlay() != null &&
                 mainGame.getTutorialOverlay().hitTest(this, container.getInput().getMouseX(), container.getInput().getMouseY()))
             return;
@@ -1350,7 +1366,10 @@ public class InGameState extends MainGame.GameState {
             hoveredRoom = null;
         }
 
-        if (hoveredRoom != null && clickEvent != null && mouseDownPrev[Input.MOUSE_LEFT_BUTTON]) {
+        // CommandGui::LButtonDown hands a press to the open focus window and stops there: weapon targeting
+        // (CombatControl, after the windows) never sees a click that went to a window, even one it closed.
+        if (hoveredRoom != null && clickEvent != null && mouseDownPrev[Input.MOUSE_LEFT_BUTTON] &&
+                !shipUI.windowHasPress(Input.MOUSE_LEFT_BUTTON)) {
             var prev = clickEvent;
             clickEvent = null;
             prev.roomClicked(hoveredRoom, container);
@@ -3194,6 +3213,18 @@ public class InGameState extends MainGame.GameState {
         return debugConsole;
     }
     public boolean isDebugConsoleVisible() { return debugConsoleVisible; }
+
+    /**
+     * What a finger taps where the touch HUD does not take it (TouchRouter): the tutorial's panel, else the open window's
+     * button. The debug console takes the finger as the mouse.
+     */
+    @Override
+    public Object liftTarget(int x, int y) {
+        if (debugConsoleVisible || shipUI == null) return null;
+        ftl.browser.BrowserTutorialOverlay overlay = mainGame == null ? null : mainGame.getTutorialOverlay();
+        if (overlay != null && overlay.hitTest(this, x, y)) return overlay;
+        return shipUI.liftTarget(x, y);
+    }
     public void openDebugConsole() {
         getDebugConsole(); debugConsoleVisible = true; queuedHotkeys.clear();
         clickEvent = null; input.clearInputPressedRecord();
@@ -3547,7 +3578,7 @@ public class InGameState extends MainGame.GameState {
 
         shipUI.debugContinuousSaveRestore(prev.shipUI);
         System.arraycopy(prev.mouseDownPrev, 0, mouseDownPrev, 0, mouseDownPrev.length);
-        System.arraycopy(prev.tutorialMouseCaptured, 0, tutorialMouseCaptured, 0, tutorialMouseCaptured.length);
+        System.arraycopy(prev.mouseCaptured, 0, mouseCaptured, 0, mouseCaptured.length);
 
         paused = prev.paused;
 

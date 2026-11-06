@@ -197,7 +197,18 @@ abstract class AbstractWeaponInstance(type: AbstractWeaponBlueprint, val ship: S
     /**
      * The tooltip displayed when the player hovers the button they click to aim the weapon.
      */
-    val weaponBarTooltip: ITooltipProvider? by lazy { createWeaponBarTooltip() }
+    val weaponBarTooltip: ITooltipProvider?
+        get() {
+            // Hyperspace's WeaponBox::GenerateTooltip hook reads redesignedWeaponTooltips.currentValue each time it
+            // builds the text, so a More Info toggle changes the next tooltip: rebuilt when that value changed.
+            val redesigned = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsMoreInfo.redesignedWeaponTooltips()
+            val cached = barTooltip
+            if (cached != null && redesigned == barTooltipRedesigned) return cached
+            barTooltipRedesigned = redesigned
+            return createWeaponBarTooltip().also { barTooltip = it }
+        }
+    private var barTooltip: ITooltipProvider? = null
+    private var barTooltipRedesigned = false
 
     init {
         // Hyperspace ProjectileFactory constructor (after super): CONSTRUCT_PROJECTILE_FACTORY.

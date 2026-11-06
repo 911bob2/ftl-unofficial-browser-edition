@@ -45,6 +45,8 @@ object HS {
         capability.clear()
         HsLoad.wrapped = 0
         HsLoad.wrappedLate = 0
+        // A new start: the More Info mode is on and not yet applied (CustomOptions.h), as in a new HS process.
+        xyz.znix.xftl.hs.render.HsMoreInfo.reset()
         if (!modded) return
         modSetHash = BrowserMods.hash()
         hsVersion = BrowserMods.hsVersion()

@@ -994,6 +994,9 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
 
         override val makesHoverNoise: Boolean get() = false
 
+        // Where a dragged item is dropped: the finger is the mouse from its press.
+        override val touchLift: Boolean get() = false
+
         private val images: List<ImageView> = container.allWidgets.filterIsInstance(ImageView::class.java)
 
         private val highlightingLabels: List<Label> = listOfNotNull(

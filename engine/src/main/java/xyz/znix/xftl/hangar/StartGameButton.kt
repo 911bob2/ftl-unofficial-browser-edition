@@ -121,6 +121,14 @@ class StartGameButton(val state: SelectShipState) {
         hoveredControl = next
     }
 
+    /** What a finger taps (TouchRouter): a difficulty, Start; else null. */
+    fun liftTarget(x: Int, y: Int): Any? {
+        if (x in difficultyX until difficultyX + difficultyWidth)
+            Difficulty.entries.firstOrNull { y in difficultyY + DIFFICULTY_STRIDE * it.ordinal until difficultyY + DIFFICULTY_STRIDE * it.ordinal + DIFFICULTY_HEIGHT }?.let { return it }
+        if (state.isSelectedUnlocked && x in startX until startX + START_WIDTH && y in startY until startY + START_HEIGHT) return "start"
+        return null
+    }
+
     fun mouseClicked(button: Int, mouseX: Int, mouseY: Int) {
         if (button != Input.MOUSE_LEFT_BUTTON)
             return

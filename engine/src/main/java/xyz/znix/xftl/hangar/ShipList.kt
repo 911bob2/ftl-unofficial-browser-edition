@@ -449,6 +449,18 @@ class ShipList(private val state: SelectShipState, private val touch: Boolean = 
         }
     }
 
+    /** What a finger taps (TouchRouter): the tutorial's choice, a page, a tab, Accept, a ship, the space around them. */
+    fun liftTarget(x: Int, y: Int): Any? {
+        tutorial?.let { t -> return t.liftTarget(x - tutorialDx, y - tutorialDy)?.let { listOf("tutorial", it) } }
+        pageButtonAt(x, y)?.let { return listOf("page", it) }
+        tabAt(x, y)?.let { return listOf("tab", it) }
+        if (touch) {
+            if (overAccept(x, y)) return "accept"
+            if (x < 50 || x > 974 || y < 50 || (x < 512 && y > 718) || (x > 512 && y > 668)) return "outside"
+        } else if (x !in 112 until 1192 || y !in 110 until 522) return "outside"
+        return cellAt(x, y) ?: "list"
+    }
+
     fun mouseClicked(button: Int,x: Int,y: Int) {
         if(button!=Input.MOUSE_LEFT_BUTTON)return
         tutorial?.let { chooseTutorial(it.click(x-tutorialDx,y-tutorialDy));return }

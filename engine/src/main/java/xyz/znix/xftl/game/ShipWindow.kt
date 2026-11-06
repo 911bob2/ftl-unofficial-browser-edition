@@ -27,20 +27,23 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     // drawn at local y 464 == the declared window height (their click
     // regions reach y 503), so scaled they hang ~73px below the rect
     // and were ~1/3 clipped off the screen bottom.
-    // CommandGui's constructor (0x00538710) places shipScreens at (340,85); the
-    // native window art lands at (335,78), which puts this origin at (342,85).
+    // CommandGui's constructor (0x00538710) places shipScreens at (340,85) and ends with CommandGui::OnLanguageChange,
+    // which moves it to 682 less the widest system levels box (shipScreensX): 335 in English vanilla and plain
+    // Hyperspace, 325 under Multiverse (oracle hs-offset wp-hs / wp-mv). The native window art lands at (x,78), which
+    // puts this origin at (x + 7,85): (342,85) in vanilla.
     // Native window-relative coordinates below are therefore offset by -7 in x.
-    // Hyperspace (on FTL 1.6.9) sits the window 10 px further left, custom tabs or not (the oracle: 332 against the
-    // original 1.6.14's 342, with 1, 2 and 3 custom tabs and with none: MV frames sw2-ship m0/q1, sw2-switch s-h0, sw4-up24).
     // The touch layout puts this origin at (50,85) of the HUD block, with the info box to its right.
     override val windowCentreOffset = ConstPoint(
-        if (TouchMode.enabled) -168 else if (PlatformSpecific.INSTANCE.isTouchUi) -266 else -4 - if (xyz.znix.xftl.hs.HS.active) 10 else 0,
+        if (TouchMode.enabled) -168 else if (PlatformSpecific.INSTANCE.isTouchUi) -266 else desktopX(),
         if (TouchMode.enabled) -67 else if (PlatformSpecific.INSTANCE.isTouchUi) -40 else -43
     )
 
     override val renderScale = if (PlatformSpecific.INSTANCE.isTouchUi) 1.2f else 1f
 
-    override val desktopCentreOffset: IPoint get() = ConstPoint(-4 - if (xyz.znix.xftl.hs.HS.active) 10 else 0, -43)
+    override val desktopCentreOffset: IPoint get() = ConstPoint(desktopX(), -43)
+
+    /** The desktop x offset: -4 puts the origin at 342, 7 right of shipScreens at 335. */
+    private fun desktopX() = -4 - (335 - shipScreensX(game))
 
     override val appliesSelfTint: Boolean get() = dismissConfirm != null
 
@@ -129,6 +132,18 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         game, game.translator["button_upgrade"], { touchSelectedBox()?.touchPrice },
         { touchSelectedBox()?.touchPrice.let { it != null && it != Int.MAX_VALUE } }
     ) { touchSelectedBox()?.touchBuy() } else null
+
+    /** What a finger taps (TouchRouter): the dismiss confirmation's buttons, Upgrade, a button; crew and items drag. */
+    override fun liftTarget(x: Int, y: Int): Any? {
+        dismissConfirm?.let { val p = scaleWindowPoint(x, y); return it.liftTarget(p.x, p.y) }
+        if (touchUpgradesShown && touchGet?.hits(x, y) == true) return touchGet
+        super.liftTarget(x, y)?.let { return it }
+        if (tab == Tab.EQUIPMENT) {
+            val p = scaleWindowPoint(x, y)
+            return equipmentPanel.buttonAt(p.x, p.y)?.takeIf { it.touchLift }
+        }
+        return null
+    }
 
     /** The boxes under the finger select; away from them the selection stays. */
     private fun touchPickUpgrade(x: Int, y: Int) {
@@ -431,9 +446,15 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         val hoveredSystem = if (TouchMode.enabled) touchSelectedSystem else hoveredButton?.system
         if (hoveredSystem != null) {
             val undoablePower = systemUpgradeUndos[hoveredSystem]?.size ?: 0
+            // CommandGui::OnLanguageChange gives the upgrades window's InfoBox the widest system levels box: 333 here
+            // for vanilla's 347, 10 wider under Multiverse (oracle hs-offset wp-hs2 / wp-mv2 13-sensors-info)
+            val width = infoPanel.customWidth
+            if (!TouchMode.enabled && !PlatformSpecific.INSTANCE.isTouchUi) infoPanel.customWidth = 333 + systemBoxWidth(game) - 347
+            diagnosticSystemInfo = "${infoPanel.position.x},${infoPanel.position.y},${infoPanel.customWidth ?: 333}"
             infoPanel.drawDescriptionBoxSystem(hoveredSystem)
             // InfoBox::SetSystem takes the system's own maximum (ShipSystem), not the blueprint's
             infoPanel.drawSystemPowerBox(g, hoveredSystem.blueprint, hoveredSystem.energyLevels, undoablePower, hoveredSystem.maxLevel)
+            infoPanel.customWidth = width
         }
 
         // Hyperspace pages the boxes: eight systems and four subsystems a page, at least the ship's systemLimit /
@@ -1175,6 +1196,9 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         val mainButton = object : Button(game, boxPos, boxNormal.imageSize) {
             override val makesHoverNoise: Boolean get() = false
 
+            // The finger picks the crew member up from its press, or renames on the lift (touchPressCrew).
+            override val touchLift: Boolean get() = false
+
             var nameHover = false
 
             override fun draw(g: Graphics) {
@@ -1291,7 +1315,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         equipmentPanel.draw(g)
 
         // Draw the information for the currently-hovered blueprint.
-        equipmentPanel.drawInfoPanel(infoPanel)
+        drawEquipmentInfo(infoPanel, equipmentPanel)
     }
 
     override fun mouseClick(button: Int, x: Int, y: Int) {
@@ -1634,7 +1658,105 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         /** TabbedWindow::names of the three tabs the original has (CustomTabbedWindow's icons are named by them). */
         private val HS_BUILTIN_TABS = arrayOf("upgrades", "crew", "equipment")
 
+        /**
+         * Equipment::SetPosition (0x00539430; Hyperspace's CustomEquipment::SetPosition keeps it): the item InfoBox at the
+         * equipment's x + 600, y - 25, 25 above the upgrades tab's, and an item box is 10 narrower than the levels box
+         * (oracle overcap oc-hs 04 and info-button ib-mv-eq: top 134, 323 wide in plain Hyperspace and Multiverse). The
+         * store's sell tab is the same Equipment. Desktop layout only.
+         */
+        /** For the checks (tests/window-places.mjs): where the levels box of a hovered system was last placed, x,y,width. */
+        @JvmStatic
+        var diagnosticSystemInfo = ""
+
+        /** For the checks (tests/window-places.mjs): where the desktop item box was last placed, as x,y,width. */
+        @JvmStatic
+        var diagnosticEquipmentInfo = ""
+
+        @JvmStatic
+        fun drawEquipmentInfo(infoPanel: InfoPanel, equipment: ShipEquipmentPanel) {
+            if (TouchMode.enabled || PlatformSpecific.INSTANCE.isTouchUi) {
+                equipment.drawInfoPanel(infoPanel)
+                return
+            }
+            val position = infoPanel.position
+            val width = infoPanel.customWidth
+            infoPanel.position = position + ConstPoint(0, -25)
+            infoPanel.customWidth = 323
+            diagnosticEquipmentInfo = "${infoPanel.position.x},${infoPanel.position.y},323"
+            try {
+                equipment.drawInfoPanel(infoPanel)
+            } finally {
+                infoPanel.position = position
+                infoPanel.customWidth = width
+            }
+        }
+
         /** The other tabs under a TabbedWindow priority popup, as measured. */
         private const val TAB_POPUP_TINT = 0.35f
+
+        private var boxWidthGame: InGameState? = null
+        private var boxWidthLanguage: String? = null
+        private var boxWidths = IntArray(0)
+
+        /**
+         * CommandGui::OnLanguageChange (0x00537cc0, run by CommandGui's constructor and on a language change): the
+         * widest system levels box, InfoBox::CalcWidthForSystem (0x0055e490) for system ids 0-15 with each system
+         * blueprint's maxPower. It places shipScreens and storeScreens ([shipScreensX], [storeScreensX]).
+         */
+        @JvmStatic
+        fun systemBoxWidth(game: InGameState): Int = systemBoxWidths(game).max()
+
+        /** InfoBox::CalcWidthForSystem for system ids 0-15, as CommandGui::OnLanguageChange measures them. */
+        @JvmStatic
+        fun systemBoxWidths(game: InGameState): IntArray {
+            val language = Languages.current
+            if (boxWidthGame === game && boxWidthLanguage == language) return boxWidths
+            val widths = IntArray(16) { id -> measureSystemBox(game, id, null) }
+            boxWidthGame = game; boxWidthLanguage = language; boxWidths = widths
+            return widths
+        }
+
+        /** For the checks: each system's widest level text as width:text. */
+        @JvmStatic
+        fun systemBoxTexts(game: InGameState): List<String> =
+            (0 until 16).map { id -> StringBuilder().also { measureSystemBox(game, id, it) }.toString() }
+
+        private fun measureSystemBox(game: InGameState, id: Int, widest: StringBuilder?): Int {
+            val left = game.getImg("img/upgradeUI/details_base_A.png").width
+            val centre = game.getImg("img/upgradeUI/details_base_B.png").width
+            val right = game.getImg("img/upgradeUI/details_base_C.png").width
+            val font = game.getFont("JustinFont10")
+            val name = xyz.znix.xftl.hs.systems.HsSystems.idToName(id)
+            val blueprint = game.blueprintManager.getOrNull(name) as? SystemBlueprint
+            // InfoBox::CalcCenterCountForSystem (0x0055dde0): the levels below maxPower (one more for sensors and
+            // doors, at most eight), each GetLevelDescription measured in font 10 (0x00595f30), plus 143, less the
+            // left art, in whole centre pieces, at least one
+            val levels = minOf(8, (blueprint?.maxPower ?: 0) + if (id == 7 || id == 8) 1 else 0)
+            var text = 0
+            for (level in 0 until levels) {
+                val description = xyz.znix.xftl.hs.lua.LuaShipEvents.levelDescription(id, level, false) {
+                    (blueprint?.info ?: SystemBlueprint.BY_NAME[name])?.getLevelName(level, game.translator) ?: ""
+                }
+                val w = font.getExtentWidth(description)
+                if (w > text) {
+                    text = w
+                    widest?.setLength(0); widest?.append(w)?.append(':')?.append(description)
+                }
+            }
+            return max(1, (text + 143 - left + centre - 1) / centre) * centre + left + right
+        }
+
+        /**
+         * CommandGui::OnLanguageChange: shipScreens at x 682 less [systemBoxWidth], at most 340 (CommandGui's
+         * constructor, 0x00538710) and at least 150, so the upgrades info box at the window's x + 600 ends at 1282.
+         * English vanilla and plain Hyperspace: 347 wide (sensors' "See enemy weapon charge", 178 px), x 335;
+         * Multiverse: 357 (its mind control level 2 text, 189 px), x 325; German vanilla: x 305.
+         */
+        @JvmStatic
+        fun shipScreensX(game: InGameState): Int = (682 - systemBoxWidth(game)).let { if (it < 150) 150 else minOf(it, 340) }
+
+        /** CommandGui::OnLanguageChange: storeScreens as [shipScreensX], but at least 283. */
+        @JvmStatic
+        fun storeScreensX(game: InGameState): Int = (682 - systemBoxWidth(game)).let { if (it < 283) 283 else minOf(it, 340) }
     }
 }

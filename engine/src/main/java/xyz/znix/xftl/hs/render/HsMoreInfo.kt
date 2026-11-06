@@ -13,7 +13,11 @@ import xyz.znix.xftl.rendering.Image
  * The More Info button (CommandGui::OnInit: `statusUI/moreInfoButtonOff` at 1207, 656), drawn after the ship status
  * (ShipStatus::OnRender), hovered with the `tooltip_more_info` tooltip (\1 = the `info` hotkey) and toggled by a
  * left click (or the `info` hotkey) with the `moreInfoOn`/`moreInfoOff` sound. [HsOverlay.altMode] (default on)
- * switches the options below on; off, they return to hyperspace.xml's values (CommandGui::OnLoop).
+ * switches the options below on; off, they return to hyperspace.xml's values. The switch takes effect in
+ * CommandGui::OnLoop ([onLoop]), which only runs in flight: until the first frame of a run the options hold
+ * hyperspace.xml's values (Resources.cpp sets currentValue = defaultValue), so the hangar of a fresh start shows
+ * the defaults (no reactor box under plain Hyperspace) and the one after a run shows the mode the run left.
+ * Neither the mode nor the options are saved: a new start has the mode on (CustomOptions.h `altMode = true`).
  */
 object HsMoreInfo {
     private const val X = 1207
@@ -26,26 +30,46 @@ object HsMoreInfo {
     private var imagesOn = false
     private var imagesGame: InGameState? = null
 
+    /**
+     * The mode CommandGui::OnLoop last applied to the options (false: the hyperspace.xml values, as at start) and so
+     * the button's image base (SetImageBase there; OnInit starts it on `moreInfoButtonOff`).
+     */
+    @JvmStatic var applied = false
+        private set
+
+    /** A new start (HS.init): the mode on, not yet applied (CustomOptions.h `altMode = true`, `altModeChanged = true`). */
+    @JvmStatic
+    fun reset() {
+        HsOverlay.reset()
+        applied = false
+    }
+
+    /** CommandGui::OnLoop hook (every flight frame, paused too): a changed mode is applied to the options. */
+    @JvmStatic
+    fun onLoop() {
+        if (!HsOverlay.altModeChanged) return
+        HsOverlay.altModeChanged = false
+        applied = HsOverlay.altMode
+    }
+
     // ---- effective option values (CustomOptionsManager::*.currentValue) ----
     private fun cfg(): HsConfig = HS.cfg()
-    @JvmStatic fun showWeaponCooldown() = HsOverlay.altMode || cfg().showWeaponCooldown
-    @JvmStatic fun eventTooltips() = HsOverlay.altMode || cfg().eventTooltips
-    @JvmStatic fun showReactor() = HsOverlay.altMode || cfg().showReactor
-    @JvmStatic fun showAllConnections() = if (cfg().splitAllNodeView) cfg().showAllConnections else HsOverlay.altMode || cfg().showAllConnections
-    @JvmStatic fun alternateOxygenRendering() = !HsOverlay.altMode && cfg().alternateOxygenRendering
-    @JvmStatic fun redesignedWeaponTooltips() = HsOverlay.altMode || cfg().redesignedWeaponTooltips
-    @JvmStatic fun redesignedDroneTooltips() = HsOverlay.altMode || cfg().redesignedDroneTooltips
-    @JvmStatic fun redesignedAugmentTooltips() = HsOverlay.altMode || cfg().redesignedAugmentTooltips
-    @JvmStatic fun showAllyPowers() = HsOverlay.altMode || cfg().showAllyPowers
-    @JvmStatic fun showEnemyPowers() = HsOverlay.altMode || cfg().showEnemyPowers
+    @JvmStatic fun showWeaponCooldown() = applied || cfg().showWeaponCooldown
+    @JvmStatic fun showReactor() = applied || cfg().showReactor
+    @JvmStatic fun alternateOxygenRendering() = !applied && cfg().alternateOxygenRendering
+    @JvmStatic fun redesignedWeaponTooltips() = applied || cfg().redesignedWeaponTooltips
+    @JvmStatic fun redesignedDroneTooltips() = applied || cfg().redesignedDroneTooltips
+    @JvmStatic fun redesignedAugmentTooltips() = applied || cfg().redesignedAugmentTooltips
+    @JvmStatic fun showAllyPowers() = applied || cfg().showAllyPowers
+    @JvmStatic fun showEnemyPowers() = applied || cfg().showEnemyPowers
     /** advancedCrewTooltipRounding: 2 under altMode when the default is 0 or 1. */
     @JvmStatic fun advancedCrewTooltipRounding(): Int {
         val d = cfg().advancedCrewTooltipRounding
-        return if (HsOverlay.altMode && (d == 0 || d == 1)) 2 else d
+        return if (applied && (d == 0 || d == 1)) 2 else d
     }
 
     private fun images(game: InGameState): Array<Image> {
-        val on = HsOverlay.altMode
+        val on = applied
         val cached = images
         if (cached != null && imagesOn == on && imagesGame === game) return cached
         val base = if (on) "img/statusUI/moreInfoButtonOn" else "img/statusUI/moreInfoButtonOff"

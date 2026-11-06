@@ -178,7 +178,8 @@ hides it. `GameRenderer` copies it from the frame it shows (a framebuffer blit),
 It only looks: the engine gets every finger event exactly as without it (`Input` hands the same events to both), so the power
 drags, the beam, crew selection, doors and the held finger's hover all stay as they are, and a slide then lift does what it
 always did. That is a press where the touch HUD already takes a finger sliding onto something: the HUD buttons, a system box
-(it opens), doors in door control (a drag over them toggles them), a window's buttons (they act on lift), a room. A crew box
+(it opens), doors in door control (a drag over them toggles them), a room. A window's or menu's button acts only when the
+finger went down on it, so the magnifier does not help to slide onto one. A crew box
 does not take a finger that slides onto it (box selection starts instead), so the magnifier does not help there. It
 comes up during drags too, as the runner's does. Settings > Haptics' **Magnifier** switch: one tick when it comes up. With
 the setting off there is no magnifier at all (`Magnifier.forGame`). The website has no touch layout turned on, so it has none.
@@ -324,9 +325,28 @@ on yet.
   gesture. A finger that begins on the border is not a game finger, so a hand holding the phone blocks nothing.
   If the system takes the fingers (Home), the line goes and the weapon stays armed.
   Each slot and AUTO FIRE has its own info drawer.
+- Crew tooltips: a finger held still (8 px) for 0.5 s on a crew member on either ship shows the desktop's crew hover
+  tooltip (health, and under Hyperspace the advanced lines with, while More Info is on, the race's powers) until it lifts;
+  the lift still does what a tap does (`TouchHold`, `TouchHud.crewHoldText`). The iPad has no such hover; this follows
+  the touch layout's other hold-to-read tooltips (crew boxes, the status bar, the iPad's long press on enemy icons).
+- Hyperspace's More Info (Multiverse's magnifier): the button in the dock above Pause, tapped to toggle; the cooldown
+  numbers over the open weapon slots; see [HS_UI.md](HS_UI.md#more-info-button-moreinfobuttoncpp-multiverses-magnifier).
+  With a window open (the map, the ship screen, a store, an event) it is drawn over the window and still takes a tap,
+  as the desktop's takes clicks there; the window gets nothing of that finger. Under the pause menu and Game Over it takes
+  none, as the desktop's hover is blocked there.
 - Crew powers: a lone selected crystal shows a lockdown button on its room; Hyperspace's power buttons are on the panel
   beside the touched crew box.
-- Windows take a finger as the left mouse button, acting on lift; two-step store buying, map and hangar as on the iPad.
+- Buttons are tapped, as on the iPad: a button acts when the finger lifts, and only if it lifts on the button it went
+  down on. A finger slid off the button, or onto another one, taps nothing; other fingers do nothing. This holds on every
+  screen without touch controls of its own: the main menu, its confirmation and welcome box, the options (Close, the
+  choices, the language list), the hangar and its ship list, the statistics, and in flight the open window's buttons,
+  the event box's choices and scroll buttons, the pause menu and Game Over (`TouchRouter`, each screen's `liftTarget`).
+  The finger shows the button lit while it is on it. Where a finger drags or slides instead (the volume bars, items in
+  the equipment and sell tabs, crew boxes picked up in the crew tab, the map's beacons, the event box's scroll bar) it
+  is the mouse from its press. A tap's click goes to the screen as a whole click at the lift, so a tap that closes or
+  replaces a window or screen never taps what is under it
+  ([ORIGINAL_BEHAVIOR.md](ORIGINAL_BEHAVIOR.md#one-click-one-receiver-2026-11-05)). Two-step store buying, map and
+  hangar as on the iPad. A mouse's left button acts on its press on these screens, as on the desktop.
 - Over capacity (`ShipWindow`, `ShipEquipmentPanel`): the crew screen's over-capacity box sits under the window's left
   half, where the iPad game puts it (30, 484); Hyperspace's box for the crew member past the limit (on the
   desktop at x 146 under that box) goes right of it, as below it would be off the screen, and its dismiss confirmation
@@ -383,7 +403,8 @@ on yet.
   (`mods/TouchPatches.kt`, `assets/touch-patches/`): Multiverse 5.5.1's tutorial, seven lines. Report and step tables:
   `.build/hs/reports/touch-tutorial.md` (ignored).
 - Names are typed on the system keyboard, which sends single characters; the game slides up to keep the field in view
-  (`TouchMode.keyboardFocusY`). A mouse's left button acts as a finger.
+  (`TouchMode.keyboardFocusY`). A mouse's left button acts as a finger for the touch HUD; on the screens and windows it
+  acts on its press, as on the desktop (`TouchRouter.MOUSE_ID`).
 
 ## Testing
 
@@ -391,6 +412,9 @@ on yet.
   fixtures), `:engine:testDebugUnitTest`, `:app:testDebugUnitTest`.
 - Emulator: AVD on the android-36 x86_64 image; `adb` installs `app-debug.apk`.
 - Multi-touch: real fingers through the input stack on the emulator, [TESTS.md](TESTS.md#android-multi-touch-on-the-emulator).
+- One tap acts once, on its own button: `ClickThroughTest`, `TouchTapTest`, and on the emulator from the main menu
+  `node tools/android-touch/click-through.mjs --serial <serial> --out <dir> [--shape phone|tablet]`
+  ([TESTS.md](TESTS.md#one-click-acts-once)).
 - Over capacity on touch: `node tools/android-touch/overcap.mjs --serial <serial> --out <dir> --name <shape> [--multiple]`
   in flight on a new run (`--multiple` for Multiverse): the debug console's get fills augments, cargo and crew, the
   receiver's `overcap` gives the open ship window's boxes (`overcappage` turns the equipment pager); checks one box at a
@@ -420,6 +444,12 @@ on yet.
   PRIMITIVES|AMPLITUDE|ON_OFF|NONE|auto` pretends a weaker vibrator for the setting's texts.
 - Sign out: `SignOutTest` (the unsynced line's rule, the words equal `web/sign-out.mjs`'s); the dialog on the emulator through
   `uiautomator` taps on Sign out, Cancel and Sign out.
+- More Info: `MoreInfoTest` (the mode reaches the options at the next flight frame only; the hold) and, on the emulator,
+  `node tools/android-touch/moreinfo.mjs --serial <serial> --out <dir> [--shape phone|tablet]` in flight on a Hyperspace
+  save without an enemy: the button's place and toggle, a held finger on an own crew member and on a boarder it adds
+  (powers on and off), the weapon slots' drawer texts and the cooldown numbers (`touchstate`: `moreInfo`,
+  `moreInfoApplied`, `crewHold`, `crew`, `weaponTips`, `cooldownNumbers`). For the tablet shape run it after
+  `adb shell wm size 1536x2048` and a restart of the run.
 - Magnifier: `MagnifierTest` (when it shows: never for a quick tap, after the hold or a move, once per hold for its haptic;
   only the first finger; where it sits and what it shows; off by default and absent when off). On the emulator: debug
   builds log `FTL-Magnifier shown at ...` with the haptic's `FTL-Haptic` line; `adb shell input motionevent DOWN|MOVE|UP x y`

@@ -42,6 +42,12 @@ abstract class Button(protected val game: InGameState, pos: IPoint, size: IPoint
      */
     var skipTapToArm: Boolean = false
 
+    /**
+     * A finger taps this button: it acts when the finger lifts on it (TouchRouter.LiftTargets). False for a button the
+     * finger drags from its press (an item, a crew member, a slider), which gets the press at once.
+     */
+    open val touchLift: Boolean get() = true
+
     var hovered: Boolean = false
         private set
 
@@ -699,6 +705,9 @@ object Buttons {
         ) : this(homePos, game, image, image.normal.imageSize, compatible, blueprint, callback)
 
         override val makesHoverNoise: Boolean get() = false
+
+        // The finger drags the item from its press.
+        override val touchLift: Boolean get() = false
 
         private val overlay = game.getImg("img/upgradeUI/Equipment/box_overlay_red.png")
 

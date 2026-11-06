@@ -240,6 +240,8 @@ object BrowserHsCrewUiDiagnostics {
         val wantSep = if (HS.active && HS.config?.insertNewlineForMultipleCrewTooltips == true) " \n\n" else " \n"
         check(sep == wantSep) { "separator ${q(sep)}" }
         out += "separator ${q(sep)}"
+        // Hyperspace's More Info button: the toggle and the crew and weapon tooltips on and off.
+        if (HS.active) out += BrowserHsMoreInfoDiagnostics.run(main, container, state)
     }
 
     private fun clone(main: MainGame, container: GameContainer, graphics: Graphics, out: ArrayList<String>) {

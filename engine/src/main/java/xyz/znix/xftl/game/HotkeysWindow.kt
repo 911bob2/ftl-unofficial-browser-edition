@@ -200,6 +200,21 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
         closeHovered = closing
     }
 
+    /** What a finger taps (TouchRouter): a tab, Close, Defaults, a key's box, the open notice's or confirmation's button. */
+    override fun liftTarget(x: Int, y: Int): Any? {
+        notice?.let { return it.liftTarget(x, y) }
+        confirmation?.let { return it.liftTarget(x, y) }
+        val lx = x - ox
+        val ly = y - oy
+        val tab = tabAt(lx, ly)
+        return when {
+            tab >= 0 && tab != page -> listOf("tab", tab)
+            inClose(lx, ly) -> "close"
+            inDefaults(lx, ly) -> "defaults"
+            else -> boxes[page].firstOrNull { it.contains(lx, ly) }
+        }
+    }
+
     override fun mouseClick(button: Int, x: Int, y: Int) {
         notice?.let { it.mouseClick(button, x, y); return }
         confirmation?.let { it.mouseClick(button, x, y); return }

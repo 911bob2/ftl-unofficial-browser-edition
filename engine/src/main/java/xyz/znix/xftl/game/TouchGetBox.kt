@@ -66,6 +66,9 @@ class TouchGetBox(
         draw(g)
     }
 
+    /** Drawn last frame and under ([x], [y]). */
+    fun hits(x: Int, y: Int): Boolean = shown && contains(x, y)
+
     /** The finger came down: true if it hit the active button, which has then acted. */
     fun press(x: Int, y: Int): Boolean {
         if (!shown || disabled || !contains(x, y)) return false

@@ -30,6 +30,7 @@ abstract class BasicCompletionEngine<T>(console: DebugConsole, val owner: Argume
 
     // A little caching for the search
     private var lastInput: String? = null
+    private var lastSearch: String? = null
     private val sortedEntries = ArrayList<T>()
     private var positionInInput: Int = 0
 
@@ -62,26 +63,93 @@ abstract class BasicCompletionEngine<T>(console: DebugConsole, val owner: Argume
 
     override val contentKey: Any? get() = lastInput
 
+    // ---- the selection (the keys, or the last tap): an entry of [navItems] by name, so a refreshed list keeps it
+
+    private var selectedName: String? = null
+
+    /** What the keys move over: the entries as drawn. */
+    protected open val navItems: List<T> get() = sortedEntries
+
+    /** The grid's columns as last drawn (1: rows). */
+    protected var navColumns = 1
+
+    /** The scroll the content was last drawn at, and each row's step (top to top) and height, in content pixels. */
+    protected var navScroll = 0
+    protected var navRowStep = 1
+    protected var navRowH = 1
+    protected var navTop = 0
+
+    /** The selected entry's index in [navItems], -1 for none. */
+    protected val selectedIndex: Int
+        get() = selectedName?.let { n -> navItems.indexOfFirst { getItemName(it) == n } } ?: -1
+
+    protected fun select(item: T?) { selectedName = item?.let { getItemName(it) } }
+
+    protected fun isSelected(item: T) = selectedName != null && getItemName(item) == selectedName
+
+    override val hasSelection: Boolean get() = selectedIndex >= 0
+
+    override fun clearSelection(): Boolean {
+        val had = hasSelection
+        selectedName = null
+        return had
+    }
+
+    override fun navigate(key: Int): IntRange? {
+        val items = navItems
+        if (items.isEmpty()) return null
+        val c = navColumns.coerceAtLeast(1)
+        val i = selectedIndex
+        val next = when (key) {
+            Input.KEY_DOWN -> when {
+                // the first entry whose row is in view
+                i < 0 -> ((navScroll - navTop + navRowStep - 1) / navRowStep).coerceAtLeast(0) * c
+                i + c < items.size -> i + c
+                // the last row: from a fuller row above, the last entry
+                i / c < (items.size - 1) / c -> items.size - 1
+                else -> i
+            }
+            Input.KEY_UP -> when {
+                i < 0 -> return null
+                i - c >= 0 -> i - c
+                else -> { selectedName = null; return IntRange.EMPTY }
+            }
+            Input.KEY_LEFT -> if (i < 0) return null else (i - 1).coerceAtLeast(0)
+            Input.KEY_RIGHT -> if (i < 0) return null else (i + 1).coerceAtMost(items.size - 1)
+            else -> return null
+        }.coerceIn(0, items.size - 1)
+        select(items[next])
+        val top = navTop + next / c * navRowStep
+        return top..(top + navRowH)
+    }
+
+    override fun activate(): Boolean {
+        val i = selectedIndex
+        if (i < 0) return false
+        itemSelected(navItems[i])
+        return true
+    }
+
     /** One row a suggestion, scrolled with the wheel or a drag; a tap or click completes it. */
     override fun draw(g: Graphics, ui: ConsoleUi, area: Area, scroll: Int): Int {
         val rowH = ui.rowH
+        navColumns = 1; navScroll = scroll; navRowStep = rowH; navRowH = rowH - 1; navTop = 0
         for ((i, item) in sortedEntries.withIndex()) {
             val y = area.y + i * rowH - scroll
-            if (y < area.y) continue
-            if (y + rowH > area.bottom) break
+            if (y + rowH <= area.y) continue
+            if (y >= area.bottom) break
             val row = Area(area.x, y, area.w, rowH - 1)
-            val shade = if (ui.hovered(row)) 140 else 100
-            g.colour = Colour(shade, shade, shade, 180)
-            g.fillRect(row.x.f, row.y.f, row.w.f, row.h.f)
+            ui.rowFill(g, row, ui.hovered(row) || ui.pressed(row), i % 2 == 1)
+            if (isSelected(item)) ui.outline(g, row, ConsoleUi.SELECTED, if (ui.touch) 3 else 2)
             val name = getItemName(item)
             val base = ui.baseline(row.y, row.h).f
             if (isFeatured(item)) ConsoleUi.rainbow(ui.font, row.x + ui.pad.f, base, name, ui.time)
             else ui.font.drawString(row.x + ui.pad.f, base, name, Colour.white)
             note(item)?.takeIf { it.isNotEmpty() }?.let { n ->
                 val nx = row.x + ui.pad * 3f + ui.font.getWidth(name)
-                ui.small.drawStringTruncated(nx, ui.baseline(row.y, row.h, ui.small).f, row.right - nx - ui.pad, n, Colour(210, 210, 210))
+                ui.small.drawStringTruncated(nx, ui.baseline(row.y, row.h, ui.small).f, row.right - nx - ui.pad, n, ConsoleUi.DIM)
             }
-            ui.hit(row) { itemSelected(item) }
+            ui.hit(row) { select(item); itemSelected(item) }
         }
         return sortedEntries.size * rowH
     }
@@ -92,6 +160,9 @@ abstract class BasicCompletionEngine<T>(console: DebugConsole, val owner: Argume
         // Only update when something changes
         if (currentToken == lastInput)
             return
+        // a new search drops the selection; the same one searched again (the items changed) keeps it
+        if (lastSearch != currentToken) selectedName = null
+        lastSearch = currentToken
         lastInput = currentToken
 
         sortedEntries.clear()
@@ -191,17 +262,23 @@ class BlueprintCompleter(console: DebugConsole, owner: ArgumentTypeProcessor?, v
         val first = buttons.firstOrNull() ?: return 0
         val w = first.image.normal.width
         val h = first.image.normal.height
-        val gap = 5
+        val gap = ui.pad
         val columns = maxOf(1, (area.w + gap) / (w + gap))
+        val left = area.x + (area.w - (columns * (w + gap) - gap)) / 2
+        navColumns = columns; navScroll = scroll; navRowStep = h + gap; navRowH = h; navTop = 0
         for ((i, button) in buttons.withIndex()) {
-            val x = area.x + (i % columns) * (w + gap)
+            val x = left + (i % columns) * (w + gap)
             val y = area.y + (i / columns) * (h + gap) - scroll
-            if (y < area.y) continue
-            if (y + h > area.bottom) break
+            if (y + h <= area.y) continue
+            if (y >= area.bottom) break
+            val tile = Area(x, y, w, h)
             button.windowOffset = ConstPoint(x, y)
-            button.update(if (ui.touch) -1 else ui.mouseX, if (ui.touch) -1 else ui.mouseY)
+            val over = ui.hovered(tile)
+            button.update(if (over) ui.mouseX else -1, if (over) ui.mouseY else -1)
             button.draw(g)
-            ui.hit(Area(x, y, w, h)) { itemSelected(button.blueprint) }
+            if (ui.pressed(tile)) ui.box(g, tile, Colour(0, 0, 0, 70))
+            if (isSelected(button.blueprint)) ui.selection(g, tile)
+            ui.hit(tile) { select(button.blueprint); itemSelected(button.blueprint) }
         }
         return (buttons.size + columns - 1) / columns * (h + gap)
     }

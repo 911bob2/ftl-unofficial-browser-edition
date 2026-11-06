@@ -37,12 +37,17 @@ object TouchProbe {
         error("no field $name on ${o.javaClass.name}")
     }
 
+    /** JSON written as it is. */
+    private class Raw(val json: String)
+
     private fun str(v: Any?): String = when (v) {
         null -> "null"
+        is Raw -> v.json
         is Number, is Boolean -> v.toString()
         is Map<*, *> -> v.entries.joinToString(",", "{", "}") { "\"${it.key}\":${str(it.value)}" }
         is List<*> -> v.joinToString(",", "[", "]") { str(it) }
-        else -> "\"" + v.toString().replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        else -> "\"" + v.toString().replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")
+            .replace("\t", "\\t") + "\""
     }
 
     private fun aim(b: SelectedTarget.BeamAim): Map<String, Any?> {
@@ -61,6 +66,11 @@ object TouchProbe {
         out["routerHud"] = field(TouchRouter, "toHud")
         out["canvasW"] = BrowserEngine.canvasWidth()
         out["canvasH"] = BrowserEngine.canvasHeight()
+        // The screen and the website's debug snapshot of it (its windows and buttons: tools/android-touch/click-through.mjs)
+        val main = BrowserEngine.getGame()
+        out["state"] = main?.currentState?.javaClass?.simpleName
+        out["mouse"] = main?.gameContainer?.input?.let { listOf(it.mouseX, it.mouseY) }
+        out["snapshot"] = Raw(main?.let { ftl.browser.BrowserDebug.snapshot(it) } ?: "null")
         val game = BrowserEngine.getGame()?.currentState as? InGameState
         out["flight"] = game != null
         if (game != null) {
@@ -110,6 +120,19 @@ object TouchProbe {
             out["speedLevel"] = xyz.znix.xftl.hs.lua.LuaFps.speedLevel
             out["speedEnabled"] = xyz.znix.xftl.hs.lua.LuaFps.speedEnabled
             out["moreInfo"] = xyz.znix.xftl.hs.render.HsOverlay.altMode
+            // The mode the options follow (CommandGui::OnLoop applied it) and the crew tooltip a resting finger shows
+            out["moreInfoApplied"] = xyz.znix.xftl.hs.render.HsMoreInfo.applied
+            out["crewHold"] = hud.crewHoldText()
+            // Every crew member on both ships: canvas centre (where a finger rests on it), owner, race, vision
+            fun crewOf(ship: xyz.znix.xftl.Ship?, enemy: Boolean) = ship?.crew?.map { c ->
+                val p = c.getPixelPositionCentre()
+                val at = if (enemy) game.enemyShipRenderToScreen(p.x, p.y) else game.playerShipRenderToScreen(p.x, p.y)
+                mapOf("name" to (c as? xyz.znix.xftl.crew.LivingCrew)?.info?.name, "race" to (c as? xyz.znix.xftl.crew.LivingCrew)?.info?.race?.name,
+                    "owner" to xyz.znix.xftl.hs.crew.HsCrew.shipId(c), "x" to at.x, "y" to at.y, "seen" to (c.room.playerHasVision || c.providesPlayerVision))
+            } ?: emptyList()
+            out["crew"] = crewOf(player, false) + crewOf(game.enemy, true)
+            out["weaponTips"] = player.hardpoints.indices.map { hud.weaponDrawerText(it) }
+            out["cooldownNumbers"] = xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.weapons.HsCooldownNumbers.enabled()
             out["hsActive"] = xyz.znix.xftl.hs.HS.active
             out["luaActive"] = xyz.znix.xftl.hs.HS.luaActive
             out["doors"] = player.doors.map { d -> mapOf("x" to d.offsetX, "y" to d.offsetY, "v" to d.isVertical, "open" to d.open) }

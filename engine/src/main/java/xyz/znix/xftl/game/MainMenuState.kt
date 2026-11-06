@@ -15,7 +15,7 @@ import xyz.znix.xftl.sys.ResourceContext
  * buttons under it, right-aligned. Continue remains visible when disabled.
  * Tutorial uses an independent game session.
  */
-class MainMenuState(private val main: MainGame, private val datafile: Datafile) : MainGame.GameState() {
+class MainMenuState(private val main: MainGame, private val datafile: Datafile) : MainGame.GameState(), TouchRouter.LiftTargets {
     private val resourceContext = ResourceContext()
     private val images = HashMap<String, Image>()
 
@@ -60,6 +60,10 @@ class MainMenuState(private val main: MainGame, private val datafile: Datafile) 
         "{\"x\":${it.position.x},\"y\":${it.position.y},\"width\":${it.size.x},\"height\":${it.size.y}}"
     } ?: "null"
     val diagnosticConfirmation get() = confirmation?.diagnosticState ?: "null"
+    /** The menu's buttons where they take a click, by name (tests/click-through.mjs). */
+    val diagnosticButtons get() = buttons.filter { it.name.isNotEmpty() }.joinToString(",", "{", "}") {
+        "\"${it.name}\":{\"x\":${it.hitLeft},\"y\":${it.hitTop},\"width\":${it.image.width},\"height\":${it.hitHeight},\"active\":${it.action != null}}"
+    }
     val confirmationWindow get() = confirmation
 
     init {
@@ -128,7 +132,7 @@ class MainMenuState(private val main: MainGame, private val datafile: Datafile) 
         logoTime = (logoTime + delta) % 3f
         promotionTime = (promotionTime + delta) % 1.2f
         // A finger only hovers while it is down.
-        val lifted = touch && !container.input.isMouseButtonDown(Input.MOUSE_LEFT_BUTTON)
+        val lifted = touch && !TouchRouter.fingerDown && !container.input.isMouseButtonDown(Input.MOUSE_LEFT_BUTTON)
         mouseX = if (lifted) -1 else container.input.mouseX
         mouseY = if (lifted) -1 else container.input.mouseY
         welcome?.mouseMove(mouseX - welcomeDx, mouseY - welcomeDy)
@@ -203,7 +207,11 @@ class MainMenuState(private val main: MainGame, private val datafile: Datafile) 
         logo.draw((if (touchArt && !wideMenu) TOUCH_LOGO_X else LOGO_X).f, (if (touchArt && !wideMenu) TOUCH_LOGO_Y else LOGO_Y).f, xyz.znix.xftl.rendering.Colour(1f, 1f, 1f, alpha))
     }
 
-    override fun mouseClicked(button: Int, x: Int, y: Int, clickCount: Int) {
+    /**
+     * MainMenu::MouseClick: the menu, its confirmation and its welcome box act on the press; the release does nothing
+     * here (MainMenu::MouseUp only lets go of the options' sliders).
+     */
+    override fun mousePressed(button: Int, x: Int, y: Int) {
         confirmation?.let { it.mouseClick(button, x, y); return }
         welcome?.let { if (button == Input.MOUSE_LEFT_BUTTON && it.click(x - welcomeDx, y - welcomeDy) != null) welcome = null; return }
         if (button != Input.MOUSE_LEFT_BUTTON)
@@ -215,6 +223,13 @@ class MainMenuState(private val main: MainGame, private val datafile: Datafile) 
                 return
             }
         }
+    }
+
+    /** What a finger taps (TouchRouter): a confirmation button, a welcome choice, a menu button. */
+    override fun liftTarget(x: Int, y: Int): Any? {
+        confirmation?.let { c -> return c.liftTarget(x, y)?.let { listOf("confirm", it) } }
+        welcome?.let { w -> return w.liftTarget(x - welcomeDx, y - welcomeDy)?.let { listOf("welcome", it) } }
+        return buttons.firstOrNull { it.contains(x, y) && it.action != null }
     }
 
     override fun keyPressed(key: Int, c: Char) {
@@ -241,7 +256,7 @@ class MainMenuState(private val main: MainGame, private val datafile: Datafile) 
         val onImage = getImg("img/main_menus/${name}_on.png")
         val image = if (action == null) getImg("img/main_menus/${name}_off.png") else onImage
         val hovered = getImg("img/main_menus/${name}_select2.png")
-        return MenuButton(image, hovered, if (touch) TOUCH_BUTTONS_X else buttonsRightX - onImage.width, y, action)
+        return MenuButton(image, hovered, if (touch) TOUCH_BUTTONS_X else buttonsRightX - onImage.width, y, action, name = name)
     }
 
     // The welcome box is laid out for the 1280x720 frame: on the touch canvas it moves to the middle.
@@ -268,7 +283,8 @@ class MainMenuState(private val main: MainGame, private val datafile: Datafile) 
         val y: Int,
         val action: (() -> Unit)?,
         /** Menu items have a hit box 2px inside their art vertically; the banner has none. */
-        private val hitInset: Int = 2
+        private val hitInset: Int = 2,
+        val name: String = ""
     ) {
         /** On the touch canvas [x] is inside the centred block. */
         private val left get() = when {
@@ -277,6 +293,10 @@ class MainMenuState(private val main: MainGame, private val datafile: Datafile) 
             else -> x
         }
         private val top get() = if (wideMenu) y + WIDE_MENU_DOWN else y
+
+        val hitLeft get() = left
+        val hitTop get() = top + hitInset
+        val hitHeight get() = image.height - 2 * hitInset
 
         fun contains(px: Int, py: Int): Boolean {
             return px in left until left + image.width && py in top + hitInset until top + image.height - hitInset

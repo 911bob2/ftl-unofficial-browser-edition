@@ -107,6 +107,8 @@ class ConfirmationWindow(
         else -> -1
     }
 
+    override fun liftTarget(x: Int, y: Int): Any? = targetAt(x, y).takeIf { it >= 0 }
+
     override fun updateUI(x: Int, y: Int) {
         val target = targetAt(x, y)
         if (target >= 0 && target != hovered && !resolved)

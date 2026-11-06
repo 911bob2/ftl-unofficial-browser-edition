@@ -160,6 +160,16 @@ abstract class Window {
         }
     }
 
+    /**
+     * What a finger taps at ([x], [y]) (TouchRouter.LiftTargets): the close control, or the topmost button that acts on
+     * the lift ([Button.touchLift]); null where the finger is the mouse from its press.
+     */
+    open fun liftTarget(x: Int, y: Int): Any? {
+        if (closeControlHit(x, y)) return CLOSE_CONTROL
+        val p = scaleWindowPoint(x, y)
+        return buttons.lastOrNull { it.contains(p.x, p.y) }?.takeIf { it.touchLift }
+    }
+
     open fun mouseReleased(button: Int, x: Int, y: Int) {
         for (btn in ArrayList(buttons)) btn.mouseReleased(button, x, y)
     }
@@ -215,5 +225,10 @@ abstract class Window {
     }
 
     open fun hotkeyPressed(key: Hotkey) {
+    }
+
+    companion object {
+        /** [liftTarget] of the close control. */
+        val CLOSE_CONTROL = Any()
     }
 }
