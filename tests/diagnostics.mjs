@@ -64,7 +64,7 @@ await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).scra
 await page.evaluate(()=>window.ftlEngine.consoleExecute('save roundtrip'));
 await page.evaluate(()=>window.ftlEngine.consoleExecute('dev-poor'));
 assert.equal((await page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()))).scrap,0);
-await page.evaluate(()=>window.ftlEngine.consoleExecute('load roundtrip'));
+await page.evaluate(()=>window.ftlEngine.consoleExecute('dev-load roundtrip'));
 assert.equal((await page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()))).scrap,5000);
 if(!await page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()).console))await page.locator('#console').click();
 pass('Named browser console checkpoints restore the run without filesystem commands');

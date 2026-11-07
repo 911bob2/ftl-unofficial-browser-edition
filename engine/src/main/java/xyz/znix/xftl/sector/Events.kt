@@ -76,7 +76,7 @@ class Event(
      * takes a unique event out of the base-event map the first time it
      * creates it, so it is produced at most once per session.
      */
-    val unique: Boolean = elem.getAttributeValue("unique")?.trim()?.toBoolean() ?: false
+    val unique: Boolean = parseBoolean(elem.getAttributeValue("unique"))
 
     val isConsumedUnique: Boolean get() = unique && uniqueRegistry?.isConsumed(this) == true
 
@@ -156,15 +156,16 @@ class Event(
 
         val modElem = elem.getChild("item_modify")
         if (modElem != null) {
-            itemsModifySteal = modElem.getAttributeValue("steal")?.toBoolean() ?: false
+            itemsModifySteal = parseBoolean(modElem.getAttributeValue("steal"))
             val items = HashMap<Resource, IntRange>()
             itemsModify = items
 
             val ranges = HashMap<Resource, RangeSpec>()
             for (res in Resource.values())
                 ranges[res] = RangeSpec.NONE
+            // EventsParser::ProcessModifyItem (1.6.14 0x5e1ed0, 1.6.9 0x5bd9c0) reads the type and range of every child
+            // node, whatever its name (Outer Expansion 7.1.10's AEA_CULT_CON_FLOWER_DEAD writes `<iten type="scrap">`).
             for (child in modElem.children) {
-                check(child.name == "item")
                 val type = Resource.byName(child.getAttributeValue("type")) ?: continue
                 val min = child.getAttributeValue("min").toInt()
                 val max = child.getAttributeValue("max").toInt()
@@ -233,7 +234,7 @@ class Event(
             // Fall back to a child element for mods using that format.
             val race = killCrew.getAttributeValue("class")
                 ?: killCrew.getChildText("class")
-            val clone = killCrew.getChildText("clone")!!.toBoolean()
+            val clone = parseBoolean(killCrew.getChildText("clone")!!)
             val cloneText = loadText(killCrew.getChild("text"))
             removedCrew.add(RemoveCrew(clone, cloneText, race, false, this))
         }
@@ -247,7 +248,7 @@ class Event(
             val max = boardersElem.getAttributeValue("max")?.let(::atoiCompat) ?: 0
             boarderCount = min..max
             boardersElem.getAttributeValue("amount")?.let { boarderAmount = atoiCompat(it) }
-            boarderBreach = boardersElem.getAttributeValue("breach")?.toBoolean() ?: false
+            boarderBreach = parseBoolean(boardersElem.getAttributeValue("breach"))
         } else {
             boarderRace = null
             boarderCount = 0..0
@@ -335,6 +336,12 @@ class Event(
         }
     }
 
+    /**
+     * `<system name>` (ResourceEvent::systemId): ModifyResources (1.6.14 0x615930) installs it with ShipManager::AddSystem,
+     * and CreateChoiceBox warns on the choice (DialogueWindow). Vanilla's data has none; Multiverse sells systems so.
+     */
+    val systemReward: String? = elem.getChild("system")?.getAttributeValue("name")
+
     val loadShipName: String?
     val loadShipHostile: Boolean?
 
@@ -343,7 +350,7 @@ class Event(
         if (ship != null) {
             check(ship.children.isEmpty()) { "Inline ship specs not yet supported" }
             loadShipName = ship.getAttributeValue("load")
-            loadShipHostile = ship.getAttributeValue("hostile")?.toBoolean()
+            loadShipHostile = ship.getAttributeValue("hostile")?.let(::parseBoolean)
         } else {
             loadShipName = null
             loadShipHostile = null
@@ -383,6 +390,12 @@ class Event(
 
     /** Hyperspace only: EventsParser::ProcessEvent's name (its own, or "PARENT n"), the key of its CustomEvent. */
     var hsName: String? = null
+
+    /**
+     * EventsParser::ProcessEvent's name (LocationEvent::eventName) as far as the original's rules read it: Hyperspace's
+     * [hsName], in vanilla the event's own name or its parent's followed by a space (see [NativeRequirements]).
+     */
+    var nativeName: String? = null
 
     internal fun consumeUnique() {
         if (unique)
@@ -548,7 +561,7 @@ class Event(
             "ship", "img", "environment", "damage",
             "upgrade", "modifyPursuit", "status",
             "quest", "reveal_map", "remove", "fleet",
-            "unlockShip", "repair", "secretSector",
+            "unlockShip", "repair", "secretSector", "system",
 
             // Used by the code loading the event
             "text", "choice"
@@ -704,7 +717,7 @@ class Choice(val text: IEventText, lazyEvent: Lazy<IEvent>, elem: Element, val d
      * in the choice's event (specified by <item_modify> or <autoReward>) to appear next to the choice's text.
      * See req for behavior of hidden when used alongside req.
      */
-    var hidden: Boolean = elem.getAttributeValue("hidden")?.toBoolean() ?: false
+    var hidden: Boolean = parseBoolean(elem.getAttributeValue("hidden"))
 
     /**
      * The name of any race, weapon, drone, augmentation or system/subsystem.
@@ -744,7 +757,7 @@ class Choice(val text: IEventText, lazyEvent: Lazy<IEvent>, elem: Element, val d
      * true/false, true if omitted. Determines whether the choice will appear as (literally) a blue choice.
      * Only has meaning when used alongside req, as only req can make the choice blue in the first place.
      */
-    var blue: Boolean = elem.getAttributeValue("blue")?.toBoolean() ?: (req != null)
+    var blue: Boolean = elem.getAttributeValue("blue")?.let(::parseBoolean) ?: (req != null)
 
     /** Hyperspace customChoiceColors: the text colour name of this choice (HsColors.choiceText). */
     var hsTextColor: String? = elem.getChild("text")?.getAttributeValue("color")
@@ -875,3 +888,10 @@ internal fun atoiCompat(s: String): Int {
     if (neg) v = -v
     return v.coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
 }
+
+/**
+ * EventsParser::ParseBoolean (1.6.9 0x5be000; its callers ProcessEvent, ProcessChoice, ProcessShipEvent): only
+ * "true", "TRUE" and "True" are true, anything else (other cases, spaces) is false. Hyperspace reads its own
+ * attributes with it too.
+ */
+fun parseBoolean(value: String?): Boolean = value == "true" || value == "TRUE" || value == "True"

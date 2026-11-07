@@ -83,7 +83,8 @@ audit entry and answers every taken name with the same message. Limits: five
 registrations per address per ten minutes (`FTL_REGISTER_LIMIT`) and sixty per hour
 for the instance (`FTL_REGISTRATION_HOURLY_LIMIT`). Sign-in allows twenty attempts per address per five minutes; the public endpoints (consent, mode, engine metadata) allow 240 per address per minute; the test runner raises both (`FTL_LOGIN_LIMIT`, `FTL_PUBLIC_LIMIT`) for its disposable fixtures only. Public registration is open by
 default; an administrator closes it in **Users**, or `FTL_PUBLIC_REGISTRATION=false`
-pins it closed (the panel then shows it as fixed). While closed the screens say so.
+pins it closed (the panel then shows it as fixed). While closed the screens say so. The Android launcher's **Create an
+account** uses the same endpoint, rules and limits ([ANDROID.md](ANDROID.md#launcher)).
 
 **Sessions.** Sign-in is persistent: the cookie slides forward 30 days while the
 account is used and ends 180 days after sign-in at the latest. Rows are purged

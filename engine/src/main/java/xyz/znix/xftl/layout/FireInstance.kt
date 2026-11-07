@@ -52,7 +52,7 @@ class FireInstance(val room: Room, val slot: Int) {
         // Drains 0.96% oxygen per second, per fire.
         room.oxygen -= dt * 0.0096f
 
-        val lowO2 = room.oxygen < OXYGEN_CUTOFF
+        val lowO2 = burnsOut(room.oxygen)
 
         // Spread to adjacent cells, and also count how many adjacent fires there are.
         var adjacentFires = 0
@@ -191,6 +191,17 @@ class FireInstance(val room: Room, val slot: Int) {
 
     companion object {
         const val OXYGEN_CUTOFF = 0.1f // Starts burning out at 10% o2
+
+        /**
+         * Fire::UpdateDeathTimer (1.6.14 0x4997d0) starts the burn-out once the fire's oxygen is at most 10 (0x879914).
+         * ShipManager::UpdateEnvironment (0x4a7040) hands the fire the room's oxygen truncated to a whole percent, so
+         * the burn-out starts below 11%; Hyperspace's UpdateEnvironment rewrite (CustomSystems.cpp) hands it the
+         * level as it is.
+         */
+        fun burnsOut(oxygen: Float): Boolean {
+            val percent = oxygen * 100f
+            return if (xyz.znix.xftl.hs.HS.active) percent <= 10f else percent.toInt() <= 10
+        }
 
         // The smoke animation is hardcoded
         private val SMOKE_SPRITE_SHEET = Animations.SpriteSheetSpec(

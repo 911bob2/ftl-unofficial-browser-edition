@@ -336,10 +336,12 @@ internal object GameplayParityCombat2Checks {
         shields.damagedEnergyLevels = 1
         shields.targetPower = 8
         shields.powerLimitChanged()
-        check(shields.powerSelected == 4 || shields.powerSelected == 6) { "Shields on ${shields.powerSelected}" }
-        check(shields.powerSelected % 2 == 0 && shields.targetPower == shields.powerSelected) {
-            "Shields took an idle bar: power ${shields.powerSelected} target ${shields.targetPower}"
-        }
+        check(shields.powerSelected == 6) { "Shields on ${shields.powerSelected}" }
+        // The step that does not fit under the cap ends the climb without touching the player's power (CheckForRepower1
+        // returns before it writes lastUserPower; HS oracle ps-c1-pw2), so the repair brings the last layer back.
+        check(shields.targetPower == 8) { "Shields took an idle bar or forgot the player's power: power ${shields.powerSelected} target ${shields.targetPower}" }
+        shields.repair(1f)
+        check(shields.powerSelected == 8 && shields.targetPower == 8) { "Repaired shields on ${shields.powerSelected}, target ${shields.targetPower}" }
         return "shield repower step"
     }
 }

@@ -23,4 +23,9 @@ val modVectors = tasks.register<Exec>("modVectors") {
 tasks.test {
     dependsOn(modVectors)
     systemProperty("vectors", vectors.get().asFile.absolutePath)
+    // Opt-in RealModsTest: a folder of tools/mods/merge-manifest.mjs manifests (real mod sets need a larger heap).
+    val modsReal = System.getenv("FTL_MODS_REAL") ?: ""
+    inputs.property("modsReal", modsReal)
+    environment("FTL_MODS_REAL", modsReal)
+    if (modsReal.isNotEmpty()) maxHeapSize = "6g"
 }

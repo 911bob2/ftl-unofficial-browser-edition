@@ -129,7 +129,8 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         // Check if the enemy ship changed, for example if it was killed.
         val enemyShip = ownerShip.sys.getEnemyOf(ownerShip)
         if (enemyShip == null || enemyShip != projectile.targetShip) {
-            destroy()
+            val target = projectile.targetShip
+            if (target != null && fightEndedAt(target)) fightEnded(true) else destroy()
             return
         }
 
@@ -138,6 +139,38 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
             // greeted by a defence drone.
             destroy()
         }
+    }
+
+    override fun onEnemyShipUpdated() {
+        val p = pawn
+        if (p != null && ship != ownerShip && fightEndedAt(ship)) {
+            fightEnded(p.health > 0f)
+            return
+        }
+        super.onEnemyShipUpdated()
+    }
+
+    /**
+     * The player's fight with [target] is over while that ship is still here (its crew died, it surrendered or it
+     * was destroyed): ShipManager::SetTarget(0) (1.6.14 0x4a2b30) gives every space drone a null movement target,
+     * so the pod's CanBeDeployed (1.6.9 0x41e860) is false and DroneSystem::OnLoop (0x639a50) takes the player's
+     * drone out of play, see [fightEnded]. A drone without a drone system (CreateSpaceDrone) is not in that loop.
+     */
+    private fun fightEndedAt(target: Ship): Boolean =
+        ownerShip.isPlayerShip && ownerShip.sys.isShipPresent(target) && ownerShip.sys.getEnemyOf(ownerShip) !== target &&
+            ownerShip.drones?.drones?.any { it?.instance === this } == true
+
+    /**
+     * DroneSystem::OnLoop (0x639a50) for a drone that cannot be deployed, on the player's ship: SetDeployed(false)
+     * (BoarderPodDrone::SetDeployed 0x4227b0 takes its crew drone off the other ship) and DePowerDrone, with no
+     * destroyed state, so no rebuild time. Hyperspace's hook (CustomDrones.cpp DroneSystem::OnLoop) runs first: with
+     * BOARDER_RECOVERY (Multiverse ships carry it in FOR_MULTIVERSE) a pod that is not dead, and whose delivered
+     * drone is alive, gives its drone part back.
+     */
+    private fun fightEnded(alive: Boolean) {
+        if (xyz.znix.xftl.hs.HS.active && alive && ownerShip.hasAugment("BOARDER_RECOVERY"))
+            ownerShip.dronesCount++
+        removeInstance()
     }
 
     private fun roomContainsHostileCrew(room: Room): Boolean {
@@ -158,9 +191,8 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         projectile?.destroyFlying()
     }
 
-    override fun drawPawn() {
-        // TODO draw the green glow when turned on
-    }
+    // The lights are the pawn's layer1 frame (AbstractIndoorsDrone.Pawn.drawImage).
+    override fun drawPawn() {}
 
     override fun makePawn(room: Room): Pawn = BoardingPawn(room)
 
@@ -485,10 +517,7 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
 
             ionClock.fired()
             room.ship.sys.sounds.getSampleOrWarn("ionHit1")?.play()
-            system.dealDamage(0, 3)
-            for (crew in room.crew) {
-                if (crew.mode != mode && !(crew is AbstractIndoorsDrone.Pawn && crew.drone is BoardingDrone)) crew.stun(6f)
-            }
+            room.ship.damage(room, ionPulseDamage(drone.ownerShip), getPixelPositionCentre())
             room.ship.playCentredAnimation(room.ship.sys.animations["stun_spark_big"], room.pixelCentre)
             return true
         }
@@ -503,6 +532,21 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         override fun loadFromXML(elem: Element, refs: RefLoader) {
             super.loadFromXML(elem, refs)
             ionClock.load(elem)
+        }
+    }
+
+    companion object {
+        /**
+         * IonDrone::GetRoomDamage (1.6.9 0x4374b0), which ShipManager::UpdateCrewmembers asks every crew member for
+         * and hands to DamageArea at the crew member's position: once the animation's FireShot is ready, a Damage of
+         * 3 ion and a 6 s stun (iStun), owned by the drone's ship, not friendly fire. So the pulse is a whole area
+         * hit: ion armour rolls, the ion number shows, and only crew not of the drone's ship are stunned.
+         */
+        fun ionPulseDamage(owner: Ship): xyz.znix.xftl.weapons.Damage = xyz.znix.xftl.weapons.Damage().also {
+            it.ionDamage = 3
+            it.stunDuration = 6f
+            it.ownerShip = owner
+            it.friendlyFire = false
         }
     }
 }

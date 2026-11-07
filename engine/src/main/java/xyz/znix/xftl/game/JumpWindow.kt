@@ -297,6 +297,23 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         val nextFleetPos = Point(sector.dangerZoneCentre)
         val tutorial = game.mainGame?.isTutorialRunning == true
         if (!tutorial) nextFleetPos.x += sector.getFleetAdvanceFor(game.currentBeacon)
+        // StarMap::RenderLabels (1.6.14 0x5ef050, 1.6.9 0x5c9070), skipped while out of fuel: the beacons the next move
+        // reaches are marked (Location::fleetChanging) and their labels hidden. The original keeps a mark until the
+        // fleet takes the beacon; Hyperspace's hook (CustomEvents.cpp) drops it again once the beacon is out of reach
+        // and for an unvisited `<preventFleet>` event.
+        val labelsHidden = HashSet<Beacon>()
+        if (!tutorial && !outOfFuel && !sector.isLastStand) {
+            for (beacon in sector.beacons) {
+                if (!isWaiting && beacon.pos.distToSq(nextFleetPos) < Sector.DANGER_ZONE_RADIUS_SQUARED) labelsHidden += beacon
+                else if (beacon.browserFleetThreatened) labelsHidden += beacon
+            }
+            if (!isWaiting) sector.markFleetChanging(nextFleetPos)
+        }
+        if (!tutorial && !sector.isLastStand && game.eventManager.hs != null) for (beacon in sector.beacons) {
+            if (beacon.browserFleetThreatened && (beacon.pos.distToSq(nextFleetPos) >= Sector.DANGER_ZONE_RADIUS_SQUARED ||
+                    (!beacon.visited && xyz.znix.xftl.hs.events.HsFlow.customFor(game, beacon.createdEvent)?.preventFleet == true)))
+                beacon.browserFleetThreatened = false
+        }
 
         // Whether or not the ship is equipped with long-range scanners
         val hasLRS = game.player.hasAugment(AugmentBlueprint.LONG_RANGE_SCANNERS)
@@ -382,15 +399,16 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 else drawBeaconLabel(labelCustom, hsLabel.colour, pos, text, hsLabel.colour)
             }
 
-            if (!hideVanilla && beacon.event.isDistressBeacon && !beacon.visited && showBasicInfo && !willBeOvertaken)
+            // RenderLabels (1.6.14 0x5ef050) reads the event's distress and repair flags with no visited test; only
+            // LocationEvent::ClearEvent (0x6119f0, on leaving) clears them, so the beacon the ship is at keeps its label.
+            if (!hideVanilla && beacon.event.isDistressBeacon && eventFlagsLive(beacon) && showBasicInfo && beacon !in labelsHidden)
                 drawBeaconLabel(labelWhite, Constants.SECTOR_CUTOUT_TEXT, pos, game.translator["map_icon_distress"])
 
-            if (!hideVanilla && beacon.event.isLastStandRepair && !beacon.visited && !willBeOvertaken)
+            if (!hideVanilla && beacon.event.isLastStandRepair && eventFlagsLive(beacon) && (if (sector.isLastStand) !willBeOvertaken else beacon !in labelsHidden))
                 drawBeaconLabel(labelWhite, Constants.SECTOR_CUTOUT_TEXT, pos, game.translator["map_icon_repair"])
 
-            // Note that quests and stores are cleared when the beacon is overrun,
-            // so we don't have to check if willBeOvertaken is set.
-            if (!hideVanilla && beacon.hasQuest && !beacon.visited)
+            // RenderLabels draws no quest, repair, store or distress label on a beacon the next move reaches or marked.
+            if (!hideVanilla && beacon.hasQuest && !beacon.visited && beacon !in labelsHidden)
                 drawBeaconLabel(
                     labelPurple,
                     Constants.SECTOR_CUTOUT_TEXT_PURPLE,
@@ -398,7 +416,7 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                     game.translator["map_icon_quest"]
                 )
 
-            if (!hideVanilla && beacon.hasStore && showBasicInfo)
+            if (!hideVanilla && beacon.hasStore && showBasicInfo && beacon !in labelsHidden)
                 drawBeaconLabel(labelWhite, Constants.SECTOR_CUTOUT_TEXT, pos, game.translator["map_icon_store"])
 
             if (!hideVanilla && beacon.isExit)
@@ -522,7 +540,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     private var drawingDeferredLabels = false
 
     private fun willBeOvertaken(beacon: Beacon, nextFleetPos: IPoint, tutorial: Boolean): Boolean {
-        return !tutorial && (if (sector.isLastStand) beacon.browserFleetThreatened else beacon.pos.distToSq(nextFleetPos) < Sector.DANGER_ZONE_RADIUS_SQUARED)
+        // Location::fleetChanging, which the label pass of the frame set (outside the last stand) or the last stand's mark.
+        return !tutorial && beacon.browserFleetThreatened
     }
 
     /**
@@ -1353,6 +1372,10 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     }
 
     companion object {
+        /** The event's map flags (store, distress, repair) still stand: LocationEvent::ClearEvent has not run on it. */
+        @JvmStatic
+        fun eventFlagsLive(beacon: Beacon): Boolean = !beacon.eventCleared
+
         // The width of the glow around the edge of the window
         private const val GLOW = 7
 

@@ -102,13 +102,9 @@ object HsStores {
                 HS.unsupported("parse", HS.HYPERSPACE_XML, "<store>: ${e.message ?: e}")
             }
         }
-        config.node("purchaseLimitNumber")?.let { n ->
-            try {
-                limitFontSize = lexInt(n.getAttributeValue("fontSize")); limitX = lexInt(n.getAttributeValue("x")); limitY = lexInt(n.getAttributeValue("y"))
-            } catch (e: Exception) {
-                HS.unsupported("parse", HS.HYPERSPACE_XML, "<purchaseLimitNumber>: ${e.message ?: e}")
-            }
-        }
+        // PurchaseLimitIndicatorInfo as HsConfig read it (Resources.cpp:951-956: fontSize, x, y in turn; a bad number
+        // ends the main pass and keeps the ones read before it).
+        limitFontSize = config.purchaseLimitFontSize; limitX = config.purchaseLimitX; limitY = config.purchaseLimitY
     }
 
     private fun lexInt(s: String?): Int {

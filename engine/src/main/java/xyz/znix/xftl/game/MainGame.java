@@ -639,6 +639,11 @@ return false;
             return;
         }
         if (currentState instanceof InGameState state) {
+            // WorldManager::SaveGame (1.6.14 0x61a3a0, 1.6.9 0x5f5410) starts with CheckForNewLocation(1): a jump whose
+            // fuel is spent is completed (CommandGui::ForceJumpComplete, CreateLocation) before anything is written,
+            // for every save (Save and Quit, closing the window, the autosave). Without it a save in the 2 s jump-out
+            // held the old beacon with the fuel already spent.
+            if (!state.browserRunEnded) state.browserSettleForSave();
             ftl.browser.BrowserFiles.setRun(state.browserRunEnded ? null : ftl.browser.BrowserXml.write(state.saveGameState()));
         }
     }

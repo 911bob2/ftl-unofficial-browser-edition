@@ -74,6 +74,10 @@ try{
  await page.mouse.move(...await at(up.x+65,275));await page.waitForTimeout(400);
  await page.locator('#game').screenshot({path:join(out,'winpos-'+fixture+'-upgrades-info.png')});
  const sysInfo=(await probe()).screens.systemInfo;console.log('system info box '+sysInfo);
+ // the reactor's box is the same InfoBox, as wide (oracle ps-w3-mv i-h-reactor: 343 under Multiverse)
+ await page.mouse.move(...await at(up.x+433,470));await page.waitForTimeout(400);
+ await page.locator('#game').screenshot({path:join(out,'winpos-'+fixture+'-reactor-info.png')});
+ const reactorInfo=(await probe()).screens.systemInfo;console.log('reactor info box '+reactorInfo);
  await closeWindows();
  const eq=await record('equipment','ShipWindow',()=>key('i'));
  // the first weapon's item box: Equipment's InfoBox at the window's x + 600, y - 25, 323 wide (oracle oc-hs 04, ib-mv-eq)
@@ -85,7 +89,10 @@ try{
  await record('map','JumpWindow',()=>key('j'));await closeWindows();
  await record('pause','PauseWindow',()=>key('Escape'));
  await record('options','OptionsWindow',()=>click(495,405));await closeWindows();
- await record('event','DialogueWindow',()=>run('EVENT ASTEROID_EXPLORE'),20000);await closeWindows();
+ // the event box sits at (334,147) for every event without an enemy ship; ASTEROID_EXPLORE is unique in the original's data
+ // (vanilla, plain Hyperspace), and a unique event the sector's beacons already took is not found by name any more
+ // (GetEvent 0x5dce90 moves it out of the map), so EVENT shows nothing there, as in the original: take TRADER_CIV
+ await record('event','DialogueWindow',()=>run('EVENT '+(fixture==='F3'?'ASTEROID_EXPLORE':'TRADER_CIV')),20000);await closeWindows();
  await record('sector-map','SectorMapWindow',()=>run('EXIT'));await closeWindows();
  // the whole crew dead (the console has no hull damage)
  await record('game-over','GameOverWindow',async()=>{for(const c of (await probe()).crew)await run('KILL '+c.split(':')[1]);},30000);
@@ -98,6 +105,7 @@ try{
  assert.deepEqual(places.store.slice(0,2),[nativeX,85],'the store at storeScreens');
  assert.equal(info,(places.equipment[0]+600)+',134,323','the item box 25 above the levels box, 323 wide');
  assert.equal(sysInfo,(places.upgrades[0]+600)+',159,'+(333+screens.box-347),'the levels box as wide as the widest system box');
+ assert.equal(reactorInfo,'reactor '+sysInfo,'the reactor box is the same InfoBox, as wide');
  pass(fixture+': the ship and store windows and the equipment item box at the original\'s place');
  // the rest do not move: their frames' edges equal the oracle's in all three (measured on these screenshots, round 23)
  const fixed={map:[340,83],pause:[414,213],options:[227,140],event:[334,147],'sector-map':[365,218],'game-over':[400,199]};

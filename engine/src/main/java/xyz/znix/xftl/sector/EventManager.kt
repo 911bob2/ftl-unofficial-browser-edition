@@ -51,6 +51,25 @@ class EventManager(
     }
 
     /**
+     * HS's LOADEVENT (CommandConsole.cpp:279-302): the event is loaded with the used unique events back in the base map,
+     * and afterwards the base map, the used events and the text lists are put back as they were: the call leaves no
+     * unique event used and no text taken out of its list. (Its insert of the used text lists adds nothing, every list
+     * is still in the map.)
+     */
+    fun <T> withoutLastingUse(block: () -> T): T {
+        val uniques = ArrayList(consumedUniques)
+        val texts = textLists.mapValues { it.value.stateToString() }
+        consumedUniques.clear()
+        try {
+            return block()
+        } finally {
+            consumedUniques.clear()
+            consumedUniques.addAll(uniques)
+            for ((name, state) in texts) textLists[name]?.loadState(state)
+        }
+    }
+
+    /**
      * EventGenerator 0x5db020 (every map generation): the used texts come
      * back to the end of their lists and the unique events can be created
      * again.
@@ -329,7 +348,17 @@ class EventManager(
         val name = elem.requireAttributeValue("name")
         eventCheck(name, eventLists)
 
-        val events = elem.children.withIndex().map {
+        // EventsParser::ProcessEventList (1.6.14 0x5e7d10, 1.6.9 0x5c3af0) walks first_node("event") /
+        // next_sibling("event"): other children are not entries. A list a mod wrote with only other children (Alder's
+        // Additions 2.1.1 AA_SHIP_MVBOSS_HACKER_CRUISER_DESTROYED_CHAOS, an event typed as a list) would be an empty
+        // list, which GetEvent divides by (0x5dce90: random % size); it stays unregistered (an empty event where it is
+        // loaded, as before), recorded for the capability report.
+        val entries = elem.getChildren("event")
+        if (entries.isEmpty() && elem.children.isNotEmpty() && HS.modded) {
+            HS.unsupported("parse", "events", "eventList $name has no <event> entries (the original divides by zero when it is used)")
+            return
+        }
+        val events = entries.withIndex().map {
             val serialId = "$name::eventList${it.index}"
             loadEvent(it.value, "$name.${it.index}", serialId, nested = true, hsParent = name)
         }
@@ -441,10 +470,15 @@ class EventManager(
         // space and the next value of the global counter (0x919c64), so a choice's event is "PARENT 12".
         val hsName = if (hs != null) elem.getAttributeValue("name") ?: "${hsParent ?: ""} ${++hsEventCounter}" else null
 
+        // The same name in vanilla as far as a rule reads it: CheckRequirements' REPAIR_STATION test reads only its start,
+        // the event's own name or the parent's (the number after it is left out here).
+        val nativeName = hsName ?: elem.getAttributeValue("name") ?: hsParent?.let { "$it " }
+
         val text = elem.getChild("text")?.let(::loadText)
-        val choices = if (hs == null) elem.getChildren("choice").withIndex().mapNotNull { loadChoice(it.value, it.index, uniqueId, hsName) }
+        val choices = if (hs == null) elem.getChildren("choice").withIndex().mapNotNull { loadChoice(it.value, it.index, uniqueId, nativeName?.trimEnd()) }
         else hsChoices(elem, uniqueId, hsName)
         val event = Event(text, choices, elem, debugId, uniqueId, ::getImageListOrNull, ::loadText, uniqueEvents)
+        event.nativeName = nativeName
 
         byDeserialisationId[uniqueId] = event
         if (hsName != null) {

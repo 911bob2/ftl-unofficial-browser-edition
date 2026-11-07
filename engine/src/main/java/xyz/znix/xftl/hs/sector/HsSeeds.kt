@@ -111,12 +111,17 @@ object HsSeeds {
     /** `Global::seededRng` (clock-seeded in HS): the source of a run seed nobody typed. */
     private var seededRng: HsMt19937? = null
 
-    /** hyperspace.xml `<seeds enabled allowMetaVars>`. */
+    /**
+     * hyperspace.xml `<seeds enabled allowMetaVars>`. Global::InitializeResources (Resources.cpp) reads every `<seeds>`
+     * node in file order, each attribute it has overriding the earlier value, through EventsParser::ParseBoolean
+     * ("true", "TRUE" or "True").
+     */
     fun readConfig(hyperspaceRoot: Element?) {
         enabled = true; allowMetaVars = true
-        val node = hyperspaceRoot?.getChild("seeds") ?: return
-        node.getAttributeValue("enabled")?.let { enabled = it.trim().equals("true", true) }
-        node.getAttributeValue("allowMetaVars")?.let { allowMetaVars = it.trim().equals("true", true) }
+        for (node in hyperspaceRoot?.getChildren("seeds") ?: return) {
+            node.getAttributeValue("enabled")?.let { enabled = xyz.znix.xftl.hs.HsConfig.bool(it) }
+            node.getAttributeValue("allowMetaVars")?.let { allowMetaVars = xyz.znix.xftl.hs.HsConfig.bool(it) }
+        }
     }
 
     /**

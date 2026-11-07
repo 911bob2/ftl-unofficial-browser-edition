@@ -48,6 +48,9 @@ public final class BrowserEngine {
         if (!xyz.znix.xftl.hs.HS.scripts.isEmpty()) xyz.znix.xftl.hs.lua.HsLua.startForSession(game, graphics);
     }
 
+    /** Hyperspace's start-up error boxes of this start (HS.errorBoxes): the app shows each before the first frame. */
+    public static java.util.List<String> hsErrorBoxes() { return xyz.znix.xftl.hs.HS.errorBoxes; }
+
     /** A frame advances at most half a speed unit, 1/32 s: a slower frame slows the game down, as in the original. */
     static final float MAX_STEP = 1f / 32f;
 

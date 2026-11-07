@@ -292,8 +292,8 @@ object HsTooltips {
 
     // ---- drones ----
 
-    /** DroneBlueprint::targetType: 1 LASERS (solid), 3 DRONES; HS's extra targets are not modelled by the port. */
-    private fun targetType(bp: DroneBlueprint): Int = when (bp.defenceTarget) { "LASERS" -> 1; "DRONES" -> 3; else -> 0 }
+    /** DroneBlueprint::targetType as RedesignedTooltips.cpp switches on it (1 default, 2 ASTEROIDS, 3 DRONES, 4 LASERS, 5 SOLID, 6 ALL). */
+    private fun targetType(bp: DroneBlueprint): Int = bp.targetType
 
     /**
      * InfoBox::SetBlueprint(drone) with `redesignedDroneTooltips`: the description with the drone's stats and scrap

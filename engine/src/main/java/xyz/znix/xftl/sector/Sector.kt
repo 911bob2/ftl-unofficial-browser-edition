@@ -53,7 +53,7 @@ class Sector {
      */
     var fleetAdvanceModifier: Int = 0
 
-    /** Hyperspace: StarMap::potentialLoc while the fleet advances for a jump (null on a wait). Not saved. */
+    /** StarMap::potentialLoc while the fleet advances for a jump (null on a wait): set by the map jump. Not saved. */
     @JvmField var hsJumpTarget: Beacon? = null
 
     /**
@@ -148,13 +148,27 @@ class Sector {
     }
 
     /**
-     * StarMap::UpdateDangerZone (0x5f5280, the animated branch used in play) for one jump or wait: the danger zone
+     * StarMap::UpdateDangerZone (0x5f5280). A jump ([hsJumpTarget] set) takes the direct branch, see below. A wait
+     * takes the animated branch: the danger zone
      * centre moves by [getFleetAdvanceFor] (no clamp), and every beacon the zone's edge (strictly under 767 px,
      * float distance) passes over on the way is overtaken by [overtake], in the order [overtakeOrder] gives.
      * The pursuit modifier then moves towards zero.
      */
     fun advanceFleet(game: InGameState, current: Beacon) {
         val start = dangerZoneCentre.x
+        if (hsJumpTarget != null) {
+            // A jump: StarMap::GetNewLocation (1.6.14 0x5f5680, 1.6.9 0x5d1310) runs UpdateDangerZone's direct branch
+            // (the wait animation is not running): the centre moves by GetNextDangerMove while it is under 60 and is
+            // then held at 60, the pursuit modifier steps towards zero, and one pass over the beacons in list order
+            // takes every one inside the zone (not the order the edge reaches them; native capture w1-ovj).
+            dangerZoneCentre.x = if (start < 60) minOf(start + getFleetAdvanceFor(current), 60) else 60
+            if (fleetAdvanceModifier < 0)
+                fleetAdvanceModifier++
+            else if (fleetAdvanceModifier > 0)
+                fleetAdvanceModifier--
+            overtakeReached(game)
+            return
+        }
         val end = start + getFleetAdvanceFor(current)
         val order = overtakeOrder(
             IntArray(beacons.size) { beacons[it].pos.x }, IntArray(beacons.size) { beacons[it].pos.y },
@@ -169,6 +183,21 @@ class Sector {
             fleetAdvanceModifier++
         else if (fleetAdvanceModifier > 0)
             fleetAdvanceModifier--
+    }
+
+    /**
+     * StarMap::RenderLabels' warning marks (1.6.9 0x5c9070), run each frame the beacon map is drawn outside the last
+     * stand: a beacon not yet taken that lies inside the zone the next move reaches ([next], the centre plus
+     * GetNextDangerMove while the centre is under 60) gets Location::fleetChanging ([Beacon.browserFleetThreatened]).
+     * The mark stays until the fleet takes the beacon (OvertakeLocation clears it), even when the reach shrinks again
+     * (a pursuit modifier running out). Not while the wait animation runs.
+     */
+    fun markFleetChanging(next: IPoint) {
+        if (isLastStand) return
+        for (beacon in beacons) {
+            if (!beacon.isOvertaken && beacon.pos.distToSq(next) < DANGER_ZONE_RADIUS_SQUARED)
+                beacon.browserFleetThreatened = true
+        }
     }
 
     /**

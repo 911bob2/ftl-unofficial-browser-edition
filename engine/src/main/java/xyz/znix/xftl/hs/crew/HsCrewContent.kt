@@ -22,6 +22,13 @@ object HsCrewContent {
         StatBoostDefs.blueprintList = { name -> (blueprints.getOrNull(name) as? BlueprintList)?.names ?: emptyList() }
         xyz.znix.xftl.hs.stat.AugmentStatBoosts.reset()
         xyz.znix.xftl.hs.stat.AugmentStatBoosts.clearCaches()
+        // The weapon blueprints' stat boosts and crew spawns first: the original builds the blueprints before HS
+        // parses hyperspace.xml (HsWeapons.loadContent).
+        val powersBefore = CustomCrewManager.powerDefs.size
+        val resourcesBefore = CustomCrewManager.resourceDefs.size
+        xyz.znix.xftl.hs.weapons.HsWeapons.loadContent(blueprints)
+        val weaponPowers = CustomCrewManager.powerDefs.size - powersBefore
+        val weaponResources = CustomCrewManager.resourceDefs.size - resourcesBefore
         // ParseHyperspaceXml walks the root's children in document order, so the stat boost definitions (and their
         // realBoostIds) of <crew> and <augments> nodes come in that order.
         var nodes = HS.cfg().nodesOf("crew") + HS.cfg().nodesOf("augments")
@@ -32,7 +39,18 @@ object HsCrewContent {
             else xyz.znix.xftl.hs.stat.AugmentStatBoosts.parseAugmentsNode(node)
         }
         StatBoostManager.augmentBoosts = xyz.znix.xftl.hs.stat.AugmentStatBoosts::boosts
-        StatBoostDefs.crewEnd = StatBoostDefs.defs.size
+        StatBoostDefs.weaponsFirst()
+        // Saved crew powers and resources name their definition by index: the weapons' few (Alder's Additions has one)
+        // keep the numbers after hyperspace.xml's they had before the weapons were parsed first.
+        fun <T> weaponsLast(list: ArrayList<T>, from: Int, count: Int, setIndex: (T, Int) -> Unit) {
+            if (count <= 0) return
+            val moved = ArrayList(list.subList(from, from + count))
+            list.subList(from, from + count).clear()
+            list.addAll(moved)
+            for (i in from until list.size) setIndex(list[i], i)
+        }
+        weaponsLast(CustomCrewManager.powerDefs, powersBefore, weaponPowers) { d, i -> d.index = i }
+        weaponsLast(CustomCrewManager.resourceDefs, resourcesBefore, weaponResources) { d, i -> d.index = i }
         HsCapability.implement("crew")
         StatCrewLua.shareDefinitions()
         loaded = true

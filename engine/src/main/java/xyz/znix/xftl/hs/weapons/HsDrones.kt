@@ -112,9 +112,19 @@ object HsDrones {
     }
     // ------------------------------------------------------------------ custom drones (CustomDroneManager)
 
-    class CustomDrone(val name: String, val crewBlueprint: String, val tooltipName: String)
+    /**
+     * A `<drones><drone>` definition. [hasAbility]/[abilityAi] are `<ability ai="systems|systems_power|heal|enemies">`
+     * (DroneAbilityDefinition): HS 1.23.2 only builds an AbilityDrone from it in CreateBoarderDrone, a stub whose
+     * ability timer never runs, whose BlockRoom room is never set and whose OnLoop writes an animation status through
+     * the wrong pointer, so the engine reads the fields and gives them no behaviour (parity sweep C4, O-M2-3).
+     */
+    class CustomDrone(val name: String, val crewBlueprint: String, val tooltipName: String,
+                      val hasAbility: Boolean = false, val abilityAi: String? = null)
 
     private var customDrones: Map<String, CustomDrone>? = null
+
+    /** The `ai` values ParseDroneNode knows; any other leaves the type unset. */
+    private val ABILITY_AI = setOf("systems", "systems_power", "heal", "enemies")
 
     /** CustomDroneManager::ParseDroneNode: hyperspace.xml `<drones><drone name><crewBlueprint><tooltipName>`. */
     @JvmStatic
@@ -122,12 +132,22 @@ object HsDrones {
         customDrones?.let { return it }
         val map = LinkedHashMap<String, CustomDrone>()
         if (xyz.znix.xftl.hs.HS.active) for (node in xyz.znix.xftl.hs.HS.cfg().nodesOf("drones")) for (d in node.getChildren("drone")) {
-            val name = d.getAttributeValue("name") ?: continue
+            val def = parseDrone(d) ?: continue
             // GetDefinition returns the first definition of a name (droneDefs is searched in order)
-            if (name !in map) map[name] = CustomDrone(name, d.getChildText("crewBlueprint") ?: "", d.getChildText("tooltipName") ?: "")
+            if (def.name !in map) map[def.name] = def
         }
         customDrones = map
         return map
+    }
+
+    /** One `<drone>`: ParseDroneNode reads every child in order, so the last crewBlueprint/tooltipName wins; any <ability> sets it. */
+    @JvmStatic
+    fun parseDrone(d: org.jdom2.Element): CustomDrone? {
+        val name = d.getAttributeValue("name") ?: return null
+        val ability = d.getChildren("ability").lastOrNull()
+        return CustomDrone(name, d.getChildren("crewBlueprint").lastOrNull()?.text ?: "",
+            d.getChildren("tooltipName").lastOrNull()?.text ?: "", ability != null,
+            ability?.getAttributeValue("ai")?.takeIf { it in ABILITY_AI })
     }
 
     @JvmStatic

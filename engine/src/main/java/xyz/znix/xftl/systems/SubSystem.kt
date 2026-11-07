@@ -35,6 +35,22 @@ abstract class SubSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint)
         check(blueprint.info!!.isSubSystem)
     }
 
+    /**
+     * ShipSystem's powered test as the system box makes it (1.6.14 FUN_0063b8a0, RenderSystemSymbol 0x63e030): the
+     * power, bonus and battery power (and a manning boost, which CrewMember's manning step 0x47b190 never gives a
+     * capped system). A subsystem without power, such as the sensors under a nebula's cap of 0, has the grey icon and
+     * no crew-slot icon (native 1.6.14 capture ps-b1-van b1v-neb); a power loss also hides the crew slot.
+     */
+    private val boxPowered: Boolean get() = undamagedEnergy + hsPowerWrite > 0
+
+    override val manningIconPowered: Boolean get() = boxPowered && scriptedPowerLoss == 0
+
+    /** Diagnostics: whether the box would draw the crew-slot icon (see [manningIconPowered]). */
+    internal val boxCrewSlotShown: Boolean get() = manningIconPowered
+
+    override val iconColourName: String
+        get() = super.iconColourName.let { if (it == "green" && !isIonised && !boxPowered) "grey" else it }
+
     override fun update(dt: Float) {
         hsPowerWrite = 0
         super.update(dt)

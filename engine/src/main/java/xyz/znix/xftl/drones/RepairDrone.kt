@@ -76,9 +76,8 @@ class RepairDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
             pawn.setTargetRoom(home)
     }
 
-    override fun drawPawn() {
-        // TODO the green glow over the drone when it's powered on - that comes from the layer1 image
-    }
+    // The lights are the pawn's layer1 frame (AbstractIndoorsDrone.Pawn.drawImage).
+    override fun drawPawn() {}
 
     override fun makePawn(room: Room): Pawn = RepairPawn(room)
 

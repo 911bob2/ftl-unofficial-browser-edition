@@ -272,6 +272,11 @@ class ConsoleReceiver : BroadcastReceiver() {
                 val w = state.player.hardpoints[cmd.substring(12).trim().toInt()].weapon
                 if (w != null) Log.i("FTL-Debug", "weaponpower ${w.type.name} ${state.player.weapons?.setWeaponPower(w, true)}")
             }
+            else if (cmd.startsWith("dronepower ")) {
+                // dronepower <slot> <on|off>: that drone's power, as a tap on its slot does.
+                val (slot, on) = cmd.substring(11).trim().split(' ')
+                Log.i("FTL-Debug", "dronepower $slot ${state.player.drones?.setDronePower(slot.toInt(), on == "on")}")
+            }
             else if (cmd.startsWith("weaponcharge ")) {
                 // weaponcharge <slot> <fraction>: that weapon's charge, as a fraction of its charge time.
                 val (slot, f) = cmd.substring(13).trim().split(' ')

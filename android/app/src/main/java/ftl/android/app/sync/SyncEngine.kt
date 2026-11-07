@@ -46,6 +46,8 @@ class SyncEngine(context: Context, private val account: Account, private val sto
         val decisions: Map<String, SyncDecision> = emptyMap(),
         val error: String? = null,
         val lastSync: String? = null,
+        /** Why the account refused a save's upload (saves_full, storage_full, a bad run): the row says it, as on the website. */
+        val refused: Map<String, String> = emptyMap(),
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -161,6 +163,7 @@ class SyncEngine(context: Context, private val account: Account, private val sto
         return try {
             val newRevision = api.putSave(local.id, revision, body(local))
             store.update(local.id) { Sync.uploaded(it, local.run, local.profile, newRevision) }
+            if (local.id in _state.value.refused) updateState { it.copy(refused = it.refused - local.id) }
             SyncDecision(ftl.saves.SyncStatus.SYNCED, SyncAction.NONE)
         } catch (e: ApiError) {
             when (e.code) {
@@ -180,7 +183,15 @@ class SyncEngine(context: Context, private val account: Account, private val sto
                     SyncDecision(ftl.saves.SyncStatus.OVERRIDDEN, SyncAction.NOTIFY_OVERRIDDEN)
                 }
                 "locked", "revision_conflict" -> SyncDecision(ftl.saves.SyncStatus.CONFLICT, SyncAction.ASK_CONFLICT)
-                else -> throw e
+                "deleted" -> SyncDecision(ftl.saves.SyncStatus.DELETED, if (local.dirty) SyncAction.ASK_DELETED else SyncAction.REMOVE_LOCAL)
+                else -> {
+                    // saves_full, storage_full, bad_*: the save stays here, unsynced, and its row says why (web/sync.mjs).
+                    if (e.status == 400 || e.status == 409 || e.status == 413) {
+                        updateState { it.copy(refused = it.refused + (local.id to (e.message ?: "Refused (${e.status})"))) }
+                        return SyncDecision(if (revision > 0) ftl.saves.SyncStatus.PENDING else ftl.saves.SyncStatus.LOCAL, SyncAction.NONE)
+                    }
+                    throw e
+                }
             }
         }
     }
@@ -192,6 +203,10 @@ class SyncEngine(context: Context, private val account: Account, private val sto
         object Offline : LockResult()
         data class Held(val lock: LockInfo) : LockResult()
         data class Overridden(val by: LockInfo?, val at: String?) : LockResult()
+        /** A save the account has never had, and it refused to take it (saves_full, storage_full): why. */
+        data class Refused(val reason: String) : LockResult()
+        /** Deleted on another device meanwhile. */
+        object Deleted : LockResult()
     }
 
     /** Takes the save's lock before play (override: take it from whoever has it). */
@@ -218,10 +233,12 @@ class SyncEngine(context: Context, private val account: Account, private val sto
                 }
                 e.status == 404 -> {
                     // Not in the cloud yet: create it, then lock it.
-                    store.get(id)?.let { upload(it, 0) }
+                    val made = store.get(id)?.let { upload(it, 0) }
+                    if (made != null && made.status != ftl.saves.SyncStatus.SYNCED) return@withLock LockResult.Refused(_state.value.refused[id] ?: "The account refused this save.")
                     api.lock(id, override)
                     LockResult.Granted
                 }
+                e.status == 410 -> LockResult.Deleted
                 else -> throw e
             }
         } catch (e: IOException) {
@@ -234,8 +251,12 @@ class SyncEngine(context: Context, private val account: Account, private val sto
         val api = me ?: return@withLock null
         try {
             val local = store.get(id)
-            val cloud = runCatching { api.save(id) }.getOrElse { e -> if (e is ApiError && e.status == 404) null else throw e }
-            val d = Sync.decide(local, cloud?.cloud, false)
+            // 410: deleted on another device (a tombstone); 404: never uploaded, or long gone.
+            var deleted = false
+            val cloud = runCatching { api.save(id) }.getOrElse { e -> if (e is ApiError && (e.status == 404 || e.status == 410)) { deleted = e.status == 410; null } else throw e }
+            // The list forgets it at once, or a removed copy would show as a cloud save until the next pass.
+            if (deleted) updateState { it.copy(cloud = it.cloud - id, deleted = it.deleted + id) }
+            val d = Sync.decide(local, cloud?.cloud, deleted)
             when (d.action) {
                 SyncAction.FETCH, SyncAction.LIST_ONLY -> {
                     val (c, run, profile) = cloud!!
@@ -243,12 +264,46 @@ class SyncEngine(context: Context, private val account: Account, private val sto
                     SyncDecision(ftl.saves.SyncStatus.SYNCED, SyncAction.NONE)
                 }
                 SyncAction.CREATE -> upload(local!!, 0)
+                // Clean here: nothing to lose, so it goes (the launcher says so).
+                SyncAction.REMOVE_LOCAL -> { store.delete(id); d }
                 else -> d
             }
         } catch (e: IOException) {
             if (e is ApiError) throw e
             null
         }
+    }
+
+    /** What deleting a save did when it could not go everywhere. */
+    sealed class Removed {
+        object Done : Removed()
+        /** The account's copy needs the network; nothing was deleted. */
+        object Offline : Removed()
+        /** Another game holds its lock; nothing was deleted (Delete anyway overrides). */
+        data class Held(val lock: LockInfo?) : Removed()
+    }
+
+    /**
+     * Deletes the save here and, when the account has it (or had it: this copy was synced), there too; override: even
+     * while another game holds its lock. As the website's (web/sync.mjs remove): offline nothing is deleted, since the
+     * account's copy would come back at the next sync.
+     */
+    suspend fun remove(id: String, override: Boolean = false): Removed = mutex.withLock {
+        val inCloud = id in _state.value.cloud || (store.get(id)?.base ?: 0L) > 0
+        if (inCloud) {
+            val api = me ?: return@withLock Removed.Offline
+            try {
+                api.deleteSave(id, override)
+            } catch (e: ApiError) {
+                if (e.code == "locked") return@withLock Removed.Held(LockInfo.fromJson(e.body?.get("lock")))
+                if (e.status != 404) throw e
+            } catch (e: IOException) {
+                return@withLock Removed.Offline
+            }
+        }
+        store.delete(id)
+        updateState { it.copy(cloud = it.cloud - id, decisions = it.decisions - id, refused = it.refused - id) }
+        Removed.Done
     }
 
     /** Before sign-out: the locks this game holds go back, as far as the network allows (a lock never expires). */
@@ -304,7 +359,7 @@ class SyncEngine(context: Context, private val account: Account, private val sto
         val local = store.get(id) ?: return@withLock
         store.delete(id)
         if (uploadAgain) {
-            val copy = local.copy(id = java.util.UUID.randomUUID().toString(), base = 0, dirty = true)
+            val copy = local.copy(id = java.util.UUID.randomUUID().toString(), base = 0, dirty = true, overridden = null, nameDirty = false)
             store.put(copy)
             upload(copy, 0)
         }

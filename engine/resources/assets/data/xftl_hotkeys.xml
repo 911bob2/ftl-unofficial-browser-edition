@@ -42,6 +42,26 @@
         <hotkey id="sys_power_drones_off" ui_name="hotkey_un_drones"/>
     </group>
 
+    <!-- Settings::ResetHotkeys power_1..8 / un_power_1..8 (unbound): SystemControl::OnKeyDown powers the n-th box of the bar. -->
+    <group id="system_slot_power" ui_name="xftl_hotkeys_system_power_group" columns="2">
+        <hotkey id="power_1" ui_name="hotkey_power_1"/>
+        <hotkey id="un_power_1" ui_name="hotkey_un_power_1"/>
+        <hotkey id="power_2" ui_name="hotkey_power_2"/>
+        <hotkey id="un_power_2" ui_name="hotkey_un_power_2"/>
+        <hotkey id="power_3" ui_name="hotkey_power_3"/>
+        <hotkey id="un_power_3" ui_name="hotkey_un_power_3"/>
+        <hotkey id="power_4" ui_name="hotkey_power_4"/>
+        <hotkey id="un_power_4" ui_name="hotkey_un_power_4"/>
+        <hotkey id="power_5" ui_name="hotkey_power_5"/>
+        <hotkey id="un_power_5" ui_name="hotkey_un_power_5"/>
+        <hotkey id="power_6" ui_name="hotkey_power_6"/>
+        <hotkey id="un_power_6" ui_name="hotkey_un_power_6"/>
+        <hotkey id="power_7" ui_name="hotkey_power_7"/>
+        <hotkey id="un_power_7" ui_name="hotkey_un_power_7"/>
+        <hotkey id="power_8" ui_name="hotkey_power_8"/>
+        <hotkey id="un_power_8" ui_name="hotkey_un_power_8"/>
+    </group>
+
     <group id="system_actions" ui_name="xftl_hotkeys_system_actions_group">
         <hotkey id="sys_action_door_open" ui_name="hotkey_open" default_bind="z"/>
         <hotkey id="sys_action_door_close" ui_name="hotkey_close" default_bind="x"/>
@@ -81,7 +101,5 @@
 
     <group id="development" ui_name="xftl_hotkeys_dev_group">
         <hotkey id="dev_console" ui_name="xftl_hotkeys_console" default_bind="backtick"/>
-        <hotkey id="dev_frame_step" ui_name="xftl_hotkeys_frame_step" default_bind="full_stop"/>
-        <hotkey id="dev_fast_forward" ui_name="xftl_hotkeys_fast_forward" default_bind="tab"/>
     </group>
 </hotkeys>

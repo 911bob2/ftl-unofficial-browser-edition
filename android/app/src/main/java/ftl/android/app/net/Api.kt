@@ -163,6 +163,20 @@ class Api(val base: String, private val identity: Identity, private val secure: 
         return ((r.json as? Json.Obj)?.get("mustChangePassword") as? Json.Bool)?.value ?: false
     }
 
+    /** Public registration (POST /api/auth/register): an External user, signed in by the answer. */
+    fun register(username: String, password: String) {
+        val body = obj("username" to username, "password" to password)
+        try {
+            request("POST", "/api/auth/register", body)
+        } catch (e: ApiError) {
+            // A stale session cookie: the server clears it and asks to try again, as for sign-in.
+            if (e.status != 409) throw e
+            csrf = null
+            request("POST", "/api/auth/register", body)
+        }
+        csrf = null
+    }
+
     fun me(): Me {
         val o = request("GET", "/api/auth/me").json as Json.Obj
         val caps = o["capabilities"]

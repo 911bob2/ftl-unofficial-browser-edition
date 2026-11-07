@@ -364,9 +364,15 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         return projectile
     }
 
-    /** position and last_position copied from another queued projectile; the heading stays. */
+    /**
+     * position and last_position copied from another queued projectile; the heading and the target stay
+     * (CustomWeapons.cpp GetProjectile copies only those two). [AbstractProjectile.targetPos] is a live view of the
+     * projectile's mutable point, which setInitialPath overwrites, so the target is copied out first.
+     */
     private fun hsPlaceAt(projectile: AbstractProjectile, from: AbstractProjectile) {
-        val target = projectile.targetPos
+        val target = projectile.targetPos.let {
+            if (it is xyz.znix.xftl.math.FPoint) xyz.znix.xftl.math.ConstFPoint(it.xf, it.yf) else xyz.znix.xftl.math.ConstFPoint(it.x.toFloat(), it.y.toFloat())
+        }
         val at = from.position
         val far = xyz.znix.xftl.math.ConstFPoint(at.xf + ship.weaponFireDirection.x * 5000f, at.yf + ship.weaponFireDirection.y * 5000f)
         projectile.setInitialPath(at, far)
@@ -429,6 +435,17 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         if (xyz.znix.xftl.hs.HS.active) projectile.hsCurrentSpace = target.ship
 
         type.launchSounds?.get()?.play()
+    }
+
+    /**
+     * Artillery.loadSystem: the mount the artillery fires from, which the save does not hold. The original asks the mount
+     * for the fire location on every shot (ProjectileFactory::Update 0x40dc80, WeaponAnimation::GetFireLocation), so a
+     * burst saved between two shots goes on from it after Continue; without it the next shot had no spawn position.
+     */
+    fun restoreArtilleryOrigin(origin: IPoint) {
+        artilleryOrigin = origin
+        projectileSpawnPos = origin
+        projectileSpawnChargeOffset = ConstPoint.ZERO
     }
 
     open fun fireFromArtillery(possibleTargets: List<Room>, origin: IPoint) {

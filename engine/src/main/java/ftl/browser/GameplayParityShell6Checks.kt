@@ -382,9 +382,12 @@ internal object GameplayParityShell6Checks {
     }
 
     /**
-     * A jump in progress. A plain save (autosave, Save, blur) holds the old beacon with the fuel already spent; Save
-     * and close first completes the jump like the native save does (WorldManager 0x61a3a0 -> 0x619fc0) so nothing is
-     * lost.
+     * A jump in progress. Every save (the arrival and battle autosaves, Save, Save and close, a hidden page, Android's
+     * onPause) goes through MainGame.writeRunSave, which first completes the jump like the native save does
+     * (WorldManager::SaveGame 1.6.14 0x61a3a0 -> CheckForNewLocation(1) 0x619fc0; 1.6.9 0x5f5410 -> 0x5f4fa0): the run
+     * is saved at the new beacon with the fuel spent once, as the original's Continue shows it (native capture
+     * scan-progress save-svD: the destination, FTL at 0, the arrival event). Before ps-s2 only Save and close settled,
+     * and any other save in the 2 s jump-out held the old beacon with the fuel already spent.
      */
     private fun jump(main: MainGame, container: GameContainer): String {
         fun begin(): Triple<InGameState, Int, Int> {
@@ -398,11 +401,15 @@ internal object GameplayParityShell6Checks {
             check(state.browserJumpPending() && state.player.fuelCount == fuel - 1) { "No jump pending" }
             return Triple(state, from, sector.beacons.indexOf(target))
         }
-        val (plain, from, _) = begin()
+        val (plain, from, to) = begin()
         val fuel = plain.player.fuelCount
-        val lostJump = trip(main, container, plain, settle = false)
-        check(lostJump.loaded.currentBeacon.sector.beacons.indexOf(lostJump.loaded.currentBeacon) == from && lostJump.loaded.player.fuelCount == fuel) {
-            "A plain save mid-jump should hold the old beacon with the fuel spent"
+        main.writeRunSave()
+        check(!plain.browserJumpPending() && plain.currentBeacon.sector.beacons.indexOf(plain.currentBeacon) == to) { "The save did not complete the jump" }
+        main.loadSavedGame(BrowserXml.parse(BrowserFiles.getRun()))
+        val loadedPlain = main.currentState as InGameState
+        val at = loadedPlain.currentBeacon.sector.beacons.indexOf(loadedPlain.currentBeacon)
+        check(at == to && at != from && loadedPlain.player.fuelCount == fuel && !loadedPlain.browserJumpPending()) {
+            "A save mid-jump should hold the new beacon with the fuel spent once (beacon $at of $from -> $to, fuel ${loadedPlain.player.fuelCount} of $fuel)"
         }
         // A second fixture game: its map comes from the random stream at that moment, so it has its own beacons.
         val (settled, _, settledTo) = begin()
@@ -413,6 +420,6 @@ internal object GameplayParityShell6Checks {
             "Save and close mid-jump should hold the new beacon"
         }
         check(!loaded.browserJumpPending()) { "A jump is still pending after the settled save" }
-        return "jump: a plain save holds the old beacon (fuel spent, as at the animation start), Save and close completes it first (new beacon)"
+        return "jump: every save completes a jump in progress first (new beacon, fuel spent once), as the native save does"
     }
 }

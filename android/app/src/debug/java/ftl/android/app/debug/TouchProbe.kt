@@ -138,6 +138,10 @@ object TouchProbe {
             out["doors"] = player.doors.map { d -> mapOf("x" to d.offsetX, "y" to d.offsetY, "v" to d.isVertical, "open" to d.open) }
             out["shipOrigin"] = Point(0, 0).let { game.convertScreenToPlayerShip(it); listOf(it.x, it.y) }
             out["crewSel"] = (field(ui, "selectedCrew") as List<*>).size
+            // The status bar's messages: running, the middle of their first line, the pointer line.
+            out["warnings"] = hud.statusWarnings.mapValues { (_, w) ->
+                mapOf("on" to w.isRunning, "x" to w.centre.x, "y" to w.centre.y, "line" to w.linePoints.map { listOf(it.x, it.y) })
+            }
             out["hull"] = player.health
             val weapons = player.weapons
             out["slots"] = player.hardpoints.map { h ->

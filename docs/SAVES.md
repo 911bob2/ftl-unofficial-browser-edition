@@ -175,7 +175,8 @@ Modules (all rules come from `savecore.js`, served at `/savecore/savecore.js` an
 | `web/device.mjs` | Device `{id, name}` in localStorage `ftl-device` ("Firefox on Windows"); the tab's instance in sessionStorage `ftl-instance` (a duplicated tab takes a new one); the `X-FTL-*` headers. |
 | `web/sync.mjs` | The syncer (Android's `SyncEngine`): passes one at a time, every 2 minutes and on focus, a few seconds after each save. Before the account's list has been read (a page opened offline) the cloud is unknown, not empty: device copies show as "Not synced", never as deleted. |
 | `web/game-session.mjs` | One running game: every engine save goes to the device store in order; a failed write keeps the game running and is retried by the next save; a tab closed with a write still queued keeps it in localStorage `ftl-save-flush` for the next start. |
-| `web/save-service.mjs`, `web/saves-ui.mjs`, `web/dialogs.mjs` | The list rows, New save, backups (`{schema: 3, kind: "ftl-save"}` with run and profile; schema 2 imports without a profile, old schema 1 backups as a save without mods), the questions in the page's own dialogs (no `prompt`/`confirm`/`alert`). |
+| `web/save-service.mjs`, `web/saves-ui.mjs`, `web/dialogs.mjs` | The list rows, New save, backups (`{schema: 3, kind: "ftl-save"}` with run and profile; schema 2 imports without a profile, old schema 1 backups as a save without mods; a recovery snapshot's Download is the same schema 3 file with the snapshot's profile), the questions in the page's own dialogs (no `prompt`/`confirm`/`alert`). |
+| `web/save-words.mjs` | The words of the save questions and notes (lock, override, changed in two places, taken over, deleted elsewhere, delete, restore, not synced, the limit), the Android launcher's too (`SaveWords.kt`; `SaveWordsTest` keeps them equal). They say "this device" on both. |
 | `web/old-saves.mjs` | The migration below; a copy of all old data is stored first (`state` `old-saves-backup`). |
 
 - **Tabs.** A running game holds the Web Lock `ftl-play:<account>:<id>`. Play in another tab sees it ("In use on
@@ -192,6 +193,11 @@ Modules (all rules come from `savecore.js`, served at `/savecore/savecore.js` an
   "In use on X" dialog asks, and only its Override lock takes it. Then this device's copy replaces the account's (the
   account's version stays a recovery snapshot) and the game starts. The takeover notice and "deleted on another
   device" return to the list; the next Play starts the game.
+- **Deleting** a save the account has (or had: this copy was synced) deletes it there too. Offline nothing is deleted
+  ("Connect to delete this save from your account."), since the account's copy would come back at the next sync; while
+  another game holds its lock the player is asked ("In use on X", **Delete anyway**). A save the account refuses to take
+  (`saves_full`, `storage_full`, a bad run) stays here, and its row says "Not synced: <the server's reason>". The Android
+  launcher does the same (`SyncEngine.remove`, `State.refused`).
 - **Launch FTL** plays the current save of the enabled mods; without mods the first save is made at once, with mods
   "No save for …" asks. Play's "Change" lists the enabled setup's saves.
 - **Local-only play** uses the same store and screens without the network: no recovery snapshots (the account keeps
@@ -233,7 +239,10 @@ the prefix); Steam Cloud keeps the same files there.
   events, event buttons; the profile's Hyperspace unlocks, victories, achievements and meta variables likewise.
 - **The ship at the beacon** of a run without mods comes from its section in the save (hull, crew, weapons), hostile or
   neutral as saved; in a Hyperspace run it is rebuilt from the beacon's event.
-- **What does not carry over.** Dead crew waiting in the clonebay; the state of a Hyperspace run's ship in mid-fight; Hyperspace custom stores (the beacon keeps a store), background objects, temporal
+- **What does not carry over.** Dead crew waiting in the clonebay; the state of a Hyperspace run's ship in mid-fight;
+  the fight in progress of any run (the save's battle state and shots in flight, which the original's ImportBattleState
+  and LoadSpace restore): weapons start uncharged and the player's unpowered, so the enemy's first volley comes later
+  than in the original (capture `s2-cx`, `.build/hs/reports/ps-s2.md`); Hyperspace custom stores (the beacon keeps a store), background objects, temporal
   and custom system state, crew power cooldowns; crystal lockdown shards (the run is refused). Scores keep the player's score
   as the scrap that gives it. FTL Profile Editor (Vhati, GPL-2.0) was read for the format; no code from it is used.
 
@@ -245,3 +254,20 @@ the prefix); Steam Cloud keeps the same files there.
 - The ship at the beacon is saved whenever there is one and it is not destroyed, hostile or not, with crew or none, as
   WorldManager::SaveGame (1.6.14 0x61a3a0) does: a neutral event ship, an automated guard drone or a crew-killed ship
   reloads as it was, neutral and with its target panel.
+- When the engine saves the run, as the original's autosave does: when an event box opens and when it closes, while
+  the ship is not jumping (CommandGui::OnLoop's ChoiceBox edge, 1.6.9 0x5220b0 / 1.6.14 0x536770, then
+  WorldManager::PrepareAutoSave); besides, at each arrival, when a fight starts, and when the page is hidden or closed or
+  the app paused (the original saves when its window closes). Never in the tutorial or after the run ended.
+- Every save first completes a jump in progress (WorldManager::SaveGame's CheckForNewLocation(1)): a run saved in the
+  2 s jump-out goes on at the new beacon with the fuel spent once, its arrival event shown.
+- Continue keeps what the original's load keeps (WorldManager::LoadGame, ShipManager::ImportShip/ImportBattleState,
+  SpaceManager::LoadSpace): shots and volleys in flight, an artillery burst between shots, drones, boarders and crew
+  mid-teleport, fires and breaches, hacking, mind control and cloak timers, the FTL charge, an enemy jumping away (it
+  goes on leaving), the flagship's surge timer and goal (BossShip::LoadBoss draws a goal and then sets the saved one
+  back, TimerHelper::SetMaxTime). Windows (store, map, ship) come back closed; an open event box comes back open.
+- The original deletes `continue.sav` as Continue reads it (FileHelper::deleteFile in WorldManager::LoadGame) and has no
+  run until its next save; the engine keeps the save, so a crash right after Continue loses nothing (choice S2-C1 in
+  `.build/hs/reports/DECISIONS.md`).
+- The random streams are saved with the run and restored after the load, so a reloaded run goes on as it would have
+  without the reload. The original does not save its stream; its generators (sector, beacon events, ships, stores)
+  reseed from saved seeds, so what they make is the same either way, and only live draws (combat, crew AI) differ.

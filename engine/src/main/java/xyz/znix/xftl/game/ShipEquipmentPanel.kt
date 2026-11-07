@@ -398,6 +398,16 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
     /** Tests: the boxes made again for the current layout (TouchMode.enabled). */
     fun diagnosticRelayout() = updateButtons()
 
+    /** Diagnostics: drag the [weapon]th weapon box onto the [cargo]th ordinary cargo box and drop it, as the mouse does. */
+    internal fun diagnosticDragWeaponToCargo(weapon: Int, cargo: Int) {
+        updateButtons()
+        val from = weaponButtons[weapon]
+        val to = cargoButtons.first { cargoSlots[it] == cargo }
+        draggingBlueprint = from
+        dropBlueprint(to)
+        updateButtons()
+    }
+
     private fun updateButtons() {
         buttons.clear()
 
@@ -746,7 +756,10 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
 
                 return SlotAccess(
                     { ship.hardpoints[i].weapon?.type },
-                    { ship.hardpoints[i].weapon = (it as? AbstractWeaponBlueprint)?.buildInstance(ship) }
+                    { bp ->
+                        val weapon = (bp as? AbstractWeaponBlueprint)?.buildInstance(ship)
+                        if (weapon == null) removeWeaponClosingGap(i) else ship.hardpoints[i].weapon = weapon
+                    }
                 )
             }
 
@@ -869,6 +882,21 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         // Equipment::MouseUp hook: the shown over-capacity page takes what its box holds now.
         if (hsUi) xyz.znix.xftl.hs.ship.HsEquipment.syncOver(ship)
         ship.cargoUpdated()
+    }
+
+    /**
+     * WeaponEquipBox::RemoveItem -> WeaponSystem::RemoveWeapon: the weapon leaves the system's list, so the weapons after
+     * it move up a slot (1.6.14 ps-w3-van w3v-equip e-3-to-hold: the third slot's laser to the hold, the fourth slot's
+     * Fire Bomb now third and the fourth slot empty).
+     */
+    private fun removeWeaponClosingGap(slot: Int) {
+        val slots = minOf(ship.weaponSlots ?: ship.hardpoints.size, ship.hardpoints.size)
+        ship.hardpoints[slot].weapon = null
+        for (j in slot until slots - 1) {
+            ship.hardpoints[j].weapon = ship.hardpoints[j + 1].weapon
+            ship.hardpoints[j + 1].weapon = null
+        }
+        ship.weapons?.let { it.selectedTargets.reindex(); it.powerManager.powerStateChanged() }
     }
 
     private fun slotGet(id: Int): Blueprint? = if (id >= 100) ship.cargoAt(id - 100 + 4) else ship.cargoBlueprints[id]
@@ -1039,15 +1067,9 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             if (price == null) {
                 // For the over-capacity boxes
             } else {
-                // The vanilla box shows the value only while an item is
-                // being dragged. Touch has no sustained drag - items are
-                // picked up and dropped with taps (Window.tapToArm) - so
-                // there the value would flash for a single frame at most
-                // and was never visible (pocket-wormhole issue 39). On
-                // touch, fall back to previewing the value of the hovered
-                // item so it stays visible before committing to the sale.
-                val shown = draggingBlueprint
-                    ?: if (PlatformSpecific.INSTANCE.isTouchUi) getHovered() else null
+                // Equipment::MouseMove (HS CustomEquipment::MouseMove keeps it): the value is the dragged item's, else
+                // the hovered one's, and empty over nothing (1.6.14 ps-w3-van s-h-sell1: 19 for the hovered Artemis).
+                val shown = draggingBlueprint ?: getHovered()
 
                 if (shown != null) {
                     // You only get half of what you paid for it

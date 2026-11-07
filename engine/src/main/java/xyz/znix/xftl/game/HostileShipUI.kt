@@ -59,8 +59,10 @@ class HostileShipUI(private val game: InGameState, private val enemy: Ship) {
     private var flyOut = 0f
     val isFlyOutDone: Boolean get() = flyOut <= 0f
 
-    fun startFlyOut() {
-        flyOut = 1f
+    /** [progress] below 1: a reloaded save's enemy goes on leaving from where it was (InGameState.loadGameState). */
+    @JvmOverloads
+    fun startFlyOut(progress: Float = 1f) {
+        flyOut = progress
     }
 
     /**

@@ -51,6 +51,9 @@ class FriendlyCrewAI(private val ship: Ship) {
     /** CrewAI +0x5c is zero: no boarders are being sent, so the teleporter's priority is the lower one. */
     val teleporterIdle: Boolean get() = sendCount == 0
 
+    /** The crew member's task is healing (CrewMember +0x1a4 == 6), which CrewAI::CheckForHealing counts for the medbay. */
+    internal fun isHealing(crew: AbstractCrew): Boolean = assignments[crew] is HealingTask
+
     private val aiCrew = ArrayList<AbstractCrew>()
 
     /** The problems the last update found, in the order CheckForProblems lists them and before anyone took one. */

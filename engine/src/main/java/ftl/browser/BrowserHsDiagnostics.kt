@@ -39,6 +39,8 @@ object BrowserHsDiagnostics {
         val rng = BrowserRandom.snapshot()
         val out = ArrayList<String>()
         try {
+            out += loaderRules(main)
+
             // Profile: block only when modded, state round trip, byte-identical re-save, another set's data not read.
             val profileXml = BrowserXml.write(main.profile.snapshot())
             check(profileXml.contains("<hyperspace ") == HS.modded) { "profile <hyperspace> block present=${!HS.modded} (modded=${HS.modded})" }
@@ -103,6 +105,108 @@ object BrowserHsDiagnostics {
             main.switchToMainMenu()
         }
         return "PASS hscore: modded=${HS.modded} hyperspace=${HS.active} ${out.joinToString("; ")}"
+    }
+
+    /**
+     * What the loaders accept (parity sweep M2), on names of our own appended to this session's content:
+     * - a blueprintList takes every child's value, whatever its name (1.6.14 0x607950, 1.6.9 0x5e3e20);
+     * - `<item_modify>` reads every child's type and range, whatever its name (ProcessModifyItem 0x5e1ed0 / 0x5bd9c0);
+     * - an eventList's entries are its `<event>` children only (ProcessEventList 0x5e7d10 / 0x5c3af0); modded, a list
+     *   with none (but other children) stays unregistered;
+     * - every `<seeds>` node of hyperspace.xml counts, with EventsParser::ParseBoolean (Resources.cpp);
+     * - Hyperspace: every `<defaults><customLockdown>` is parsed onto the default lockdown (Resources.cpp).
+     */
+    private fun loaderRules(main: MainGame): String {
+        val content = main.gameContent
+        val bm = content.blueprintManager
+        val em = content.eventManager
+        bm.diagnosticAppend(em.df, BrowserXml.parse(
+            "<FTL><blueprintList name=\"PS_M2_LIST\"><name>LASER_BURST_1</name><bane>MISSILES_1</bane><name>ION_1</name></blueprintList></FTL>"
+        ).rootElement.clone() as Element)
+        val list = bm.getOrNull("PS_M2_LIST") as? xyz.znix.xftl.BlueprintList
+        check(list?.names == listOf("LASER_BURST_1", "MISSILES_1", "ION_1")) { "blueprintList entries: ${list?.names}" }
+
+        em.diagnosticAppend(BrowserXml.parse(
+            "<FTL><event name=\"PS_M2_ITEM\"><text>t</text><item_modify><iten type=\"scrap\" min=\"7\" max=\"9\"/><item type=\"fuel\" min=\"1\" max=\"2\"/></item_modify></event>" +
+                "<eventList name=\"PS_M2_EVLIST\"><text>stray</text><event><text>a</text></event><autoReward level=\"LOW\">standard</autoReward><event><text>b</text></event></eventList>" +
+                (if (HS.modded) "<eventList name=\"PS_M2_NOLIST\"><text>t</text><choice><text>c</text></choice></eventList>" else "") + "</FTL>"))
+        val item = em.getOrNull("PS_M2_ITEM") as? xyz.znix.xftl.sector.Event ?: error("PS_M2_ITEM was not loaded")
+        val scrap = item.resourceRanges[xyz.znix.xftl.game.Resource.SCRAP]!!
+        val fuel = item.resourceRanges[xyz.znix.xftl.game.Resource.FUEL]!!
+        check(scrap.min == 7 && scrap.max == 9 && fuel.min == 1 && fuel.max == 2) { "item_modify ranges: scrap ${scrap.min}-${scrap.max}, fuel ${fuel.min}-${fuel.max}" }
+        val evList = em.getOrNull("PS_M2_EVLIST") as? xyz.znix.xftl.sector.EventList ?: error("PS_M2_EVLIST was not loaded")
+        check(evList.events.size == 2) { "eventList entries: ${evList.events.size}" }
+        if (HS.modded) check(em.getOrNull("PS_M2_NOLIST") == null) { "an eventList without <event> children was registered" }
+
+        val seeds = xyz.znix.xftl.hs.sector.HsSeeds
+        val enabled = seeds.enabled; val metaVars = seeds.allowMetaVars
+        try {
+            seeds.readConfig(BrowserXml.parse("<FTL><seeds enabled=\"false\"/><seeds allowMetaVars=\"false\"/><seeds enabled=\"True\"/></FTL>").rootElement)
+            check(seeds.enabled && !seeds.allowMetaVars) { "seeds blocks: enabled=${seeds.enabled} allowMetaVars=${seeds.allowMetaVars}" }
+            seeds.readConfig(BrowserXml.parse("<FTL><seeds enabled=\" true\" allowMetaVars=\"tRUE\"/></FTL>").rootElement)
+            check(!seeds.enabled && !seeds.allowMetaVars) { "seeds ParseBoolean: enabled=${seeds.enabled} allowMetaVars=${seeds.allowMetaVars}" }
+        } finally {
+            seeds.enabled = enabled; seeds.allowMetaVars = metaVars
+        }
+
+        if (HS.active) {
+            val config = HS.config
+            try {
+                HS.config = xyz.znix.xftl.hs.HsConfig.parse(BrowserXml.parse(
+                    "<FTL><version>^1.23.2</version><defaults><customLockdown><duration>3</duration></customLockdown></defaults>" +
+                        "<defaults><customLockdown><health>77</health></customLockdown><customLockdown><canDilate>false</canDilate></customLockdown></defaults></FTL>").rootElement)
+                val d = xyz.znix.xftl.hs.ship.HsLockdowns.defaults()
+                check(d.duration == 3f && d.health == 77 && !d.canDilate) { "default lockdown from two <defaults>: $d" }
+            } finally {
+                HS.config = config
+            }
+        }
+        configErrorRules()
+        return "loader rules ok"
+    }
+
+    /**
+     * Parity sweep M2b: hyperspace.xml errors as Resources.cpp has them (checked against the original with the oracle's
+     * ps-m2b sessions): a bad number ends its pass with HS's box, later settings of that pass are lost; the version box.
+     */
+    private fun configErrorRules() {
+        val parse = { body: String -> xyz.znix.xftl.hs.HsConfig.parse(BrowserXml.parse("<FTL>$body</FTL>").rootElement) }
+        val cast = xyz.znix.xftl.hs.HsConfig.BAD_CAST
+        val wrong = xyz.znix.xftl.hs.HsConfig.WRONG_VERSION
+        // The ps-m2b-num fixture mod over HS's own settings: both passes stop, the second script never runs.
+        val num = parse("<version>^1.23.2</version><scripts><script>a.lua</script></scripts><purchaseLimitNumber fontSize=\"0\" x=\"-16\" y=\"106\"/>" +
+            "<events><eventFile>x</eventFile></events><defaults><checkCargo>true</checkCargo><erosion><speed>2</speed><growBreachMultiplier>x</growBreachMultiplier></erosion></defaults>" +
+            "<defaults><choiceRequiresCrew>true</choiceRequiresCrew></defaults><version>^1.99.0</version>" +
+            "<purchaseLimitNumber fontSize=\"abc\" x=\"1\" y=\"2\"/><scripts><script>b.lua</script></scripts><forceDlc enabled=\"true\"/>")
+        check(num.errorBoxes == listOf("Failed parsing hyperspace.xml\n$cast", "Error parsing hyperspace.xml\n$cast")) { "boxes: ${num.errorBoxes}" }
+        check(num.earlyStop == 4 && num.mainStop == 7) { "stops: ${num.earlyStop} ${num.mainStop}" }
+        check(num.scripts == listOf("a.lua") && !num.forceDlc) { "main pass went on: ${num.scripts} forceDlc=${num.forceDlc}" }
+        check(num.defaultCheckCargo && !num.defaultChoiceRequiresCrew && num.erosionGrowBreachMultiplier == 1f) { "early pass went on" }
+        check(num.eventFiles.isEmpty()) { "ReadCustomEventFiles ran after the early error: ${num.eventFiles}" }
+        check(num.purchaseLimitFontSize == 0 && num.purchaseLimitX == -16 && num.purchaseLimitY == 106) { "purchase limit ${num.purchaseLimitY}" }
+        check(num.problems.any { "'x'" in it } && num.problems.any { "'abc'" in it }) { "problems: ${num.problems}" }
+        val cut = num.nodesOf("defaults")
+        check(cut.size == 1 && cut[0].getChild("checkCargo") != null && cut[0].getChild("erosion")?.children?.map { it.name } == listOf("speed")) { "defaults kept: ${cut.map { d -> d.children.map { it.name } }}" }
+        val root = BrowserXml.parse("<FTL><events><a/></events><defaults><erosion><time>y</time></erosion></defaults><events><b/></events></FTL>").rootElement
+        val early = xyz.znix.xftl.hs.HsConfig.parse(root)
+        check(early.passRoot(root, true)!!.children.map { it.name } == listOf("events", "defaults") && early.passRoot(root, false) === root) { "pass roots" }
+        // Attributes in turn: the ones before the bad one stay set.
+        val limit = parse("<version>^1.23.2</version><purchaseLimitNumber fontSize=\"3\" x=\"5\" y=\"q\"/>")
+        check(limit.purchaseLimitFontSize == 3 && limit.purchaseLimitX == 5 && limit.purchaseLimitY == 60) { "attributes in turn" }
+        // The version: a newer one is the warning box (after the early pass), a bad syntax ends the early pass.
+        check(parse("<version>^1.99.0</version>").errorBoxes == listOf(wrong)) { "wrong version box" }
+        check(parse("<version>^1.23.0</version><version>=1.23.2</version>").errorBoxes.isEmpty()) { "accepted version" }
+        check(parse("").errorBoxes == listOf(wrong)) { "no <version>" }
+        val syntax = parse("<version>1.23</version><defaults><checkCargo>true</checkCargo></defaults>")
+        check(syntax.errorBoxes == listOf(xyz.znix.xftl.hs.HsConfig.VERSION_SYNTAX) && !syntax.defaultCheckCargo && syntax.earlyStop == 0) { "version syntax" }
+        check(parse("<version>332</version>").errorBoxes.isEmpty() && parse("<version>3x2</version>").errorBoxes == listOf("Failed parsing hyperspace.xml\n$cast")) { "integer version" }
+        // Strict casts: lexical_cast takes no spaces.
+        check(parse("<version>^1.23.2</version><showDummyEquipmentSlots enabled=\"true\" opacity=\" 0.5\"/>").errorBoxes.size == 1) { "a spaced number" }
+        // The store reads PurchaseLimitIndicatorInfo from the config (HS: x -16, y 106 in Hyperspace's own file).
+        val stores = xyz.znix.xftl.hs.ship.HsStores
+        stores.load(num)
+        check(stores.limitY == 106) { "store purchase limit y ${stores.limitY}" }
+        stores.load(HS.config)
     }
 
     /** [xml] with the children of every element inside its `<hyperspace>` block sorted (order-insensitive compare). */

@@ -100,7 +100,8 @@ object HsAchievements {
     fun bindGame(game: xyz.znix.xftl.game.InGameState) {
         difficulty = { game.difficulty.ordinal }
         currentShip = { game.player?.type?.name ?: "" }
-        game.mainGame?.profile?.let { bindProfile(it) }
+        // A bare game of the automated tests has no MainGame (its getter throws there).
+        if (!game.isRunningAutomatedTest) game.mainGame.profile?.let { bindProfile(it) }
     }
 
     /** Settings::achPopups and the popup queue of this profile. */

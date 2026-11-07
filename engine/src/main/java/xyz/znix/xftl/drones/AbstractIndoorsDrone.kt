@@ -175,6 +175,11 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
         }
     }
 
+    override fun onPowerChanged() {
+        super.onPowerChanged()
+        pawn?.syncPowerAnimation()
+    }
+
     protected abstract fun updatePawn(dt: Float)
 
     /** Intrinsic crew behavior continues when HS suppresses autonomous drone orders. */
@@ -384,18 +389,7 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
                 return
             }
 
-            // If the drone was turned off or on again, we only apply that
-            // when the game unpauses.
-            if (isRunning != runningLastUpdate) {
-                if (isRunning) {
-                    powerUpDuration = pawnAnim("power_up").totalTime
-                } else {
-                    powerUpDuration = 0f
-                }
-
-                runningLastUpdate = isRunning
-                updateAnimation()
-            }
+            syncPowerAnimation()
 
             // Only progress on movement, fighting, repairs, etc if we're powered,
             // and the power-up/power-down animation isn't playing.
@@ -445,6 +439,18 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
             }
         }
 
+        /**
+         * A drone turned on or off starts its power-up or power-down animation. This also runs from the power change
+         * itself ([onPowerChanged]): the original shows the power-up's first frame while the game is still paused
+         * (native 1.6.14 frame pair c4v-d, d-powerup-paused).
+         */
+        fun syncPowerAnimation() {
+            if (isRunning == runningLastUpdate) return
+            powerUpDuration = if (isRunning) pawnAnim("power_up").totalTime else 0f
+            runningLastUpdate = isRunning
+            updateAnimation()
+        }
+
         override fun updateAnimation() {
             if (powerUpDuration != 0f) {
                 // The crew loop runs during the power-up and changes actions; the animation plays on
@@ -465,6 +471,24 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
         override fun draw(g: Graphics) {
             super.draw(g)
             drawPawn()
+        }
+
+        /**
+         * A crew drone is drawn as its base sheet's frame with the same frame of `people/<sheet>_layer1.png` over it,
+         * tinted with its ship's colour: CrewDrone::OnRender (1.6.14 0x4410a0) draws baseLayer, then lightLayer in
+         * (100, 255, 100) for the player's drones and (255, 50, 50) for the enemy's (the 255-scaled vectors its static
+         * initialiser copies from 0x877d00 and 0x877cf0); the walking and fighting frames show the same green lights
+         * (native 1.6.14 frames ps-c4-drones c4v-d). The sheets share one layout (the CrewDrone constructor builds
+         * both names from the drone type; Hyperspace's hook from the race's animSheet).
+         */
+        override fun drawImage(x0: Float, y0: Float, x1: Float, y1: Float, baseFrame: xyz.znix.xftl.rendering.Image, alpha: Float) {
+            super.drawImage(x0, y0, x1, y1, baseFrame, alpha)
+            val base = icon.spec.sheet.sheetPath
+            if (!base.endsWith("_base.png")) return
+            val layer = game.getImgIfExists(base.removeSuffix("_base.png") + "_layer1.png") ?: return
+            val tint = if (drone.ownerShip.isPlayerShip) DRONE_LIGHT_PLAYER else DRONE_LIGHT_ENEMY
+            layer.draw(x0, y0, x1, y1, baseFrame.textureOffsetX.toFloat(), baseFrame.textureOffsetY.toFloat(),
+                (baseFrame.textureOffsetX + baseFrame.width).toFloat(), (baseFrame.textureOffsetY + baseFrame.height).toFloat(), alpha, tint)
         }
 
         /** CrewDrone::SetDeployed(true) on the kept body: full health, the power-up animation runs again. */
@@ -531,5 +555,11 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
 
             super.loadFromXML(elem, refs)
         }
+    }
+
+    companion object {
+        /** CrewDrone::OnRender's lightLayer colours (0x913960 player, 0x913970 enemy). */
+        val DRONE_LIGHT_PLAYER = xyz.znix.xftl.rendering.Colour(100, 255, 100)
+        val DRONE_LIGHT_ENEMY = xyz.znix.xftl.rendering.Colour(255, 50, 50)
     }
 }

@@ -66,10 +66,21 @@ class GameView(context: Context, private val renderer: GameRenderer) : SurfaceVi
             ((above - keyboardHeight - top - translationY) * 768 / height).toInt().coerceIn(0, 768) else 768
     }
 
-    override fun onCheckIsTextEditor() = true
+    /**
+     * The view is a text editor only while the game takes text (a name, the debug console). Otherwise the system's
+     * keyboard would stay attached to it, and a key from a keyboard Android does not count as a physical one (adb's,
+     * some Bluetooth key pads) would bring it up over the game, where nothing takes text.
+     */
+    private var editing = false
+
+    override fun onCheckIsTextEditor() = editing
 
     // Character by character: the game's name fields take keys, so the keyboard must not hold back words to compose.
-    override fun onCreateInputConnection(out: EditorInfo): InputConnection {
+    override fun onCreateInputConnection(out: EditorInfo): InputConnection? {
+        if (!editing) {
+            out.inputType = InputType.TYPE_NULL
+            return null
+        }
         out.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
         out.imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
         return object : BaseInputConnection(this, false) {
@@ -99,10 +110,15 @@ class GameView(context: Context, private val renderer: GameRenderer) : SurfaceVi
         keyboardShown = show
         val ime = context.getSystemService(InputMethodManager::class.java)
         if (show) {
+            editing = true
             requestFocus()
             ime.restartInput(this)
             ime.showSoftInput(this, 0)
-        } else ime.hideSoftInputFromWindow(windowToken, 0)
+        } else {
+            ime.hideSoftInputFromWindow(windowToken, 0)
+            editing = false
+            ime.restartInput(this)
+        }
     }
 
     private var keyboardShown = false

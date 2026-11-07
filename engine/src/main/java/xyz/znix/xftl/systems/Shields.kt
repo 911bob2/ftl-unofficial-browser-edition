@@ -256,7 +256,11 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         // 0x63b180 leaves the reactor power alone while it fits).
         // A script's ShipSystem::IncreasePower(1) adds one bar per call (PowerManager::IncreasePower takes the amount
         // as it is; HS CustomShips.cpp powers enemy shields over 10 levels one bar a call), so its odd total stays.
-        if (powerSelected.mod(2) == 1 && powerSelected != keptPowerAfterLoss && bonusOnTop == 0 && powerSelected != hsScriptPower)
+        // An ion hit is not a cap: ShipSystem::IonDamage (0x63d830) takes its bars one at a time (ForceDecreasePower), so
+        // the odd bar it leaves stays powered until the lock ends and CheckForRepower1 climbs back (HS oracle ps-c1-pw2:
+        // shields 8 hit by one ion run 7, by three run 5, and are back on 8 when the lock is over).
+        val ionOdd = ionPowerLimit != null && powerSelected == undamagedEnergy
+        if (powerSelected.mod(2) == 1 && powerSelected != keptPowerAfterLoss && bonusOnTop == 0 && powerSelected != hsScriptPower && !ionOdd)
             powerSelected -= 1
     }
 

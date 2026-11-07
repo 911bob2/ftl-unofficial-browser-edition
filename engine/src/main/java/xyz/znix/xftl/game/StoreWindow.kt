@@ -274,7 +274,12 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
             }
         } else {
         val hoveredBuyButton = buttons.filterIsInstance<BuyButton>().firstOrNull { it.hovered }
-        hoveredBuyButton?.drawInfoPanel(g)
+        // The buy tab's item boxes (weapons, drones, augments, resources) are 323 wide, a system's 333 (1.6.14 ps-w3-van
+        // s-h-weap1, s-h-fuel against s-h-sys1; oracle ps-w3-mv i-h-weap1 932..1254 under Multiverse).
+        val width = infoPanel.customWidth
+        if (hoveredBuyButton != null && hoveredBuyButton !is RepairButton && !TouchMode.enabled &&
+            hoveredBuyButton.blueprint !is xyz.znix.xftl.systems.SystemBlueprint) infoPanel.customWidth = 323
+        try { hoveredBuyButton?.drawInfoPanel(g) } finally { infoPanel.customWidth = width }
         }
 
         sellPanel.drawDrag(g)
@@ -293,6 +298,25 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         window.centre(1280, 720)
         hsConfirm = window
     }
+
+    /**
+     * The confirm text SystemStoreBox::Activate (1.6.14 0x519250) shows before a vanilla store sells [system], or null to
+     * sell at once: medbay over clone bay "confirm_buy_medbay", clone bay over medbay "confirm_buy_clonebay"; any main
+     * system (not pilot, sensors, doors or battery) while the ship has seven (the power-needing count, 0x49bfd0), with
+     * Advanced Edition on or artillery installed, "confirm_buy_last_system". Hyperspace's stores have their own rule.
+     */
+    internal fun vanillaSystemConfirm(system: xyz.znix.xftl.systems.SystemBlueprint): String? {
+        if (xyz.znix.xftl.hs.HS.active) return null
+        fun has(type: String) = ship.systems.any { it.codename == type }
+        if (system.type == "medbay" && has("clonebay")) return "confirm_buy_medbay"
+        if (system.type == "clonebay" && has("medbay")) return "confirm_buy_clonebay"
+        if (system.info?.isSubSystem == true) return null
+        if (ship.mainSystems.size == 7 && (game.isAdvancedEdition || has("artillery"))) return "confirm_buy_last_system"
+        return null
+    }
+
+    /** Diagnostics: the confirm dialog's text key while one is open. */
+    internal val diagnosticConfirmKey: String? get() = hsConfirm?.messageKey
 
     private fun drawBuy(g: Graphics) {
         // TabbedWindow::OnRender (0x00518660) draws the other tab before the window.
@@ -497,6 +521,18 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                         // Stop the user from installing the same system twice
                         return systemSlot.isInstalled
                     }
+
+                // SystemStoreBox::Activate (1.6.14 0x519250): with the scrap to pay, a medbay bought over a clone bay
+                // (or the reverse) and a main system that takes the eighth slot (seven main systems, with Advanced
+                // Edition on or artillery installed) ask first; yes buys it (SystemStoreBox::Confirm).
+                override fun click(button: Int) {
+                    val key = system?.let { vanillaSystemConfirm(it) }
+                    if (key != null && button == Input.MOUSE_LEFT_BUTTON && !disabled && ship.scrap >= price) {
+                        openHsConfirm(key, null) { super.click(button) }
+                        return
+                    }
+                    super.click(button)
+                }
 
                 override fun buy() {
                     store.systems[i] = null
@@ -750,15 +786,14 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                         textColour
                     )
 
-                    // Draw the price
-                    if (!customDisabled) {
-                        numberFont.drawString(
-                            this.pos.x + priceOffset.x.f,
-                            this.pos.y + priceOffset.y.f,
-                            price.toString(),
-                            textColour
-                        )
-                    }
+                    // StoreBox::OnRender (1.6.14 0x51f4b0) draws the price whenever the box holds an item, also while
+                    // the ship's augments are full or it has this non-stackable one.
+                    numberFont.drawString(
+                        this.pos.x + priceOffset.x.f,
+                        this.pos.y + priceOffset.y.f,
+                        price.toString(),
+                        textColour
+                    )
                 }
 
                 override fun drawInfoPanel(g: Graphics) {
@@ -1053,7 +1088,8 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
             if (hovered && box.count >= 1 && !box.mysteryItem && customDisabled) g.tooltip = augmentTooltip
             val name = if (box.mysteryItem) "?" else (box.blueprint as xyz.znix.xftl.augments.AugmentBlueprint).translateTitle(game)
             augmentNameFont.drawString(pos.x + 48f, pos.y + 26f, name, textColour)
-            if (!customDisabled) numberFont.drawString(pos.x + priceOffset.x.f, pos.y + priceOffset.y.f, price.toString(), textColour)
+            // StoreBox::OnRender (1.6.14 0x51f4b0): the price whether or not the ship can take the augment.
+            numberFont.drawString(pos.x + priceOffset.x.f, pos.y + priceOffset.y.f, price.toString(), textColour)
         }
 
         private fun drawCrewBox() {
@@ -1084,7 +1120,9 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
                 else -> box.crew?.let {
                     // A race whose art the engine cannot resolve yet (HS <animSheet>: statcrew) is reported, not fatal.
                     try {
-                        infoPanel.drawCrew(g, it)
+                        // Hyperspace's custom store sets its crew InfoBox without the original's 40 px lift (oracle
+                        // ps-w3-mv / ps-w3-hs i-h-crew1: from y 159; the crew screen's from 119)
+                        infoPanel.drawCrew(g, it, nativeLift = false)
                     } catch (e: Exception) {
                         xyz.znix.xftl.hs.HS.unsupported("crew", "animations", "store info of ${it.race.name}: ${e.message}")
                     }
@@ -1105,12 +1143,16 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
     }
 
     override fun escapePressed() {
-        hsConfirm?.let { it.escapePressed(); return }
+        // The original's store (1.6.14 ps-w3-van w3v-confirm c-after-escape, HS oracle ps-w3-esc x-escape): Escape over
+        // the confirm closes the whole store, nothing bought.
+        hsConfirm = null
         close()
     }
 
     /** Hyperspace StoreComplete::KeyDown (custom stores): the left and right arrow keys turn the buy pages. */
     override fun onTextInput(key: Int, c: Char): Boolean {
+        // The key reaches the confirm first; Escape over the confirm closes the store (escapePressed).
+        if (key == Input.KEY_ESCAPE && hsConfirm != null) { escapePressed(); return true }
         hsConfirm?.let { return it.onTextInput(key, c) }
         val hs = hsStore ?: return false
         when (key) {

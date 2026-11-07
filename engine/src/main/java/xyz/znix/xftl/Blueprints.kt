@@ -89,6 +89,20 @@ class BlueprintManager {
     /** Hyperspace only: the `<shipBlueprint>` elements of each loaded file, for [xyz.znix.xftl.hs.ship.HsShips.build]. */
     private var hsShipElements: HashMap<String, MutableList<Element>>? = null
 
+    /**
+     * Hyperspace only: every weapon blueprint built from each file, in document order, duplicates included (each
+     * ProcessWeaponBlueprint call parses its stat boosts, a later blueprint of the same name too).
+     */
+    private val hsWeaponFiles = HashMap<String, MutableList<AbstractWeaponBlueprint>>()
+    private var hsLoadingFile: String? = null
+
+    /**
+     * Hyperspace only: the weapon blueprints in the order the original builds them (CApp::OnExecute's LoadBlueprints
+     * calls, 1.6.9 0x403700: blueprints, names, autoBlueprints, dlcPirateBlueprints, dlcBlueprints,
+     * dlcBlueprintsOverwrite, bosses), each file in document order.
+     */
+    fun hsWeaponsInLoadOrder(): List<AbstractWeaponBlueprint> = HS_BLUEPRINT_ORDER.flatMap { hsWeaponFiles[it] ?: emptyList() }
+
     constructor(df: Datafile, enableAE: Boolean) : this(enableAE, {
         it.loadFile(df, "blueprints.xml")
         it.loadFile(df, "autoBlueprints.xml")
@@ -111,8 +125,11 @@ class BlueprintManager {
         val main = blueprints as HashMap<String, IBlueprint>
         val before = HashMap(main)
         val itemsBefore = HashMap(itemBlueprints)
-        for (name in files)
+        for (name in files) {
+            hsLoadingFile = name
             loadDocument(df, df.parseXML(df["data/$name"]).rootElement)
+            hsLoadingFile = null
+        }
         for ((name, bp) in main.entries.toList()) {
             val old = before[name]
             if (old != null) {
@@ -169,7 +186,9 @@ class BlueprintManager {
             val files = hsShipElements ?: HashMap<String, MutableList<Element>>().also { hsShipElements = it }
             files[name] = parseXML.rootElement.getChildren("shipBlueprint").toMutableList()
         }
+        hsLoadingFile = name
         loadDocument(df, parseXML.rootElement)
+        hsLoadingFile = null
     }
 
     /** Diagnostics: the blueprints of one more document (an oracle probe's authored append). */
@@ -202,6 +221,10 @@ class BlueprintManager {
                 else -> null
             } } ?: continue
 
+            val file = hsLoadingFile
+            if (file != null && bp is AbstractWeaponBlueprint && xyz.znix.xftl.hs.HS.active)
+                hsWeaponFiles.getOrPut(file) { ArrayList() } += bp
+
             val bpName = elem.requireAttributeValue("name")
             if (mutableBlueprints.containsKey(bpName)) {
                 println("Warning: duplicate blueprint name '$bpName'")
@@ -213,8 +236,10 @@ class BlueprintManager {
     private fun buildList(elem: Element): IBlueprint {
         val items = ArrayList<String>()
 
+        // The list reader of BlueprintManager::LoadBlueprints (1.6.14 0x607950; the same in 1.6.9 at 0x5e3e20) takes
+        // the value of every child node, whatever its name: a mod's typo (`<bane>` in Outer Expansion 7.1.10's
+        // LIST_DRONES_AEA_OLD_2) is still an entry, and the list is not lost.
         for (node in elem.children) {
-            check(node.name == "name")
             items += node.textTrim
         }
 
@@ -321,6 +346,17 @@ class BlueprintManager {
             return BlueprintManager(true) {
                 for (doc in files) {
                     it.loadDocument(df, doc.rootElement)
+                }
+            }
+        }
+
+        /** [createForTests] with each document loaded as the named data file (for [hsWeaponsInLoadOrder]). */
+        fun createForTestsFiles(df: Datafile, files: List<Pair<String, Document>>): BlueprintManager {
+            return BlueprintManager(true) {
+                for ((name, doc) in files) {
+                    it.hsLoadingFile = name
+                    it.loadDocument(df, doc.rootElement)
+                    it.hsLoadingFile = null
                 }
             }
         }

@@ -15,7 +15,57 @@ internal object GameplayParityVanillaNativeChecks {
     fun run(main: MainGame, container: GameContainer): String {
         if (xyz.znix.xftl.hs.HS.active) return "vanilla native: skipped under Hyperspace"
         return "vanilla native: ${mindCanUse(main, container)}, ${shade(main, container)}, ${bossEvents(main, container)}, " +
-            "${bossEnds(main, container)}, ${crewPicks(main, container)}, ${nebula(main, container)}, ${cloneTooltip(main, container)}"
+            "${bossEnds(main, container)}, ${crewPicks(main, container)}, ${nebula(main, container)}, ${cloneTooltip(main, container)}, " +
+            choiceRules(main, container)
+    }
+
+    /**
+     * Choice rules (ps-w2; 1.6.14 CheckRequirements 0x6130e0, CreateChoiceBox 0x616680; native session ps-w2-van):
+     * the repair station's choices against the hull damage, FUEL_ON_SLUG_CHUCKLE_LIST's stealing Continue open with no
+     * scrap, and TRADER_UPGRADES_LIST's max_group (both upgrades qualify at level 1: the first, cheaper one survives and
+     * moves after the decline).
+     */
+    private fun choiceRules(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        val ship = state.player
+        val ui = state.shipUI
+        ship.scrap = 200
+        val repair = state.eventManager["REPAIR_STATION"]
+        for ((damage, native) in listOf(0 to "0001", 3 to "0011", 8 to "0111", 12 to "1111")) {
+            ship.health = ship.maxHealth - damage
+            ui.showEventDialogue(state.eventCreator.create(repair, 0, true) ?: error("No REPAIR_STATION"))
+            val box = ui.diagnosticDialogue!!
+            val got = box.diagnosticChoices().joinToString("") { if (it.second) "1" else "0" }
+            check(got == native) { "REPAIR_STATION at $damage hull damage: $got, native $native" }
+            box.selectOption(3)
+            BrowserDiagnostics.closeBoxes(main, container)
+        }
+        ship.health = ship.maxHealth
+
+        // HS's LOADEVENT (CommandConsole.cpp:279-302) leaves no unique event used
+        state.eventManager.hsReturnUnique(repair as xyz.znix.xftl.sector.Event)
+        xyz.znix.xftl.hs.render.HsConsole.run(state, "LOADEVENT REPAIR_STATION")
+        check(ui.diagnosticDialogue != null) { "LOADEVENT REPAIR_STATION opened no box" }
+        BrowserDiagnostics.closeBoxes(main, container)
+        check(!state.eventManager.uniqueEvents.isConsumed(repair)) { "LOADEVENT used up REPAIR_STATION" }
+
+        ship.scrap = 0
+        val chuckle = (state.eventManager["FUEL_ON_SLUG_CHUCKLE_LIST"] as xyz.znix.xftl.sector.EventList).events[0] as xyz.znix.xftl.sector.Event
+        ui.showEventDialogue(state.eventCreator.create(chuckle, 0, true) ?: error("No FUEL_ON_SLUG_CHUCKLE_LIST"))
+        val steal = ui.diagnosticDialogue!!.diagnosticChoices()
+        check(steal.size == 1 && steal[0].second) { "A stealing Continue with no scrap: $steal" }
+        BrowserDiagnostics.closeBoxes(main, container)
+
+        ship.scrap = 200
+        val trader = (state.eventManager["TRADER_UPGRADES_LIST"] as xyz.znix.xftl.sector.EventList).events[0] as xyz.znix.xftl.sector.Event
+        check(ship.systems.first { it.codename == "oxygen" }.energyLevels == 1) { "The fixture's oxygen is not at level 1" }
+        ui.showEventDialogue(state.eventCreator.create(trader, 0, true) ?: error("No TRADER_UPGRADES_LIST"))
+        val upgrades = ui.diagnosticDialogue!!.diagnosticChoices()
+        check(upgrades.size == 2 && upgrades[0].third == 0 && upgrades[1].third in -20..-15) {
+            "TRADER_UPGRADES_LIST oxygen at level 1: ${upgrades.map { it.third }}, native [decline, upgrade for 15-20 scrap]"
+        }
+        BrowserDiagnostics.closeBoxes(main, container)
+        return "choice rules"
     }
 
     /**
@@ -26,8 +76,9 @@ internal object GameplayParityVanillaNativeChecks {
         val state = BrowserGameplayParityDiagnostics.fresh(main, container, "PLAYER_SHIP_ANAEROBIC")
         val clonebay = state.player.clonebay!!
         val text = xyz.znix.xftl.game.SystemButtonTooltip(state, clonebay).getText()
-        val native = listOf("Clone Bay: Automatically clones any dead crewmember.", "", "Heals all crew 8 hp every jump.", "",
-            "Level 1: 12 sec clone", "", "Status:", "-Fully Powered").joinToString("\n")
+        // 0x4df760 ends a part before a blank line, and each bullet, with a space (" \n\n", " \n")
+        val native = listOf("Clone Bay: Automatically clones any dead crewmember. ", "", "Heals all crew 8 hp every jump. ", "",
+            "Level 1: 12 sec clone ", "", "Status:", "-Fully Powered ").joinToString("\n")
         check(text.startsWith(native)) { "Clone bay tooltip: " + text.replace('\n', '|') }
         clonebay.damagedEnergyLevels = 1
         val damaged = xyz.znix.xftl.game.SystemButtonTooltip(state, clonebay).getText()

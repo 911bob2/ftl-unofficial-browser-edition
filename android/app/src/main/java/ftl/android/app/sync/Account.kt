@@ -32,14 +32,33 @@ class Account(context: Context, private val identity: Identity) {
 
     /** Signs in; the same rules and limits as the website's sign-in. Blocking. */
     fun signIn(server: String, username: String, password: String): User {
-        val base = server.trim().trimEnd('/')
-        require(base.startsWith("https://") || (BuildConfig.DEBUG && base.startsWith("http://"))) { "Use the server's https:// address." }
-        val api = Api(base, identity, secure)
+        val api = Api(address(server), identity, secure)
         val mustChange = api.login(username.trim(), password)
         if (mustChange) {
             api.logout()
             throw IllegalStateException("This account needs a new password. Sign in on the website once to set it, then sign in here.")
         }
+        return signedIn(api)
+    }
+
+    /**
+     * Creates an account and signs it in, as the website's registration does (docs/WEBSITE.md, "Registration"): the server's
+     * rules, limits and words, and an External user, who brings their own ftl.dat. Blocking.
+     */
+    fun register(server: String, username: String, password: String): User {
+        val api = Api(address(server), identity, secure)
+        api.register(username.trim(), password)
+        return signedIn(api)
+    }
+
+    private fun address(server: String): String {
+        val base = server.trim().trimEnd('/')
+        require(base.startsWith("https://") || (BuildConfig.DEBUG && base.startsWith("http://"))) { "Use the server's https:// address." }
+        return base
+    }
+
+    private fun signedIn(api: Api): User {
+        val base = api.base
         val me = api.me()
         val user = User(base, me.id, me.username, me.role, me.serverAssets)
         api.accountId = user.id

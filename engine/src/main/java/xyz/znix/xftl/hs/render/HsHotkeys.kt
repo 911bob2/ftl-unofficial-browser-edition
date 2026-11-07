@@ -30,6 +30,35 @@ import xyz.znix.xftl.game.InGameState
  * setting is on, which opens the console on it in every mode (devutil/ConsoleRegistry.kt, ConsoleGate).
  */
 object HsHotkeys {
+    /**
+     * The settings name of an armament box's hotkey (weapon1..4, drone1..6): WeaponControl / DroneControl::ArmamentHotkey,
+     * and under Hyperspace their AdditionalWeaponSlots.cpp hooks: a weapon box past the fourth takes drone1.., the
+     * drone boxes come after five or more weapon boxes, start on weapon1..4 without a weapons system, and past six
+     * drone boxes start at max(weapons, 10 - drones). [weapons] and [drones] count the boxes (0 without the system).
+     */
+    @JvmStatic
+    fun armamentHotkeyName(hs: Boolean, weapons: Int, drones: Int, weapon: Boolean, i: Int): String {
+        if (!hs) return (if (weapon) "weapon" else "drone") + (i + 1)
+        if (weapon) return if (i >= 4) "drone${i - 3}" else "weapon${i + 1}"
+        val n = when {
+            weapons > 4 -> return "drone${i + weapons - 4 + 1}"
+            weapons == 0 -> i
+            drones > 6 -> maxOf(weapons, 10 - drones) + i
+            else -> return "drone${i + 1}"
+        }
+        return if (n < 4) "weapon${n + 1}" else "drone${n - 4 + 1}"
+    }
+
+    /** ArmamentBox::hotKey, the box's number: DroneControl::OnLoop's hook renumbers the drone boxes as above. */
+    @JvmStatic
+    fun armamentBoxNumber(hs: Boolean, weapons: Int, drones: Int, weapon: Boolean, i: Int): Int = when {
+        !hs || weapon -> i + 1
+        weapons > 4 -> weapons + i + 1
+        weapons == 0 -> i + 1
+        drones > 6 -> maxOf(weapons, 10 - drones) + i + 1
+        else -> i + 1
+    }
+
     private class Def(val name: String, val id: String, val default: String?, val page: Int, val index: Int)
 
     private val DEFS = listOf(
@@ -89,16 +118,16 @@ object HsHotkeys {
 
     /**
      * CommandGui::KeyDown hook (speed, info; the console opens in InGameState, ConsoleGate) and CombatControl::KeyDown hook
-     * (aim_artillery1..4 while the artillery is targetable); drone4..6 power the 4th to 6th drone slot.
+     * (aim_artillery1..4 while the artillery is targetable); drone4..6 reach the boxes through [armamentHotkeyName]. The speed and
+     * info keys come before the original CommandGui::KeyDown, the others after it, which ignores keys while the ship
+     * jumps ([jumpHeld]).
      */
     @JvmStatic
-    fun dispatch(game: InGameState, key: Hotkey, powerDown: Boolean) {
+    fun dispatch(game: InGameState, key: Hotkey, powerDown: Boolean, jumpHeld: Boolean = false) {
+        if (jumpHeld && key.id != "speed" && key.id != "info") return
         when (key.id) {
             "speed" -> xyz.znix.xftl.hs.lua.LuaFps.speedEnabled = !xyz.znix.xftl.hs.lua.LuaFps.speedEnabled
             "info" -> HsMoreInfo.toggle(game)
-            "drone_slot_4" -> game.shipUI.droneHotkeyPressed(3, powerDown)
-            "drone_slot_5" -> game.shipUI.droneHotkeyPressed(4, powerDown)
-            "drone_slot_6" -> game.shipUI.droneHotkeyPressed(5, powerDown)
             "aim_artillery1", "aim_artillery2", "aim_artillery3", "aim_artillery4" -> {
                 val player = game.player ?: return
                 val i = key.id.last() - '1'

@@ -202,7 +202,7 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
    await page.locator('#save-rename-dialog-input').fill('Imported run');await page.locator('#save-rename-dialog-ok').click();
    await row(page,copy).locator('strong',{hasText:'Imported run'}).waitFor();
    await row(page,copy).locator('details.row-menu > summary').click();await row(page,copy).locator('[data-action="delete"]').click();
-   assert.match(await page.locator('#save-delete-dialog').innerText(),/deleted from this browser/);
+   assert.match(await page.locator('#save-delete-dialog').innerText(),/deleted from this device/);
    await page.locator('#save-delete-dialog-yes').click();await row(page,copy).waitFor({state:'detached'});
    assert.equal(await localSave(page,copy),null);
    check(name+': rename and delete ask in the page\'s own dialogs');
@@ -275,7 +275,9 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
    await page.locator('#saves-button').click();await page.locator('#saves-local-card').waitFor({state:'visible'});
    assert.match(await page.locator('#saves-local-info').textContent(),/One save from playing without an account/);
    assert.equal((await cloudList(page)).saves.length,1,'nothing moves without asking');
+   // The card hides once the save leaves this browser's local list; the upload pass ends later, with the message.
    await page.locator('#saves-local-upload').click();await page.locator('#saves-local-card').waitFor({state:'hidden'});
+   await page.waitForFunction(()=>/now in your account/.test(document.getElementById('message').textContent),null,{timeout:30000});
    cloud=await cloudList(page);
    assert.deepEqual(cloud.saves.map(s=>s.name).sort(),['Local run','Second run']);
    assert.equal((await (await page.request.get(origin+'/api/saves/'+first)).json()).run,RUN,'the save already in the account is unchanged');

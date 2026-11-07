@@ -1,8 +1,11 @@
 const version=new URL(import.meta.url).search;
 const [{createGL},{createAudio},{Unzlib},{createFramePacer}]=await Promise.all([import('./gl.mjs'+version),import('./audio.mjs'+version),import('./vendor/fflate-0.8.3.mjs'+version),import('./frame-pacer.mjs'+version)]);
-export async function loadGame({canvas,manifest,fetchBoot,fetchAudio,onProgress,onSave,run=null,profile=null,settings=null,ae=true,audioContext,closeAudioContext=true,accountId="diagnostics",mods=null}){
+export async function loadGame({canvas,manifest,fetchBoot,fetchEngine=null,fetchAudio,onProgress,onSave,run=null,profile=null,settings=null,ae=true,audioContext,closeAudioContext=true,accountId="diagnostics",mods=null}){
   onProgress('Loading game resources…',{stage:'files'});const packed=await fetchBoot();const view=new DataView(packed);if(view.getUint32(0)!==0x46544c42)throw Error('Invalid asset bundle');const n=view.getUint32(4);const entries=JSON.parse(new TextDecoder().decode(new Uint8Array(packed,8,n)));const base=8+n;
-  window.ftlFiles=new Map(entries.map(e=>[e.name,new Uint8Array(packed,base+e.offset,e.length)]));if(mods){for(const n of mods.removed)window.ftlFiles.delete(n);for(const [n,b] of mods.files)window.ftlFiles.set(n,b);window.ftlModSession=mods.session;}window.ftlUnzlib=Unzlib;
+  window.ftlFiles=new Map(entries.map(e=>[e.name,new Uint8Array(packed,base+e.offset,e.length)]));
+  if(fetchEngine){const res=await fetchEngine();const rv=new DataView(res);if(rv.getUint32(0)!==0x46544c42)throw Error('Invalid engine resources');const rn=rv.getUint32(4);
+   for(const e of JSON.parse(new TextDecoder().decode(new Uint8Array(res,8,rn))))if(e.name.startsWith('engine/'))window.ftlFiles.set(e.name,new Uint8Array(res,8+rn+e.offset,e.length));}
+  if(mods){for(const n of mods.removed)window.ftlFiles.delete(n);for(const [n,b] of mods.files)window.ftlFiles.set(n,b);window.ftlModSession=mods.session;}window.ftlUnzlib=Unzlib;
   window.ftlGL=createGL(canvas);window.ftlAudio=createAudio(manifest,fetchAudio,audioContext);window.ftlOnSave=onSave;window.ftlSettings=settings;
   // Cursor keys are main[,overlay][#frame]: the original draws the image at the mouse with an optional overlay on top
   // (the armed weapon's numbered crosshair), and '#n' picks one square frame of a strip (the door cursor).
@@ -19,6 +22,10 @@ export async function loadGame({canvas,manifest,fetchBoot,fetchAudio,onProgress,
   // engine.start is one long synchronous task (MV: several seconds): paint the stage first, as the page cannot repaint it.
   onProgress('Starting the engine…',{stage:'engine',blocking:true});await new Promise(r=>requestAnimationFrame(()=>setTimeout(r,0)));
   const engine=Object.fromEntries(['start','step','render','renderFrame','mouse','wheel','key','pause','focusChanged','save','newRun','restore','runSave','profileSave','inFlight','resetInput','shutdown','debugConfig','debugSnapshot','diagnosticRun','diagnosticProfile','diagnosticSettings','consoleOpen','consoleToggle','consoleExecute','consoleConfig','consoleOutput','menuCancel','saveKind','saveSettle','frameRateLimit','missingContent'].map(name=>[name,window[name]]));engine.start(ae,run,profile);
+  // Hyperspace's start-up error boxes (HsConfig.errorBoxes): one at a time before the first frame, as the original's system
+  // box "Error" over a black screen; the start waits until each is dismissed (OK, Enter or Escape).
+  const hsErrorBoxes=JSON.parse(window.hsErrorBoxes?.()??'[]');
+  if(hsErrorBoxes.length){onProgress('',{stage:'hs-error-box'});const {showHsErrorBox}=await import('./hs-error-box.mjs'+version);for(const text of hsErrorBoxes)await showHsErrorBox(canvas,text);}
   const log=(category,event,payload,severity='info')=>window.ftlDebugEvent?.(category,event,payload,severity);
   const diagnosticContext=()=>({focus:document.activeElement===canvas,fullscreen:!!document.fullscreenElement,pointerCapture:null});
   window.ftlCheckpointPut=(name,xml)=>{if(!/^[\w-]{1,64}$/.test(name))throw Error('Use a checkpoint name of 1 to 64 letters, digits, hyphens or underscores');const key='ftl-checkpoints:'+accountId+':'+manifest.engineBuild;const stored=JSON.parse(localStorage.getItem(key)??'{}');stored[name]=xml;if(Object.keys(stored).length>10)throw Error('At most ten named checkpoints are supported');localStorage.setItem(key,JSON.stringify(stored));};

@@ -163,11 +163,14 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             return
         }
 
-        // Heal our crew each jump.
-        if (undamagedEnergy == 0)
+        // Heal our crew each jump: ShipManager::CloneHealing (1.6.14 0x49cc10) looks the heal up by GetMaxPower
+        // (0x63c0c0: the level less damage and power loss, under the power cap), which an ion lock does not lower;
+        // a bay with no health left heals nothing.
+        val maxPower = if (energyLevels - damagedEnergyLevels == 0) 0 else nativeMaxPower
+        if (maxPower <= 0)
             return
 
-        val healing = PASSIVE_HEALING[undamagedEnergy - 1]
+        val healing = PASSIVE_HEALING[(maxPower - 1).coerceAtMost(PASSIVE_HEALING.size - 1)]
 
         for (crew in ship.crew) {
             // Skip drones

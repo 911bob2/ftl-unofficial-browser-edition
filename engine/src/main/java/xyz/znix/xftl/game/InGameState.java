@@ -329,6 +329,8 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
 
         updatePlayerCrew();
         if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSave.readRun(root);
+        // A box saved open comes back open: the save holds it already, so its reappearing is no new autosave.
+        browserEventOpenSeen = shipUI != null && shipUI.getDiagnosticDialogue() != null;
     }
 
     /**
@@ -1185,21 +1187,18 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             xyz.znix.xftl.hs.events.HsFlow.INSTANCE.checkEventQueue(this, shipUI.getHsHost(), shipUI::hsChoiceBoxOpen);
         }
 
-        Input in = container.getInput();
-
-        // For debugging, this lets you either step or fast-forward through time.
-        // Don't do this in response to typing on the debug console, though.
-        if (!debugConsoleVisible) {
-            HotkeyButton fastForwardButton = reverseHotkeyBindings.get(getHotkeyManager().getKeyFastForward());
-            HotkeyButton stepButton = reverseHotkeyBindings.get(getHotkeyManager().getKeyFrameStep());
-
-            if (fastForwardButton != null && in.isKeyDown(fastForwardButton.getKeyID())) {
-                updateGameState(delta * 4);
-            }
-            if (stepButton != null && in.isKeyPressed(stepButton.getKeyID())) {
-                updateGameState(0.01f);
-            }
+        // CommandGui::OnLoop (1.6.9 0x5220b0, 1.6.14 0x536770): while the player's ship is not jumping, the event box
+        // opening or closing (the ChoiceBox's bOpen, CommandGui +0x1794, against the last frame's) queues event 13, on
+        // which WorldManager's loop autosaves (PrepareAutoSave 1.6.9 0x5f5780: not in the tutorial, not after a game
+        // over). The box closing saves in PlayerShipUI.eventDialogueClosed; this is its opening (an arrival's box, the
+        // reward box after a fight), so a run that stops while a box is open goes on with it.
+        boolean eventOpen = shipUI != null && shipUI.getDiagnosticDialogue() != null;
+        if (!isPlayerJumping()) {
+            if (eventOpen && !browserEventOpenSeen && mainGame != null && !browserRunEnded) mainGame.writeRunSave();
+            browserEventOpenSeen = eventOpen;
         }
+
+        Input in = container.getInput();
 
         shipUI.updateAlways(delta);
 
@@ -1227,8 +1226,8 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             dispatchHotkey(queuedHotkeys.remove(0), in);
         }
 
-        // Escape is special, it's not a hotkey and can't be rebound.
-        if (in.isKeyPressed(Input.KEY_ESCAPE)) {
+        // Escape is special, it's not a hotkey and can't be rebound (CommandGui::KeyDown: not while the ship jumps).
+        if (in.isKeyPressed(Input.KEY_ESCAPE) && (debugConsoleVisible || !keysHeldByJump())) {
             cancelMenu();
         }
 
@@ -1263,12 +1262,18 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
                 }
                 // CommandGui::RButtonDown hands the right press to an open focus window and stops there: it neither
                 // drops the armed weapon nor orders the crew aboard the enemy ship under the window.
+                // Otherwise CombatControl::MouseRClick (1.6.14 0x581520) drops what is armed, and a press that dropped
+                // something goes no further than the weapon and drone slots (see PlayerShipUI.rightPressDisarmed).
+                boolean disarmed = false;
                 if (i == Input.MOUSE_RIGHT_BUTTON && !shipUI.isWindowOpen()) {
+                    disarmed = clickEvent != null;
                     clickEvent = null;
-                    rightClicked = true;
+                    rightClicked = !disarmed;
                 }
 
+                shipUI.setRightPressDisarmed(disarmed);
                 shipUI.mouseClick(i, in.getMouseX(), in.getMouseY(), playerShipOffset);
+                shipUI.setRightPressDisarmed(false);
             } else if (prev && !now) {
                 if (!mouseCaptured[i]) shipUI.mouseUp(i, in.getMouseX(), in.getMouseY(), playerShipOffset);
                 mouseCaptured[i] = false;
@@ -1377,28 +1382,45 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     }
 
     private void dispatchHotkey(Hotkey key, Input in) {
-        if (key.getId().equals(VanillaHotkeys.PAUSE) && !shipUI.isWindowOpen())
-            paused = !paused;
+        // CommandGui::SpaceBar (0x52ce50): nothing while the ship jumps; with a focus window open (menu_pause) only the
+        // event box (event_pause) sets the pause, so the game stays paused once the box closes; otherwise a toggle.
+        if (key.getId().equals(VanillaHotkeys.PAUSE) && !isPlayerJumpingOut()) {
+            if (!shipUI.isWindowOpen()) paused = !paused;
+            else if (shipUI.getDiagnosticPauseWindow() == null && shipUI.getTutorialDialogueOpen()) paused = true;
+        }
 
         boolean shiftPressed = in.isKeyDown(Input.KEY_LSHIFT) || in.isKeyDown(Input.KEY_RSHIFT);
         boolean ctrlPressed = shipUI.isTargetingModifierDown();
-        // Hyperspace hotkeys (CommandGui::KeyDown / CombatControl::KeyDown hooks)
-        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsHotkeys.dispatch(this, key, shiftPressed);
-        for (int i = 0; i < VanillaHotkeys.WEAPON_SLOTS.size(); i++) {
-            if (key.getId().equals(VanillaHotkeys.WEAPON_SLOTS.get(i))) {
-                shipUI.weaponHotkeyPressed(i, shiftPressed, ctrlPressed);
+        boolean jumpHeld = keysHeldByJump();
+        // Hyperspace hotkeys (CommandGui::KeyDown / CombatControl::KeyDown hooks); its speed and info keys come
+        // before the original's KeyDown, so they still work while the ship jumps.
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsHotkeys.dispatch(this, key, shiftPressed, jumpHeld);
+        if (jumpHeld) return;
+        // ArmamentControl::KeyDown: each box whose ArmamentHotkey is the key (Hyperspace renumbers them past four weapons).
+        if (player != null) {
+            for (int i = 0; i < shipUI.armamentBoxCount(true); i++) {
+                if (shipUI.armamentHotkey(true, i) == key) shipUI.weaponHotkeyPressed(i, shiftPressed, ctrlPressed);
             }
         }
         if (key.getId().equals(VanillaHotkeys.WEAPON_AUTOFIRE_TOGGLE)) {
             shipUI.toggleAutofire();
         }
-        for (int i = 0; i < VanillaHotkeys.DRONE_SLOTS.size(); i++) {
-            if (key.getId().equals(VanillaHotkeys.DRONE_SLOTS.get(i))) {
-                shipUI.droneHotkeyPressed(i, shiftPressed);
+        if (player != null) {
+            for (int i = 0; i < shipUI.armamentBoxCount(false); i++) {
+                if (shipUI.armamentHotkey(false, i) == key) shipUI.droneHotkeyPressed(i, shiftPressed);
             }
         }
 
         shipUI.hotkeyPressed(key, in);
+    }
+
+    /**
+     * CommandGui::KeyDown (0x534820) gives the key to the event box, the pause menu or Game Over first, then returns while
+     * the player's ship jumps (ShipManager bJumping): no hotkey, no Escape, no window while the jump animation plays.
+     */
+    public boolean keysHeldByJump() {
+        return player != null && isPlayerJumpingOut() && shipUI.getDiagnosticPauseWindow() == null &&
+                !shipUI.isGameOverOpen() && shipUI.getDiagnosticDialogue() == null;
     }
 
     @Override
@@ -1805,6 +1827,10 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             // Note we check the crew owners, so that mind-controlling the last
             // crew doesn't break it.
             checkCrewKillDefeat();
+
+            // WorldManager::OnLoop: boarders left on a ship that is no longer hostile, with no crew at home and the
+            // teleporter destroyed, come home with CREW_STUCK (not in a loop that showed an ending event).
+            xyz.znix.xftl.crew.CrewStuck.check(this, shipUI != null && shipUI.isWindowOpen());
         } else {
             player.setOpponentCloakActive(false);
         }
@@ -1919,6 +1945,9 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     // Same animation for an enemy ship jumping away mid-combat.
     private float enemyJumpOut = 0f;
 
+    /** The event box was open at the last frame the player's ship was not jumping (CommandGui +0x427a; see update). */
+    private boolean browserEventOpenSeen;
+
     // The out-of-fuel distress beacon toggle (StarMap +0x39c): it outlives
     // the map window and only the toggle changes it.
     private boolean fuelDistressBeacon = false;
@@ -1966,6 +1995,13 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             // Distraction Buoys (FLEET_DISTRACTION, 0x619fc0): entering one
             // of the first seven sectors delays the fleet by one jump.
             Sector newSector = currentBeacon.getSector();
+            // StarMap::pursuitDelay (+0x498) is the map's, not the sector's: only ModifyPursuit, the danger zone's
+            // step and LoadGame write it (1.6.14 0x5edbe0/0x5f5280/0x5fb9a0; GenerateMap 0x5f8ca0 and
+            // AdvanceWorldLevel 0x5edec0 leave it; Hyperspace zeroes it only in NewGame), so the new sector starts
+            // with what the old one had left (oracle ps-w1-ops: pursuit 2 across the secret sector warp).
+            if (this.currentBeacon != null && !isCurrentlyLoadingSave) {
+                newSector.setFleetAdvanceModifier(this.currentBeacon.getSector().getFleetAdvanceModifier());
+            }
             if (this.currentBeacon != null && !isCurrentlyLoadingSave && player != null
                     && newSector.getSectorNumber() <= 6
                     && player.hasAugment(xyz.znix.xftl.augments.AugmentBlueprint.FLEET_DISTRACTION)) {
@@ -2529,6 +2565,11 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             if (arrivalEliteEvent != null) arrival.setAttribute("eliteEvent", arrivalEliteEvent.getDeserialisationId());
             root.addContent(arrival);
         }
+        // An enemy that is jumping away (its escape, or Hyperspace's <instantEscape>): ShipManager::ExportShip writes
+        // the jump flag and the jump tracker's time, which ImportShip puts back (see loadGameState).
+        if (enemy != null && enemyJumpOut > 0f) {
+            root.addContent(new Element("browserEnemyJump").setAttribute("progress", Float.toString(enemyJumpOut)));
+        }
 
         ObjectRefs refs = new ObjectRefs();
         Sector sector = currentBeacon.getSector();
@@ -2697,6 +2738,16 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             setEnemy(overrideCurrentBeacon);
         } else {
             setEnemy(currentBeacon.getShip());
+        }
+        // ShipManager::ImportShip (1.6.9 0x4a7530): an enemy saved while jumping away runs JumpLeave again and its jump
+        // tracker (+0x4ac) gets the saved time back, so it goes on leaving where it was instead of staying (an
+        // <instantEscape>) or starting its 2 s again (an escape).
+        Element enemyJump = root.getChild("browserEnemyJump");
+        if (enemyJump != null && enemy != null) {
+            enemyJumpOut = Math.max(0f, Math.min(1f, Float.parseFloat(enemyJump.getAttributeValue("progress"))));
+            enemyJumpEvent = enemy.getSpec() == null ? null : enemy.getSpec().getGotaway();
+            enemy.browserJumpLeave();
+            if (hostileShipUI != null) hostileShipUI.startFlyOut(enemyJumpOut);
         }
 
         // We might have loaded a beacon with a store
@@ -3372,6 +3423,14 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         return playerJumpOut > 0 || playerFlyIn > 0;
     }
 
+    /**
+     * ShipManager bJumping as CommandGui::KeyDown and SpaceBar read it: set by ShipManager::JumpLeave, so the jump-out.
+     * Whether the original also holds keys during the arrival (our fly-in) was not established; the fly-in does not.
+     */
+    public boolean isPlayerJumpingOut() {
+        return playerJumpOut > 0;
+    }
+
     public void givePlayerResources(@NotNull ResourceSet resources) {
         // The event reward (0x615930) floors the fuel at 0, and ModifyMissileCount (0x49fa70 / 0x636200),
         // ModifyDroneCount (0x49f2c0 / 0x638b50) and ModifyScrapCount (0x49ba70) floor their counts at 0: a loss
@@ -3885,9 +3944,8 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             hotkeyManager = new HotkeyManager();
 
             blueprintManager.finishLoading(this);
+            // the weapons' stat boosts first, then hyperspace.xml's crew and augments (HsWeapons.loadContent)
             if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewContent.load(blueprintManager);
-            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsWeapons.loadContent(blueprintManager);
-            if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.stat.StatBoostDefs.weaponsFirst(); // HS realBoostId order
 
             // TODO load this via the usual asset system, so mods can override it
             BrowserSaxBuilder builder = com.pocketwormhole.android.SafeXML.builder();

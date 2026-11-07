@@ -5,6 +5,7 @@ import {loadSaveCore, setupOf, SAVES_LIMIT} from './savecore.mjs';
 import {deviceStore, keepOldSettings, LOCAL_ACCOUNT, moveSaves, onStoreChange} from './device-store.mjs';
 import {createLocalSync, createSync} from './sync.mjs';
 import {claimInstance, device, saveHeaders} from './device.mjs';
+import {words} from './save-words.mjs';
 
 const CURRENT = 'ftl-current-save:';
 const newId = () => crypto.randomUUID();
@@ -54,7 +55,7 @@ export async function createSaveService({account, local, api, version = ''}) {
   /** A new empty save (or one with `run` and `profile`) on this device; the syncer uploads it. */
   async function create(setup, name, {run = null, profile = null, meta = {}} = {}) {
     const list = await rows();
-    if (list.length >= SAVES_LIMIT) throw Error(`An account has at most ${SAVES_LIMIT} saves. Delete one first.`);
+    if (list.length >= SAVES_LIMIT) throw Error(words('savesFull', {count: SAVES_LIMIT}));
     const clean = core.cleanName(name ?? '') ?? core.nextName(list.map(r => r.name));
     const now = new Date().toISOString();
     const save = {id: newId(), name: clean, setup, createdUtc: now, meta: {...meta, summary: core.summary(run, 0), playedOn: {platform: 'browser', device: me.name, deviceId: me.id, at: now}},

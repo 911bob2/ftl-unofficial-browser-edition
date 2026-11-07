@@ -64,6 +64,9 @@ class WarningFlasher(
     var timeRemaining: Float = 0f
         private set
 
+    /** When the message stops (System.nanoTime), for the diagnostics. */
+    internal val stopNanos: Long get() = stopTime
+
     // Read the clock rather than the last drawn frame's timeRemaining, so a message started this frame counts.
     val isRunning: Boolean get() = alwaysOn || stopTime - System.nanoTime() > 0
 

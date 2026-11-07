@@ -181,7 +181,7 @@ fun rememberSaveFiles(onChanged: () -> Unit): SaveFileActions {
                 try {
                     val parsed = withContext(Dispatchers.IO) { SaveFile.parse(SaveFileIo.read(context.contentResolver, uri), app.mods.catalogue) }
                     when {
-                        SaveFileIo.count() >= Limits.SAVES -> problem = "Not imported" to "You have ${Limits.SAVES} saves, the most there can be. Delete one first."
+                        SaveFileIo.count() >= Limits.SAVES -> problem = "Not imported" to ftl.android.app.SaveWords.words("savesFull", "count" to Limits.SAVES.toString())
                         missingMods(parsed.setup, app.mods.list().map { it.sha256 }.toSet()).isNotEmpty() -> importing = parsed
                         else -> add(parsed)
                     }

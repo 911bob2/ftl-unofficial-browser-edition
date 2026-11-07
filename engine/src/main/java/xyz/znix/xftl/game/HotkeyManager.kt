@@ -14,8 +14,6 @@ class HotkeyManager {
 
     // These are special-cased, and thus we have to fish them out here
     val keyDevConsole: Hotkey
-    val keyFrameStep: Hotkey
-    val keyFastForward: Hotkey
 
     init {
         groups = ArrayList()
@@ -36,8 +34,6 @@ class HotkeyManager {
 
         byID = groups.flatMap { it.hotkeys }.associateBy { it.id }
         keyDevConsole = byID.getValue(VanillaHotkeys.DEV_CONSOLE)
-        keyFrameStep = byID.getValue(VanillaHotkeys.DEV_FRAME_STEP)
-        keyFastForward = byID.getValue(VanillaHotkeys.DEV_FAST_FORWARD)
     }
 
     private fun parseGroup(elem: Element): HotkeyGroup {
@@ -84,7 +80,7 @@ class HotkeyManager {
         val dev = groups.firstOrNull { it.id == "development" }?.hotkeys ?: emptyList()
         for (hotkey in byId.values) {
             val key = hotkey.default ?: continue
-            // Hyperspace: a development key gives up a default an HS hotkey takes (frame step on '.')
+            // Hyperspace: a development key (the console's) gives up a default an HS hotkey takes
             if (hs && hotkey in dev && !xyz.znix.xftl.hs.render.HsHotkeys.devKeyFree(hotkey, key, groups)) continue
             reverse[hotkey] = key
         }
@@ -295,6 +291,4 @@ object VanillaHotkeys {
     const val LOCKDOWN_ACTIVATE: String = "lockdown_activate"
 
     const val DEV_CONSOLE: String = "dev_console"
-    const val DEV_FRAME_STEP: String = "dev_frame_step"
-    const val DEV_FAST_FORWARD: String = "dev_fast_forward"
 }

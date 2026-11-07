@@ -1,6 +1,7 @@
 package ftl.browser
 
 import xyz.znix.xftl.augments.AugmentBlueprint
+import xyz.znix.xftl.crew.LivingCrew
 import xyz.znix.xftl.environment.AsteroidEnvironment
 import xyz.znix.xftl.environment.NebulaEnvironment
 import xyz.znix.xftl.game.Difficulty
@@ -9,6 +10,7 @@ import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.game.MainGame
 import xyz.znix.xftl.game.ReactorEnergySource
 import xyz.znix.xftl.game.ResourceSet
+import xyz.znix.xftl.layout.FireInstance
 import xyz.znix.xftl.sys.GameContainer
 import xyz.znix.xftl.systems.MainSystem
 
@@ -27,7 +29,10 @@ internal object GameplayParityShipRulesChecks {
             val asteroids = asteroidRanges()
             val ion = ionArmour(main, container)
             val storm = stormPower(main, container)
-            return "shiprules ok: $doors, $scrap, $asteroids, $ion, $storm"
+            val clone = BrowserGameplayParityDiagnostics.vanillaOnly("clone jump heal") { cloneJumpHeal(main, container) }
+            val safe = safeArrival(main, container)
+            val burnOut = fireBurnOut(main, container)
+            return "shiprules ok: $doors, $scrap, $asteroids, $ion, $storm, $clone, $safe, $burnOut"
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
@@ -183,5 +188,92 @@ internal object GameplayParityShipRulesChecks {
         check(system.reactorPowerDemand < before) { "Forced decrease: $before -> ${system.reactorPowerDemand}" }
         check(system.isPowerLocked) { "The forced decrease left the locked system unlocked" }
         return "storm power"
+    }
+
+    /**
+     * ShipManager::CloneHealing (1.6.14 0x49cc10) heals by GetJumpHealth(GetMaxPower) (8/16/25): GetMaxPower (0x63c0c0)
+     * is the level less damage, so an ion lock leaves the heal as it was while damage lowers it, and a bay with no
+     * health left heals nothing.
+     */
+    private fun cloneJumpHeal(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container, "PLAYER_SHIP_MANTIS_3")
+        val bay = state.player.clonebay ?: error("PLAYER_SHIP_MANTIS_3 has no clonebay")
+        val crew = state.player.crew.filterIsInstance<LivingCrew>().first { it.ownerShip == state.player }
+        bay.energyLevels = 3
+        bay.repair(1f)
+        bay.update(0f)
+
+        fun heal(): Float {
+            crew.health = 20f
+            bay.onJump()
+            return crew.health - 20f
+        }
+        check(heal() == 25f) { "Level 3 clonebay healed ${crew.health - 20f}" }
+
+        bay.dealDamage(0, 1)
+        check(bay.isIonised && bay.nativeMaxPower == 3) { "Ionised clonebay: locked ${bay.isIonised}, max ${bay.nativeMaxPower}" }
+        check(heal() == 25f) { "Ionised level 3 clonebay healed ${crew.health - 20f}, expected 25" }
+
+        bay.dealDamage(1, 0)
+        check(bay.nativeMaxPower == 2) { "Damaged clonebay max power ${bay.nativeMaxPower}" }
+        check(heal() == 16f) { "Damaged level 3 clonebay healed ${crew.health - 20f}, expected 16" }
+
+        bay.dealDamage(2, 0)
+        check(heal() == 0f) { "Broken clonebay healed ${crew.health - 20f}" }
+        return "clone jump heal 25/25 ionised/16 damaged/0 broken"
+    }
+
+    /**
+     * ShipManager::JumpArrive (0x49d490): after a beacon where SetSafe (0x49b5b0) ran, LockSystem(0) ends the ion locks
+     * on the shields, engines, weapons and piloting; after a beacon that stayed hostile they carry on. Other systems keep
+     * theirs either way.
+     */
+    private fun safeArrival(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        val ship = state.player
+        val shields = ship.shields ?: error("no shields")
+        val engines = ship.engines ?: error("no engines")
+        val oxygen = ship.oxygen ?: error("no oxygen")
+        check(!state.isInDanger) { "The first beacon is dangerous" }
+
+        state.updateGameState(0f)
+        for (system in listOf(shields, engines, oxygen)) system.addLockUnits(2)
+        ship.resetAfterJump()
+        check(!shields.isIonised && !engines.isIonised) { "Safe arrival kept the locks: shields ${shields.ionTimer}, engines ${engines.ionTimer}" }
+        check(oxygen.isIonised) { "Safe arrival ended the oxygen lock" }
+
+        for (system in listOf(shields, engines)) system.addLockUnits(2)
+        ship.resetAfterJump()
+        check(shields.isIonised && engines.isIonised) { "A second arrival without a safe frame ended the locks" }
+        return "safe arrival unlocks"
+    }
+
+    /**
+     * Fire::UpdateDeathTimer (1.6.14 0x4997d0): a fire burns out once its oxygen is at most 10, which vanilla's
+     * UpdateEnvironment (0x4a7040) truncates to a whole percent (so 10.5% burns out, 11.5% does not) and Hyperspace's
+     * rewrite does not (10.5% keeps burning).
+     */
+    private fun fireBurnOut(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        val room = state.player.rooms.first { it.system == null }
+        fun burnsOutAt(oxygen: Float): Boolean {
+            room.fires.indices.forEach { room.fires[it] = null }
+            val fire = FireInstance(room, 0)
+            room.fires[0] = fire
+            // The death timer is at most 14 and runs at least 0.48 a second (four burning neighbours): 40 s is enough.
+            repeat(800) {
+                room.oxygen = oxygen
+                if (room.fires[0] === fire) fire.update(0.05f)
+            }
+            val out = room.fires[0] !== fire
+            room.fires.indices.forEach { room.fires[it] = null }
+            return out
+        }
+        val hs = xyz.znix.xftl.hs.HS.active
+        val atTenAndAHalf = burnsOutAt(.105f)
+        check(atTenAndAHalf == !hs) { "A fire at 10.5% oxygen: burnt out $atTenAndAHalf, expected ${!hs}" }
+        check(!burnsOutAt(.115f)) { "A fire at 11.5% oxygen burnt out" }
+        check(burnsOutAt(.095f)) { "A fire at 9.5% oxygen kept burning" }
+        return if (hs) "fire burn-out at 10%" else "fire burn-out below 11%"
     }
 }

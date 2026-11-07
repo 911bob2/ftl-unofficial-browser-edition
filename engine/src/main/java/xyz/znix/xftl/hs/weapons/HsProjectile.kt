@@ -62,13 +62,15 @@ class HsProjectileExt(detached: Boolean = false) {
         /**
          * ProjectileFactory::SaveProjectile hook (CustomDamage.cpp): after the projectile's own state, the extend's
          * name, the CustomDamageDefinition index, accuracyMod, droneAccuracyMod and the SpaceIds of the drones it
-         * already missed (the `hsExt` child; absent in vanilla saves).
+         * already missed (the `hsExt` child; absent in vanilla saves). Our own format also names the weapon whose
+         * definition it is (`defOwner`), which a load prefers to the index ([HsDamageDef.saved]).
          */
         @JvmStatic
         fun save(ext: HsProjectileExt, elem: org.jdom2.Element) {
             val node = org.jdom2.Element("hsExt")
             node.setAttribute("name", ext.name)
             node.setAttribute("def", ext.def.idx.toString())
+            ext.def.owner?.let { node.setAttribute("defOwner", it) }
             node.setAttribute("accuracyMod", ext.accuracyMod.toString())
             node.setAttribute("droneAccuracyMod", ext.droneAccuracyMod.toString())
             if (ext.missedDrones.isNotEmpty()) node.setAttribute("missedDrones", ext.missedDrones.joinToString(","))
@@ -84,7 +86,7 @@ class HsProjectileExt(detached: Boolean = false) {
         fun load(ext: HsProjectileExt, elem: org.jdom2.Element) {
             val node = elem.getChild("hsExt") ?: return
             node.getAttributeValue("name")?.let { ext.name = it }
-            node.getAttributeValue("def")?.toIntOrNull()?.let { HsDamageDef.defs.getOrNull(it)?.let { d -> ext.def = d } }
+            HsDamageDef.saved(node.getAttributeValue("defOwner"), node.getAttributeValue("def")?.toIntOrNull())?.let { ext.def = it }
             node.getAttributeValue("accuracyMod")?.toIntOrNull()?.let { ext.accuracyMod = it }
             node.getAttributeValue("droneAccuracyMod")?.toIntOrNull()?.let { ext.droneAccuracyMod = it }
             ext.missedDrones.clear()

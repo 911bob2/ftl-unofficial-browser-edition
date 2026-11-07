@@ -339,6 +339,12 @@ class Artillery(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             }
         }
         weapon.loadFromXML(weaponElem, refs)
+        // ArtillerySystem's ProjectileFactory::LoadState (1.6.9 0x40eab0) restores the queued volley; its shots leave from
+        // the artillery's mount (fireAt), which a burst saved between two shots needs again.
+        (weapon as? AbstractProjectileWeaponInstance)?.let { w ->
+            val anim = w.animation
+            w.restoreArtilleryOrigin(hardpoint.position - anim.mountPoint + anim.firePoint)
+        }
     }
 
     companion object {

@@ -272,14 +272,14 @@ async function playSave(id,{override=false,hsAsked=false}={}){
  // The takeover notice and "deleted on another device" return to the list, as on Android (Play again to start).
  if(d?.action==='NOTIFY_OVERRIDDEN'){const l=await svc.store.get(id);await ui.showOverridden(l?.overridden?.device,l?.overridden?.at);await sync.acknowledgeOverride(id,l?.overridden?.at);ui.refreshSaves();return;}
  if(d?.action==='ASK_DELETED'){const a=await ui.askDeleted(row.name);if(a)await sync.resolveDeleted(id,a==='upload',crypto.randomUUID());ui.refreshSaves();return;}
- if(d?.removed){message(row.name+' was deleted on another device.');ui.refreshSaves();return;}
+ if(d?.removed){message(ui.words('deletedRemoved',{name:row.name}));ui.refreshSaves();return;}
  let lock=await sync.lock(id,override);
  if(lock.result==='held'){if(!await ui.askOverride(lock.lock,sync.sameDevice(lock.lock)))return;lock=await sync.lock(id,true);}
  if(lock.result==='overridden'){await ui.showOverridden(lock.lock?.device,lock.at);await sync.acknowledgeOverride(id,lock.at);ui.refreshSaves();return;}
- if(lock.result==='deleted'){message(row.name+' was deleted on another device.');ui.refreshSaves();return;}
+ if(lock.result==='deleted'){message(ui.words('deletedRemoved',{name:row.name}));ui.refreshSaves();return;}
  if(lock.result==='refused')throw Error(lock.decision?.error??'The account refused this save.');
  if(keepMine){
-  if(lock.result!=='granted'){message('Connect to keep this browser\'s copy of '+row.name+': the account has a newer version.');ui.refreshSaves();return;}
+  if(lock.result!=='granted'){message(ui.words('keepOffline',{name:row.name}));ui.refreshSaves();return;}
   const kept=await sync.resolveConflict(id,true);
   if(kept?.status!=='SYNCED'){await sync.release(id).catch(()=>{});ui.refreshSaves();throw Error(kept?.error??'This browser\'s copy of '+row.name+' could not replace the account\'s version.');}
   message('This browser\'s copy of '+row.name+' is now in your account.');
@@ -293,6 +293,7 @@ async function playSave(id,{override=false,hsAsked=false}={}){
 let P=null,loadingRate=null,modLaunch=null;
 function loadingReset(modded){$('loading-phase').textContent='Preparing…';$('save-status').textContent='Loading…';for(const li of $('loading-steps').children)li.dataset.state='';$('loading-steps').querySelector('[data-step="mods"]').hidden=!modded;$('loading-progress').hidden=true;$('loading-note').hidden=true;loadingRate=null;}
 function loadingUpdate(text,detail){
+ if(detail?.stage==='hs-error-box'){$('game-loading').hidden=true;return;}// the game area stays black under the box
  $('save-status').textContent=text;$('loading-phase').textContent=text;
  const steps=[...$('loading-steps').children].filter(li=>!li.hidden),at=steps.findIndex(li=>li.dataset.step===detail?.stage);
  if(at>=0)steps.forEach((li,i)=>li.dataset.state=i<at?'done':i===at?'active':'');
@@ -321,7 +322,7 @@ async function launch(save){
   document.body.dataset.workload='active';await new Promise(requestAnimationFrame);
   const ae=session.run?session.run.includes('enableAE="true"'):true;
   const {loadGame}=await import('./game.mjs'+version);const {readSettings}=await import('./device-store.mjs'+version);
-  engine=await loadGame({canvas:$('game'),manifest,accountId:me.id,fetchBoot:modLaunch?modLaunch.fetchBoot:assetProvider.fetchBoot,fetchAudio:modLaunch?modLaunch.fetchAudio:assetProvider.fetchAudio,mods:modLaunch?.overlay,onProgress:(text,detail)=>loadingUpdate(text,detail),onSave:(kind,xml)=>session?.onSave(kind,xml),run:session.run,profile:session.profileXml,settings:readSettings(),ae,audioContext});
+  engine=await loadGame({canvas:$('game'),manifest,accountId:me.id,fetchBoot:modLaunch?modLaunch.fetchBoot:assetProvider.fetchBoot,fetchEngine:assetProvider.fetchEngine,fetchAudio:modLaunch?modLaunch.fetchAudio:assetProvider.fetchAudio,mods:modLaunch?.overlay,onProgress:(text,detail)=>loadingUpdate(text,detail),onSave:(kind,xml)=>session?.onSave(kind,xml),run:session.run,profile:session.profileXml,settings:readSettings(),ae,audioContext});
   $('game-loading').hidden=true;$('save-status').textContent=save.name;
   engine.debugConfig?.(diagnostics?.enabled()??false);engine.consoleConfig?.(consoleSetting.consoleEnabled());await diagnostics?.checkpoint('engine.start');
   // A save that names content these game files lack loads without it (the engine drops it); say what went.

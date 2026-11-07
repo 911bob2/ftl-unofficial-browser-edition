@@ -109,8 +109,9 @@ held, plus the textures, which live on the host with `-gpu host`.
 Native Compose UI styled like the website (dark FTL design: space banner, logo, honeycomb panels, Chakra Petch,
 daisyUI colours and spacing from `web/styles.css`). Steps, each one screen:
 
-1. **Account**: sign in (same accounts; the server's cookie session, stored encrypted on the device), register, or
-   **Play offline** (no account). Each account's saves are kept apart on the device (`accounts/<scope>/`, scope =
+1. **Account**: sign in (same accounts; the server's cookie session, stored encrypted on the device), **Create an account**
+   (the website's registration, `POST /api/auth/register`: an External user with the server's rules, limits and words;
+   closed registration says so), or **Play offline** (no account). Each account's saves are kept apart on the device (`accounts/<scope>/`, scope =
    hashed server and user id; play without an account uses `local-device`, as the browser does); the settings
    (language, volumes, hotkeys) are the device's (`settings.xml`). Signing in moves the
    saves made while playing offline into the account, where they upload ("Enable cloud saves"). **Sign out** (the top
@@ -126,6 +127,11 @@ daisyUI colours and spacing from `web/styles.css`). Steps, each one screen:
    Restore takes the lock (never from another device: it names the device instead), posts
    `/snapshots/{rev}/restore` with `If-Match`, replaces this device's copy with the result (unsynced progress too, after a
    warning) and gives the lock back. Offline or signed out the dialog says the snapshots are in the account.
+   The questions (in use elsewhere, changed in two places, taken over with its time, deleted on another device, delete,
+   restore) and the row's line have the website's words (`SaveWords.kt` = `web/save-words.mjs`, `SaveWordsTest`). Play on a
+   save deleted on another device asks Upload again / Delete here too, or removes a clean copy with a note. **Delete** of a
+   save the account has asks the account too: offline nothing is deleted, and while another game holds the lock it asks
+   (Delete anyway). A save the account refused (`saves_full`, `storage_full`, a bad run) says "Not synced: <reason>".
 4. **Mods**: catalogue files (server or MEGA, pinned) and any local `.ftl`/`.zip` (badged Verified or Custom). A set that uses
    Hyperspace without Hyperspace.ftl gets a hint in the picker and a warning on Play, Start and New save's Create
    ([MODS.md](MODS.md#hyperspace-mod-without-hyperspace)).
@@ -314,6 +320,13 @@ on yet.
   reorder (CrewMemberFactory::MoveCrewMemberToSpot on the box under the finger), kept and saved as the desktop keeps it
   (`PlayerShipUI.hsCrewOrder`, [HS_UI.md](HS_UI.md)). The touch only becomes a reorder once the crew member reaches another box; held and
   lifted on the same box it selects, and the box's tooltip shows while held, as before (`TouchHud.reorderTouch`).
+  A finger that comes down on nothing (no ship, crew box or system box) and slides onto a ship or the crew list comes
+  down there anew, as the iPad's does: lifted on a crew box it selects that crew member (`TouchHud.crewControlRedown`).
+- Status bar: the hull bar's colour is the desktop's (above 19 points green, above 9 yellow; under Hyperspace by the
+  hull fraction, above 0.65 and 0.32: `hullBarColour`). The desktop's warnings sit where the iPad puts them, each with
+  its pointer line: hull under the scrap counter, shields under the shields box, low oxygen under the evade box, drawn
+  over the boxes they point past; the intruders warning shows over the player's ship while a boarder is aboard, at a
+  place per ship class (`PlayerShipUI.touchUpdateHullWarnings` and its neighbours).
 - Systems: tap a box to open it, tap again or on empty space to close; drag up or down for power, flick for all or
   nothing; drag sideways or tap the tab for the info drawer. Doors: open the box, then tap or drag over doors.
   An open box dims the rest of the bar; an open drawer taller than the box grows the box. Hazards show at the top of the
@@ -403,13 +416,16 @@ on yet.
   (`mods/TouchPatches.kt`, `assets/touch-patches/`): Multiverse 5.5.1's tutorial, seven lines. Report and step tables:
   `.build/hs/reports/touch-tutorial.md` (ignored).
 - Names are typed on the system keyboard, which sends single characters; the game slides up to keep the field in view
-  (`TouchMode.keyboardFocusY`). A mouse's left button acts as a finger for the touch HUD; on the screens and windows it
+  (`TouchMode.keyboardFocusY`). The game's view is a text editor only while a name or the debug console takes text, so a
+  key from a keyboard Android does not count as physical (adb's, some Bluetooth key pads) never brings the system
+  keyboard up over the game (`GameView.editing`). A mouse's left button acts as a finger for the touch HUD; on the screens and windows it
   acts on its press, as on the desktop (`TouchRouter.MOUSE_ID`).
 
 ## Testing
 
 - `./gradlew --offline :savecore:test` (shared vectors), `:mods:test` (merge and MEGA against the website's
-  fixtures), `:engine:testDebugUnitTest`, `:app:testDebugUnitTest`.
+  fixtures; with `FTL_MODS_REAL=<folder>` also `RealModsTest`: the merge of real mod sets against the website's, from
+  manifests `node tools/mods/merge-manifest.mjs` writes; sets with Lua patch scripts need the device runner below), `:engine:testDebugUnitTest`, `:app:testDebugUnitTest`.
 - Emulator: AVD on the android-36 x86_64 image; `adb` installs `app-debug.apk`.
 - Multi-touch: real fingers through the input stack on the emulator, [TESTS.md](TESTS.md#android-multi-touch-on-the-emulator).
 - One tap acts once, on its own button: `ClickThroughTest`, `TouchTapTest`, and on the emulator from the main menu
@@ -418,7 +434,8 @@ on yet.
 - Over capacity on touch: `node tools/android-touch/overcap.mjs --serial <serial> --out <dir> --name <shape> [--multiple]`
   in flight on a new run (`--multiple` for Multiverse): the debug console's get fills augments, cargo and crew, the
   receiver's `overcap` gives the open ship window's boxes (`overcappage` turns the equipment pager); checks one box at a
-  time, a tap on the pager's arrow, every crew member's box and dismiss button clear of the over-capacity box, and a
+  time, a tap on the pager's arrow, every crew member's box and dismiss button clear of the over-capacity box, without
+  Hyperspace a crew box dragged onto another keeping the order (the crew screen has no reorder; Hyperspace's swaps), and a
   dismiss by taps with the confirmation on the screen; phone and tablet shapes through `wm size` ([TESTS.md](TESTS.md#over-capacity-boxes)).
 - Desktop HUD elements on touch: `TouchExtrasTest` (places, the event button restore and the storage crate an older save
   lost, the settled measure, the shelf's alignment, the probe's solid art) and, on the emulator,
@@ -444,6 +461,9 @@ on yet.
   PRIMITIVES|AMPLITUDE|ON_OFF|NONE|auto` pretends a weaker vibrator for the setting's texts.
 - Sign out: `SignOutTest` (the unsynced line's rule, the words equal `web/sign-out.mjs`'s); the dialog on the emulator through
   `uiautomator` taps on Sign out, Cancel and Sign out.
+- Save questions: `SaveWordsTest` (every word equal to `web/save-words.mjs`'s, the list line and stock ship names equal to
+  `web/saves-ui.mjs`'s); on the emulator against a local server container (`adb reverse`), the flows of deleting, deleted
+  elsewhere, a refused upload and registration ([TESTS.md](TESTS.md#saves-on-both-platforms)).
 - More Info: `MoreInfoTest` (the mode reaches the options at the next flight frame only; the hold) and, on the emulator,
   `node tools/android-touch/moreinfo.mjs --serial <serial> --out <dir> [--shape phone|tablet]` in flight on a Hyperspace
   save without an enemy: the button's place and toggle, a held finger on an own crew member and on a boarder it adds
@@ -461,6 +481,11 @@ on yet.
   (`pointers` in `touchstate`: kind, desktop and canvas places, the element). `touchstate` also has `tutorial` (the vanilla
   lesson, whether Continue shows), `crewOrder` and `crewHeld`. Crew reorder:
   `node tools/android-touch/reorder.mjs --serial <serial> --out <dir>` on a Hyperspace run with three crew.
+- Status bar and keys: `TouchStatusTest` (the hull colour's steps, vanilla and Hyperspace) and, on the emulator,
+  `node tools/android-touch/hud.mjs --serial <serial> --out <dir>` from any screen of a vanilla or Hyperspace save (it
+  starts a new run): keys through `adb input` reach the game (Space pauses and resumes, 1 answers the start event) with
+  the system keyboard staying down; a finger down on empty space slid onto the first crew box selects; the hull,
+  shields and intruders warnings run at their places with their lines (`warnings` in `touchstate`).
 - Power drag past eight levels: `TouchPowerDragTest` (the iPad's step up to eight; past eight the finger on the drawn bar,
   up and down, on every count to 20 with and without pairs).
 - Updates: `UpdateCheckTest` (versions: equal, newer, older, `v`, `2.0` against `2.0.0`, junk; once a day, failures

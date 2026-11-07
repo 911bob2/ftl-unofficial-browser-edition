@@ -269,6 +269,25 @@ Tree events: `S` u32 prefix length (all bits set = none), prefix, u32 name lengt
 Integers are little-endian. Built natively, the imports are ordinary C functions with these signatures (the
 import/export attributes only matter for WebAssembly).
 
+## What the loaders accept
+
+The merged files then go through the engine's loaders, which accept what FTL's (1.6.14, and 1.6.9 under Hyperspace)
+accept rather than what a strict reading of the format would:
+
+- A `<blueprintList>` takes the value of every child, whatever its name (the list reader of
+  `BlueprintManager::LoadBlueprints`): Outer Expansion 7.1.10's `<bane>` entries count.
+- `<item_modify>` reads the `type`, `min` and `max` of every child, whatever its name
+  (`EventsParser::ProcessModifyItem`): Outer Expansion's `<iten type="scrap">` gives scrap.
+- An `<eventList>`'s entries are its `<event>` children only (`EventsParser::ProcessEventList`); other children are
+  not entries. A modded list with no `<event>` at all (Alder's Additions 2.1.1 wrote an event as a list) is left out and
+  reported: the original would divide by its size of 0 when the list is used.
+- Files with several top-level elements, unknown element names, bad or odd PNGs and lenient numbers: see
+  [HYPERSPACE.md](HYPERSPACE.md#capability-report-hscapability-browserenginehscapabilityreport) (load problems) and the
+  mod-fix round (`HsLoad`, `PNGDecoder`, `NativeNumbers`).
+
+`hsCoreProbe` checks the three list rules above, and `hyperspace.xml`'s repeated `<seeds>` and `<defaults>` blocks, on
+names of its own (`BrowserHsDiagnostics.loaderRules`).
+
 ## Verification
 
 - `tests/mods-merge.mjs` (unit group): 69 append cases and the F1 fixture archives (`tests/fixtures/mods/`) against
@@ -301,10 +320,17 @@ import/export attributes only matter for WebAssembly).
   unchanged vanilla launch (no session, identical files map, no mod module requested).
 - `tools/mods/compare-ftlman.mjs` (developer, needs `ftl.dat` and the archives): every file of a merge against
   ftlman's patched `ftl.dat`. Hyperspace 1.23.2 and Hyperspace + Multiverse 5.5 Assets + 5.5.1 Data are
-  byte-identical (3,468 and 13,307 files). With Lua patch scripts, MV 5.5.1 + The Old Guard 3.4 + its System Patch
+  byte-identical (3,468 and 13,307 files), and so is every other mod set of the packaged runner (2026-11-06):
+  Vertex 6.4 with a tag test mod, Speed Control 1.0.0, SimpleGraphics with a test wrapper (over Hyperspace), and over
+  Multiverse: Judge Blue Options 1.16 + Boon Selector 1.10.0, Fusion 0.1.6, Fusion + Alder's Additions 2.1.1, Hektar
+  Bundle 0.1.7, Hektar + Universal Weapon Modularity 0.2, Jub 1.0.22, Trash Compactor Collection 1.1 (its five appends
+  to files Multiverse 5.5.1 no longer has are ignored with ftlman's warning), More Mannable Systems 2.1 and R&D 1.5.8. With Lua patch scripts, MV 5.5.1 + The Old Guard 3.4 + its System Patch
   Last and MV 5.5.1 + Darkest Desire 4.1.4 + its System Patcher are byte-identical (14,343 and 14,760 files);
   MV 5.5.1 + Outer Expansion 7.1.10 + its Patch After All is identical in 14,727 of 14,728 files, and
   `data/blueprints.xml` is identical once the two systems its script adds to 324 ships are in ftlman's order (`pairs`
   order, see Lua patch scripts).
+- Android: `RealModsTest` (`android/mods`, opt-in with `FTL_MODS_REAL`) merges the same sets with the Kotlin merge and
+  compares every file with the website's merge (`tools/mods/merge-manifest.mjs`); all 14 sets without Lua patch scripts
+  are equal (2026-11-06). The three with Lua patch scripts run through the device runner ([ANDROID.md](ANDROID.md#testing)).
 - `tools/mods/build-modded-assets.mjs` (developer/test): a modded server-asset directory plus session JSON for the
   packaged test runner; production never serves it.

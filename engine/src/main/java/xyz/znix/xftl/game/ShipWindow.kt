@@ -65,6 +65,20 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     private val font5 by lazy { xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 5) }
     private val font52 by lazy { xyz.znix.xftl.rendering.NativeFonts.font(game::getFont, 52) }
 
+    /**
+     * The upgrades window's one InfoBox (Upgrades +0x680) is as wide as CommandGui::OnLanguageChange's widest system
+     * levels box: 333 for vanilla's 347, 10 wider under Multiverse, for the systems and the reactor alike (oracle hs-offset
+     * wp-mv2 13-sensors-info, ps-w3-mv i-h-reactor). Desktop layout only.
+     */
+    private inline fun upgradesInfoWidth(reactor: Boolean = false, draw: () -> Unit) {
+        val width = infoPanel.customWidth
+        if (!TouchMode.enabled && !PlatformSpecific.INSTANCE.isTouchUi) infoPanel.customWidth = 333 + systemBoxWidth(game) - 347
+        diagnosticSystemInfo = (if (reactor) "reactor " else "") + "${infoPanel.position.x},${infoPanel.position.y},${infoPanel.customWidth ?: 333}"
+        try { draw() } finally { infoPanel.customWidth = width }
+    }
+
+    private val REACTOR_BAR_HOVER = Colour(255, 255, 100, 64)
+
     /** The price of a reactor column (`reactorCosts[col]`, or the base cost plus `(col - 1) * increment` where it is -1). */
     private fun hsReactorCost(def: xyz.znix.xftl.hs.ship.CustomShipDefinition, column: Int): Int {
         val c = def.reactorPrices.getOrNull(column) ?: -1
@@ -188,7 +202,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     private fun touchReleaseCrew() {
         val candidate = touchCrewCandidate ?: return
         touchCrewCandidate = null
-        if (touchCrewRename) renamingCrew = candidate
+        if (touchCrewRename) { renamingCrew = candidate; renameCursor = -1 }
     }
 
     private var crewToDismiss: LivingCrew? = null
@@ -207,6 +221,12 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             if (TouchMode.enabled) TouchMode.keyboardWanted = value != null || renamingShip
         }
     private var cursorFlashTimer = 0f
+
+    /** The crew name's TextInput cursor (TextInput +0x30): characters before it; -1 is the end of the name. */
+    private var renameCursor = -1
+
+    /** Diagnostics (ps-u2): start renaming [crew] as a click on its name does. */
+    fun diagnosticStartCrewRename(crew: LivingCrew) { renamingCrew = crew; renameCursor = -1 }
 
     // If true, the drawing code should re-create any buttons it added
     private var updatingButtons = false
@@ -448,13 +468,11 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             val undoablePower = systemUpgradeUndos[hoveredSystem]?.size ?: 0
             // CommandGui::OnLanguageChange gives the upgrades window's InfoBox the widest system levels box: 333 here
             // for vanilla's 347, 10 wider under Multiverse (oracle hs-offset wp-hs2 / wp-mv2 13-sensors-info)
-            val width = infoPanel.customWidth
-            if (!TouchMode.enabled && !PlatformSpecific.INSTANCE.isTouchUi) infoPanel.customWidth = 333 + systemBoxWidth(game) - 347
-            diagnosticSystemInfo = "${infoPanel.position.x},${infoPanel.position.y},${infoPanel.customWidth ?: 333}"
-            infoPanel.drawDescriptionBoxSystem(hoveredSystem)
-            // InfoBox::SetSystem takes the system's own maximum (ShipSystem), not the blueprint's
-            infoPanel.drawSystemPowerBox(g, hoveredSystem.blueprint, hoveredSystem.energyLevels, undoablePower, hoveredSystem.maxLevel)
-            infoPanel.customWidth = width
+            upgradesInfoWidth {
+                infoPanel.drawDescriptionBoxSystem(hoveredSystem)
+                // InfoBox::SetSystem takes the system's own maximum (ShipSystem), not the blueprint's
+                infoPanel.drawSystemPowerBox(g, hoveredSystem.blueprint, hoveredSystem.energyLevels, undoablePower, hoveredSystem.maxLevel)
+            }
         }
 
         // Hyperspace pages the boxes: eight systems and four subsystems a page, at least the ship's systemLimit /
@@ -593,12 +611,14 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                     if (hovered) {
                         reactorHighlight.draw(pos)
 
-                        infoPanel.drawDescriptionBox(
-                            GameText.localised("upgrade_reactor"),
-                            GameText.localised("reactor_desc"),
-                            null, emptyList(),
-                            InfoPanel.INFO_HEIGHT_SYSTEM
-                        )
+                        upgradesInfoWidth(reactor = true) {
+                            infoPanel.drawDescriptionBox(
+                                GameText.localised("upgrade_reactor"),
+                                GameText.localised("reactor_desc"),
+                                null, emptyList(),
+                                InfoPanel.INFO_HEIGHT_SYSTEM
+                            )
+                        }
                     } else {
                         reactorImg.draw(pos)
                     }
@@ -617,7 +637,9 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                         g.colour = when {
                             level in refundRange -> Constants.SYS_ENERGY_PURCHASE_UNDOABLE
                             ship.purchasedReactorPower > level -> Constants.SYS_ENERGY_ACTIVE
-                            hovered -> Constants.SYS_ENERGY_PURCHASE_HOVER
+                            // A bar to buy is (255, 255, 100) at a quarter over the hovered button's art (Hyperspace's
+                            // ReactorButton::OnRender keeps it; 1.6.14 ps-w3-van u-h-reactor: (156, 140, 100))
+                            hovered -> REACTOR_BAR_HOVER
                             else -> Constants.SYS_ENERGY_PURCHASE
                         }
 
@@ -657,7 +679,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                     val active = reactorLevel < maxLevel
                     val img = if (!active) game.getImg("img/upgradeUI/Equipment/equipment_reactor_off.png") else if (hovered) reactorHighlight else reactorImg
                     img.draw(pos)
-                    if (hovered) infoPanel.drawDescriptionBox(GameText.localised("upgrade_reactor"), GameText.localised("reactor_desc"), null, emptyList(), InfoPanel.INFO_HEIGHT_SYSTEM)
+                    if (hovered) upgradesInfoWidth(reactor = true) { infoPanel.drawDescriptionBox(GameText.localised("upgrade_reactor"), GameText.localised("reactor_desc"), null, emptyList(), InfoPanel.INFO_HEIGHT_SYSTEM) }
 
                     var overCol = 0
                     var displayReactorLevel = reactorLevel
@@ -1110,6 +1132,9 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         updateButtons()
     }
 
+    /** Hyperspace Input.cpp: the wheel goes to the crew tab (CustomCrewManifest) or the equipment tab, not the upgrades. */
+    val hsTakesWheel: Boolean get() = xyz.znix.xftl.hs.HS.active && (tab == Tab.CREW || tab == Tab.EQUIPMENT)
+
     override fun mouseScroll(change: Int) {
         if (hsDef != null && tab == Tab.EQUIPMENT) { val p = scaleWindowPoint(mouseX, mouseY); equipmentPanel.mouseScroll(change, p.x, p.y); return }
         // CustomCrewManifest::OnScrollWheel
@@ -1166,8 +1191,9 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
     private fun drawCrewBox(g: Graphics, crewList: List<LivingCrew>, boxPos: ConstPoint, id: Int, over: Boolean = false) {
         val crew = crewList.getOrNull(id)
-        // The drop looks these up; the Hyperspace manifest lists its own.
-        if (TouchMode.enabled && hsDef == null) hsCrewBoxes += Pair(boxPos, id)
+        // The drop looks these up; the Hyperspace manifest lists its own. Without Hyperspace a dragged crew member goes
+        // back to its box (the crew screen has no reorder: CrewManifest::MouseClick; the reorder is HS's CustomCrewManifest).
+        if (TouchMode.enabled && hsDef == null && xyz.znix.xftl.hs.HS.active) hsCrewBoxes += Pair(boxPos, id)
         if (updatingButtons) diagnosticCrewBoxes += DiagnosticCrewBox(id, boxPos, crew, over)
 
         if (crew == null) {
@@ -1226,7 +1252,9 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                     val nameX = boxX + (width - nameWidth) / 2
                     crewMessageFont.drawString(nameX.f, pos.y + 61f, name, Colour.white)
 
-                    // Draw the cursor
+                    // Draw the cursor (after the characters before it)
+                    val cursorAt = if (renameCursor in 0..name.length) renameCursor else name.length
+                    val cursorX = nameX + crewMessageFont.getWidth(name.substring(0, cursorAt)) + 2
                     cursorFlashTimer += game.renderingDeltaTime
                     val period = 0.5f
                     if (cursorFlashTimer > period)
@@ -1234,7 +1262,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
                     if (cursorFlashTimer < period / 2f) {
                         g.colour = Colour.yellow
-                        g.fillRect(nameX + nameWidth - 2, boxY + 8, 2, 13)
+                        g.fillRect(cursorX, boxY + 8, 2, 13)
                     }
                 } else if (hsDragging !== crew) {
                     // Draw the name
@@ -1280,6 +1308,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                 }
 
                 renamingCrew = crew
+                renameCursor = -1
             }
         }
 
@@ -1460,22 +1489,36 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             return true
         }
         val info = renamingCrew?.info ?: return false
-
-        if (key == Input.KEY_BACK) {
-            val endPos = max(0, info.name.length - 1)
-            info.name = info.name.substring(0, endPos)
+        // CrewEquipBox::OnTextEvent -> TextInput::OnTextEvent (0x4ff810): Backspace and Delete either side of the
+        // cursor, Left/Right/Home/End move it, as the hangar's name fields (HangarPresentation.key).
+        var cursor = if (renameCursor in 0..info.name.length) renameCursor else info.name.length
+        when (key) {
+            Input.KEY_BACK -> { if (cursor > 0) { info.name = info.name.removeRange(cursor - 1, cursor); cursor-- } }
+            Input.KEY_DELETE -> { if (cursor < info.name.length) info.name = info.name.removeRange(cursor, cursor + 1) }
+            Input.KEY_LEFT -> cursor = max(0, cursor - 1)
+            Input.KEY_RIGHT -> cursor = minOf(info.name.length, cursor + 1)
+            Input.KEY_HOME -> cursor = 0
+            Input.KEY_END -> cursor = info.name.length
+            else -> cursor = -2
+        }
+        if (cursor != -2) {
+            renameCursor = if (cursor == info.name.length) -1 else cursor
             return true
         }
+        cursor = if (renameCursor in 0..info.name.length) renameCursor else info.name.length
 
         if (key == Input.KEY_ENTER) {
             renamingCrew = null
+            renameCursor = -1
             return true
         }
 
         if (c != 0.toChar()) {
-            // TextInput::OnTextInput: only the characters of the current language's set.
-            if (info.name.length < 15 && xyz.znix.xftl.TextInputChars.accepts(c))
-                info.name += c
+            // TextInput::OnTextInput: only the characters of the current language's set, inserted at the cursor.
+            if (info.name.length < 15 && xyz.znix.xftl.TextInputChars.accepts(c)) {
+                info.name = info.name.substring(0, cursor) + c + info.name.substring(cursor)
+                if (renameCursor >= 0) renameCursor++
+            }
             return true
         }
 

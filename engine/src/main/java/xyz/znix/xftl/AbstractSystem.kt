@@ -213,6 +213,18 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
             return max(available, 0)
         }
 
+    /**
+     * ShipSystem::GetMaxPower (1.6.14 0x63c0c0): the level less the damage and the power loss, under the power cap. Unlike
+     * [undamagedEnergy] an ion lock does not lower it.
+     */
+    val nativeMaxPower: Int
+        get() {
+            var available = energyLevels - damagedEnergyLevels - scriptedPowerLoss
+            hsExt?.let { available -= it.appliedLoss }
+            scriptedPowerLimit?.let { available = min(it, available) }
+            return max(available, 0)
+        }
+
     var repairProgress: Float = 0f
         private set(value) {
             field = if (damaged) value else 0f
@@ -570,6 +582,10 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
      * [x] and [y] specify the top-left corner of the box that contains
      * the system icon, NOT including the 19-pixel glow around the icon.
      */
+    /** The top bar's y as [drawIconAndPower] last drew it (PlayerShipUI's tooltip column over the bars). */
+    var drawnPowerBarsTop: Int = Int.MAX_VALUE
+        private set
+
     open fun drawIconAndPower(
         game: InGameState,
         g: Graphics,
@@ -649,6 +665,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         // Draw the power bars, so that systems can override this relatively easily.
         val bottomBarBaseY = y - 11 + 6
         val topBarY = drawPowerBars(g, barX, bottomBarBaseY, hoverGlow)
+        drawnPowerBarsTop = topBarY
 
         // If a status icon (ion or hacking) is drawn, this is the Y of it's base.
         var statusIconY = topBarY - 3

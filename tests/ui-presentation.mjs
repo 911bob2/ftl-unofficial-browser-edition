@@ -81,12 +81,12 @@ export async function presentationUiChecks(page,{snapshot,state,click,pass,name}
    assert.equal(button.height,24);assert.equal(button.x+button.width-first.x,count*97-4);assert.equal(button.y-first.y,47);
    if(hud.autofire){await click(button.x+button.width/2,button.y+12);await flush();}
    await hover(900,400);await color(button.x+button.width/2,button.y+2,[164,171,160],'Autofire off fill');await capture(`weapons-${count}-off`);
-   await hover(button.x+button.width/2,button.y+12);await color(button.x+button.width/2,button.y+2,[209,213,208],'Autofire off hover');
+   await hover(button.x+button.width/2,button.y+12);await color(button.x+button.width/2,button.y+2,[200,205,198],'Autofire off hover');
    const tooltip=(await snapshot()).armaments.tooltip;
    assert.ok(tooltip&&!tooltip.includes('\\1')&&!tooltip.includes('\\2')&&!tooltip.includes('Tap twice'),'Desktop autofire tooltip bindings missing');
    await click(button.x-1,button.y+12);await flush();assert.equal((await snapshot()).autofire,false,'Autofire art margin accepted a click');
    await click(button.x+button.width/2,button.y+12);await flush();assert.equal((await snapshot()).autofire,true);
-   await color(button.x+button.width/2,button.y+2,[255,243,175],'Autofire on hover');
+   await color(button.x+button.width/2,button.y+2,[255,240,158],'Autofire on hover');
    await hover(900,400);await color(button.x+button.width/2,button.y+2,[255,230,94],'Autofire on fill');await capture(`weapons-${count}-on`);
   }
   await page.evaluate(({profile,ae})=>window.start(ae,null,profile),ordinary);await state('MainMenuState');

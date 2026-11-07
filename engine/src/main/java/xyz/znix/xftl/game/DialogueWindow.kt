@@ -44,8 +44,11 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
 
     /** Hyperspace Lua: ChoiceBox.mainText, the box's text as shown. */
     override var mainText: String
-        get() = luaMainText ?: ((currentEvent?.text ?: "") + extraText)
+        get() = luaMainText ?: ((if (textlessBox) "" else currentEvent?.text ?: "") + extraText)
         set(v) { luaMainText = v }
+
+    /** The never-shown box of an event without text is being made: its text is empty, not the parent box's (oracle ps-w2-ops). */
+    private var textlessBox = false
 
     /** Hyperspace Lua: ChoiceBox.mainText as a script wrote it, replacing the text drawn; reset with each box. */
     private var luaMainText: String? = null
@@ -386,9 +389,20 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             addResources(event)
             // CreateChoiceBox's POST_CREATE_CHOICEBOX (after its ModifyResources), then the diagnostics listener.
             if (game.eventManager.hs != null) {
-                xyz.znix.xftl.hs.events.HsFlow.afterChoiceBox(game, event.created!!)
-                xyz.znix.xftl.hs.events.HsEventsLua.postChoiceBox(this, event.created!!)
-                xyz.znix.xftl.hs.events.HsFlow.boxListener?.invoke(game, event.created!!, null)
+                // the box CreateChoiceBox makes for it (never shown) holds the implicit Continue, not the parent box's
+                // choices (oracle ps-w2-ops: REPAIR_STATION's "Ignore" event gives "Continue..." to the callback)
+                if (event.created!!.choices.isEmpty()) {
+                    options = listOf(continueEvent)
+                    hsTypes = intArrayOf(0)
+                }
+                textlessBox = true
+                try {
+                    xyz.znix.xftl.hs.events.HsFlow.afterChoiceBox(game, event.created!!)
+                    xyz.znix.xftl.hs.events.HsEventsLua.postChoiceBox(this, event.created!!)
+                    xyz.znix.xftl.hs.events.HsFlow.boxListener?.invoke(game, event.created!!, null)
+                } finally {
+                    textlessBox = false
+                }
             }
 
             currentEvent = null
@@ -411,7 +425,9 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             // Hyperspace: CreateChoiceBox with HS's requirement, max_group and colour rules (HsFlow.choiceBox).
             val box = xyz.znix.xftl.hs.events.HsFlow.choiceBox(game, event.created!!)
             options = box.map { EvaluatedEvent(it.choice.event, game, it.choice.template, it.choice.text) }
-            hsTypes = box.map { it.type }.toIntArray()
+            // the original's part: a system the ship owns or cannot fit makes the choice unavailable
+            hsTypes = box.mapIndexed { i, it -> if (systemChoiceWarning(options[i])?.second == true) 1 else it.type }.toIntArray()
+            extraText += systemWarningsText()
             // An event without choices has FTL's implicit "continue" one first (LocationEvent::AddChoice appends after it);
             // a script that removed it (RemoveChoice 0) leaves only what it added.
             if (options.isNotEmpty() && event.created!!.template.choices.isEmpty() && !event.created!!.hsContinueRemoved) {
@@ -439,36 +455,31 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         for (choice in event.created!!.choices)
             newOptions.add(EvaluatedEvent(choice.event, game, choice.template, choice.text))
 
-        // Walk backwards from the end of the options list, removing
-        // anything that's not suitable. Aside from iteration order,
-        // we specifically need to go backwards to keep the last suitable
-        // option among many with max_group set.
-        val maxGroupHit = HashSet<Int>()
-        for (i in newOptions.size - 1 downTo 0) {
-            val option = newOptions[i]
+        // CreateChoiceBox (1.6.14 0x616680, 1.6.9 0x5f0f70): a choice with a req stays only while HasEquipment is within
+        // [lvl, max_lvl]. Every kept choice of a max_group is taken out of the list; per group the first one with the
+        // strictly highest lvl survives, and the survivors go to the end in ascending group order. A max_group without
+        // a req means nothing.
+        val groups = java.util.TreeMap<Int, EvaluatedEvent>()
+        val kept = ArrayList<EvaluatedEvent>()
+        for (option in newOptions) {
             val choice = option.choice!!
-
-            // If we don't have the blue option requirements, hide the option.
-            // This doesn't consider regular resources (missiles, fuel, etc) since
-            // if there's not enough of those, the option is merely greyed out.
-            if (!hasRequiredEquipment(option)) {
-                newOptions.removeAt(i)
-                continue
+            if (choice.req != null) {
+                if (!hasRequiredEquipment(option)) continue
+                val group = choice.maxGroup
+                if (group != null && group != -1) {
+                    val existing = groups[group]
+                    if (existing == null || (existing.choice!!.minLevel ?: 1) < (choice.minLevel ?: 1)) groups[group] = option
+                    continue
+                }
             }
-
-            // If multiple options with the same max_group are set,
-            // only the last one (first one we see in this iteration
-            // order) is kept.
-            val maxGroup = choice.maxGroup ?: continue
-
-            if (maxGroupHit.contains(maxGroup)) {
-                newOptions.removeAt(i)
-                continue
-            }
-            maxGroupHit.add(maxGroup)
+            kept.add(option)
         }
+        kept.addAll(groups.values)
+        newOptions.clear()
+        newOptions.addAll(kept)
 
         options = newOptions
+        extraText += systemWarningsText()
 
         if (options.isEmpty()) {
             options = listOf(continueEvent)
@@ -1326,14 +1337,10 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
 
         val res = event.previewResources
 
-        // Check we have enough stuff, if any of the resources are negative
-        if (playerShip.scrap < -res.scrap)
+        // WorldManager::CheckRequirements: the costs (not for a stealing event) and the repair station's rule
+        if (!xyz.znix.xftl.sector.NativeRequirements.check(playerShip, res.fuel, res.missiles, res.droneParts, res.scrap, event.event))
             return false
-        if (playerShip.missilesCount < -res.missiles)
-            return false
-        if (playerShip.dronesCount < -res.droneParts)
-            return false
-        if (playerShip.fuelCount < -res.fuel)
+        if (systemChoiceWarning(event)?.second == true)
             return false
 
         return hasRequiredEquipment(event)
@@ -1355,77 +1362,18 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         return event.choice?.let { checkReq(it) } ?: true
     }
 
+    /**
+     * CreateChoiceBox (1.6.14 0x616680) keeps a choice with a `req` only when ShipObject::HasEquipment(req) (0x46d350)
+     * lies between its lvl and max_lvl (EventsParser::ProcessChoice defaults 1 and INT_MAX). HasEquipment reads the
+     * ship's equipment list: a system or the reactor by level, each crew member, weapon, drone and augment once
+     * (ShipObject::AddEquipment's callers are WeaponSystem::AddWeapon, DroneSystem::AddDrone, AddSystem and the crew;
+     * ShipInfo::AddAugmentation counts augments), so the cargo hold never counts (Hyperspace's checkCargo adds it);
+     * a blueprint list is 1 when any entry is there. maxGroup is applied when the box is made.
+     */
     private fun checkReq(choice: Choice): Boolean {
         val req = choice.req ?: return true
-
-        // Req is the requirement name of an event choice. Per Choice.req, it is:
-        // "any race, weapon, drone, augmentation or system/subsystem"
-
-        // Check for matching races
-        if (requiredCrewCount(req) != null) return crewRequirementSatisfied(choice)
-
-        // Check for matching weapons, drones and augments. We search through all
-        // the places a blueprint could be, but none of these checks are specific
-        // to that type of item. For example, we could find a weapon in the cargo
-        // hold just the same as if it's in the weapons slots.
-        fun hasBlueprint(name: String): Boolean {
-            if (playerShip.hardpoints.any { it.weapon?.type?.name == name }) {
-                return true
-            }
-            if (playerShip.drones?.drones?.any { it?.type?.name == name } == true) {
-                return true
-            }
-            if (playerShip.augmentValues.any { it.key.name == name }) {
-                return true
-            }
-            return playerShip.allCargo().any { it.name == name }
-        }
-        if (hasBlueprint(req))
-            return true
-
-        // Req can be a blueprint list, in which case match anything from that.
-        // For example, DISTRESS_SATELLITE_DEFENSE's ion weapon option.
-        val bpList = game.blueprintManager.blueprints[req] as? BlueprintList
-        if (bpList != null) {
-            for (bp in bpList.list()) {
-                if (hasBlueprint(bp.name))
-                    return true
-            }
-        }
-
-        // Check for any matching systems
-        val matchingSystem = playerShip.systems.firstOrNull { it.codename == req }
-        if (matchingSystem != null) {
-            // Check if we're outside the level bounds of this system
-            choice.minLevel?.let { minLevel ->
-                if (matchingSystem.energyLevels < minLevel)
-                    return false
-            }
-            choice.maxLevel?.let { maxLevel ->
-                if (maxLevel < matchingSystem.energyLevels)
-                    return false
-            }
-
-            // Note that choice.maxGroup is processed during event setup.
-
-            return true
-        }
-
-        // If the system is 'reactor', we just have to check it's
-        // between the minimum and maximum level.
-        if (req == "reactor") {
-            choice.minLevel?.let { minLevel ->
-                if (playerShip.purchasedReactorPower < minLevel)
-                    return false
-            }
-            choice.maxLevel?.let { maxLevel ->
-                if (maxLevel < playerShip.purchasedReactorPower)
-                    return false
-            }
-            return true
-        }
-
-        return false
+        val have = xyz.znix.xftl.hs.events.HsReq.equipList(game, playerShip, req)
+        return have >= (choice.minLevel ?: 1) && have <= (choice.maxLevel ?: Int.MAX_VALUE)
     }
 
     private fun requiredCrewCount(req: String): Int? {
@@ -1569,6 +1517,13 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     val hsOpenEvent: String? get() = if (syntheticEvents.isEmpty()) currentEvent?.created?.template?.let { it.hsName ?: it.debugId } else syntheticEvents.first().hsName
 
     /** Diagnostics (hs-fullrun reload): the box's internal state. */
+    /**
+     * Diagnostics: each option as the box lists it: its text, whether it can be picked, and its event's scrap.
+     */
+    fun diagnosticChoices(): List<Triple<String, Boolean, Int>> = options.map { o ->
+        Triple(o.choiceText, isConditionsSatisfied(o), o.created?.scrap ?: 0)
+    }
+
     fun diagnosticState(): String = "event=${currentEvent?.created?.template?.debugId} cont=${currentEvent?.isContinue} synthetic=${syntheticEvents.size} " +
         "pending=${hsPendingChoice != null} depth=$hsDepth types=${hsTypes?.toList()} options=" +
         options.map { "${if (it.isContinue) "continue" else it.created?.template?.debugId}:${isConditionsSatisfied(it)}" }
@@ -1649,12 +1604,26 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
      * before the choice box), not when its box closes: the native last-stand capture shows the flagship's sensors
      * limit with its arrival box open.
      */
+    /**
+     * StatusEffect::GetNebulaEffect (1.6.9 0x5eba80: {limit, system 7 = sensors, amount 0, target 2 = both ships}),
+     * which the original appends to an event whose environment is a nebula or an ion storm (EventGenerator::
+     * CreateEvent 0x5b8940) and to a beacon's event the map turns into a nebula location (StarMap::GenerateNebulas
+     * 0x5d17e0, TurnIntoFleetLocation 0x5d0940, SetupNoFuel 0x5d0250). Both ships' sensors are capped at 0 there, so
+     * their boxes show the capped bars and the unpowered icon (native 1.6.14 capture ps-b1-van b1v-neb). The storm's
+     * own effect (reactor divided by 2) is the environment's here (ReactorEnergySource), not a status.
+     */
+    private fun nebulaStatus(event: EvaluatedEvent): List<EventStatus> {
+        val nebula = event.event.environment?.isNebula == true ||
+            (event.event === game.currentBeacon.event && game.currentBeacon.nebulaLocation)
+        return if (nebula) listOf(NEBULA_STATUS) else emptyList()
+    }
+
     private fun applyStatuses(event: EvaluatedEvent) {
         // WorldManager 0x613a10 / 0x613760 apply each entry to the player's ship when its
         // target is the player or both, then to every enemy ship when it is the enemy or both. The ship system keeps
         // three independent fields (ShipSystem 0x63d1a0..0x63d3e0): the limit (+0x11c), the loss (+0x120) and the
         // divisor (+0x124, which also sets the limit to half the level). Clear resets all three.
-        for (effect in event.created?.statusOverride ?: event.event.statuses) {
+        for (effect in event.created?.statusOverride ?: (event.event.statuses + nebulaStatus(event))) {
             val beacon = game.currentBeacon
 
             for (applyToPlayer in booleanArrayOf(true, false)) {
@@ -1728,6 +1697,10 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         game.givePlayerResources(event.resources)
         if (boxPickPending) event.event.pickLostCrew(game, ResourceSet())
 
+        // ResourceEvent::systemId: ShipManager::AddSystem (1.6.14 0x4a8370), as a bought system goes in (the room the
+        // ship's blueprint has for it; a clonebay takes over a medbay's level and the reverse, the replaced one goes)
+        event.event.systemReward?.let { addEventSystem(it) }
+
         // Remove blueprints
         removeStuff@ for (name in event.event.removedStuff) {
             val blueprint = game.blueprintManager.getOrNull(name) ?: continue@removeStuff
@@ -1750,6 +1723,49 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             game.currentBeacon.sector.mapRevealed = true
         }
         if (event.event.secretSector) secretSectorPending = true
+    }
+
+    private fun addEventSystem(name: String) {
+        // an owned one is not offered (the choice is unavailable); one the blueprint has no room for is not added
+        if (playerShip.systems.any { it.codename == name }) return
+        val slot = playerShip.systemSlots.firstOrNull { it.system.name == name } ?: return
+        xyz.znix.xftl.hs.systems.HsSystemInstall.install(playerShip, slot)
+        slot.room.system?.let { playerShip.browserPowerNewSystem(it) }
+    }
+
+    /**
+     * CreateChoiceBox (1.6.14 0x616680, 1.6.9 0x5f0f70) for a choice whose event installs a system: an owned one says
+     * new_system_owned and cannot be picked; a subsystem says nothing; a medbay over a clonebay (and the reverse) says
+     * it replaces it; one that does not fit (CanFitSystem: fewer than 8 main systems, or that swap) says
+     * new_system_full and cannot be picked; else the main system slots left after it (GetSystemCount 7:
+     * new_system_last, 6: new_system_penultimate, otherwise new_system_update with 7 - count). Returns the text and
+     * whether the choice is unavailable.
+     */
+    private fun systemChoiceWarning(option: EvaluatedEvent): Pair<String, Boolean>? {
+        if (option.isContinue) return null
+        val name = option.event.systemReward ?: return null
+        val ship = playerShip
+        if (ship.systems.any { it.codename == name }) return game.translator["new_system_owned"] to true
+        val slot = ship.systemSlots.firstOrNull { it.system.name == name }
+        val blueprint = slot?.system ?: game.blueprintManager.getOrNull(name) as? xyz.znix.xftl.systems.SystemBlueprint
+        if (blueprint?.info?.isSubSystem == true) return null
+        if (name == "medbay" && ship.systems.any { it.codename == "clonebay" }) return game.translator["new_system_medbay"] to false
+        if (name == "clonebay" && ship.systems.any { it.codename == "medbay" }) return game.translator["new_system_clonebay"] to false
+        val fits = if (slot != null) xyz.znix.xftl.hs.systems.HsSystemInstall.canFit(ship, slot) else ship.mainSystems.size < 8
+        if (!fits) return game.translator["new_system_full"] to true
+        val count = ship.mainSystems.size
+        val key = when (count) { 7 -> "new_system_last"; 6 -> "new_system_penultimate"; else -> null }
+        return (if (key != null) game.translator[key] else game.translator["new_system_update"].replace("\\1", (7 - count).toString())) to false
+    }
+
+    /**
+     * CreateChoiceBox gathers the choices' system warnings, each after [SYSTEM_WARNING_SEPARATOR] but the first, and
+     * adds them to the box's own text after one more (1.6.9 0x5f0f70: the event's TextString gets the separator and
+     * the warnings; the oracle's ChoiceText.text keeps none, ps-w2-ops).
+     */
+    private fun systemWarningsText(): String {
+        val warnings = options.mapNotNull { systemChoiceWarning(it)?.first }
+        return if (warnings.isEmpty()) "" else SYSTEM_WARNING_SEPARATOR + warnings.joinToString(SYSTEM_WARNING_SEPARATOR)
     }
 
     private fun getHullDamageText(resourceSet: ResourceSet): Pair<String?, Colour> {
@@ -2036,6 +2052,9 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     }
 
     companion object {
+        /** StatusEffect::GetNebulaEffect: the sensors of both ships limited to 0 (see [nebulaStatus]). */
+        private val NEBULA_STATUS = EventStatus("sensors", EventStatus.Operation.LIMIT, EventStatus.Target.BOTH, 0)
+
         /** Diagnostics (hs-events probe): called with the event name and text when a named synthetic event is added. */
         @JvmField var syntheticListener: ((String, String) -> Unit)? = null
 
@@ -2045,6 +2064,9 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         private const val FONT_HEIGHT = 11
 
         private const val RESOURCE_BOTTOM_MARGIN = 10
+
+        /** A space and an empty line: what CreateChoiceBox puts before each system warning (1.6.14 0x884a24). */
+        private const val SYSTEM_WARNING_SEPARATOR = " \n\n"
 
         private const val RESOURCE_LEFT_START = 5
         private const val RESOURCE_ICON_SPACING = 30

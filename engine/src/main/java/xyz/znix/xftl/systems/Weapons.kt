@@ -394,6 +394,10 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         fun update() {
             // Un-target all unpowered weapons
+            // WeaponControl::OnLoop (1.6.14 0x56c1a0, 1.6.9 0x553da0) clears an aim at a ship that is jumping away or
+            // not hostile only when the weapon box's check (vtable +8) fails, which a powered weapon passes: it keeps
+            // its aim at an escaping ship through the jump and fires at it (oracle ps-w4-ai: jump at 6.0 s, still
+            // aimed until its volley at 7.5 s).
             val enemy = ship.sys.getEnemyOf(ship)
             selectedTargets.targets.values.removeIf {
                 val drop = !it.weapon.isPowered || (it.targetShip !== ship && it.targetShip !== enemy)

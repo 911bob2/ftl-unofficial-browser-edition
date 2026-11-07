@@ -34,6 +34,4 @@
     <text name="xftl_hotkeys_conflicts_tooltip">Conflicts with:</text>
 
     <text name="xftl_hotkeys_console">Debug console</text>
-    <text name="xftl_hotkeys_frame_step">Unpause for 10ms</text>
-    <text name="xftl_hotkeys_fast_forward">Fast-forward</text>
 </FTL>

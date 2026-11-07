@@ -21,6 +21,15 @@ class HsSysExt(@JvmField val system: AbstractSystem) : LuaTyped {
     /** The loss in effect (iTempPowerLoss's additional part at the last CheckMaxPower). */
     @JvmField var appliedLoss = 0
 
+    /**
+     * iTempPowerLoss as the GetMaxPower hook (CustomCrew.cpp) sets it when read: the event loss plus the current
+     * [additionalPowerLoss], at most the undamaged levels.
+     */
+    fun liveLoss(): Int {
+        val s = system
+        return (s.scriptedPowerLoss + additionalPowerLoss).coerceIn(0, (s.energyLevels - s.damagedEnergyLevels).coerceAtLeast(0))
+    }
+
     /** ShipSystem::CheckMaxPower (CustomCrew.cpp hook): the loss takes effect, capped at the undamaged levels. */
     fun checkMaxPower() {
         val s = system
@@ -60,7 +69,7 @@ class HsSysExt(@JvmField val system: AbstractSystem) : LuaTyped {
             }
         }
 
-        /** The OnLoop's CheckMaxPower over every system, after SHIP_LOOP (so the scripts' additions count). */
+        /** The OnLoop's CheckMaxPower over every system, before SHIP_LOOP (the crew's drain; scripts call it themselves). */
         @JvmStatic
         fun commit(ship: Ship) {
             for (s in ship.systems) s.hsExt?.checkMaxPower()

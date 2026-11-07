@@ -76,13 +76,22 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
         lines += game.translator["status"]
         val powerStateKey = when (power) {
             system.energyLevels -> if (system is MainSystem) "full_powered" else "full_functional"
-            0 -> "unpowered"
+            // The system tooltip (0x004df760) has no power line for a subsystem without power (a nebula's sensors).
+            0 -> if (system is MainSystem) "unpowered" else null
             else -> if (system is MainSystem) "partial_powered" else "partial_functional"
         }
-        lines += "-" + game.translator[powerStateKey]
+        if (powerStateKey != null) lines += "-" + game.translator[powerStateKey] + " "
 
         if (power > 0 && system.info.canBeManned && system.manningCrew == null) {
-            lines += "-" + game.translator["unmanned"]
+            lines += "-" + game.translator["unmanned"] + " "
+        }
+
+        // 0x004df760: "temp_disabled" while ShipSystem::GetPowerCap is below the level or GetPowerLoss is not 0 (an
+        // event's limit or loss, a nebula's cap of the sensors), after the manning line (native 1.6.14 capture
+        // ps-b1-van b1v-neb n-neb-h-sensors: "-Temporarily disabled by enemy or location").
+        val limit = system.scriptedPowerLimit
+        if ((limit != null && limit < system.energyLevels) || system.scriptedPowerLoss + (system.hsExt?.appliedLoss ?: 0) != 0) {
+            lines += "-" + game.translator["temp_disabled"] + " "
         }
 
         // TODO hacking
@@ -94,11 +103,17 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
             val id = if (system is Medbay || system is Clonebay) VanillaHotkeys.SYS_POWER_MEDICAL else "sys_power_${system.codename}"
             val onKey = game.getButtonNameForHotkey(id, "")
             val offKey = game.getButtonNameForHotkey(id + "_off", "")
-            lines += game.translator["add_power"].replace("\\1", onKey)
-            lines += if (offKey.isNotEmpty()) game.translator["remove_power"].replace("\\1", offKey)
-            else game.translator["remove_power_alt"].replace("\\1", onKey)
+            lines += game.translator["add_power"].replace("\\1", onKey) + " "
+            lines += (if (offKey.isNotEmpty()) game.translator["remove_power"].replace("\\1", offKey)
+            else game.translator["remove_power_alt"].replace("\\1", onKey)) + " "
         }
 
+        // The system tooltip (0x004df760) puts " \n\n" before each part after the description and ends each bullet
+        // and power key line with " \n" ("Status:" with "\n" alone): the space widens a line's measure, so the box is
+        // as wide as the original's where such a line is the widest (frame pair u1v-a a-h-sub-doors: "opening/closing
+        // of doors. " makes the doors box 6 px wider).
+        for (i in 0 until lines.size - 1)
+            if (lines[i + 1].isEmpty() && lines[i].isNotEmpty() && !lines[i].endsWith(" ")) lines[i] = lines[i] + " "
         return lines.joinToString("\n")
     }
 

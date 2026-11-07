@@ -162,23 +162,19 @@ object HsFlow {
     // ------------------------------------------------------------------ CheckRequirements
 
     /**
-     * WorldManager::CheckRequirements (0x6130e0, the resource part) and HS's hook: a stealing event always passes;
-     * otherwise fuel, missiles, drone parts and scrap must cover the event's costs (HS adds the previous event's
-     * costs, a vanilla fix), and with choiceRequiresCrew a crew-losing event needs an eligible crew member.
+     * WorldManager::CheckRequirements ([xyz.znix.xftl.sector.NativeRequirements]: the costs unless the event steals,
+     * the repair station's rule) and HS's hook: a non-stealing event's costs plus the previous event's must be covered
+     * (a vanilla fix), and with choiceRequiresCrew a crew-losing event needs an eligible crew member (stealing or not).
      */
     fun checkRequirements(game: InGameState, event: CreatedEvent?, hidden: Boolean): Boolean {
         event ?: return true
         val ship = game.player ?: return true
+        // the original's rule first (its costs unless the event steals, the repair station's), then HS's
+        if (!xyz.znix.xftl.sector.NativeRequirements.check(ship, event.fuel, event.missiles, event.droneParts, event.scrap, event.template)) return false
         val steal = event.template.itemsModifySteal
-        if (!steal) {
-            if (event.fuel < 0 && ship.fuelCount < -event.fuel) return false
-            if (event.missiles < 0 && ship.missilesCount < -event.missiles) return false
-            if (event.droneParts < 0 && ship.dronesCount < -event.droneParts) return false
-            if (event.scrap < 0 && ship.scrap < -event.scrap) return false
-        } else return true
 
         val last = lastLocationEvent
-        if (last != null && last !== event && !last.template.itemsModifySteal) {
+        if (last != null && last !== event && !steal && !last.template.itemsModifySteal) {
             val fuel = event.fuel + last.fuel
             if (fuel < 0 && ship.fuelCount < -fuel) return false
             val missiles = event.missiles + last.missiles

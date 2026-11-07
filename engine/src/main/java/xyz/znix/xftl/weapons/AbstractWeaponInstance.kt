@@ -500,7 +500,7 @@ abstract class AbstractWeaponInstance(type: AbstractWeaponBlueprint, val ship: S
         return object : WeaponButtonTooltip(ship.sys, text) {
             override fun getText(): String {
                 val slot = ship.hardpoints.indexOfFirst { it.weapon === this@AbstractWeaponInstance }
-                return text.replace("\\1", ship.sys.getButtonNameForHotkey(VanillaHotkeys.WEAPON_SLOTS.getOrNull(slot), ""))
+                return text.replace("\\1", ship.sys.getButtonNameForHotkey(if (slot < 0) null else ship.sys.shipUI.armamentHotkey(true, slot)?.id, ""))
             }
         }
     }

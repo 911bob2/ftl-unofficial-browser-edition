@@ -79,8 +79,12 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     /** GetRealDilation */
     val realDilation: Int get() = if (isSpeeding) dilationStrength else -dilationStrength
 
-    /** ShipSystem::GetLocked: iLockCount != 0 (an ion/cooldown lock, or the permanent lock). */
-    val isLocked: Boolean get() = isIonised || hasPermanentLock
+    /**
+     * ShipSystem::GetLocked (1.6.9 0x615930): iLockCount != 0 (an ion/cooldown lock, or the permanent lock), or a
+     * hacking pulse on the system (iHackEffect > 1). So a pulse keeps IsReady false: the box's buttons are off and a
+     * queued target (the player's or the AI's) does not start.
+     */
+    val isLocked: Boolean get() = isIonised || hasPermanentLock || isHackActive
 
     /** ShipSystem::Functioning for a non-manned system: Powered(), GetEffectivePower() > 0 (FUN_0063a960). */
     val functioning: Boolean get() = powerSupplied > 0
@@ -188,7 +192,9 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         queuedRoom?.let { startTimeDilation(it, queuedSpeedUp) }
 
         val room = currentRoom
-        if (!functioning || isHackActive || room == null || !ship.sys.isShipPresent(room.ship) || room.ship.isDead) {
+        // TemporalSystem_Wrapper::OnLoop stops when the target's ShipManager is gone (G_->GetShipManager is null), not
+        // when its hull reaches 0: a destroyed ship keeps the dilation until it is removed.
+        if (!functioning || isHackActive || room == null || !ship.sys.isShipPresent(room.ship)) {
             stopTimeDilation()
         }
 

@@ -389,7 +389,7 @@ object HsBoss {
         }
     }
 
-    private fun launch(ship: Ship, shot: xyz.znix.xftl.weapons.AbstractWeaponProjectile, origin: ConstPoint, headingDegrees: Int) {
+    internal fun launch(ship: Ship, shot: xyz.znix.xftl.weapons.AbstractWeaponProjectile, origin: ConstPoint, headingDegrees: Int) {
         // heading = random32() % 360: the shot leaves the ship that way.
         val heading = Math.toRadians(headingDegrees.toDouble())
         val end = ConstPoint(origin.x + (5000 * cos(heading)).toInt(), origin.y + (5000 * sin(heading)).toInt())
@@ -398,7 +398,7 @@ object HsBoss {
     }
 
     /** ShipGraph::center: the middle of the rooms' bounding box. */
-    private fun shipCentre(ship: Ship): ConstPoint {
+    internal fun shipCentre(ship: Ship): ConstPoint {
         val minX = ship.rooms.minOf { it.offsetX }; val minY = ship.rooms.minOf { it.offsetY }
         val maxX = ship.rooms.maxOf { it.offsetX + it.pixelWidth }; val maxY = ship.rooms.maxOf { it.offsetY + it.pixelHeight }
         return ConstPoint((minX + maxX) / 2, (minY + maxY) / 2)

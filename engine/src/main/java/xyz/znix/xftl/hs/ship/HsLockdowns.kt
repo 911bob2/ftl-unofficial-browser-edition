@@ -16,7 +16,8 @@ object HsLockdowns {
     @JvmStatic
     fun defaults(): LockdownDefinition {
         val d = LockdownDefinition()
-        if (HS.active) HS.cfg().node("defaults")?.getChild("customLockdown")?.let { parse(it, d) }
+        // Global::PreInitializeResources: every <defaults> node, each <customLockdown> child parsed onto the default.
+        if (HS.active) for (n in HS.cfg().nodesOf("defaults")) for (c in n.getChildren("customLockdown")) parse(c, d)
         return d
     }
 

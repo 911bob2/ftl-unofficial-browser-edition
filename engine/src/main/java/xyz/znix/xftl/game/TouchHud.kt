@@ -53,6 +53,9 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     val playerOnTop: Boolean get() = focusT > 0.5f
     val focusAmount: Float get() = focusT
 
+    /** The status bar's messages by name: hull, shields, oxygen, intruders (device checks). */
+    val statusWarnings: Map<String, WarningFlasher> get() = ui.touchStatusWarnings
+
     // What the tutorial watches.
     val doorsSelected: Boolean get() = selected?.system is Doors
     val weaponsSelected: Boolean get() = selected?.system is Weapons
@@ -436,13 +439,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         img(if (hullRed) "ipad/statusUI/top_hull_red.png" else "ipad/statusUI/top_hull.png").draw(-4f, -4f)
         val mask = img("ipad/statusUI/top_hull_bar_mask.png")
         val w = 360f * hullFraction
-        val colour = when {
-            ship.health < ship.maxHealth / 3 -> Constants.SHIP_HEALTH_LOW
-            ship.health < ship.maxHealth * 2 / 3 -> Constants.SHIP_HEALTH_MED
-            else -> Constants.SHIP_HEALTH_HIGH
-        }
+        val colour = hullBarColour(ship.health, ship.maxHealth)
         mask.draw(9f, -4f, 9f + w, -4f + mask.height, 0f, 0f, mask.width * hullFraction, mask.height.f, 1f, colour)
-        ui.touchUpdateHullWarnings(hullFraction, g)
 
         val shields = ship.shields
         val broken = shields != null && shields.energyLevels >= 2 && shields.energyLevels - shields.damagedEnergyLevels < 2
@@ -483,7 +481,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         counter("drones", 221f, 266f, ship.dronesCount, 0)
 
         val avgOxygen = Math.round(ship.averageOxygen * 100)
-        val oxygenRed = avgOxygen < 25 && ship.oxygen != null && !ship.type.name.contains("ANAEROBIC") && ui.touchOxygenWarningRed(g)
+        val lowOxygen = avgOxygen < 25 && ship.oxygen != null && !ship.type.name.contains("ANAEROBIC")
+        val oxygenRed = lowOxygen && ui.touchOxygenWarningRed()
         val evadeRed = ship.evasion == 0
         img(when {
             evadeRed && oxygenRed -> "ipad/statusUI/top_evade_oxygen_both_red.png"
@@ -497,10 +496,14 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         }
         percent(26f, "${ship.evasion}")
         percent(41f, "$avgOxygen")
+        // The low-oxygen and hull warnings lie over the boxes they point past.
+        if (lowOxygen) ui.touchDrawOxygenWarning(g)
 
         val scrapRed = ui.touchScrapRed
         img(if (scrapRed) "statusUI/top_scrap_red.png" else "statusUI/top_scrap.png").draw(378f, 0f)
         numberFont.drawStringCentred(460f, 23f + 8f, 0f, ship.scrap.toString(), Constants.UI_SCRAP_TEXT_COLOUR)
+        ui.touchUpdateHullWarnings(g)
+        ui.touchUpdateIntrudersWarning(g)
     }
 
     // ---- crew list ---------------------------------------------------------------------------------------------------
@@ -660,6 +663,16 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         reorderCrew = boxCrew.getOrNull(reorderBox)
         reorderFingerY = reorderDownY
         reorderBox = -1
+    }
+
+    /**
+     * [crewControl] for a finger that may have come down on nothing (no ship, no crew box, no system box): where it then
+     * reaches a ship or the crew list, it comes down there first, so a slide from empty space onto a crew box or a crew
+     * member selects as a tap there does.
+     */
+    private fun crewControlRedown(action: Int, x: Int, y: Int, cx: Int, cy: Int) {
+        if (pendingRedown && action != TouchRouter.DOWN) crewControl(TouchRouter.DOWN, x, y, cx, cy)
+        crewControl(action, x, y, cx, cy)
     }
 
     private fun crewControl(action: Int, x: Int, y: Int, cx: Int, cy: Int) {
@@ -2095,18 +2108,19 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
                         isTargeting || activeTargeting -> {
                             if (!combatTouch(action, canvasX, canvasY)) crewControl(action, x, y, canvasX, canvasY)
                         }
-                        else -> crewControl(if (pendingRedown && action == TouchRouter.MOVE) TouchRouter.DOWN else action, x, y, canvasX, canvasY)
+                        else -> crewControlRedown(action, x, y, canvasX, canvasY)
                     }
                 } else if (over && selected?.wide == true) {
                     // The open column comes before aiming: its slots and drawers keep working with a weapon armed.
                     systemTouch(action, x, y, time)
                 } else if (!combatTouch(action, canvasX, canvasY)) {
                     if (overCrewArea(x, y) || dragging) {
-                        crewControl(action, x, y, canvasX, canvasY)
+                        crewControlRedown(action, x, y, canvasX, canvasY)
                         val first = ui.touchSelected.firstOrNull()
                         if (first != null && hasTarget && (first.room.ship === ship) != focusOnPlayer) toggleFocus()
                     } else if (!systemTouch(action, x, y, time)) {
-                        redownFlag = action == TouchRouter.MOVE
+                        // Nothing took the finger: if it goes on to a ship or the crew list, it comes down there anew.
+                        redownFlag = true
                         statusTip = if (action == TouchRouter.DOWN || action == TouchRouter.MOVE) statusAt(x, y) else null
                     }
                 }
@@ -2295,4 +2309,17 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val SLOT_LIGHT = Constants.TEXT_BUTTON_NORMAL
         val REACTOR_USED = Colour(235 / 255f, 245 / 255f, 229 / 255f, 1f)
     }
+}
+
+/**
+ * The touch status bar's hull colour, the desktop bar's rule (ShipStatus::RenderHealth): above 19 points green, above
+ * 9 yellow, else red; under Hyperspace its playerHpColorFix by the hull fraction (HullNumbers.cpp).
+ */
+fun hullBarColour(health: Int, maxHealth: Int): Colour {
+    val vanilla = when {
+        health < 10 -> Constants.SHIP_HEALTH_LOW
+        health < 20 -> Constants.SHIP_HEALTH_MED
+        else -> Constants.SHIP_HEALTH_HIGH
+    }
+    return if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsHullNumbers.playerBarColour(health, maxHealth, vanilla) else vanilla
 }

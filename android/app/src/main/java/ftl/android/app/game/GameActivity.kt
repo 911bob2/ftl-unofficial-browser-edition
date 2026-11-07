@@ -176,6 +176,12 @@ class GameActivity : Activity() {
                 val run = saved?.run ?: s.runXml
                 BrowserEngine.consoleConfig(ConsoleButton.enabled(this))
                 BrowserEngine.start(run?.contains("enableAE=\"true\"") ?: true, run, saved?.profile ?: s.profileXml, app.store.settings())
+                // Hyperspace's start-up error boxes: the screen stays black and the game waits until the last is closed.
+                val boxes = BrowserEngine.hsErrorBoxes().toList()
+                if (boxes.isNotEmpty()) {
+                    renderer.held = true
+                    runOnUiThread { HsErrorBox.showAll(this, boxes) { renderer.held = false } }
+                }
             },
             onReady = { runOnUiThread { loading.visibility = View.GONE } },
             onError = { e -> runOnUiThread { showError(e) } },
@@ -264,10 +270,9 @@ class GameActivity : Activity() {
         withContext(Dispatchers.Main) {
             renderer.suspended = true
             view.queueEvent { if (BrowserEngine.running()) BrowserEngine.shutdown() }
-            val who = by?.device?.takeIf { it.isNotBlank() } ?: "another device"
             AlertDialog.Builder(this@GameActivity)
-                .setTitle("Save taken over")
-                .setMessage("This save was taken over on $who. Progress and unlocks since your last sync were discarded.")
+                .setTitle(ftl.android.app.SaveWords.words("overriddenTitle"))
+                .setMessage(ftl.android.app.SaveWords.overridden(by?.device, at))
                 .setPositiveButton("Back to saves") { _, _ ->
                     scope.launch { runCatching { FtlApplication.app.sync.acknowledgeOverride(s.id, at) } }
                     closing = true

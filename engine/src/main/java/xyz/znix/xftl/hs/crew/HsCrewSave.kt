@@ -48,7 +48,7 @@ object HsCrewSave {
         }
         val be = Element(name)
         be.setAttribute("def", id.toString())
-        be.setAttribute("ids", "2") // HS's numbering (StatBoostDefs.weaponsFirst)
+        be.setAttribute("ids", "3") // HS's numbering, the weapons in the original's blueprint order (StatBoostDefs.weaponsFirst)
         be.setAttribute("stacks", b.iStacks.toString())
         be.setAttribute("source", "${b.crewSourceId},${b.sourceShipId}")
         timer(be, "timer", b.timer)
@@ -59,7 +59,7 @@ object HsCrewSave {
 
     /** StatBoost::LoadStatBoost. */
     fun loadBoost(be: Element): StatBoost? {
-        val def = StatBoostDefs.bySavedId(be.getAttributeValue("def").toInt(), be.getAttributeValue("ids") == "2") ?: return null
+        val def = StatBoostDefs.bySavedId(be.getAttributeValue("def").toInt(), be.getAttributeValue("ids")) ?: return null
         val b = StatBoost(def)
         b.iStacks = be.getAttributeValue("stacks").toInt()
         be.getAttributeValue("source").split(',').let { b.crewSourceId = it[0].toInt(); b.sourceShipId = it[1].toInt() }

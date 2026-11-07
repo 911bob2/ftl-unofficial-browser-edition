@@ -62,7 +62,7 @@ class ConsoleTest {
         "CREDITS", "VICTORY", "VARIABLE", "VAR", "METAVARIABLE", "METAVAR", "MVAR", "ACH", "ACH_LOCK", "SWITCHALL", "SWITCH",
         "WEAPON",
     )
-    private val originalWords = listOf("SCRAP", "FUEL", "MISSILES", "DRONES", "HULL", "DRONE", "AUG", "CREW", "GOD", "DELETE", "EVENT")
+    private val originalWords = listOf("SCRAP", "FUEL", "MISSILES", "DRONES", "HULL", "DRONE", "AUG", "CREW", "GOD", "DELETE", "EVENT", "LOAD")
 
     /** The port's development commands before the merge. */
     private val ourNames = listOf(
@@ -93,7 +93,7 @@ class ConsoleTest {
     @Test
     fun aClashKeepsTheHyperspaceCommandUnderItsNameAndOursMoves() {
         val commands = console().commands
-        assertEquals(listOf("rich", "poor", "weapon", "drone", "aug", "store", "event", "kill", "skill"), ConsoleRegistry.RENAMED.keys.toList())
+        assertEquals(listOf("rich", "poor", "weapon", "drone", "aug", "store", "event", "kill", "skill", "load"), ConsoleRegistry.RENAMED.keys.toList())
         for ((old, new) in ConsoleRegistry.RENAMED) {
             assertNotNull("$old is Hyperspace's or the original's", ConsoleRegistry.find(commands, old)?.raw)
             val ours = ConsoleRegistry.find(commands, new)

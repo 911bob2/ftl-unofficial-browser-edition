@@ -27,8 +27,6 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     private val droneLaunchSound by onInit { it.sounds.getSample("droneLaunch") }
 
-    private var playDroneLaunchSound = false
-
     lateinit var powerManager: WeaponPowerManager
         private set
 
@@ -108,11 +106,6 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         // If a drone has turned itself on or off, find out why and fix it.
         if (powerSupplied != powerManager.currentPower) {
             powerStateChanged()
-        }
-
-        if (playDroneLaunchSound) {
-            droneLaunchSound.play()
-            playDroneLaunchSound = false
         }
 
         healCrewDrones(dt)
@@ -256,10 +249,9 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
                 // Drone::SetDeployed(true) on the equipped body: the engine builds the drone's actor now.
                 info.deployActor(ship)
 
-                // We should only play the launch sound when unpaused, both
-                // to match vanilla and to only play the sound once if multiple
-                // drones are selected in the same update.
-                playDroneLaunchSound = true
+                // DroneSystem's PowerDrone (0x638b80) plays "droneLaunch" right there in its not-yet-deployed
+                // branch, once per launched drone and also while the game is paused.
+                droneLaunchSound.play()
             }
         }
 

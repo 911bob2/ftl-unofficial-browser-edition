@@ -43,6 +43,8 @@ public final class BrowserEngine {
     /** ships workstream diagnostics: "defs" | "ships" | "start <ship> [difficulty]" | "menu" (JSON / text). */
     @JSExport public static String hsShipsProbe(String what){return BrowserHsShipsDiagnostics.INSTANCE.run(game,what,container,graphics);}
     @JSExport public static String hsCapabilityReport(){return xyz.znix.xftl.hs.HS.capabilityReport();}
+    /** Hyperspace's start-up error boxes of this start (HS.errorBoxes), a JSON array of texts; the page shows each before the first frame. */
+    @JSExport public static String hsErrorBoxes(){StringBuilder b=new StringBuilder("[");for(String t:xyz.znix.xftl.hs.HS.errorBoxes){if(b.length()>1)b.append(',');b.append(BrowserDebug.quote(t));}return b.append(']').toString();}
     /** Mods: per-callback Lua calls/instructions/time and bridge state (JSON); reset clears the counters. */
     @JSExport public static String hsProfile(boolean reset){return xyz.znix.xftl.hs.lua.HsLua.profileJson(reset);}
     /** Diagnostics mode hs-lua: Lua runtime against real objects (bench, in-situ frames, script API semantics). */

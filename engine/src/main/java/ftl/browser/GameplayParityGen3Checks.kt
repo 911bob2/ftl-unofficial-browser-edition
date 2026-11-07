@@ -37,6 +37,8 @@ internal object GameplayParityGen3Checks {
     private class Run(
         val ae: Boolean, val sample: String, val treeSeed: Int, val difficulty: Difficulty, val usedNames: List<String>,
         val steps: String, val hashes: IntArray,
+        /** Parity sweep W1: the fingerprint of each map's places and links ([geometry]), where captured. */
+        val geo: IntArray? = null,
     )
 
     private val RUNS = listOf(
@@ -62,6 +64,20 @@ internal object GameplayParityGen3Checks {
             "0:1311694473,T=FINAL@0:1330905339", intArrayOf(-1549552070, 338527330)),
         Run(false, "gen-f0-hard-van", 1109619866, Difficulty.HARD, listOf("Pipaluk", "Nathan", "Berko"),
             "0:416945692,T=FINAL@0:1895871370", intArrayOf(154879888, -860568246)),
+        // Parity sweep W1: fresh 1.6.14 runs through all eight sectors (`.build/ps-w1/gen`, sessions w1-gen.json): each
+        // sector's exit taken in turn with the first sector choice, a ring and core at each sector's start.
+        Run(true, "w1-a-easy-ae", 1095616680, Difficulty.EASY, listOf("Graffin", "Weston", "Yeoz"), "0:610038512,1:607171880,3:233383395,6:1150577529,10:1811895725,12:2129567247,16:400496103,18:1645965456",
+            intArrayOf(509468389, -635515500, -1462028228, 1774986782, -1604133757, -40123248, -1236363836, -1737254515), intArrayOf(1503429345, -1772026003, -507049357, -972834419, 746770230, -387273180, 121545430, -1117597766)),
+        Run(false, "w1-b-normal-van", 1243028573, Difficulty.NORMAL, listOf("Scoops", "Dolan", "Starger"), "0:283983661,1:969555914,3:899527102,6:1163973318,10:464036119,13:1605217938,15:645699901,18:1199367285",
+            intArrayOf(-2009372232, -2582954, 316422923, -1625103880, -471437989, -1166475807, -1153345419, -1650676152), intArrayOf(-1680612637, 485878309, -1152850386, 1144066022, 2013187337, -381976841, -1004086126, -1268251025)),
+        Run(true, "w1-c-hard-ae", 1625308658, Difficulty.HARD, listOf("Fenn", "Dengler", "Johnson"), "0:865176223,1:31705367,3:582018995,7:1398063941,9:46489677,13:226417349,15:1168071026,19:1386858232",
+            intArrayOf(-2117852960, 1058414935, 1204005743, 2050602134, -1191842036, 1686840338, 598286420, 2029309792), intArrayOf(1094384764, -544988783, -1980327789, 615837927, 318521917, 262500816, 1578892192, 851062805)),
+        Run(false, "w1-d-easy-van", 1352910262, Difficulty.EASY, listOf("Lombard", "Will", "Dolan"), "0:997295072,1:74365162,3:302208761,7:1619624666,9:124593651,13:414791181,16:2092571585,20:1679894927",
+            intArrayOf(-1849534122, -1290602337, 1583665252, -1151321993, 1823238231, -961716212, -335366419, -1380155699), intArrayOf(1291773361, 1178182715, -1561353157, -1707256693, 1229613824, -1103885273, 1841392998, 55351717)),
+        Run(false, "w1-f-hard-van", 2078327366, Difficulty.HARD, listOf("Shirai", "Notch", "Weston"), "0:225573302,1:898573296,3:1852476078,7:800424239,10:604110177,12:1662690356,16:1118329006,18:1480022327",
+            intArrayOf(413394504, 863562541, -797253025, -172818069, 315399549, 1839664807, 386896795, -1347076933), intArrayOf(1462652349, -946355089, 1572878964, 199497702, -1268334089, 720776372, -1257366063, 151963636)),
+        Run(true, "w1-e-normal-ae", 1466886754, Difficulty.NORMAL, listOf("Jax", "Weston", "Giles"), "0:2059746764,1:1467293460,3:1704770897,7:457420908,9:343215191,12:399040945,16:1815891306,19:1802505817",
+            intArrayOf(613729440, 357024917, -657850346, 985316326, -1674871243, -421214015, 1623995812, -1194508819), intArrayOf(-1881709772, -91733656, -1395811588, -984677674, 1714356515, 1043799894, -107525843, 168178177)),
     )
 
     /** Native ship ending events (G1): the ship-event seed reseeds the stream, at the sector's level. */
@@ -574,6 +590,7 @@ internal object GameplayParityGen3Checks {
 
     private fun nativeMaps(state: InGameState): String {
         var maps = 0
+        var w1Runs = 0
         for (run in RUNS) {
             if (run.ae != state.content.enableAdvancedEdition) continue
             for ((n, text) in generateRun(state, run).withIndex()) {
@@ -582,14 +599,34 @@ internal object GameplayParityGen3Checks {
                 }
                 maps++
             }
+            val geo = run.geo ?: continue
+            w1Runs++
+            for ((n, sector) in generateSectors(state, run).withIndex()) {
+                val text = geometry(sector)
+                check(text.hashCode() == geo[n]) { "${run.sample} sector $n places or links differ from the native map:\n" + text.take(1500) }
+            }
         }
-        return "$maps native maps"
+        // The eight-sector runs come in both editions, so either mode compares some of them.
+        check(w1Runs > 0) { "No eight-sector native run for this edition" }
+        return "$maps native maps ($w1Runs eight-sector runs)"
     }
 
     /** The run's sectors, generated in order as one game, as [canonical] strings. */
     internal fun generateRun(state: InGameState, sample: String): List<String> = generateRun(state, RUNS.first { it.sample == sample })
 
-    private fun generateRun(state: InGameState, run: Run): List<String> {
+    private fun generateRun(state: InGameState, run: Run): List<String> = generateSectors(state, run).map { canonical(it) }
+
+    /** One line per beacon: index, place, then the sorted indices of its links. */
+    private fun geometry(sector: Sector): String {
+        val sb = StringBuilder()
+        for ((i, beacon) in sector.beacons.withIndex()) {
+            sb.append(i).append(':').append(beacon.pos.x).append(',').append(beacon.pos.y).append(':')
+            sb.append(beacon.neighbours.map { sector.beacons.indexOf(it) }.sorted().joinToString(",")).append('\n')
+        }
+        return sb.toString()
+    }
+
+    private fun generateSectors(state: InGameState, run: Run): List<Sector> {
         state.setDifficulty(run.difficulty)
         state.eventManager.resetEventState()
         state.eventCreator.usedNamesFixture = run.usedNames
@@ -605,7 +642,7 @@ internal object GameplayParityGen3Checks {
                 val (idx, layout) = step.split(":").map { it.toInt() }
                 map.generateSector(flat[idx], state, layout)
             }
-            canonical(sector)
+            sector
         }
     }
 

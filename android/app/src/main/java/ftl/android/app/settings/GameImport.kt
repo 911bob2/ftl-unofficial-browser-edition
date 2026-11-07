@@ -128,7 +128,7 @@ fun rememberGameImport(onChanged: () -> Unit): GameImportActions {
             for ((os, folder) in GUIDE_FOLDERS) Txt("$os: $folder", Ftl.small)
             Txt("Copy them to this device first (a USB cable, a cloud drive or a message to yourself), then choose them here. With Steam Cloud, start FTL once on the computer so the latest files are there.", Ftl.small)
             if (busy) Working()
-            if (SaveFileIo.count() >= Limits.SAVES) Txt("You have ${Limits.SAVES} saves, the most there can be. Delete one first.", Ftl.small.copy(color = Ftl.error))
+            if (SaveFileIo.count() >= Limits.SAVES) Txt(ftl.android.app.SaveWords.words("savesFull", "count" to Limits.SAVES.toString()), Ftl.small.copy(color = Ftl.error))
             problem?.let { Txt(it, Ftl.small.copy(color = Ftl.error)) }
         }
         picked?.let { p ->

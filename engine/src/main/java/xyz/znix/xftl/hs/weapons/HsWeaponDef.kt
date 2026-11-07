@@ -99,6 +99,7 @@ class HsWeaponDef(@JvmField val name: String) {
             if (dmg.crewSpawnChance == -1) dmg.crewSpawnChance = if (dmg.crewSpawns.isEmpty()) 0 else 10
             if (dmg.erosionChance == -1) dmg.erosionChance = if (hasErosion) 10 else 0
             if (hasCustomDamage) {
+                dmg.owner = def.name
                 dmg.giveId()
                 def.damage = dmg
             }
@@ -121,6 +122,8 @@ class HsText(@JvmField val data: String, @JvmField val isLiteral: Boolean) {
  */
 class HsDamageDef {
     @JvmField var idx = 0
+    /** The weapon blueprint whose tags made this definition; null for the default and for one a script made. */
+    @JvmField var owner: String? = null
     @JvmField var accuracyMod = 0
     @JvmField var droneAccuracyMod = 0
     @JvmField var noSysDamage = false
@@ -144,7 +147,7 @@ class HsDamageDef {
     class Node(val kind: Int, val element: Element)
     @JvmField val content = ArrayList<Node>()
 
-    /** Parsed by [HsWeapons.loadContent] once the HS crew content (races, stat boost ids) is loaded. */
+    /** Parsed by [HsWeapons.loadContent] in the original's blueprint order, before hyperspace.xml's crew content. */
     @JvmField var statBoostDefs: List<xyz.znix.xftl.hs.stat.StatBoostDefinition> = emptyList()
     @JvmField var roomStatBoostDefs: List<xyz.znix.xftl.hs.stat.StatBoostDefinition> = emptyList()
     @JvmField var crewSpawnDefs: List<xyz.znix.xftl.hs.crew.CrewSpawn> = emptyList()
@@ -168,6 +171,18 @@ class HsDamageDef {
         @JvmStatic
         fun reset() {
             defs.clear(); defs.add(DEFAULT)
+        }
+
+        /**
+         * A saved projectile's definition: the weapon's that made it when the save names one ([owner], the last parse of
+         * that name, as the blueprint that wins), else [defs] at the saved index as HS reads it
+         * (`customDamageDefs.at`). The index alone follows the order the blueprints were parsed in, which another mod
+         * order or an engine with another parse order changes.
+         */
+        @JvmStatic
+        fun saved(owner: String?, idx: Int?): HsDamageDef? {
+            if (owner != null) defs.lastOrNull { it.owner == owner }?.let { return it }
+            return idx?.let { defs.getOrNull(it) }
         }
     }
 }

@@ -26,6 +26,12 @@ object HS {
     /** The parsed `data/hyperspace.xml` while [active], else null. */
     @JvmField var config: HsConfig? = null
 
+    /**
+     * Hyperspace's start-up error boxes for this engine start ([HsConfig.errorBoxes]): the host shows them one at a time,
+     * as the system box "Error" with OK, before the first frame; the game waits until the last is dismissed.
+     */
+    @JvmField var errorBoxes: List<String> = emptyList()
+
     const val HYPERSPACE_XML = "data/hyperspace.xml"
 
     /** Hyperspace `<forceDlc enabled="true">`: Advanced Edition is always on and the hangar hides its toggle. */
@@ -41,7 +47,7 @@ object HS {
     fun init() {
         modded = BrowserMods.modded()
         active = false; luaActive = false
-        modSetHash = null; hsVersion = null; mods = emptyList(); scripts = emptyList(); config = null
+        modSetHash = null; hsVersion = null; mods = emptyList(); scripts = emptyList(); config = null; errorBoxes = emptyList()
         capability.clear()
         HsLoad.wrapped = 0
         HsLoad.wrappedLate = 0
@@ -67,6 +73,8 @@ object HS {
         }
         config = cfg
         cfg.versionMessage?.let { println("Hyperspace: $it"); BrowserDebug.warning("Hyperspace: $it") }
+        errorBoxes = cfg.errorBoxes.toList()
+        for (b in errorBoxes) println("Hyperspace error box: " + b.replace('\n', ' '))
         for (p in cfg.problems) unsupported("config", HYPERSPACE_XML, p)
         xyz.znix.xftl.hs.ship.HsShips.registerCapabilities()
         xyz.znix.xftl.hs.weapons.HsWeapons.registerImplemented()
@@ -134,7 +142,8 @@ object HS {
                 "\"purchaseLimit\":[${c.purchaseLimitFontSize},${c.purchaseLimitX},${c.purchaseLimitY}]," +
                 "\"systemNoPurchaseThreshold\":[${c.systemNoPurchaseThreshold},${c.systemNoPurchaseThresholdValue},${q(c.systemNoPurchaseThresholdReplace)}]," +
                 "\"savePrefix\":${q(c.savePrefix)},\"saveInheritMode\":${c.saveInheritMode},\"scripts\":${c.scripts.size}," +
-                "\"eventFiles\":${c.eventFiles.size},\"nodes\":{${c.nodes.entries.joinToString(",") { "${q(it.key)}:${it.value.size}" }}}}}"
+                "\"eventFiles\":${c.eventFiles.size},\"errorBoxes\":[${c.errorBoxes.joinToString(",") { q(it) }}]," +
+                "\"earlyStop\":${c.earlyStop},\"mainStop\":${c.mainStop},\"nodes\":{${c.nodes.entries.joinToString(",") { "${q(it.key)}:${it.value.size}" }}}}}"
         return "{\"modded\":$modded,\"hyperspace\":$active,\"lua\":$luaActive," +
             "\"modSet\":${modSetHash?.let(q) ?: "null"},\"hsVersion\":${hsVersion?.let(q) ?: "null"},\"config\":$cfgJson," +
             "\"xmlWrapped\":${HsLoad.wrapped},\"xmlWrappedLate\":${HsLoad.wrappedLate},\"unsupported\":[$items],\"byName\":[$byName],\"ignored\":[$ignored]}"

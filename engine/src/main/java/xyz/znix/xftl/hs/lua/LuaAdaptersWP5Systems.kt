@@ -134,9 +134,12 @@ object LuaAdaptersWP5Systems {
     @JvmStatic
     fun underAttack(s: AbstractSystem): Boolean = s.hsState?.underAttack ?: (s.hackedBy != null)
 
-    /** ShipSystem::GetMaxPower (iTempPowerCap clamps at powerState.second when above 7). */
+    /**
+     * ShipSystem::GetMaxPower (iTempPowerCap clamps at powerState.second when above 7). HS's hook (CustomCrew.cpp) first
+     * sets iTempPowerLoss from the current additionalPowerLoss, so a SHIP_LOOP addition counts here at once.
+     */
     private fun maxPower(s: AbstractSystem): Int {
-        var m = s.energyLevels - s.damagedEnergyLevels - s.scriptedPowerLoss - (s.hsExt?.appliedLoss ?: 0)
+        var m = s.energyLevels - s.damagedEnergyLevels - (s.hsExt?.liveLoss() ?: s.scriptedPowerLoss)
         s.scriptedPowerLimit?.let { m = min(m, it) }
         return max(0, m)
     }

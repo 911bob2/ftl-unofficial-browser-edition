@@ -102,9 +102,6 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         }
         val lines = ArrayList<String>()
 
-        // Properly calculate the effective system and crew damage.
-        val damage = Damage(blueprint)
-
         // Build all the weapon attributes that appear when hovering over it
 
         lines += translator["required_power"].replaceArg(blueprint.power)
@@ -144,14 +141,20 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         addChanceString(lines, "fire_chance", blueprint.fireChance)
         addChanceString(lines, "breach_chance", blueprint.breachChance)
         if(hangar==null || hangar.advancedEdition) addChanceString(lines, "stun_chance", blueprint.stunChance)
+        // WeaponBlueprint::GetDescription (1.6.14 0x605a80): ion damage, stun, then the blueprint's own personnel damage
+        // (only above 0, in hp) and system damage, not the hull damage they add in a hit (1.6.14 ps-w3-van s-h-weap1:
+        // Hull Laser I has no crew damage line).
         if (blueprint.ionDamage != 0) {
             lines += translator["ion_damage"].replaceArg(blueprint.ionDamage)
         }
-        if (damage.effectiveCrewDamage != 0 && (hangar==null || damage.effectiveCrewDamage != blueprint.damage*15)) {
-            lines += translator["personnel_damage"].replaceArg(damage.effectiveCrewDamage)
+        if (blueprint.stun != 0) {
+            lines += translator["stun_damage"].replaceArg(blueprint.stun)
         }
-        if (damage.effectiveSysDamage != blueprint.damage) {
-            lines += translator["system_damage"].replaceArg(damage.effectiveSysDamage)
+        if (blueprint.personnelDamage >= 1) {
+            lines += translator["personnel_damage"].replaceArg(blueprint.personnelDamage * 15)
+        }
+        if (blueprint.sysDamage != 0) {
+            lines += translator["system_damage"].replaceArg(blueprint.sysDamage)
         }
         if (blueprint.hullBust != 0) {
             lines += translator["double_damage"]
@@ -160,7 +163,21 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         drawDescriptionBox(blueprint.title, blueprint.desc, if(hangar==null) blueprint.tip else null, lines, INFO_HEIGHT_WEAPON)
     }
 
-    fun drawCrew(g: Graphics, info: LivingCrewInfo, skills: Boolean = true) {
+    fun drawCrew(g: Graphics, info: LivingCrewInfo, skills: Boolean = true, nativeLift: Boolean = true) {
+        // InfoBox::OnRender (1.6.9 0x54c710): a crew member's box with the skills (CrewStoreBox::SetInfoBox 0x518d20, the
+        // crew screen) is drawn 40 above the InfoBox's place, 323 wide like the item boxes (1.6.14 ps-w3-van s-h-crew1,
+        // u-h-crew1: 942..1265 from y 119). Desktop layout only; the hangar has its own box.
+        if (skills && hangar == null && !TouchMode.enabled && !xyz.znix.xftl.sys.PlatformSpecific.INSTANCE.isTouchUi) {
+            val (place, width) = position to customWidth
+            position = ConstPoint(place.x, place.y - if (nativeLift) 40 else 0)
+            customWidth = 323
+            try { drawCrewBoxes(g, info, skills) } finally { position = place; customWidth = width }
+            return
+        }
+        drawCrewBoxes(g, info, skills)
+    }
+
+    private fun drawCrewBoxes(g: Graphics, info: LivingCrewInfo, skills: Boolean) {
         val raceName = translator[info.race.title!!]
         val title = GameText.literal("${info.name} ($raceName)")
         val powers = info.race.powerStringIds.map { "-" + translator[it] }
@@ -297,12 +314,16 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
 
         if (tip != null) {
             val tipStr = translator[tip]
-            val tipLines = tipFont.wrapString(tipStr, panelWidth-30)
+            // InfoBox::CreateTipBox (1.6.14 0x55d980): the tip wraps in font 9 at the description's width + 2 and its frame
+            // is 323 wide (1.6.14 ps-w3-van s-h-weap1: "...a system or a subsystem." on two lines).
+            // Desktop layout only; the touch layout keeps its own.
+            val desktop = !TouchMode.enabled && !xyz.znix.xftl.sys.PlatformSpecific.INSTANCE.isTouchUi
+            val tipLines = tipFont.wrapString(tipStr, if (desktop) textWidth + 2 else panelWidth - 30)
 
             val tipY = position.y + height + 17
             val tipHeight = 31 + tipLines.size * 15
 
-            windowRenderer.render(position.x, tipY, panelWidth, tipHeight)
+            windowRenderer.render(position.x, tipY, if (desktop) 323 else panelWidth, tipHeight)
             touchBottom = max(touchBottom, tipY + tipHeight)
 
             var lineY = tipY + 27

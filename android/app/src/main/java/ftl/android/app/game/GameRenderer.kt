@@ -29,6 +29,8 @@ class GameRenderer(
     private var lastDropped: List<String> = xyz.znix.xftl.savegame.MissingContent.dropped
     val events = ConcurrentLinkedQueue<Runnable>()
     @Volatile var suspended = false
+    /** Hyperspace's start-up error box is up (HsErrorBox): no step and no frame, the screen stays black. */
+    @Volatile var held = false
     /** Frames drawn, for the debug console. */
     @Volatile var frames = 0L
 
@@ -112,6 +114,18 @@ class GameRenderer(
 
     fun onDrawFrame() {
         if (failed || !started) return
+        if (held) {
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            GLES30.glViewport(0, 0, viewW, viewH)
+            GLES30.glClearColor(0f, 0f, 0f, 1f)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            if (!readyReported) {
+                readyReported = true
+                onReady()
+            }
+            last = System.nanoTime()
+            return
+        }
         frames++
         val now = System.nanoTime()
         val dt = ((now - last).coerceAtLeast(0) / 1e9).coerceAtMost(0.05).toFloat()

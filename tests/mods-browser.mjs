@@ -172,7 +172,9 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     await page.waitForFunction(() => !document.getElementById('mods-preset-dialog').open, {}, {timeout: 60000});
     const order = () => page.evaluate(() => [...document.querySelectorAll('#mods-panel ol[aria-label="Mod load order"] .mod-row')].map(r => [r.querySelector('strong').textContent, r.dataset.enabled]));
     assert.deepEqual(await order(), [['F1 Content', 'true'], ['F1 Override', 'true']]);
-    assert.equal(await page.locator('#mods-set').textContent(), 'Id ' + setHash.slice(0, 12));
+    // The set's Id is written after the rows, once its hash is worked out (library.mjs render): wait for it.
+    await page.waitForFunction(id => document.getElementById('mods-set')?.textContent === id, 'Id ' + setHash.slice(0, 12), {timeout: 10000})
+      .catch(async () => assert.equal(await page.locator('#mods-set').textContent(), 'Id ' + setHash.slice(0, 12)));
     pass('the preset dialog lists the missing files, their size and source (MEGA named); Download enables the preset in order');
     const [onLabel, onWidth] = await width(presetButton);
     assert.deepEqual([offLabel, onLabel], ['Enable', 'Enabled']); assert.equal(onWidth, offWidth, 'Enable and Enabled have the same width');
@@ -332,7 +334,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     await page.locator('#save-rename-dialog-input').fill('Second voyage'); await page.locator('#save-rename-dialog-ok').click();
     await page.waitForFunction(id => document.querySelector(`#saves-list .save-row[data-id="${id}"] strong`)?.textContent === 'Second voyage', save2.id);
     await menu(contentOnly.id, 'delete');
-    assert.match(await page.locator('#save-delete-dialog').innerText(), /deleted in this browser and in your account|deleted from this browser/);
+    assert.match(await page.locator('#save-delete-dialog').innerText(), /deleted on this device and in your account|deleted from this device/);
     await page.locator('#save-delete-dialog-yes').click();
     await rowOf(contentOnly.id).waitFor({state: 'detached'});
     assert.equal(await hasModSave(hash1), false);
@@ -351,6 +353,17 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     const restored = await cloudSave(first.id);
     assert.equal(restored.revision, revisionBefore + 1); assert.equal(restored.run, (await page.evaluate(({id, r}) => fetch(`/api/saves/${id}/snapshots/${r}`).then(x => x.json()), {id: first.id, r: oldest})).run);
     pass('Recovery snapshots: one line each, the current one without Restore; Restore makes the chosen version the newest');
+    // A snapshot's Download is the backup format (schema 3) with the profile the snapshot holds, so its unlocks import too.
+    await menu(first.id, 'snapshots');
+    const snapshotRow = page.locator('#save-snapshots-dialog .snapshot-row').first();
+    await snapshotRow.waitFor();
+    const held = await page.evaluate(({id, r}) => fetch(`/api/saves/${id}/snapshots/${r}`).then(x => x.json()), {id: first.id, r: await snapshotRow.getAttribute('data-revision')});
+    const [file] = await Promise.all([page.waitForEvent('download'), snapshotRow.locator('button', {hasText: 'Download'}).click()]);
+    const backup = JSON.parse(await readFile(await file.path(), 'utf8'));
+    assert.equal(backup.schema, 3); assert.equal(backup.kind, 'ftl-save'); assert.equal(backup.run, held.run);
+    assert.equal(backup.profile, held.profile ?? null, 'the snapshot\'s profile is in the file');
+    await page.locator('#save-snapshots-close').click();
+    pass('a recovery snapshot downloads as a schema 3 backup with its run and profile (' + (typeof held.profile === 'string' ? 'a profile of ' + held.profile.length + ' characters' : 'this snapshot has none') + ')');
 
     // Play on a modded row: the enabled mods become that setup and its save launches.
     await saves();

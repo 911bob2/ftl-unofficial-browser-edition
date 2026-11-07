@@ -93,6 +93,8 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityCombat2Checks.run") { GameplayParityCombat2Checks.run(main, container) }
             step("GameplayParityCombat3Checks.run") { GameplayParityCombat3Checks.run(main, container) }
             step("GameplayParityWeapons6Checks.run") { GameplayParityWeapons6Checks.run(main, container) }
+            step("GameplayParityPsC3Checks.run") { GameplayParityPsC3Checks.run(main, container) }
+            step("GameplayParityPsC4Checks.run") { GameplayParityPsC4Checks.run(main, container) }
             vanillaStep("GameplayParityGen3Checks.run") { GameplayParityGen3Checks.run(main, container) }
             step("GameplayParityAudio3Checks.run") { GameplayParityAudio3Checks.run(main, container) }
             step("GameplayParityFlow3Checks.run") { GameplayParityFlow3Checks.run(main, container) }
@@ -104,14 +106,21 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityJump6Checks.run") { GameplayParityJump6Checks.run(main, container, graphics) }
             step("GameplayParityCursor7Checks.run") { GameplayParityCursor7Checks.run(main, container) }
             step("GameplayParityEscape7Checks.run") { GameplayParityEscape7Checks.run(main, container) }
+            step("GameplayParityPsW4Checks.run") { GameplayParityPsW4Checks.run(main, container) }
+            step("GameplayParityPsW1Checks.run") { GameplayParityPsW1Checks.run(main, container) }
+            step("GameplayParityPsW3Checks.run") { GameplayParityPsW3Checks.run(main, container) }
             step("GameplayParityAssets7Checks.run") { GameplayParityAssets7Checks.run(main, container, graphics) }
             step("GameplayParityCrew7Checks.run") { GameplayParityCrew7Checks.run(main, container) }
+            step("GameplayParityCrewC5Checks.run") { GameplayParityCrewC5Checks.run(main, container) }
             step("GameplaySave8Checks.run") { GameplaySave8Checks.run(main, container) }
+            step("GameplaySavePsS2Checks.run") { GameplaySavePsS2Checks.run(main, container) }
             step("GameplayParityCloak7Checks.run") { GameplayParityCloak7Checks.run(main, container, graphics) }
             step("GameplayParityVanillaNativeChecks.run") { GameplayParityVanillaNativeChecks.run(main, container) }
             step("GameplayParityLockdownShardChecks.run") { GameplayParityLockdownShardChecks.run(main, container) }
             step("GameplayWeapons17Checks.run") { GameplayWeapons17Checks.run(main, container, graphics) }
             step("GameplayWeaponBarChecks.run") { GameplayWeaponBarChecks.run(main, container) }
+            step("GameplayHudU1Checks.run") { GameplayHudU1Checks.run(main, container, graphics) }
+            step("GameplayParityPsB1Checks.run") { GameplayParityPsB1Checks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
@@ -435,7 +444,12 @@ object BrowserGameplayParityDiagnostics {
         player.cargoUpdated()
         val armoured = hits(50, 4000)
         check(armoured.first in 1580..1820 && armoured.second in 3300..3500) { "Rock armour hits $armoured" }
-        check(hits(100, 300).first == 300) { "Rock armour stopped a certain breach" }
+        // A certain breach (10) always breaches. In 1.6.14 it ends a Rock Plating proc, so the hull is hit too
+        // (DamageArea 0x4a6100); Hyperspace's DamageArea keeps the proc (CustomCrew.cpp; oracle ps-c3-dmg h-r10).
+        val certain = hits(100, 600)
+        check(certain.first == 600 && if (modded) certain.second in 430..560 else certain.second == 600) {
+            "Rock armour with a certain breach $certain"
+        }
 
         // Crystal Vengeance launches the real CRYSTAL_1 shard.
         val enemy = spawnCrewed(state)

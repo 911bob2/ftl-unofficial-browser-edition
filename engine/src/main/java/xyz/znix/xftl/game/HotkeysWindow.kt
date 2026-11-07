@@ -14,8 +14,8 @@ import xyz.znix.xftl.sys.Input
  * (0x005898c0) and drawn by ControlsScreen::OnRender (0x0058b110): a WindowFrame at
  * (130,112) 1089x500, four page tabs, and per page the native Settings hotkey lists
  * as 105x25 boxes in two columns from (480,150), 440 apart and 40px per row, with
- * their labels right-aligned 5px left of the box. Hotkeys the port has no action for
- * (event font size, power by system slot) open a Work in progress notice instead.
+ * their labels right-aligned 5px left of the box. Every native hotkey has its action (a page entry the port had no
+ * hotkey for would open a Work in progress notice instead).
  */
 class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window() {
     constructor(game: InGameState, close: () -> Unit) : this(SettingsContext(game), close)
@@ -265,6 +265,12 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
         close()
     }
 
+    /** Diagnostics (ps-u2): press the box of hotkey [name] (any page) and then [key], as a player does. */
+    fun diagnosticAssign(name: String, key: Int) {
+        listening = boxes.flatten().first { it.name == name }
+        onTextInput(key, 0.toChar())
+    }
+
     /** ControlsScreen's key handler (0x0058ada0): Escape cancels, shift keys are ignored. */
     override fun onTextInput(key: Int, c: Char): Boolean {
         notice?.let { return it.onTextInput(key, c) }
@@ -276,6 +282,9 @@ class HotkeysWindow(val game: SettingsContext, val close: () -> Unit) : Window()
         }
         if (key == Input.KEY_LSHIFT || key == Input.KEY_RSHIFT) return true
         val button = HotkeyButton.BY_KEY_ID[key] ?: return true
+        // Settings::SetHotkey (0x59eaf0): a key another hotkey has is taken from it (that one is left unbound).
+        for ((other, bound) in game.reverseHotkeyBindings)
+            if (bound === button && other !== box.hotkey) game.mainGame.profile.unbindKey(other)
         game.mainGame.profile.setKeybind(box.hotkey!!, button)
         listening = null
         game.updateHotkeyBindings()

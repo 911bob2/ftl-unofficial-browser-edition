@@ -4,6 +4,7 @@
 // is sent to the server except the new save, which syncs like any other.
 import {el} from './dialogs.mjs';
 import {SAVES_LIMIT} from './savecore.mjs';
+import {words} from './save-words.mjs';
 
 const MAX_FILE = 4 * 1024 * 1024;
 
@@ -56,7 +57,7 @@ export function importFromGame(ctx) {
     cancel.onclick = () => done(null);
     dialog.addEventListener('cancel', e => { e.preventDefault(); done(null); });
     const blocked = ctx.blocked();
-    service.rows().then(rows => { if (rows.length >= SAVES_LIMIT && !finished) { note.textContent = `An account has at most ${SAVES_LIMIT} saves. Delete one first.`; } }).catch(() => {});
+    service.rows().then(rows => { if (rows.length >= SAVES_LIMIT && !finished) { note.textContent = words('savesFull', {count: SAVES_LIMIT}); } }).catch(() => {});
     if (blocked) { note.textContent = blocked; choose.classList.add('btn-disabled'); input.disabled = true; }
 
     input.addEventListener('change', async () => {

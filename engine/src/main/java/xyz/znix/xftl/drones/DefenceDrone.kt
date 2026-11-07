@@ -280,8 +280,11 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
 
     private fun canTakeLocked(candidate: Any): Boolean {
         // 0x4210d0: the target we last locked onto is skipped,
-        // unless we are an anti-drone (blueprint target type 3).
-        return candidate !== lockedTarget || type.defenceTarget == DRONES_TARGET
+        // unless we are an anti-drone (blueprint target type 3). Hyperspace's
+        // DefenseDrone::SetWeaponTarget (CustomDrones.cpp) also lets any drone
+        // target (class 3) be taken again: ALL and SOLID drones keep firing at it.
+        if (candidate !== lockedTarget || type.targetType == 3) return true
+        return xyz.znix.xftl.hs.HS.active && candidate is AbstractExternalDrone
     }
 
     private fun replaces(currentClass: Int, candidateClass: Int): Boolean {
@@ -317,16 +320,12 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
     /**
      * DefenseDrone::ValidTargetObject (0x421020): the blueprint's target type
      * against the target's class. The default type takes missiles, asteroids
-     * and pods, LASERS adds lasers, DRONES takes drones and pods.
+     * and pods, LASERS adds lasers, DRONES takes drones and pods. Hyperspace's
+     * hook (CustomDrones.cpp) adds ASTEROIDS (asteroids only), SOLID (anything
+     * but lasers: its case falls through to ALL's) and ALL (any target but a
+     * ship or class 5).
      */
-    private fun isValidClass(targetClass: Int): Boolean {
-        return when (type.defenceTarget) {
-            DRONES_TARGET -> targetClass == CLASS_DRONE || targetClass == CLASS_POD
-            OMNI_TARGET -> true
-            LASERS_TARGET -> targetClass != CLASS_DRONE
-            else -> targetClass == CLASS_MISSILE || targetClass == CLASS_ASTEROID || targetClass == CLASS_POD
-        }
-    }
+    private fun isValidClass(targetClass: Int): Boolean = validTargetClass(type.targetType, targetClass)
 
     /**
      * The aiming part of DefenseDrone's loop (0x4277b0).
@@ -578,15 +577,15 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
     companion object {
         const val LASER_SERIALISATION_TYPE = "defenceDroneLaser"
 
-        // The target type used by defence 2 drones, this also shoots
-        // at asteroids/missiles.
-        private const val LASERS_TARGET = "LASERS"
-
-        // Used by anti-drones, this only fires at drones.
-        private const val DRONES_TARGET = "DRONES"
-
-        // Used by certain drones in Multiverse that can target solid projectiles, lasers and drones
-        private const val OMNI_TARGET = "ALL"
+        /** [isValidClass] for a blueprint target type (DroneBlueprint.targetType) and a Targetable class. */
+        internal fun validTargetClass(targetType: Int, targetClass: Int): Boolean = when (targetType) {
+            3 -> targetClass == CLASS_DRONE || targetClass == CLASS_POD
+            4 -> targetClass != CLASS_DRONE && targetClass != CLASS_OTHER
+            2 -> targetClass == CLASS_ASTEROID
+            5 -> targetClass != CLASS_LASER && targetClass != CLASS_OTHER
+            6 -> targetClass != CLASS_OTHER
+            else -> targetClass == CLASS_MISSILE || targetClass == CLASS_ASTEROID || targetClass == CLASS_POD
+        }
 
         // The Targetable classes the original stores in its projectiles and drones
         // (Missile ctor 0x451900, LaserBlast::OnInit, SpaceDrone ctor 0x426930,

@@ -82,10 +82,17 @@ class LanguageChooser(
 
 /** What follows a language choice: Settings::language, TextLibrary::SetLanguage and the language's fonts. */
 object LanguageSwitch {
+    /**
+     * [persist] false: the console's LANG, TextLibrary::SetLanguage alone (CommandGui::RunCommand): the texts, fonts and
+     * language images switch, the chosen language (Settings::language) stays for the next start.
+     */
     @JvmStatic
-    fun apply(main: MainGame, code: String) {
-        main.profile.language = code
-        main.profile.markDirty()
+    @JvmOverloads
+    fun apply(main: MainGame, code: String, persist: Boolean = true) {
+        if (persist) {
+            main.profile.language = code
+            main.profile.markDirty()
+        }
         Languages.select(code)
         main.gameContent.translator.setLanguage(code)
         // CommandGui::OnLanguageChange: SystemControl lays its boxes out again (the subsystems label's

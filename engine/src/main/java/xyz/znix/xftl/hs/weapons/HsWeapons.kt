@@ -56,32 +56,53 @@ object HsWeapons {
 
     /**
      * The weapons' stat boosts and crew spawns (ProcessWeaponBlueprint's ParseStatBoostNode / ParseCrewSpawn), parsed
-     * once the HS crew content is loaded (after hyperspace.xml's crew and augments, as HS parses hyperspace.xml before
-     * the blueprints): blueprint order, each weapon's nodes in document order.
+     * as the original builds the weapons: every weapon blueprint in LoadBlueprints order (CApp::OnExecute, 1.6.9
+     * 0x403700, runs it before AchievementTracker::LoadAchievementDescriptions, where HS parses hyperspace.xml's crew
+     * and augments), each weapon's nodes in document order. So a `save=` of an earlier weapon is there for a later
+     * weapon's `load=` and for hyperspace.xml's, and the weapons' realBoostIds come first. Called by
+     * HsCrewContent.load after its reset, before the crew.
      */
     @JvmStatic
     fun loadContent(blueprints: xyz.znix.xftl.BlueprintManager) {
         if (!HS.active) return
         HsDrones.reset()
+        val sb = xyz.znix.xftl.hs.stat.StatBoostDefs
+        val created = java.util.IdentityHashMap<HsDamageDef, List<xyz.znix.xftl.hs.stat.StatBoostDefinition>>()
         val seen = java.util.IdentityHashMap<HsDamageDef, Boolean>()
+        for (bp in blueprints.hsWeaponsInLoadOrder()) {
+            val def = bp.hs?.damage ?: continue
+            if (def === HsDamageDef.DEFAULT || seen.put(def, true) != null) continue
+            val first = sb.defs.size
+            parseContent(def)
+            created[def] = ArrayList(sb.defs.subList(first, sb.defs.size))
+        }
+        sb.weaponEnd = sb.defs.size
+        // The browser's earlier saves numbered the weapons' definitions in the blueprint map's order.
+        val legacy = ArrayList<xyz.znix.xftl.hs.stat.StatBoostDefinition>()
+        val seenLegacy = java.util.IdentityHashMap<HsDamageDef, Boolean>()
         for (bp in blueprints.blueprints.values) {
             val def = (bp as? AbstractWeaponBlueprint)?.hs?.damage ?: continue
-            if (def === HsDamageDef.DEFAULT || seen.put(def, true) != null) continue
-            val stat = ArrayList<xyz.znix.xftl.hs.stat.StatBoostDefinition>()
-            val room = ArrayList<xyz.znix.xftl.hs.stat.StatBoostDefinition>()
-            val spawns = ArrayList<xyz.znix.xftl.hs.crew.CrewSpawn>()
-            for (n in def.content) when (n.kind) {
-                HsDamageDef.STAT -> stat += xyz.znix.xftl.hs.stat.StatBoostDefs.parse(n.element,
-                    xyz.znix.xftl.hs.stat.StatBoostDefinition.BoostSource.AUGMENT, false)
-                HsDamageDef.ROOM_STAT -> room += xyz.znix.xftl.hs.stat.StatBoostDefs.parse(n.element,
-                    xyz.znix.xftl.hs.stat.StatBoostDefinition.BoostSource.AUGMENT, true)
-                HsDamageDef.SPAWN -> spawns += xyz.znix.xftl.hs.crew.CustomCrewManager.parseCrewSpawn(n.element, false)
-                HsDamageDef.SPAWN_DROPPED -> xyz.znix.xftl.hs.crew.CustomCrewManager.parseCrewSpawn(n.element, false)
-            }
-            def.statBoostDefs = stat
-            def.roomStatBoostDefs = room
-            def.crewSpawnDefs = spawns
+            if (def === HsDamageDef.DEFAULT || seenLegacy.put(def, true) != null) continue
+            created[def]?.let { legacy.addAll(it) }
         }
+        sb.legacyWeaponOrder = legacy
+    }
+
+    private fun parseContent(def: HsDamageDef) {
+        val stat = ArrayList<xyz.znix.xftl.hs.stat.StatBoostDefinition>()
+        val room = ArrayList<xyz.znix.xftl.hs.stat.StatBoostDefinition>()
+        val spawns = ArrayList<xyz.znix.xftl.hs.crew.CrewSpawn>()
+        for (n in def.content) when (n.kind) {
+            HsDamageDef.STAT -> stat += xyz.znix.xftl.hs.stat.StatBoostDefs.parse(n.element,
+                xyz.znix.xftl.hs.stat.StatBoostDefinition.BoostSource.AUGMENT, false)
+            HsDamageDef.ROOM_STAT -> room += xyz.znix.xftl.hs.stat.StatBoostDefs.parse(n.element,
+                xyz.znix.xftl.hs.stat.StatBoostDefinition.BoostSource.AUGMENT, true)
+            HsDamageDef.SPAWN -> spawns += xyz.znix.xftl.hs.crew.CustomCrewManager.parseCrewSpawn(n.element, false)
+            HsDamageDef.SPAWN_DROPPED -> xyz.znix.xftl.hs.crew.CustomCrewManager.parseCrewSpawn(n.element, false)
+        }
+        def.statBoostDefs = stat
+        def.roomStatBoostDefs = room
+        def.crewSpawnDefs = spawns
     }
 
     // ---------------------------------------------------------------- missiles

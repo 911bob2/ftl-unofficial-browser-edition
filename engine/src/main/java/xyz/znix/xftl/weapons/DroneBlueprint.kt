@@ -38,13 +38,27 @@ class DroneBlueprint(xml: Element) : Blueprint(xml) {
     /** DroneBlueprint::level (`<level>`, 1 when absent). */
     val level: Int = xml.nativeInt("level") ?: 1
 
-    /** DroneBlueprint::targetType from `<target>`: LASERS 4, DRONES 3, ALL 6, otherwise 1 (wp4-drone-body oracle, HS 1.6.9 + MV). */
-    val targetType: Int = when (xml.getChildTextTrim("target")) {
-        "LASERS" -> 4
-        "DRONES" -> 3
-        "ALL" -> 6
-        else -> 1
-    }
+    private val xmlTargets: List<String> = xml.getChildren("target").map { it.textTrim }
+
+    /**
+     * DroneBlueprint::targetType from `<target>`: LASERS 4, DRONES 3, otherwise 1 (wp4-drone-body oracle, HS 1.6.9 +
+     * MV). Hyperspace's ProcessDroneBlueprint hook (CustomDrones.cpp) then goes through every `<target>`: ASTEROIDS 2,
+     * SOLID 5, ALL 6.
+     */
+    val targetType: Int
+        get() {
+            var t = when (defenceTarget) {
+                "LASERS" -> 4
+                "DRONES" -> 3
+                else -> 1
+            }
+            if (xyz.znix.xftl.hs.HS.active) for (text in xmlTargets) when (text) {
+                "ASTEROIDS" -> t = 2
+                "SOLID" -> t = 5
+                "ALL" -> t = 6
+            }
+            return t
+        }
     var weaponBlueprint: AbstractWeaponBlueprint? = null
         private set
 

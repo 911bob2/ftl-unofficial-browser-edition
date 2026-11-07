@@ -298,19 +298,23 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
         }
     }
 
-    // 0x4a6a90: seven LASER_HEAVY_1 shots at random rooms.
+    // ShipManager::PrepareSuperBarrage (1.6.14 0x4a6a90, 1.6.9 0x492890): seven LASER_HEAVY_1 shots, each from the
+    // middle of the ship (ShipGraph::center) with a heading of random32() % 360, so they burst out in all directions,
+    // aimed at a random room centre of the target (GetRandomTargettingPoint(false), drawn first), and each with its
+    // own launch sound.
     private fun laserSurge(ship: Ship) {
         // Hyperspace PrepareSuperBarrage hook: the <boss> barrage replaces the seven heavy lasers.
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsBoss.barrageDef("")?.let { xyz.znix.xftl.hs.ship.HsBoss.prepareSuperBarrage(game, ship, it); return }
         val laser = game.blueprintManager["LASER_HEAVY_1"] as xyz.znix.xftl.weapons.LaserBlueprint
+        val target = game.getEnemyOf(ship) ?: game.player
+        if (target.rooms.isEmpty() || ship.rooms.isEmpty()) return
+        val origin = xyz.znix.xftl.hs.ship.HsBoss.shipCentre(ship)
         repeat(7) {
-            val target = game.player.rooms.random(ftl.browser.BrowserRandom)
-            val shot = laser.LaserProjectile(target)
-            val spawnPos = ship.rooms.random(ftl.browser.BrowserRandom).pixelCentre
-            shot.setInitialPath(spawnPos, spawnPos + ship.weaponFireDirection * 5000)
-            ship.projectiles.add(shot)
+            val room = target.rooms[ftl.browser.BrowserRandom.nextInt(target.rooms.size)]
+            val heading = ftl.browser.BrowserRandom.nextInt(360)
+            xyz.znix.xftl.hs.ship.HsBoss.launch(ship, laser.LaserProjectile(room), origin, heading)
+            laser.launchSounds?.get()?.play()
         }
-        laser.launchSounds?.get()?.play()
     }
 
     // 0x49cb50 -> Shields::PowerSuperShields (0x631810): a 12-point super shield.

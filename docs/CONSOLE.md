@@ -156,8 +156,10 @@ are Hyperspace's and the original game's (HS 1.23.2 `CommandConsole::RunCommand`
 the others run in vanilla too, on vanilla's data: `SYS` takes a free room of the layout (the original's AddSystem),
 `LOADEVENT` and `EVENT` load the base event (no aliases or load lists), `ACH` unlocks a vanilla achievement at the run's
 difficulty, `GOD` sets the reactor to the ship's maximum (HS: the ship definition's), `SPEED` steps through CFPS while n
-is not 0. The original's `LOAD`, `INDEX`, `SECTOR`, `LANG`, `LOADTEXT`, `CLEAR_ONLINE_ACH` and `SHIP <name>` are not
-ported.
+is not 0. The original's `LANG` (TextLibrary::SetLanguage, not saved) and `SHIP <name>`
+(ScoreKeeper::UnlockShip with its popup) are ported (parity sweep U2), and its `LOAD` (WorldManager::CheckLoadEvent:
+`LOAD <event>` as `EVENT`, `LOAD <ship blueprint> <sector>` a hostile ship built for that sector; parity sweep U2b, our
+checkpoint command is `dev-load` now); `INDEX`, `SECTOR`, `LOADTEXT` and `CLEAR_ONLINE_ACH` are not ([ORIGINAL_BEHAVIOR.md](ORIGINAL_BEHAVIOR.md#keys-hotkeys-and-the-console-parity-sweep-u2-2026-11-06)).
 
 <!-- generated: ConsoleReference.markdown, see ConsoleTest -->
 
@@ -174,10 +176,10 @@ ported.
 | --- | --- | --- |
 | `dev-rich` | Set scrap to 5000 and fuel, drone parts and missiles to 99 |  |
 | `dev-poor` | Set scrap, fuel, drone parts and missiles to 0 |  |
-| `RICH` | +9999999 scrap, +800 fuel, drone parts and missiles (missiles need a weapons system) |  |
+| `RICH` | +9999999 scrap, +800 fuel, drone parts and missiles (the original without Hyperspace: +1999 scrap, +80 of the rest; missiles need a weapons system) |  |
 | `POOR` | -9999999 scrap, -800 fuel, drone parts and missiles (none below 0) |  |
 | `SCRAP <n>` | Add n scrap (negative takes it away, none below 0) | `SCRAP 100`, `SCRAP -50` |
-| `FUEL <n>` | Add n fuel | `FUEL 10` |
+| `FUEL <n>` | Add n fuel (none below 0) | `FUEL 10` |
 | `MISSILES <n>` | Add n missiles (with a weapons system; none below 0) | `MISSILES 10` |
 | `DRONES <n>` | Add n drone parts (none below 0) | `DRONES 10` |
 | `HULL <n>` | Repair n hull points, up to the maximum | `HULL 10` |
@@ -255,7 +257,8 @@ ported.
 | `LOADEVENT <event>` | Load an event here now (used events too) | `LOADEVENT STORE_FUEL` |
 | `CREDITS` | Win the run: the victory screen |  |
 | `VICTORY` | Same as CREDITS |  |
-| `EVENT <event>` | This beacon's event replaced by <event>, shown as on arrival | `EVENT STORE_FUEL` |
+| `EVENT <event>` | This beacon's event replaced by <event>, shown as on arrival | `EVENT REPAIR_STATION` |
+| `LOAD <event>\|<ship blueprint> <sector>` | LOAD <event>: as EVENT. LOAD <ship blueprint or list> <sector>: this beacon cleared and a hostile ship of that blueprint built for that sector (0 is the first; an unknown blueprint gives the default ship) | `LOAD REPAIR_STATION`, `LOAD SHIPS_PIRATE 3`, `LOAD MANTIS_FIGHTER 0` |
 
 ### Profile: ships and achievements
 
@@ -266,7 +269,7 @@ ported.
 | `ship-unlock ship difficulty` | Set the difficulty a ship family's unlock quest was completed with | `ship-unlock PLAYER_SHIP_CIRCLE NORMAL` |
 | `ship-lock ship` | Un-completes a ship unlock quest |  |
 | `layout-unlock ship difficulty` | Unlock an official ship layout | `layout-unlock PLAYER_SHIP_HARD_2 EASY` |
-| `SHIP ALL` | SHIP ALL: unlock every ship and layout for good (profile) | `SHIP ALL` |
+| `SHIP ALL\|<ship>` | SHIP ALL: unlock every ship and layout for good (profile); SHIP <ship>: one original layout by its blueprint name, as written (PLAYER_SHIP_HARD, _2 for B, _3 for C), with its popup | `SHIP ALL`, `SHIP PLAYER_SHIP_HARD_2` |
 | `SHIP_CUSTOM <ship>` | Unlock a mod ship for good (profile) (needs Hyperspace) |  |
 | `SHIP_CUSTOM_LOCK <ship>` | Lock a mod ship again (profile) (needs Hyperspace) |  |
 | `METAVAR <name> [value]` | Set a mod's profile variable (needs Hyperspace) | `METAVAR prof_test 1` |
@@ -295,7 +298,7 @@ ported.
 | `save-load` | Save the game to XML, and load it back in. |  |
 | `gc` | Manually trigger Java's Garbage Collector. |  |
 | `save name` | Save a named browser checkpoint: save name | `save before-boss` |
-| `load name` | Load a named browser checkpoint: load name | `load before-boss` |
+| `dev-load name` | Load a named browser checkpoint: dev-load name | `dev-load before-boss` |
 | `download` | Download the current run as an XML checkpoint |  |
 | `import` | Choose and import a browser XML checkpoint |  |
 | `inspect` | Inspect current input, UI, weapons, RNG and recording state |  |
@@ -303,6 +306,7 @@ ported.
 | `reload-console` | Reload the console (useful with Java HotSwap) |  |
 | `reload-flags` | Reload the debug flags (useful with Java HotSwap) |  |
 | `help [search]` | The command reference: every command by group, with its usage, what it does and examples. Type after help to search it; tap or click a command to fill it in | `help`, `help get` |
+| `LANG <language>` | Switch the game's language (en, de, es, fr, it, pl, pt, ru, ja, zh-Hans or a mod's own) until the game restarts | `LANG de`, `LANG en` |
 
 <!-- end of the generated reference -->
 
@@ -320,6 +324,7 @@ Where both consoles had a name, Hyperspace's (or the original's) command kept it
 | `event` | `EVENT <name>`: ClearLocation, a new scene, the event as an arrival | `dev-event`: a search, the event shown over the beacon |
 | `kill` | `KILL <crew name>` | `dev-kill`: destroys the enemy ship |
 | `skill` | `SKILL`: masters every skill of every player crew member | `dev-skill <skill> [count]`: points for one |
+| `load` | `LOAD <event>` or `LOAD <ship blueprint> <sector>` (the original's) | `dev-load <name>`: a named browser checkpoint |
 | `scrap`, `fuel`, `missiles`, `drones`, `crew` | the original's | ours did the same (ours let resources go below 0): gone, the original's keeps our completion |
 
 ## Profile changes and the cloud

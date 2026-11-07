@@ -84,8 +84,8 @@ bottom right corner; the case list keeps at least 8rem (about four rows) when th
 - **Hyperspace core / gameplay** and **Multiverse core, weapons & drones, systems, crew, hazards, Lua, gameplay** run when
   this browser's mod library holds the catalogue preset's files (Hyperspace 1.23.2; Hyperspace plus both Multiverse
   files), found by SHA-256; nothing is downloaded or added. Without them they are disabled with a note and left out of
-  All tests. The merge is the Play page's (`prepareModdedLaunch`, its cache included). Core is `hsCoreProbe` (with
-  Multiverse also its `hyperspace.xml` values), weapons/systems/crew/hazards the parts of `tests/hs-weapons.mjs`,
+  All tests. The merge is the Play page's (`prepareModdedLaunch`, its cache included). Core is `hsCoreProbe` (the loader rules of
+  [mods](MODS.md#what-the-loaders-accept) on names of its own, the hyperspace.xml errors of [HYPERSPACE.md](HYPERSPACE.md) (also `HsConfigErrorsTest`, Android), the gate and saves; with Multiverse also its `hyperspace.xml` values), weapons/systems/crew/hazards the parts of `tests/hs-weapons.mjs`,
   `hs-systems.mjs`, `hs-crewui.mjs` and `hs-wp1.mjs` that need nothing but the mod files, Lua `hsLuaProbe`, and gameplay
   the vanilla probes again on the mod's data, each on a fresh engine (the packaged `p-F2-*`/`p-F3-*` modes). In a
   packaged fixture the preloaded mod session (`mod-session-preload.mjs`) stands for the library.
@@ -246,6 +246,19 @@ does not consume simulation RNG or alter serialized gameplay state. Screen shake
 has a separate cosmetic random source. These cases exposed an actual dependence
 of gameplay RNG on drawing frequency, now fixed.
 
+## Saves on both platforms
+
+The save questions and the list line are one text on the website and in the Android launcher: `web/save-words.mjs` and
+`SaveWords.kt`, compared by `SaveWordsTest` (Android unit tests, also the stock ship names and the list line of
+`web/saves-ui.mjs`). The website's flows run in `saves-client.mjs` (unit), `saves-browser.mjs` and `mods-browser.mjs`
+(menus; the latter also checks that a recovery snapshot downloads as a schema 3 backup with its profile), the server's in
+`saves-v2.mjs` (security). The launcher's flows are checked on the emulator against a disposable local server container
+(`docker run -p 127.0.0.1:8097:8080 -e ASPNETCORE_ENVIRONMENT=Development -e PUBLIC_ORIGIN=http://localhost:8097 ...` through
+docker-slot, `adb reverse tcp:8097 tcp:8097`, server address `http://localhost:8097` in the debug build) with a host script as
+the other device (log in, list, delete, lock, fill the account): Create an account, a save deleted elsewhere with unsynced
+progress (Upload again), Delete while another device holds the lock (Delete anyway), Delete offline (nothing deleted), and a
+new save the full account refuses ("Not synced: ..."). The 2026-11-06 rig and screenshots: `.build/hs/reports/ps-a2.md`.
+
 ## Saves from the original game
 
 `tests/native-import.mjs` (in the image, through `.build/hs/prod-int/t.sh <label> vanilla|F2|F3 native-import.mjs -e
@@ -261,6 +274,24 @@ Multiverse from `tools/hs-oracle/` sessions that play a few beacons and Save and
 Python reader of the format and, for Hyperspace, the oracle tracer's last `state` line. `NATIVE_SAVES=<dir> ./gradlew
 :savecore:test` identifies and checks every original file below `<dir>`. The 2026-11 set and its sessions are in
 `.build/hs/save-tools/` (report: `.build/hs/reports/save-tools.md`).
+
+## Saves and Continue (engine)
+
+The gameplay-parity mode (vanilla, F2, F3) saves and loads live games, one state at a time. `GameplayParityShell6Checks`
+compares a digest of the live objects before and after (idle, an open event box, combat with shots in flight, fires,
+breaches, boarders, drones, hacking, mind control, cloak, the ASB between two shots, a jump in progress: every save
+completes it). `GameplaySavePsS2Checks` (parity sweep S2): an enemy saved mid-escape and mid-`<instantEscape>` goes on
+leaving, an event box opening autosaves (and the box a load brings back does not), a crew member mid-teleport arrives,
+a shot charged and aimed while paused leaves, an artillery burst saved between two shots finishes, two saves in a row
+are one save and draw nothing, a save made while the ship breaks up ends in the game over, a save naming a missing
+augment, weapon and crew race loads without them and lists them, a sun's and a pulsar's timers come back as saved,
+and (Hyperspace) a projectile's custom damage comes back by its weapon's name. The clone queue is in the progress mode (`BrowserRunStatisticsDiagnostics`), a volley and a
+beam at a destroyed ship in `GameplaySave8Checks`, Hyperspace runs reloaded at every beacon in `reload-F2`/`reload-F3`.
+
+Native rows: `tools/native-capture/sessions/ps-s2-native.json` (`.build/hs/sweep/vanilla/run.sh`): Continue of
+`run-cx.sav` with the HUD every 0.25 s (`s2-cx`, its browser twin through `tools/ui-capture.sh`), the autosave of an
+event box opened after Continue (`s2-ev`: `continue.sav` holds the event) and none without one (`s2-ld`: the load
+deleted the file and nothing wrote it in 6 s).
 
 ## Engine modes on a modded fixture
 
@@ -292,6 +323,112 @@ cooldown modifier` pixels on desktop and in the touch slot (22 instead of 33 in 
 icon view draws it), the touch frame is as tall as that bar (so a full bar fills it), and the bar takes the box's colour unless the weapon is aimed. It also checks that a save and load keep each
 weapon's charge, charged state and power, and that weapons charge with no ship at the beacon. The native numbers come from
 the Multiverse oracle (`.build/hs/reports/weapons-reload.md`): Burst I 27 px and Defense Laser 20 px when manned.
+
+`gameplay-parity`'s `GameplayParityCombatRulesChecks` and `GameplayParityShipRulesChecks` hold power and ship-interior rules of the original (parity sweep
+C1): an ion hit takes shield bars one at a time (an odd bar stays on) and the bars climb
+back to the player's choice once the lock ends; damage keeps that choice until the repair; the evasion table by engine
+power, with a pilot and on autopilot; the clone bay's jump heal by its level less damage, not ion; an arrival after a
+safe beacon ends the ion locks of shields, engines, weapons and piloting; a fire burns out below 11% oxygen in vanilla
+(a whole percent) and at 10% under Hyperspace. `hs-systems` checks that a hacking pulse keeps the temporal system from
+starting and that a target ship at hull 0 keeps its dilation. The oracle sessions in
+`tools/hs-oracle/sessions/ps-c1-power.json` (probe `hs_oracle/ps-c1.lua`) dump power, health, locks, evasion and
+`additionalPowerLoss` per step for `sweep/twin/run.sh`.
+
+`gameplay-parity`'s `GameplayParityCrewC5Checks` holds the crew rules of parity sweep C5: boarders left on an enemy whose
+crew is dead come home to the piloting room with the CREW_STUCK box when no crew of the player's is at home and the
+player's teleporter has no health (WorldManager::OnLoop), on the first loop after the crew-kill box closes; not while
+the enemy is hostile, and not while the teleporter has a bar.
+
+`gameplay-parity`'s `GameplayParityPsB1Checks` (parity sweep B1, vanilla, F2 and F3) fires one volley of Flak I, Flak II
+and Adv. Flak (and, under Hyperspace, up to twelve of the mod's flak guns) from the player and Flak I from the enemy, and
+wants every piece in the target's space, aimed within the blueprint radius of the room and reaching its point (under
+Hyperspace all pieces but one used to fly off). It also loads NEBULA_REBEL and wants both ships' sensors capped at 0
+(StatusEffect::GetNebulaEffect), their bars crossed, the icon grey and no crew-slot icon, as the original's box shows in a
+nebula. The native sides: `tools/native-capture/sessions/ps-b1-van.json` (1.6.14: a Flak I volley, a nebula beacon's
+system boxes) and `tools/hs-oracle/sessions/ps-b1.json` (HS and MV: probe `hs_oracle/ps-b1.lua` logs each piece's
+target and the sensors' power cap in the nebula).
+
+`gameplay-parity`'s `GameplayParityPsC3Checks` holds the hit rules of ShipManager::DamageArea and DamageSystem (parity
+sweep C3, vanilla and mods): a certain breach (breachChance 10) under a Rock Plating proc breaches, and in vanilla also
+ends the proc (hull damage, its number), under Hyperspace keeps it (RESIST); a 9-in-10 breach under a proc is stopped with
+RESIST, the system number shows under a proc, a System Casing proc keeps the system's bars and shows RESIST in place of the
+hull number (for system damage only and on a destroyed system as each mode does), and a chain boost on personnel damage
+adds whole crew units. The rock-armour statistics step counts 600 certain breaches: all hit the hull in vanilla, about 83%
+under Hyperspace. `hs-weapons` units' "stat boost load order" checks that the
+weapons' `<statBoosts>` load in the original's blueprint order before hyperspace.xml (no unresolved `load=`, an authored
+boss-file weapon loading a dlc-file save). The oracle session `tools/hs-oracle/sessions/ps-c3.json` (`ps-c3-dmg`, probe
+`hs_oracle/ps-c3.lua`) counts 300 forced DamageArea hits per case on the player's ship (hull and system hits, breaches)
+with and without Rock Plating and System Casing, for `sweep/twin/run.sh`.
+
+`gameplay-parity`'s `GameplayParityPsC4Checks` holds drone rules (parity sweep C4, vanilla and mods): the defence drone
+target types (`<target>` LASERS, DRONES, and under Hyperspace ASTEROIDS, SOLID, ALL) and the Targetable classes each
+accepts (DefenseDrone::ValidTargetObject and Hyperspace's hook); the ion intruder's pulse as an area hit (3 ion locks the
+system 15 s, the stun reaches only crew not of the drone's ship); the player's boarding drone when the fight ends with
+the other ship still there, in flight and landed (undeployed with no rebuild time, its part back under Hyperspace's
+BOARDER_RECOVERY, which Multiverse ships carry); the crew drone light colours. The native frame pair session
+`tools/native-capture/sessions/ps-c4-drones.json` (`c4v-d`: a repair and an anti-personnel drone on the Kestrel, paused
+and running, on and off) runs with `sweep/vanilla/run.sh` against `tools/ui-capture.sh`.
+
+`interaction`'s probe starts with `GameplayParityPsU2Checks` (parity sweep U2, vanilla and mods): every hotkey of the
+original's Settings::ResetHotkeys with its default key, a key taken from another hotkey leaving it unbound, the
+power_<n> / un_power_<n> keys on the bar's n-th powered
+system (Shift takes power away), no key while the ship jumps (Space, Escape, U), Space over the event box setting the
+pause that outlasts the box (not over the ship window), the crew name's cursor (Left, Home, Delete, End, Backspace,
+typing at the cursor), the "no stations" crew message, the console's FUEL floor at 0, RICH's amounts, LANG's code and SHIP <layout>,
+the armament box hotkeys of Hyperspace's AdditionalWeaponSlots.cpp (past four weapons, without weapons, past six drones),
+and under Hyperspace the wheel over the upgrades tab turning the crew list page. A prepared fixture's boot.pack holds
+the engine resources (engine/...) of the day it was prepared and they replace the image's: with an xftl_hotkeys.xml
+older than the power keys, the list and power-key checks print "skipped: the fixture's boot.pack has an older
+xftl_hotkeys.xml" and pass; re-prepare the fixture to run them. The native session `tools/native-capture/sessions/ps-u2-keys.json` (`u2-keys`, console
+exe, settings.ini binding power_1/un_power_1/power_2/power_7 to F9-F12; `u2-keys2`: Space over the event box and the
+ship window, LANG de / zh-hans / en) shows the same on 1.6.14 through `sweep/vanilla/run.sh`. `tests/window-places.mjs`
+opens TRADER_CIV for the event box in vanilla and plain Hyperspace: ASTEROID_EXPLORE is unique there and a run whose
+sector already took it shows no box, as the original.
+
+`GameplayHudU1Checks` (also in `gameplay-parity`, parity sweep U1) pins the desktop HUD's mouse rules found in the frame
+pairs of `tools/native-capture/sessions/ps-u1-hud.json`: a right press that drops an armed weapon leaves the system box
+under it alone (CommandGui::RButtonDown); crew added while paused take a box hover at once; a drone slot has the
+original's tooltip (description, state, hotkey, rearrange); the system tooltip keeps the original's trailing spaces
+(they widen the box); GOD while paused shows the new free reactor bars at once; a subsystem box under a drone box keeps
+its tooltip over the drone's (CommandGui::MouseMove); the hull warning is one 6 s message whose timer a second fall
+does not restart (ShipStatus::OnLoop); the shields box takes the hover in its icon square and shows its tooltip over its
+bars' column too (SystemBox::MouseMove).
+
+`gameplay-parity`'s `GameplayParityPsW4Checks` holds the enemy rules of parity sweep W4: the player's aim at an escaping
+enemy stays through its countdown and its jump-away and the charged weapon fires at the leaving ship (WeaponControl::OnLoop
+and the oracle), which plays jumpLeave once; no hacking while either ship jumps or at a dying target; the enemy's medbay is powered
+for crew below a quarter of their health or on a healing task, not for hurt crew only standing in its room; and in
+vanilla the flagship's stage 3 barrage leaves the ship's centre on several headings with a sound per shot. The oracle
+session `tools/hs-oracle/sessions/ps-w4.json` (`ps-w4-ai`, F3, probe `hs_oracle/ps-w4.lua`, ship `PSW4_ENEMY` and events
+`PSW4_*` in the tracer's append files) records the enemy's power after ion and damage, the rooms its shots aim at over
+about 150 game seconds, and the escape (jump flag, the player's aims and shots, the ship gone), for `sweep/twin/run.sh`
+with the map `{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-w4.lua", "prefix": "PH:"}`.
+
+`gameplay-parity`'s `GameplayParityPsW1Checks` holds the fleet rules of parity sweep W1 (UpdateDangerZone, RenderLabels):
+a jump takes the beacons inside the zone in list order, with the fleet events that overtaking them one by one in that
+order gives, and holds the centre at 60 (a wait does not); a warning mark stays when the next move's reach shrinks and
+goes when the fleet takes the beacon; the next sector starts with the pursuit modifier the old one left.
+`GameplayParityGen3Checks` also holds fresh 1.6.14 runs through all eight sectors
+(`w1-*` runs: every map's events and, as a second fingerprint, its places and links; the AE-off ones run only when
+gameplay-parity runs with Advanced Edition off). The oracle sessions
+`tools/hs-oracle/sessions/ps-w1.json` (F3, seed 505, probe `hs_oracle/ps-w1.lua`, events `PSW1_*`) record the map after
+reveal_map, distressBeacon, modifyPursuit and secretSector (`ps-w1-ops`), the warning marks and a jump's fleet move
+(`ps-w1-fleet`), the hold at 60 (`ps-w1-clamp`) and the split all-node view (`ps-w1-split`, frames), for
+`sweep/twin/run.sh` with the map `{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-w1.lua", "prefix": "PH:"}`.
+`.build/hs/sweep/jobs/ps-w1-map.sh` replays ops, fleet and clamp against the recorded oracle (`sweep/fixtures/ps-w1-map`)
+and `ps-w1-check.py` compares the rows; after a jump it compares with the oracle's last tracer state, because the
+oracle's Lua rows stop at the arrival box.
+
+`gameplay-parity`'s `GameplayParityPsW3Checks` holds the store and requirement rules of parity sweep W3 (vanilla data):
+a choice's req counts each weapon, drone and augment once and never the cargo hold, between its lvl and max_lvl
+(QUEST_CREWDEAD_START_2 with BOMB_FIRE in the hold, then in a slot; CreateChoiceBox with ShipObject::HasEquipment), and
+the vanilla store asks before a clone bay replaces the medbay (or the reverse) and before an eighth main system
+(SystemStoreBox::Activate), where Escape closes the whole store; a weapon dragged from its slot to the hold leaves no
+gap (WeaponSystem::RemoveWeapon, every mode). The 1.6.14 sessions `tools/native-capture/sessions/ps-w3-van.json` (console exe; generator
+`.build/ps-w3/gen/gen_v.py`) record those cases, the store's InfoBoxes at `run-store.sav`, the ship window's InfoBoxes
+and equipment drags, as frame pairs with the port (`tools/ui-capture.sh`, the same console commands). The oracle
+sessions `tools/hs-oracle/sessions/ps-w3-hs.json` (`ps-w3-mv` F3, `ps-w3-hs` F2: the fixed store `PSW3_STORE` of the
+tracer's append files; `ps-w3-repair`: BOSS_REPAIR_STATION's map label) are their Hyperspace twins.
 
 `gameplay-parity`'s `overflowAugmentStore` step runs under mods too: a fourth augment on a full ship goes to the over-capacity
 box, and the store's buy and sell tabs draw with the mouse and touch layouts. `tests/hs-store-overflow.mjs` (F3) plays the
@@ -359,7 +496,8 @@ Multiverse's multipleOverCapacity), the crew DropBox at CrewManifest's (-275, 10
 right below it (CustomCrewManifest::OnInit; oracle session `overcap.json` `oc-hs`). Touch layout: one box at a time, the
 pager's two arrows and its other page, every box on the 1024 x 768 HUD block and clear of the window and Accept. Both: a
 box and a dismiss button for every crew member, none under the over-capacity box, the touch layout's dismiss
-confirmation on the screen, and the extra one dismissed with its button and Yes. On the emulator:
+confirmation on the screen, and the extra one dismissed with its button and Yes. Touch without Hyperspace: a crew box
+dragged onto another keeps the order (no reorder on the crew screen; Hyperspace's swaps). On the emulator:
 `tools/android-touch/overcap.mjs` ([ANDROID.md](ANDROID.md#testing)); round 21's runs and frames: `.build/hs/reports/overcap.md`.
 
 ## Window places
@@ -430,7 +568,8 @@ their own one-finger script, `tools/android-touch/extras.mjs` ([ANDROID.md](ANDR
 Multiverse storage crate's rule, the shelf's alignment and frame-to-frame stability. `tools/android-touch/tutorial.mjs`
 checks a Lua tutorial's arrows and outlines on the touch HUD (Multiverse's lessons, [ANDROID.md](ANDROID.md#testing)),
 and `tools/android-touch/reorder.mjs` the touch crew reorder (a held box slid to another place; a tap, a hold lifted in
-place and a quick slide still select or paint as before). `TouchRouterTest` (`:app:testDebugUnitTest`) is the
+place and a quick slide still select or paint as before), and `tools/android-touch/hud.mjs` the status bar's warnings, a
+finger slid from empty space onto a crew box, and adb's keys with the system keyboard staying down. `TouchRouterTest` (`:app:testDebugUnitTest`) is the
 quick check of finger routing, at the engine's call only.
 
 ## Packaged integration runner
@@ -472,6 +611,36 @@ shutdown also terminates a running job.
 The Compose `/tmp` limit is 512 MiB for temporary browsers and fixtures. Set
 `FTL_TEST_RUNNER_ENABLED=false` to disable integration jobs; in-browser checks and
 benchmarks remain available. The packaged browsers increase image size.
+
+## Native evidence kit (parity sweep)
+
+The parity sweep's evidence tools sit in ignored `.build/hs/sweep/` (its `README.md`): the original 1.6.14 under
+`tools/native-capture/` with a fixture exe chosen and the RNG ring summarised per call site, the Hyperspace oracle's
+sessions with their browser twins (one probe Lua, rows side by side), Ghidra decompiles of 1.6.14 and the oracle's 1.6.9
+by ZHL name, and frame pairs with the sweep's tolerance (2/255 per channel, 1 px). `tools/native-capture/driver.py` has
+two steps for the 1.6.14 fixtures: `["cmd", "text", s]` types a dev console command (`FTLGame-console.exe` and the
+fixtures built on it) and `["ring", "name"]` dumps `FTLGame-trace.exe`'s RNG ring. Native sessions of the sweep are in
+`tools/native-capture/sessions/ps-<id>-*.json` (`ps-k0-vanilla-kit.json`: a console `LOAD` with its draws).
+`ps-u1-hud.json` is the in-flight HUD's frame-pair matrix (nine sessions on `run1.sav` and `run-cx.sav`: hovers,
+tooltips, power and right clicks, a crew list box drag, ten systems, four weapons and two drones, eight crew, hull and
+resource values, an enemy box, a slot drag, GOD, the system boxes' hover and tooltip areas); its browser side runs with `tools/ui-capture.sh ps-u1-hud.json`
+(the port imports the same save, `parityNoBackground`, the same console commands; `down`/`up` steps hold a press across
+moves). `tools/hs-oracle/sessions/ps-u1-hs.json` holds its Hyperspace part (triggered-event boxes over windows, a
+five-drone-slot ship `PSU1_D5`, thirteen systems).
+The runner (`.build/hs/prod-int/hsq.sh`) runs `hs-mv-tutorial.mjs` and `hs-store-overflow.mjs` on F3 and
+`native-import.mjs` on vanilla, F2 and F3 with the `.build/hs/save-tools/` set (jobs `hs-mv-tutorial`,
+`hs-store-overflow`, `hs-native-import-<fixture>`).
+
+Events and choices (sweep W2): the vanilla gameplay-parity mode's `choice rules` step
+(`GameplayParityVanillaNativeChecks`) holds the 1.6.14 answers of `tools/native-capture/sessions/ps-w2-van.json`: the
+repair station's choices at 0/3/8/12 hull damage, a stealing Continue open with no scrap, TRADER_UPGRADES_LIST's
+max_group survivor and order, and LOADEVENT leaving no unique event used. The Hyperspace side is the oracle session
+`tools/hs-oracle/sessions/ps-w2.json` (`ps-w2-ops`, F3, probe `tracer/data/hs_oracle/ps-w2.lua`, test events `PSW2_*`
+in `tracer/data/events.xml.append`) and its twin: `sweep/twin/run.sh tools/hs-oracle/sessions/ps-w2.json ps-w2-ops
+<map>` with the map `{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-w2.lua"}`. It compares every choice box (types,
+texts, the end of the box text) and the ship after one event per operation (resources, crew, systems, weapons, cargo,
+augments, boarders, the `<system>` reward and its warnings). The oracle's start chain gives LASER_BURST_1, which the twin
+(started at the beacon) lacks: the `st` rows differ in that one weapon and nothing else.
 
 ## Developer verification
 

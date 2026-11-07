@@ -25,7 +25,7 @@ the app bundle under `Contents/Resources`.
 
 ## Status
 
-Version 2.0.5. The goal is 1:1 behavior with desktop FTL 1.6.14 and, with mods, Hyperspace 1.23.2 and Multiverse 5.5.1 (gameplay,
+Version 2.0.6. The goal is 1:1 behavior with desktop FTL 1.6.14 and, with mods, Hyperspace 1.23.2 and Multiverse 5.5.1 (gameplay,
 generation from seeds, menus, controls, visuals and sound). Most of it is playable end to end, but full parity is
 **not** established; see [feature status](docs/STATUS.md) and the [parity matrix](docs/parity/README.md). Original FTL
 saves are not interchangeable, and multiplayer is not supported.

@@ -73,22 +73,25 @@ fun clock(iso: String?): String {
     }.getOrDefault("")
 }
 
-/** "2 h ago" style age for the save list. */
-fun ago(iso: String?): String {
+/** "just now", "5 min ago", "2 h ago", "3 d ago", then the date: the website's (web/saves-ui.mjs ago). */
+fun ago(iso: String?, now: Instant = Instant.now()): String {
     if (iso.isNullOrBlank()) return ""
     return runCatching {
-        val s = ChronoUnit.SECONDS.between(Instant.parse(iso), Instant.now()).coerceAtLeast(0)
+        val t = Instant.parse(iso)
+        val s = ChronoUnit.SECONDS.between(t, now).coerceAtLeast(0).toDouble()
         when {
             s < 60 -> "just now"
-            s < 3600 -> "${s / 60} min ago"
-            s < 86400 -> "${s / 3600} h ago"
-            else -> "${s / 86400} d ago"
+            s < 3600 -> "${Math.round(s / 60)} min ago"
+            s < 86400 -> "${Math.round(s / 3600)} h ago"
+            s < 86400 * 14 -> "${Math.round(s / 86400)} d ago"
+            else -> t.atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.SHORT))
         }
     }.getOrDefault("")
 }
 
+/** "1 h 5 min", "12 min", "40 s": the website's (web/saves-ui.mjs duration). */
 fun duration(seconds: Long): String = when {
-    seconds < 60 -> "${seconds}s"
+    seconds < 60 -> "${seconds.coerceAtLeast(0)} s"
     seconds < 3600 -> "${seconds / 60} min"
     else -> "${seconds / 3600} h ${seconds % 3600 / 60} min"
 }

@@ -27,13 +27,17 @@ class GameOverWindow(private val game: InGameState, val outcome: Outcome) : Wind
     private val highScoreFont = NativeFonts.font(game::getFont, 7)
 
     private val title = game.translator[if (outcome == Outcome.WIN) "gameover_title_victory" else "gameover_title_gameover"]
-    // Hyperspace GameOver::OpenText: a replaced game over text (a <win>/<lose> event, a <finalBoss>) is shown once
+    // Hyperspace GameOver::OpenText: a replaced game over text (a <win>/<lose> event, a <finalBoss>) is shown once.
+    // CommandGui::CheckGameover (0x52c900): a loss in the tutorial reads gameover_tutorial whatever its cause.
     private val body = (if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.events.HsFinalBoss.takeGameOverText() else null)
-        ?: game.translator[when (outcome) {
-        Outcome.WIN -> "gameover_win"
-        Outcome.LOOSE_HULL -> "gameover_blowup"
-        Outcome.LOOSE_CREW -> "gameover_crew"
-        Outcome.LOOSE_BASE_DESTROYED -> "gameover_fedbase"
+        ?: game.translator[when {
+        outcome != Outcome.WIN && game.mainGame?.isTutorialRunning == true -> "gameover_tutorial"
+        else -> when (outcome) {
+            Outcome.WIN -> "gameover_win"
+            Outcome.LOOSE_HULL -> "gameover_blowup"
+            Outcome.LOOSE_CREW -> "gameover_crew"
+            Outcome.LOOSE_BASE_DESTROYED -> "gameover_fedbase"
+        }
     }]
 
     private val bottomLabels = listOf(

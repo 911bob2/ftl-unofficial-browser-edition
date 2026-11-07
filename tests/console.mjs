@@ -407,7 +407,7 @@ try{
  // ---- the commands --------------------------------------------------------------------------------------------
  s=await run('dev-rich');let snap=await snapshot();assert.deepEqual([snap.scrap,snap.fuel,snap.missiles,snap.drones],[5000,99,99,99]);
  await run('POOR');snap=await snapshot();assert.deepEqual([snap.scrap,snap.fuel,snap.missiles,snap.drones],[0,0,0,0],'POOR');
- await run('rich');snap=await snapshot();assert.deepEqual([snap.scrap,snap.fuel,snap.missiles,snap.drones],[9999999,800,800,800],'HS RICH');
+ await run('rich');snap=await snapshot();assert.deepEqual([snap.scrap,snap.fuel,snap.missiles,snap.drones],hs?[9999999,800,800,800]:[1999,80,80,80],hs?'HS RICH':'the original RICH (RunCommand: +1999 scrap, +80 of the rest)');
  await run('poor');for(const c of ['SCRAP 100','FUEL 5','MISSILES 7','DRONES 3'])await run(c);
  snap=await snapshot();assert.deepEqual([snap.scrap,snap.fuel,snap.missiles,snap.drones],[100,5,7,3],'the original SCRAP FUEL MISSILES DRONES');
  const hull0=snap.hull;await run('damage 10');await run('HULL 4');assert.equal((await snapshot()).hull,hull0-6,'HULL 4 heals 4');

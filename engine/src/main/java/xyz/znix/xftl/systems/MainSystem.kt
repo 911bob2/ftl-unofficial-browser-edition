@@ -299,7 +299,14 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
             val systemRequested = min(targetPower, undamagedEnergy)
             val reachable = repowerReach(systemRequested)
             val nextValue = min(powerAvailable, reachable)
-            if (!setSystemPower(nextValue) || nextValue < systemRequested) {
+            // ShipSystem::CheckForRepower1 (0x63ac40) only overwrites the player's power (lastUserPower +0x16c) when
+            // the reactor refuses a bar. A cap below it, or a shield step that does not fit under the cap, ends the
+            // climb and keeps the player's power, so a later repair (PartialRepair) or the end of an ion lock climbs
+            // the rest of the way (HS oracle ps-c1-pw2: shields 8 damaged to 7 run 6 and come back to 8 when repaired).
+            // The climb goes bar by bar, so a reactor that runs out mid-step leaves a shield system on an odd total.
+            val shortOfReactor = nextValue < reachable
+            if (shortOfReactor && nextValue % 2 == 1) keptPowerAfterLoss = nextValue
+            if (!setSystemPower(nextValue) || shortOfReactor) {
                 // We didn't have enough reactor power to restore this level.
                 // TODO show a not-enough-power warning here.
                 targetPower = powerSelected

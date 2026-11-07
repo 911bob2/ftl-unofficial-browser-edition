@@ -270,9 +270,34 @@ assert(Hyperspace.ships(0).ship.vRoomList[${own.id}].extend.timeDilation == 2, '
         check(t.turnedOn && HsTemporal.dilation(enemyRoom) == -2 && near(HsTemporal.factor(enemyRoom), .12f, 1e-4f) && t.timerGoal == 17f) {
             "slow: on ${t.turnedOn} dilation ${HsTemporal.dilation(enemyRoom)} factor ${HsTemporal.factor(enemyRoom)} goal ${t.timerGoal}"
         }
+        // TemporalSystem_Wrapper::OnLoop stops only once the target's ShipManager is gone, not at a hull of 0.
+        val enemyHull = state.enemy!!.health
+        state.enemy!!.health = 0
+        t.update(0f)
+        check(t.turnedOn && HsTemporal.dilation(enemyRoom) == -2) { "temporal stopped on a destroyed hull: on ${t.turnedOn}" }
+        state.enemy!!.health = enemyHull
         t.stopTimeDilation()
         check(HsTemporal.dilation(enemyRoom) == 0) { "stop left dilation ${HsTemporal.dilation(enemyRoom)}" }
-        out += "temporal slow enemy room x0.12 goal 17 s"
+        out += "temporal slow enemy room x0.12 goal 17 s, kept on a destroyed hull"
+
+        // ShipSystem::GetLocked (1.6.9 0x615930) counts a hacking pulse (iHackEffect > 1): IsReady is false, a queued
+        // target does not start (StartTimeDilation returns at GetLocked) and no cooldown lock follows
+        run {
+            t.lockUnits(0)
+            step(state, 2)
+            check(t.isReady && t.ionTimer == 0f) { "temporal before the pulse: ready ${t.isReady} lock ${t.ionTimer}" }
+            t.hsHackLevel = 2
+            check(!t.isReady && t.isLocked) { "temporal under a hacking pulse: ready ${t.isReady} locked ${t.isLocked}" }
+            t.selectRoom(ownLoaded, true)
+            step(state, 1)
+            check(!t.turnedOn && t.queuedRoom == null && t.ionTimer == 0f && HsTemporal.dilation(ownLoaded) == 0) {
+                "hacked temporal started: on ${t.turnedOn} queued ${t.queuedRoom?.id} lock ${t.ionTimer} dilation ${HsTemporal.dilation(ownLoaded)}"
+            }
+            t.hsHackLevel = 0
+            step(state, 1)
+            check(t.isReady) { "temporal not ready after the pulse" }
+            out += "temporal under a hacking pulse: not ready, a queued target does not start, no cooldown"
+        }
 
         // PowerManager status: reactor statuses and Lua iTempPowerCap reach the reactor
         run {
@@ -310,19 +335,33 @@ assert(Hyperspace.ships(0).ship.vRoomList[${own.id}].extend.timeDilation == 2, '
             val levels = engines.undamagedEnergy
             lua("hs-systems-loop", """
 script.on_internal_event(Defines.InternalEvents.SHIP_LOOP, function(s)
-  if HSSYS_LOSS and s.iShipId == 0 then local e = s:GetSystem(1); e.extend.additionalPowerLoss = e.extend.additionalPowerLoss + HSSYS_LOSS end
+  if HSSYS_LOSS and s.iShipId == 0 then
+    local e = s:GetSystem(1); e.extend.additionalPowerLoss = e.extend.additionalPowerLoss + HSSYS_LOSS
+    HSSYS_MAX = e:GetMaxPower()
+    if HSSYS_CHECK then e:CheckMaxPower(); e:CheckForRepower() end
+  end
 end)
 script.on_internal_event(Defines.InternalEvents.SET_BONUS_POWER, function(sys, amount)
   if HSSYS_BONUS and sys:GetId() == 20 then return Defines.Chain.CONTINUE, amount + HSSYS_BONUS end
 end)
 HSSYS_LOSS = 1
 """)
+            // ShipManager::OnLoop (CustomCrew.cpp) runs CheckMaxPower before SHIP_LOOP: an addition alone only lowers
+            // GetMaxPower (HS oracle ps-c1-ex); with the script's own CheckMaxPower (Multiverse sys-limit.lua) it takes
+            // the bar until the script stops.
             step(state, 3)
-            check(engines.undamagedEnergy == levels - 1 && engines.powerSupplied <= levels - 1) { "additionalPowerLoss: levels ${engines.undamagedEnergy} (was $levels) power ${engines.powerSupplied}" }
-            lua("hs-systems-loop2", "HSSYS_LOSS = nil")
+            val powered = engines.powerSupplied
+            lua("hs-systems-loop-max", "assert(HSSYS_MAX == $levels - 1, 'GetMaxPower ' .. tostring(HSSYS_MAX))")
+            check(engines.undamagedEnergy == levels && engines.powerSupplied == powered) {
+                "additionalPowerLoss alone: levels ${engines.undamagedEnergy} (was $levels) power ${engines.powerSupplied}"
+            }
+            lua("hs-systems-loop-check", "HSSYS_CHECK = true")
             step(state, 3)
-            check(engines.undamagedEnergy == levels) { "additionalPowerLoss gone: ${engines.undamagedEnergy} want $levels" }
-            out += "additionalPowerLoss from SHIP_LOOP takes $levels -> ${levels - 1} and back"
+            check(engines.undamagedEnergy == levels - 1 && engines.powerSupplied <= levels - 1) { "additionalPowerLoss with CheckMaxPower: levels ${engines.undamagedEnergy} (was $levels) power ${engines.powerSupplied}" }
+            lua("hs-systems-loop2", "HSSYS_LOSS = nil; HSSYS_CHECK = nil")
+            step(state, 3)
+            check(engines.undamagedEnergy == levels && engines.powerSupplied == powered) { "additionalPowerLoss gone: ${engines.undamagedEnergy} want $levels, power ${engines.powerSupplied} want $powered" }
+            out += "additionalPowerLoss from SHIP_LOOP: alone only GetMaxPower ${levels - 1}, with CheckMaxPower $levels -> ${levels - 1} and back"
 
             val t2 = player.systems.firstOrNull { it is Temporal } as Temporal? ?: error("no temporal system (bonus)")
             t2.lockUnits(0)

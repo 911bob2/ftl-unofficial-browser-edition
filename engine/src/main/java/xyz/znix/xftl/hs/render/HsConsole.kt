@@ -57,7 +57,7 @@ object HsConsole {
             // HS: PowerManager currentPower.second = the ship definition's maxReactorLevel
             val ship = game.player ?: return
             val max = xyz.znix.xftl.hs.ship.HsShips.def(ship.type.name)?.maxReactorLevel
-            if (max != null) ship.purchasedReactorPower = max
+            if (max != null) { ship.purchasedReactorPower = max; ship.updateAvailablePower() }
         }
     }
 
@@ -136,11 +136,15 @@ object HsConsole {
                 return true
             }
             name == "RICH" -> {
+                // Hyperspace's CommandConsole: 9999999 scrap and 800 of the rest. The original's RunCommand (vanilla):
+                // ModifyMissileCount(80), fuel + 80, ModifyDroneCount(80), ModifyScrapCount(1999).
+                val scrap = if (HS.active) 9999999 else 1999
+                val more = if (HS.active) 800 else 80
                 if (ship != null) {
-                    ship.scrap = maxOf(0, ship.scrap + 9999999)
-                    if (ship.weapons != null) ship.missilesCount = maxOf(0, ship.missilesCount + 800)
-                    ship.fuelCount += 800
-                    ship.dronesCount = maxOf(0, ship.dronesCount + 800)
+                    ship.scrap = maxOf(0, ship.scrap + scrap)
+                    if (ship.weapons != null) ship.missilesCount = maxOf(0, ship.missilesCount + more)
+                    ship.fuelCount = maxOf(0, ship.fuelCount + more)
+                    ship.dronesCount = maxOf(0, ship.dronesCount + more)
                 }
                 return true
             }
@@ -158,7 +162,7 @@ object HsConsole {
                 return true
             }
             name == "LOADEVENT" -> {
-                if (command.length > 10) {
+                if (command.length > 10) game.eventManager.withoutLastingUse {
                     if (game.eventManager.hs != null) HsFlow.loadEvent(game, game.shipUI.hsHost, arg(10), true, -1, null)
                     // vanilla: CustomEventsParser::LoadEvent without aliases or load lists is GetBaseEvent, then UpdateLocation
                     else baseEvent(game, arg(10))?.let { game.shipUI.hsHost.hsUpdateLocation(it) }
@@ -221,6 +225,18 @@ object HsConsole {
         if (HS.active) HsShipUnlocks.unlockAllShips()
     }
 
+    /**
+     * SHIP <blueprint>: ScoreKeeper::GetShipId takes one of the ten families' base blueprint names exactly as typed, or it
+     * with _2 or _3 (layouts B and C; Crystal and Lanius have no C), and ScoreKeeper::UnlockShip(id, layout, save, popup)
+     * unlocks that layout with its popup.
+     */
+    private fun unlockShip(game: InGameState, name: String) {
+        val families = game.content.shipFamilies.families.take(10)
+        val family = families.firstOrNull { f -> f.ships.firstOrNull()?.let { name == it || name == it + "_2" || name == it + "_3" } == true } ?: return
+        if (name !in family.ships) return
+        game.mainGame.profile.unlockLayout(name, xyz.znix.xftl.game.Difficulty.EASY, popup = true)
+    }
+
     /** SYS ALL: every vanilla system, temporal and the custom ones the ship lacks and nothing replaces. */
     private fun sysAll(ship: Ship) {
         val ids = (0 until 16) + listOf(xyz.znix.xftl.hs.systems.HsSystems.SYS_TEMPORAL) +
@@ -255,7 +271,8 @@ object HsConsole {
         val n = parts.getOrNull(1)?.toIntOrNull()
         when (word) {
             "SCRAP" -> if (n != null) ship.scrap = maxOf(0, ship.scrap + n)
-            "FUEL" -> if (n != null) ship.fuelCount += n
+            // FUEL n adds n and keeps the count at 0 or more (RunCommand writes max(fuel + n, 0) back)
+            "FUEL" -> if (n != null) ship.fuelCount = maxOf(0, ship.fuelCount + n)
             "MISSILES" -> if (n != null && ship.weapons != null) ship.missilesCount = maxOf(0, ship.missilesCount + n)
             "DRONES" -> if (n != null) ship.dronesCount = maxOf(0, ship.dronesCount + n)
             // HULL n heals n (the oracle: 18/30 then HULL 4 gives 22/30, HULL 30 then 30/30); capped at the maximum
@@ -281,6 +298,9 @@ object HsConsole {
             "GOD" -> {
                 for (system in ship.systems) system.energyLevels = system.maxLevel
                 ship.purchasedReactorPower = ship.maxReactorPower
+                // The reactor bars read the ship's power at once (native frame pair u1v-b b-god: paused, the new bars
+                // show free straight away); ours are what updateAvailablePower last worked out.
+                ship.updateAvailablePower()
             }
             "DELETE" -> game.enemy?.let { enemy ->
                 enemy.damage(enemy.rooms.random(ftl.browser.BrowserRandom), xyz.znix.xftl.weapons.Damage.hullOnly(100))
@@ -288,10 +308,63 @@ object HsConsole {
             }
             "EXIT" -> game.shipUI.openSectorMap()
             "EVENT" -> consoleEvent(game, rest)
-            "SHIP" -> if (rest.uppercase() == "ALL") unlockAllShips(game)
+            "LOAD" -> load(game, command.trimStart())
+            "SHIP" -> if (rest.uppercase() == "ALL") unlockAllShips(game) else unlockShip(game, command.trim().drop(5))
+            // LANG xx: the line in lower case, the letter after a '-' in upper case (zh-hans is zh-Hans), then
+            // TextLibrary::SetLanguage (texts, fonts, language images; native capture u2-keys2), not Settings::language,
+            // so the next start is in the chosen language again; any code is taken (one without texts is English)
+            "LANG" -> if (parts.size > 1) game.mainGame?.let { xyz.znix.xftl.game.LanguageSwitch.apply(it, langCode(command), persist = false) }
             "ACH" -> achievement(game, rest)
             else -> printf("unknown command")
         }
+    }
+
+    /**
+     * RunCommand's LOAD: CommandGui::loadEvent is the line from its sixth character up to the first space, and only when
+     * a space follows, CommandGui::loadSector is atoi of the rest (else -1, as LoadEvent left it). WorldManager::
+     * CheckLoadEvent (1.6.14 0x61ab80, 1.6.9 0x5f4aa0) then, with no name, does nothing; with a sector (not -1), clears
+     * the location and adds a hostile enemy built by ShipGenerator::CreateShip(name, sector, a default ShipEvent): name
+     * is a ship blueprint or blueprint list, the unknown one gives the DEFAULT ship; else it loads the event as EVENT
+     * does (GetBaseEvent with ignoreUnique).
+     */
+    private fun load(game: InGameState, command: String) {
+        val parsed = loadArgs(command) ?: return
+        val (name, sector) = parsed
+        if (sector == -1) { consoleEvent(game, name); return }
+        val elem = org.jdom2.Element("ship").setAttribute("name", "").setAttribute("auto_blueprint", name)
+        val spec = xyz.znix.xftl.shipgen.EnemyShipSpec(elem, game.blueprintManager, game.eventManager)
+        game.clearLocation()
+        game.debugSpawnShip(spec, game.difficulty, sector, 0)
+    }
+
+    /** LOAD's name and sector (-1 when no space follows the name); null when the name is empty. */
+    @JvmStatic
+    fun loadArgs(command: String): Pair<String, Int>? {
+        val rest = if (command.length > 5) command.substring(5) else ""
+        val space = rest.indexOf(' ')
+        val name = if (space == -1) rest else rest.substring(0, space)
+        if (name.isEmpty()) return null
+        return name to if (space == -1) -1 else atoi(rest.substring(space + 1))
+    }
+
+    /** C atoi: leading white space, an optional sign, then digits; 0 when none. */
+    private fun atoi(s: String): Int {
+        var i = 0
+        while (i < s.length && s[i].isWhitespace()) i++
+        var negative = false
+        if (i < s.length && (s[i] == '+' || s[i] == '-')) { negative = s[i] == '-'; i++ }
+        var n = 0L
+        while (i < s.length && s[i] in '0'..'9') { n = (n * 10 + (s[i] - '0')).coerceAtMost(Int.MAX_VALUE.toLong() + 1); i++ }
+        return (if (negative) -n else n).coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    /** RunCommand's LANG: the lower-case line from its sixth character, the letter after the first '-' upper-cased. */
+    @JvmStatic
+    fun langCode(command: String): String {
+        val code = StringBuilder(command.lowercase().drop(5))
+        val dash = code.indexOf("-")
+        if (dash != -1 && dash + 1 < code.length) code.setCharAt(dash + 1, code[dash + 1].uppercaseChar())
+        return code.toString()
     }
 
     /**

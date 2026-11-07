@@ -696,7 +696,8 @@ object BrowserDiagnostics {
         check(state.player.weapons!!.setWeaponPower(restoredCancelled, true)) { "BrowserDiagnostics.kt:659" }
         state.player.update(0f)
         check(!restoredCancelled.isFiring && (restoredCancelled.browserEncounterVolleys ?: 0) == 0) { "Power/restore revived a cancelled shot" }
-        return "PASS cancelled primed-shot cleanup across depower/restore/power, existing weapon instances, empty slots, invalid moves, duplicate target ownership, charge/chain/power/override preservation, firing swap, global autofire, remapped/unbound targeting modifier, one-shot target cleanup, jump cleanup, save/restore, logging RNG isolation, consistent door animation and damage/render RNG isolation at 30/60/120/240 FPS"
+        val psU2 = GameplayParityPsU2Checks.run(main, container)
+        return "PASS $psU2; cancelled primed-shot cleanup across depower/restore/power, existing weapon instances, empty slots, invalid moves, duplicate target ownership, charge/chain/power/override preservation, firing swap, global autofire, remapped/unbound targeting modifier, one-shot target cleanup, jump cleanup, save/restore, logging RNG isolation, consistent door animation and damage/render RNG isolation at 30/60/120/240 FPS"
     }
 
     fun aeProbe(main: MainGame, container: GameContainer, graphics: Graphics): String {

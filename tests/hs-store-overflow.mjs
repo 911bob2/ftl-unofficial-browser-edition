@@ -46,8 +46,13 @@ try{
  // Multiverse's start beacon: the oracle's picks (1 x7, then 2 at START_BEACON_EXPLAIN).
  console.log('start boxes answered: '+await answer(['1','1','1','1','1','1','1','2']));
  const run=()=>page.evaluate(()=>window.diagnosticRun());
- // The HS console the way the oracle's driver types it: backslash opens the box, Return runs the command.
- const command=async c=>{await key('Backslash');await page.waitForTimeout(300);await page.keyboard.type(c,{delay:20});await key('Enter');await page.waitForTimeout(500);};
+ // The HS console the way the oracle's driver types it: backslash opens the box, Return runs the command. HS's box closes
+ // on Return (InputBox, TEXT_CONFIRM); the port's console stays open to show its output (docs/CONSOLE.md), so it is closed
+ // here before the next key goes to the game, as in the oracle session.
+ const consoleOpen=()=>page.evaluate(()=>/^open=true/.test(window.hsWp7UiProbe('console')));
+ const command=async c=>{for(let i=0;!await consoleOpen();i++){assert.ok(i<40,'the console opens');await key('Backslash');await page.waitForTimeout(250);}
+  await page.keyboard.type(c,{delay:20});await key('Enter');await page.waitForTimeout(500);
+  if(await consoleOpen()){await key('Escape');await page.waitForTimeout(250);}};
  for(const a of ['SCRAP_COLLECTOR','AUTO_COOLDOWN','SHIELD_RECHARGE'])await command('AUG '+a);
  await command('SCRAP 500');
  const augs=[...(await run()).matchAll(/<augment[^>]*>/g)].length;console.log('augment elements before the event: '+augs);

@@ -302,9 +302,13 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
         plan.apply()
     }
 
-    /** CrewAI::FUN_006270f0 (+0x7): crew that is hurt enough, or still healing, keeps the medbay powered. */
+    /**
+     * CrewAI::CheckForHealing (1.6.14 0x6270f0, 1.6.9 0x602770) sets CrewAI +0x7 for a crew member (no intruder, no
+     * drone) below a quarter of its health, or below 99% while the crew AI is calm, or whose task is healing (task 6,
+     * CrewMember +0x1a4): only then does the medbay get its bar. Being hurt in the medbay's room for another reason
+     * (a fight, a repair) does not count.
+     */
     private fun someoneNeedsHealing(): Boolean {
-        val medbayRoom = ship.medbay?.room
         for (crew in ship.friendlyCrew) {
             if (crew !is LivingCrew)
                 continue
@@ -313,11 +317,14 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
                 return true
             if (fraction < NEEDS_HEALING_CALM && ship.crewAI.isCalm)
                 return true
-            if (crew.room == medbayRoom && fraction < 1f)
+            if (ship.crewAI.isHealing(crew))
                 return true
         }
         return false
     }
+
+    /** [someoneNeedsHealing] for the checks. */
+    internal fun medbayWanted(): Boolean = someoneNeedsHealing()
 
     /**
      * The power allocation worked out for the frame. [level] is the power each unlocked system ends up with,
@@ -632,7 +639,7 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
      */
     private fun updateHacking(target: Ship) {
         val hacking = ship.hacking ?: return
-        if (target.isDead)
+        if (!hackingAllowed(ship, target))
             return
 
         if (!hacking.droneLaunched) {
@@ -690,6 +697,13 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
         /** CrewMemberFactory 0x467250 with ship id 0, or 1 while the mind control system is hacked. */
         internal fun mindControlPool(hacked: Boolean, own: Ship, target: Ship): List<AbstractCrew> =
             if (hacked) own.crew else target.crew
+
+        /**
+         * CombatAI::OnLoop (1.6.14 0x62c510, 1.6.9 0x606c80): its hacking half (a new probe or a pulse) waits while
+         * either ship is jumping (GetIsJumping, ShipManager +0x4d8) or the target is going down (GetIsDying, +0x499).
+         */
+        internal fun hackingAllowed(own: Ship, target: Ship): Boolean =
+            !target.isDead && !own.browserJumping && !target.browserJumping
 
         /** CombatAI 0x62d710: the pulse needs the hacked system to be intact and the hacking system to be powered. */
         internal fun canStartPulse(hackedSystemBroken: Boolean, hackingPower: Int): Boolean =

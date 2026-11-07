@@ -144,6 +144,14 @@ class Beacon(
     @JvmField var hsHazardsRemoved = false
     @JvmField var hsNebulaRemoved = false
 
+    /**
+     * The beacon's own event is a nebula location: its environment is a nebula or an ion storm before any Hyperspace
+     * removal. Every native path that makes one also adds StatusEffect::GetNebulaEffect to the event (1.6.9
+     * EventGenerator::CreateEvent 0x5b8940 for environment 3 or 4, StarMap::GenerateNebulas 0x5d17e0,
+     * TurnIntoFleetLocation 0x5d0940, SetupNoFuel 0x5d0250); see DialogueWindow.applyStatuses.
+     */
+    val nebulaLocation: Boolean get() = nativeEnvironmentType.isNebula
+
     private val nativeEnvironmentType: EnvironmentType
         get() {
             var type = if (forcedNebula) EnvironmentType.NEBULA else event.environment ?: EnvironmentType.NORMAL

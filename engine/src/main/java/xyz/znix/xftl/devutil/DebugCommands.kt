@@ -78,7 +78,7 @@ class DebugCommands(console: DebugConsole) : ConsoleCommandProvider(console) {
         DebugConsole.Cmd("save-load", listOf(), false, { cmdSaveLoad() }, "Save the game to XML, and load it back in.", group = ConsoleRegistry.Groups.DEV),
         DebugConsole.Cmd("gc", listOf(), false, { cmdGC() }, "Manually trigger Java's Garbage Collector.", group = ConsoleRegistry.Groups.DEV),
         DebugConsole.Cmd("save", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "name")), false, { a -> cmdSave(a[0] as String) }, "Save a named browser checkpoint: save name", group = ConsoleRegistry.Groups.DEV, examples = listOf("save before-boss")),
-        DebugConsole.Cmd("load", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "name")), false, { a -> cmdLoad(a[0] as String) }, "Load a named browser checkpoint: load name", group = ConsoleRegistry.Groups.DEV, examples = listOf("load before-boss")),
+        DebugConsole.Cmd("dev-load", listOf(DebugConsole.CmdParameter(StringTypeProcessor, "name")), false, { a -> cmdLoad(a[0] as String) }, "Load a named browser checkpoint: dev-load name", group = ConsoleRegistry.Groups.DEV, examples = listOf("dev-load before-boss")),
         DebugConsole.Cmd("download", listOf(), false, { cmdDownload() }, "Download the current run as an XML checkpoint", group = ConsoleRegistry.Groups.DEV),
         DebugConsole.Cmd("import", listOf(), false, { cmdImport() }, "Choose and import a browser XML checkpoint", group = ConsoleRegistry.Groups.DEV),
         DebugConsole.Cmd("inspect", listOf(), false, { cmdInspect() }, "Inspect current input, UI, weapons, RNG and recording state", group = ConsoleRegistry.Groups.DEV),
@@ -1116,8 +1116,8 @@ class DebugCommands(console: DebugConsole) : ConsoleCommandProvider(console) {
         addLine("Checkpoint saved: $name")
     }
 
-    @ConsoleCommand(name = "load")
-    @CmdHelp("Load a named browser checkpoint: load name")
+    @ConsoleCommand(name = "dev-load")
+    @CmdHelp("Load a named browser checkpoint: dev-load name")
     private fun cmdLoad(@ParName("name") name: String) {
         val xml = ftl.browser.BrowserCheckpoints.get(name)
         if (xml == null) { addLine("No checkpoint: $name"); return }

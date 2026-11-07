@@ -41,7 +41,7 @@ object ConsoleRegistry {
     /** HS CommandConsole.cpp's words, then the original's (CommandGui::RunCommand 0x52f7b0) that HS leaves to it. */
     @JvmField
     val SPECS: List<Spec> = listOf(
-        Spec("RICH", "", "+9999999 scrap, +800 fuel, drone parts and missiles (missiles need a weapons system)", group = Groups.RESOURCES),
+        Spec("RICH", "", "+9999999 scrap, +800 fuel, drone parts and missiles (the original without Hyperspace: +1999 scrap, +80 of the rest; missiles need a weapons system)", group = Groups.RESOURCES),
         Spec("POOR", "", "-9999999 scrap, -800 fuel, drone parts and missiles (none below 0)", group = Groups.RESOURCES),
         Spec("STORE", "[sector]", "A new store here, opened at once (this sector's stock, or the given sector's)", group = Groups.WORLD, examples = listOf("STORE", "STORE 5")),
         hs("FORCE_STORE", "<store id>", "The next store is the mod's custom store <store id>", group = Groups.WORLD),
@@ -56,7 +56,7 @@ object ConsoleRegistry {
         Spec("DAMAGESYS", "<system>", "Break a player system completely", group = Groups.SHIP, examples = listOf("DAMAGESYS shields")),
         hs("REMOVESYS", "<system>", "Remove a player system", group = Groups.SHIP, examples = listOf("REMOVESYS cloaking")),
         Spec("DEBUG", "", "Does nothing (Hyperspace keeps the word)", group = Groups.MOD),
-        Spec("SHIP", "ALL", "SHIP ALL: unlock every ship and layout for good (profile)", group = Groups.PROFILE, examples = listOf("SHIP ALL")),
+        Spec("SHIP", "ALL|<ship>", "SHIP ALL: unlock every ship and layout for good (profile); SHIP <ship>: one original layout by its blueprint name, as written (PLAYER_SHIP_HARD, _2 for B, _3 for C), with its popup", group = Groups.PROFILE, examples = listOf("SHIP ALL", "SHIP PLAYER_SHIP_HARD_2")),
         hs("SHIP_CUSTOM", "<ship>", "Unlock a mod ship for good (profile)", group = Groups.PROFILE),
         hs("SHIP_CUSTOM_LOCK", "<ship>", "Lock a mod ship again (profile)", group = Groups.PROFILE),
         Spec("FLEET", "<n>", "Rebel fleet: n > 0 advances twice as fast for n jumps, n < 0 stops it for -n jumps", group = Groups.WORLD, examples = listOf("FLEET 3", "FLEET -2")),
@@ -76,7 +76,7 @@ object ConsoleRegistry {
         Spec("WEAPON", "<weapon>", "Add a weapon: a free weapon slot, else the cargo", hint = BlueprintTypeProcessor(AbstractWeaponBlueprint::class.java), group = Groups.GEAR, examples = listOf("WEAPON LASER_BURST_2")),
         // the original's own (HS passes them on)
         Spec("SCRAP", "<n>", "Add n scrap (negative takes it away, none below 0)", group = Groups.RESOURCES, examples = listOf("SCRAP 100", "SCRAP -50")),
-        Spec("FUEL", "<n>", "Add n fuel", group = Groups.RESOURCES, examples = listOf("FUEL 10")),
+        Spec("FUEL", "<n>", "Add n fuel (none below 0)", group = Groups.RESOURCES, examples = listOf("FUEL 10")),
         Spec("MISSILES", "<n>", "Add n missiles (with a weapons system; none below 0)", group = Groups.RESOURCES, examples = listOf("MISSILES 10")),
         Spec("DRONES", "<n>", "Add n drone parts (none below 0)", group = Groups.RESOURCES, examples = listOf("DRONES 10")),
         Spec("HULL", "<n>", "Repair n hull points, up to the maximum", group = Groups.RESOURCES, examples = listOf("HULL 10")),
@@ -85,14 +85,16 @@ object ConsoleRegistry {
         Spec("CREW", "<race>", "Add a crew member of that race", hint = BlueprintTypeProcessor(CrewBlueprint::class.java), group = Groups.GEAR, examples = listOf("CREW engi")),
         Spec("GOD", "", "Every system and the reactor to their maximum", group = Groups.SHIP),
         Spec("DELETE", "", "Destroy the enemy ship", group = Groups.ENEMY),
-        Spec("EVENT", "<event>", "This beacon's event replaced by <event>, shown as on arrival", group = Groups.WORLD, examples = listOf("EVENT STORE_FUEL")),
+        Spec("EVENT", "<event>", "This beacon's event replaced by <event>, shown as on arrival", group = Groups.WORLD, examples = listOf("EVENT REPAIR_STATION")),
+        Spec("LOAD", "<event>|<ship blueprint> <sector>", "LOAD <event>: as EVENT. LOAD <ship blueprint or list> <sector>: this beacon cleared and a hostile ship of that blueprint built for that sector (0 is the first; an unknown blueprint gives the default ship)", group = Groups.WORLD, examples = listOf("LOAD REPAIR_STATION", "LOAD SHIPS_PIRATE 3", "LOAD MANTIS_FIGHTER 0")),
+        Spec("LANG", "<language>", "Switch the game's language (en, de, es, fr, it, pl, pt, ru, ja, zh-Hans or a mod's own) until the game restarts", group = Groups.DEV, examples = listOf("LANG de", "LANG en")),
     )
 
     /** Ours that shared a Hyperspace or original command's name and behaved differently: old name to new name. */
     @JvmField
     val RENAMED: Map<String, String> = linkedMapOf(
         "rich" to "dev-rich", "poor" to "dev-poor", "weapon" to "dev-weapon", "drone" to "dev-drone", "aug" to "dev-aug",
-        "store" to "dev-store", "event" to "dev-event", "kill" to "dev-kill", "skill" to "dev-skill",
+        "store" to "dev-store", "event" to "dev-event", "kill" to "dev-kill", "skill" to "dev-skill", "load" to "dev-load",
     )
 
     /** Ours that did what the Hyperspace or original command of the same name does: that one stays, with our completion. */

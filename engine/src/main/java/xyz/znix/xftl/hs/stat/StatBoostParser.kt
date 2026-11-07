@@ -31,39 +31,41 @@ object StatBoostDefs {
 
     fun reset() {
         defs.clear(); saved.clear(); nextStackId = 0; stackIdMap.clear(); luaDefs.clear()
-        crewEnd = -1; legacyIds = IntArray(0)
+        weaponEnd = 0; legacyWeaponOrder = emptyList(); legacy1 = emptyArray(); legacy2 = emptyArray()
     }
 
-    /** The number of definitions hyperspace.xml's crew and augments gave (HsCrewContent.load), before the weapons'. */
-    @JvmField var crewEnd = -1
+    /** The number of definitions the weapon blueprints gave (HsWeapons.loadContent); hyperspace.xml's follow. */
+    @JvmField var weaponEnd = 0
 
-    /** realBoostId of the browser's earlier numbering (hyperspace.xml first) -> today's; saves without `ids` use it. */
-    @JvmField var legacyIds = IntArray(0)
+    /** The weapons' definitions in the order the browser's earlier saves numbered them (the blueprint map's order). */
+    @JvmField var legacyWeaponOrder: List<StatBoostDefinition> = emptyList()
+
+    /** Saved realBoostId -> definition for the browser's earlier numberings: no `ids` (crew first), `ids` 2. */
+    private var legacy1: Array<StatBoostDefinition?> = emptyArray()
+    private var legacy2: Array<StatBoostDefinition?> = emptyArray()
 
     /**
-     * HS gives realBoostIds in its parse order: the weapon blueprints (ProcessWeaponBlueprint) come before
-     * hyperspace.xml's crew and augments (oracle sweep-crew2: zoltan_devotee's power boost is 560, the weapons have 541).
-     * We parse hyperspace.xml first (the weapons may load its saved definitions), so the weapons' definitions, parsed
-     * after [crewEnd], move to the front and every realBoostId is the index again.
+     * HS gives realBoostIds in its parse order: the weapon blueprints (ProcessWeaponBlueprint) before hyperspace.xml's
+     * crew and augments (oracle sweep-crew2: zoltan_devotee's power boost is 560, the weapons have 541). The weapons
+     * are parsed first (HsWeapons.loadContent), in the original's blueprint order, so every realBoostId is HS's and
+     * the same on every platform. Called once hyperspace.xml's crew and augments are parsed: builds the tables for
+     * saves made with the browser's earlier numberings, hyperspace.xml first (no `ids`) and the weapons first in the
+     * blueprint map's order (`ids` 2).
      */
     @JvmStatic
     fun weaponsFirst() {
-        if (crewEnd < 0 || crewEnd > defs.size) return
-        val old = ArrayList(defs)
-        defs.clear()
-        defs.addAll(old.subList(crewEnd, old.size)); defs.addAll(old.subList(0, crewEnd))
-        legacyIds = IntArray(old.size)
-        for ((i, d) in defs.withIndex()) {
-            if (d.realBoostId in legacyIds.indices && old[d.realBoostId] === d) legacyIds[d.realBoostId] = i
-            d.realBoostId = i
-        }
-        crewEnd = -1
+        val crew = defs.subList(weaponEnd.coerceAtMost(defs.size), defs.size).toList()
+        legacy1 = (crew + legacyWeaponOrder).toTypedArray()
+        legacy2 = (legacyWeaponOrder + crew).toTypedArray()
     }
 
-    /** A saved realBoostId: today's numbering when the save says so (`ids` = 2), else the earlier one. */
+    /** A saved realBoostId: today's numbering when the save says so (`ids` = 3), else an earlier one. */
     @JvmStatic
-    fun bySavedId(id: Int, current: Boolean): StatBoostDefinition? =
-        byRealId(if (current || id !in legacyIds.indices) id else legacyIds[id])
+    fun bySavedId(id: Int, ids: String?): StatBoostDefinition? = when (ids) {
+        "3" -> byRealId(id)
+        "2" -> legacy2.getOrNull(id) ?: byRealId(id)
+        else -> legacy1.getOrNull(id) ?: byRealId(id)
+    }
 
     /** StatBoostDefinition::statBoostDefs[realBoostId] (saves). */
     @JvmStatic

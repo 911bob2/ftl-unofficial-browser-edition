@@ -278,43 +278,64 @@ class MainActivity : ComponentActivity() {
         var server by remember { mutableStateOf(app.account.server) }
         var name by remember { mutableStateOf("") }
         var password by remember { mutableStateOf("") }
+        var confirm by remember { mutableStateOf("") }
+        // Create an account instead (docs/WEBSITE.md, "Registration"): the website's form and the server's rules and words.
+        var registering by rememberSaveable { mutableStateOf(false) }
+        var closed by remember { mutableStateOf(false) }
         var showServer by remember { mutableStateOf(false) }
         var busy by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
-        Panel(tab = "Account") {
-            Txt("Sign in", Ftl.h1)
-            Txt("Use the account you play with in the browser. Your saves sync both ways; play continues offline and syncs later.", Ftl.small)
+        fun go() {
+            if (registering && password != confirm) { error = "The passwords do not match."; return }
+            busy = true
+            error = null
+            scope.launch {
+                try {
+                    val u = withContext(Dispatchers.IO) { if (registering) app.account.register(server, name, password) else app.account.signIn(server, name, password) }
+                    password = ""
+                    confirm = ""
+                    app.accountChanged()
+                    // Saves made while playing without an account join it and upload, as "Enable cloud saves" does on the website.
+                    val moved = withContext(Dispatchers.IO) { runCatching { app.sync.adoptLocal() }.getOrDefault(0) }
+                    if (moved > 0) Toast.makeText(this@MainActivity, if (moved == 1) "Your save from playing offline is now in your account."
+                        else "Your $moved saves from playing offline are now in your account.", Toast.LENGTH_LONG).show()
+                    onSignedIn(u)
+                } catch (e: Exception) {
+                    val api = e as? ftl.android.app.net.ApiError
+                    if (api?.code == "registration_closed") closed = true
+                    error = when {
+                        api?.status == 401 && !registering -> "The username or password is incorrect."
+                        api?.status == 429 && api.body?.get("error") == null -> "Too many attempts. Please wait before trying again."
+                        e is IllegalArgumentException || e is java.net.URISyntaxException || e is java.net.MalformedURLException -> "That server address is not valid."
+                        else -> e.message ?: if (registering) "The account was not created. Check your connection." else "Sign-in failed. Check your connection."
+                    }
+                } finally {
+                    busy = false
+                }
+            }
+        }
+        Panel(tab = if (registering) "New account" else "Account") {
+            Txt(if (registering) "Create account" else "Sign in", Ftl.h1)
+            if (!registering) Txt("Use the account you play with in the browser. Your saves sync both ways; play continues offline and syncs later.", Ftl.small)
+            if (registering && closed) Txt("Registration is closed on this server. Ask the administrator for an account, or play offline.", Ftl.small.copy(color = Ftl.accent))
             Field("Username", name, { name = it })
             Field("Password", password, { password = it }, password = true)
+            if (registering) {
+                Field("Confirm password", confirm, { confirm = it }, password = true)
+                Txt("Use 15 to 128 characters.", Ftl.small)
+            }
             if (showServer) Field("Server", server, { server = it })
             else Txt("Server: $server (change)", Ftl.small.copy(color = Ftl.secondary), Modifier.clickable { showServer = true })
             error?.let { Txt(it, Ftl.small.copy(color = Ftl.error)) }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                FtlButton(if (busy) "Signing in…" else "Sign in", {
-                    busy = true
-                    error = null
-                    scope.launch {
-                        try {
-                            val u = withContext(Dispatchers.IO) { app.account.signIn(server, name, password) }
-                            password = ""
-                            app.accountChanged()
-                            // Saves made while playing without an account join it and upload, as "Enable cloud saves" does on the website.
-                            val moved = withContext(Dispatchers.IO) { runCatching { app.sync.adoptLocal() }.getOrDefault(0) }
-                            if (moved > 0) Toast.makeText(this@MainActivity, if (moved == 1) "Your save from playing offline is now in your account."
-                                else "Your $moved saves from playing offline are now in your account.", Toast.LENGTH_LONG).show()
-                            onSignedIn(u)
-                        } catch (e: Exception) {
-                            error = when ((e as? ftl.android.app.net.ApiError)?.status) {
-                                401 -> "The username or password is incorrect."
-                                429 -> "Too many attempts. Please wait before trying again."
-                                else -> if (e is IllegalArgumentException || e is java.net.URISyntaxException || e is java.net.MalformedURLException) "That server address is not valid."
-                                    else e.message ?: "Sign-in failed. Check your connection."
-                            }
-                        } finally {
-                            busy = false
-                        }
-                    }
-                }, kind = ButtonKind.PRIMARY, enabled = !busy && name.isNotBlank() && password.isNotEmpty())
+                FtlButton(when {
+                    busy && registering -> "Creating account…"
+                    busy -> "Signing in…"
+                    registering -> "Create account"
+                    else -> "Sign in"
+                }, { go() }, kind = ButtonKind.PRIMARY,
+                    enabled = !busy && name.isNotBlank() && password.isNotEmpty() && (!registering || confirm.isNotEmpty()))
+                FtlButton(if (registering) "I already have an account" else "Create an account", { registering = !registering; error = null; confirm = "" }, enabled = !busy)
                 FtlButton("Play offline", onOffline)
             }
         }
@@ -390,7 +411,11 @@ class MainActivity : ComponentActivity() {
         class Lock(val id: String, val lock: LockInfo, val keepMine: Boolean?, val hsAsked: Boolean = false) : Ask()
         class Conflict(val id: String) : Ask()
         class Overridden(val id: String, val by: String, val at: String?) : Ask()
-        class Deleted(val id: String) : Ask()
+        class Deleted(val id: String, val name: String) : Ask()
+        /** Delete refused while another game holds the lock: Delete anyway overrides it. */
+        class DeleteLocked(val id: String, val name: String, val lock: LockInfo?) : Ask()
+        /** A short note (a toast), then the list again. */
+        class Note(val text: String) : Ask()
         class NewSave(val prefill: List<String> = emptyList()) : Ask()
         class Advanced(val id: String, val first: String? = null) : Ask()
         /** "Hyperspace mod without Hyperspace" before a save starts, then the way to Hyperspace.ftl and to the save's mods. */
@@ -444,9 +469,12 @@ class MainActivity : ComponentActivity() {
                 try {
                     val outcome = withContext(Dispatchers.IO) {
                         if (signedIn) when (app.sync.prepare(id)?.action) {
-                            SyncAction.ASK_CONFLICT -> if (keepMine == null) return@withContext Ask.Conflict(id)
+                            // "Use the cloud copy" applies at once, with no lock (docs/SAVES.md); keeping this device's copy needs the lock below.
+                            SyncAction.ASK_CONFLICT -> if (keepMine == null) return@withContext Ask.Conflict(id) else if (!keepMine) app.sync.resolveConflict(id, false)
                             SyncAction.NOTIFY_OVERRIDDEN -> return@withContext app.store.get(id)?.overridden.let { Ask.Overridden(id, it?.device ?: "another device", it?.at) }
-                            SyncAction.ASK_DELETED -> return@withContext Ask.Deleted(id)
+                            SyncAction.ASK_DELETED -> return@withContext Ask.Deleted(id, app.store.get(id)?.name ?: "This save")
+                            // Clean here and deleted on another device: it is gone from this device too (SyncEngine.prepare).
+                            SyncAction.REMOVE_LOCAL -> return@withContext Ask.Note(SaveWords.words("deletedRemoved", "name" to (rows.firstOrNull { it.id == id }?.name ?: "The save")))
                             else -> {}
                         }
                         // Refused here, before the lock: a save this device cannot play stays free for the others.
@@ -462,7 +490,10 @@ class MainActivity : ComponentActivity() {
                         when (val r = app.sync.lock(id, override)) {
                             is SyncEngine.LockResult.Held -> Ask.Lock(id, r.lock, keepMine, hsAsked)
                             is SyncEngine.LockResult.Overridden -> Ask.Overridden(id, r.by?.device ?: "another device", r.at)
-                            else -> { if (keepMine != null) app.sync.resolveConflict(id, keepMine); null }
+                            is SyncEngine.LockResult.Refused -> Ask.Message("Could not start", r.reason)
+                            SyncEngine.LockResult.Deleted -> Ask.Note(SaveWords.words("deletedRemoved", "name" to save.name))
+                            SyncEngine.LockResult.Offline -> if (keepMine == true) Ask.Message("Not kept", SaveWords.words("keepOffline", "name" to save.name)) else null
+                            else -> { if (keepMine == true) app.sync.resolveConflict(id, true); null }
                         }
                     }
                     if (outcome != null) ask = outcome
@@ -472,6 +503,23 @@ class MainActivity : ComponentActivity() {
                 } finally {
                     busy = null
                 }
+            }
+        }
+
+        /** Deletes here and in the account (SyncEngine.remove): offline nothing goes; a lock held elsewhere asks first. */
+        fun delete(id: String, name: String, override: Boolean = false) {
+            scope.launch {
+                try {
+                    when (val r = withContext(Dispatchers.IO) { app.sync.remove(id, override) }) {
+                        SyncEngine.Removed.Done -> {}
+                        SyncEngine.Removed.Offline -> ask = Ask.Message("Not deleted", SaveWords.words("deleteOffline"))
+                        is SyncEngine.Removed.Held -> ask = Ask.DeleteLocked(id, name, r.lock)
+                    }
+                } catch (e: Exception) {
+                    ask = Ask.Message("Not deleted", e.message ?: "Try again.")
+                }
+                reload()
+                app.sync.requestSync()
             }
         }
 
@@ -510,30 +558,44 @@ class MainActivity : ComponentActivity() {
 
         when (val a = ask) {
             null -> {}
-            is Ask.Lock -> FtlDialog("In use on ${a.lock.device}", { ask = null }, {
-                FtlButton("Cancel", { ask = null })
-                FtlButton("Override lock", { ask = null; play(a.id, override = true, keepMine = a.keepMine, hsAsked = a.hsAsked) }, kind = ButtonKind.DANGER)
+            is Ask.Lock -> FtlDialog(SaveWords.words("lockTitle", "device" to a.lock.device), { ask = null; reload() }, {
+                FtlButton("Cancel", { ask = null; reload() })
+                FtlButton(SaveWords.words("override"), { ask = null; play(a.id, override = true, keepMine = a.keepMine, hsAsked = a.hsAsked) }, kind = ButtonKind.DANGER)
             }) {
-                Txt("${a.lock.device} has this save open · last seen ${clock(a.lock.lastSeen)}.")
-                Txt("It may have progress and unlocks that have not synced yet. Overriding discards them; nothing is kept.", Ftl.small.copy(color = Ftl.error))
+                Txt(SaveWords.lockLine(a.lock.device, a.lock.lastSeen) + ".")
+                Txt(SaveWords.words("overrideWarning", "device" to a.lock.device), Ftl.small.copy(color = Ftl.error))
             }
-            is Ask.Conflict -> FtlDialog("This save changed in two places", { ask = null }, {
-                FtlButton("Use the cloud copy", { ask = null; play(a.id, keepMine = false) })
-                FtlButton("Keep this device's copy", { ask = null; play(a.id, keepMine = true) }, kind = ButtonKind.PRIMARY)
+            is Ask.Conflict -> FtlDialog(SaveWords.words("conflictTitle", "name" to (rows.firstOrNull { it.id == a.id }?.name ?: "This save")), { ask = null }, {
+                FtlButton("Cancel", { ask = null }, kind = ButtonKind.GHOST)
+                FtlButton(SaveWords.words("useCloud"), { ask = null; play(a.id, keepMine = false) })
+                FtlButton(SaveWords.words("keepMine"), { ask = null; play(a.id, keepMine = true) }, kind = ButtonKind.PRIMARY)
             }) {
-                Txt("The cloud has a newer version than the one this device's unsynced progress started from.")
-                Txt("Use the cloud copy: this device's unsynced progress and unlocks are discarded. Keep this device's copy: it replaces the cloud version, unlocks too (a recovery snapshot of the cloud version is kept).", Ftl.small)
+                Txt(SaveWords.words("conflictText"))
+                Txt(SaveWords.words("conflictChoices"), Ftl.small)
             }
-            is Ask.Overridden -> FtlDialog("Save taken over", { ask = null }, {
+            is Ask.Overridden -> FtlDialog(SaveWords.words("overriddenTitle"), { ask = null }, {
                 FtlButton("OK", { ask = null; scope.launch { withContext(Dispatchers.IO) { runCatching { app.sync.acknowledgeOverride(a.id, a.at) } }; reload() } }, kind = ButtonKind.PRIMARY)
             }) {
-                Txt("This save was taken over on ${a.by}. Progress and unlocks on this device since its last sync were discarded.")
+                Txt(SaveWords.overridden(a.by, a.at))
             }
-            is Ask.Deleted -> FtlDialog("Deleted on another device", { ask = null }, {
-                FtlButton("Delete here too", { ask = null; scope.launch { withContext(Dispatchers.IO) { app.sync.resolveDeleted(a.id, false) }; reload() } }, kind = ButtonKind.DANGER)
-                FtlButton("Upload again", { ask = null; scope.launch { withContext(Dispatchers.IO) { app.sync.resolveDeleted(a.id, true) }; reload() } }, kind = ButtonKind.PRIMARY)
+            is Ask.Deleted -> FtlDialog(SaveWords.words("deletedTitle", "name" to a.name), { ask = null }, {
+                FtlButton("Cancel", { ask = null }, kind = ButtonKind.GHOST)
+                FtlButton(SaveWords.words("deleteHereToo"), { ask = null; scope.launch { withContext(Dispatchers.IO) { app.sync.resolveDeleted(a.id, false) }; reload() } }, kind = ButtonKind.DANGER)
+                FtlButton(SaveWords.words("uploadAgain"), { ask = null; scope.launch { withContext(Dispatchers.IO) { app.sync.resolveDeleted(a.id, true) }; reload() } }, kind = ButtonKind.PRIMARY)
             }) {
-                Txt("This save was deleted on another device, but this device has progress that never synced.")
+                Txt(SaveWords.words("deletedText"))
+            }
+            is Ask.Note -> LaunchedEffect(a) {
+                Toast.makeText(this@MainActivity, a.text, Toast.LENGTH_LONG).show()
+                ask = null
+                reload()
+            }
+            is Ask.DeleteLocked -> FtlDialog(SaveWords.words("lockTitle", "device" to (a.lock?.device ?: "another device")), { ask = null }, {
+                FtlButton("Cancel", { ask = null })
+                FtlButton(SaveWords.words("deleteAnyway"), { ask = null; delete(a.id, a.name, override = true) }, kind = ButtonKind.DANGER)
+            }) {
+                Txt(a.lock?.let { SaveWords.lockLine(it.device, it.lastSeen) + "." } ?: "Another game has this save open.")
+                Txt(SaveWords.words("deleteLockedWarning"), Ftl.small.copy(color = Ftl.error))
             }
             is Ask.Advanced -> AdvancedDialog(a.id, a.first, onChanged = { if (a.first != null) play(a.id, hsAsked = true) }) { ask = null; reload() }
             is Ask.HsMissing -> HyperspaceWarning(a.mod, a.name, onEnable = {
@@ -616,24 +678,10 @@ class MainActivity : ComponentActivity() {
                     }, kind = ButtonKind.PRIMARY, enabled = SaveNames.clean(name) != null)
                 }) { Field("Name", name, { name = it }) }
             }
-            is Ask.Delete -> FtlDialog("Delete ${a.name}?", { ask = null }, {
+            is Ask.Delete -> FtlDialog(SaveWords.words("deleteTitle", "name" to a.name), { ask = null }, {
                 FtlButton("Cancel", { ask = null })
-                FtlButton("Delete", {
-                    ask = null
-                    scope.launch {
-                        try {
-                            withContext(Dispatchers.IO) {
-                                if (sync.cloud.containsKey(a.id)) app.account.api?.deleteSave(a.id)
-                                app.store.delete(a.id)
-                            }
-                        } catch (e: Exception) {
-                            ask = Ask.Message("Not deleted", e.message ?: "Try again.")
-                        }
-                        reload()
-                        app.sync.requestSync()
-                    }
-                }, kind = ButtonKind.DANGER)
-            }) { Txt(if (sync.cloud.containsKey(a.id)) "The save is deleted on this device and in your account, with its older copies. This cannot be undone." else "The save is deleted from this device. This cannot be undone.") }
+                FtlButton("Delete", { ask = null; delete(a.id, a.name) }, kind = ButtonKind.DANGER)
+            }) { Txt(SaveWords.words(if (sync.cloud.containsKey(a.id) || (app.store.get(a.id)?.base ?: 0L) > 0) "deleteCloud" else "deleteLocal")) }
             is Ask.LowMemory -> FtlDialog(MemoryNotice.TOO_SMALL_TITLE, { ask = null }, {
                 FtlButton("Cancel", { ask = null })
                 FtlButton("Play anyway", {
@@ -667,10 +715,10 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     val sum = r.meta.summary
-                    Txt(if (!r.hasRun) "Empty" else listOfNotNull(shipLabel(sum.ship), sum.sector?.let { "sector $it" }, sum.scrap?.let { "$it scrap" },
-                        sum.hull?.let { "hull $it" }, sum.playSeconds.takeIf { it > 0 }?.let { duration(it) }, ago(r.playedAt)).joinToString(" · "), Ftl.small)
-                    r.meta.playedOn?.let { p -> Txt("Last played on ${p.device} (${p.platform})", Ftl.small) }
-                    lock?.let { Txt("In use on ${it.device} · last seen ${clock(it.lastSeen)}", Ftl.small.copy(color = Ftl.accent)) }
+                    Txt(SaveWords.summaryLine(r.hasRun, sum, r.playedAt), Ftl.small)
+                    r.meta.playedOn?.let { p -> Txt("Last played on ${p.device}" + (if (p.platform.isNotEmpty()) " (${p.platform})" else ""), Ftl.small) }
+                    lock?.let { Txt(SaveWords.lockLine(it.device, it.lastSeen), Ftl.small.copy(color = Ftl.accent)) }
+                    sync.refused[r.id]?.let { Txt(SaveWords.words("notSynced", "reason" to it), Ftl.small.copy(color = Ftl.accent)) }
                     for (m in missingMods(r.setup, have)) Txt("Missing mod: ${m.name}, ${m.sha256.take(12)}…", Ftl.small.copy(color = Ftl.error))
                 }
                 FtlButton(if (busy) "…" else if (r.hasRun) "Play" else "Start", onPlay, kind = ButtonKind.PRIMARY, enabled = !busy)

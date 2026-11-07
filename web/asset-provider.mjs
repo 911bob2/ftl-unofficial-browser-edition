@@ -7,7 +7,15 @@ export async function createAssetProvider({api,accountId,fetchBytes,onProgress=(
  if(config.accountId&&config.accountId!==accountId)throw Error('The active account changed. Reload before using this account’s game files.');
  if(config.assetSource==='server'){
   const manifest=await api('/assets/manifest');
-  return {source:'server',manifest,...await createAssetCache(manifest,fetchBytes,onProgress),dispose(){}};
+  // A server's prepared boot pack carries the engine's own files (engine/...) from the day it was prepared; the image's
+  // resources.pack is the current set, as a player's own ftl.dat gets it (fetchBoot below). loadGame lays it over.
+  let enginePromise=null;
+  const fetchEngine=config.resourcesHash?()=>enginePromise??=(async()=>{
+   const pack=await fetchBytes(config.resourcesUrl,{length:config.resourcesBytes});
+   if(pack.byteLength!==config.resourcesBytes||await sha256(pack)!==config.resourcesHash)throw Error('Engine resources changed. Reload and retry.');
+   return pack;
+  })().catch(e=>{enginePromise=null;throw e;}):null;
+  return {source:'server',manifest,fetchEngine,...await createAssetCache(manifest,fetchBytes,onProgress),dispose(){enginePromise=null;}};
  }
  const record=await getLocalAsset(accountId);
  if(!record||record.index.assetVersion!==config.assetVersion||record.index.parserVersion!==1)throw Object.assign(Error('Upload a matching ftl.dat in Local game files before launching FTL or running engine tests.'),{code:'LOCAL_ASSETS_REQUIRED'});

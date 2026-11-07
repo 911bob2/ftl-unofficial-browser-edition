@@ -56,15 +56,15 @@ fun SnapshotsDialog(id: String, name: String, onClose: (restored: String?) -> Un
     val playing = app.sync.playing == id
     confirm?.let { s ->
         val dirty = app.store.get(id)?.dirty == true
-        FtlDialog("Restore the save from ${clock(s.createdUtc)}?", { confirm = null }, {
+        FtlDialog(SaveWords.words("restoreTitle", "time" to clock(s.createdUtc)), { confirm = null }, {
             FtlButton("Cancel", { confirm = null }, enabled = !busy)
             FtlButton(if (busy) "Restoring…" else "Restore", {
                 busy = true
                 scope.launch {
                     try {
                         when (val r = withContext(Dispatchers.IO) { app.sync.restore(id, s.revision) }) {
-                            is SyncEngine.LockResult.Held -> { error = "This save is in use on ${r.lock.device}. Close it there first."; confirm = null }
-                            else -> { confirm = null; onClose("Restored $name from ${clock(s.createdUtc)}.") }
+                            is SyncEngine.LockResult.Held -> { error = SaveWords.words("restoreHeld", "device" to r.lock.device); confirm = null }
+                            else -> { confirm = null; onClose(SaveWords.words("restored", "name" to name, "time" to clock(s.createdUtc))) }
                         }
                     } catch (e: ApiError) {
                         error = e.message
@@ -78,14 +78,14 @@ fun SnapshotsDialog(id: String, name: String, onClose: (restored: String?) -> Un
                 }
             }, kind = ButtonKind.DANGER, enabled = !busy)
         }) {
-            Txt("The save becomes this snapshot as its newest version; the newer snapshots stay, so this can be undone.")
-            if (dirty) Txt("Progress on this device that has not synced yet is discarded.", Ftl.small.copy(color = Ftl.error))
+            Txt(SaveWords.words("restoreText"))
+            if (dirty) Txt(SaveWords.words("restoreUnsynced"), Ftl.small.copy(color = Ftl.error))
         }
         return
     }
     FtlDialog("Recovery snapshots", { onClose(null) }, { FtlButton("Close", { onClose(null) }) }, wide = true) {
         Txt(name, Ftl.h2)
-        Txt("The account keeps the last 10 versions of every save. Restoring makes a snapshot the newest version; the newer ones stay.", Ftl.small)
+        Txt(SaveWords.words("snapshotsText"), Ftl.small)
         error?.let { Txt(it, Ftl.small.copy(color = Ftl.error)) }
         val l = list
         when {

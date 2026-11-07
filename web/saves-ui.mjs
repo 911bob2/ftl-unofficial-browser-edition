@@ -5,6 +5,8 @@
 // message(text), download(value, name), showAll()}.
 import {choose, confirmAction, askText, notice, el} from './dialogs.mjs';
 import {SAVES_LIMIT} from './savecore.mjs';
+import {words} from './save-words.mjs';
+export {words};
 
 const fill = (node, ...children) => node.replaceChildren(...children.flat().filter(c => c != null && c !== false));
 /** "14:05" today, else "29 Oct 14:05". */
@@ -32,11 +34,20 @@ export function duration(seconds) {
 const modName = m => m.name + (m.version ? ' ' + m.version : '');
 /** Tooltip text of a setup: "Hyperspace 1.23.2, Multiverse Assets 5.5"; "No mods" for none. */
 export const modsLabel = mods => mods.length ? mods.map(modName).join(', ') : 'No mods';
+/** Stock ships by blueprint id, as the Android launcher names them (ui/Theme.kt shipLabel; SaveWordsTest compares). */
+const STOCK_SHIPS = {
+  PLAYER_SHIP_HARD: 'The Kestrel', PLAYER_SHIP_STEALTH: 'Stealth Cruiser', PLAYER_SHIP_MANTIS: 'Mantis Cruiser',
+  PLAYER_SHIP_CIRCLE: 'Engi Cruiser', PLAYER_SHIP_FED: 'Federation Cruiser', PLAYER_SHIP_JELLY: 'Slug Cruiser',
+  PLAYER_SHIP_ROCK: 'Rock Cruiser', PLAYER_SHIP_ENERGY: 'Zoltan Cruiser', PLAYER_SHIP_CRYSTAL: 'Crystal Cruiser',
+  PLAYER_SHIP_ANAEROBIC: 'Lanius Cruiser',
+};
+/** The list's ship: a save names a stock ship by its id unless the player renamed it; a mod's ship keeps what it has. */
+export const shipLabel = ship => ship == null ? null : STOCK_SHIPS[String(ship).replace(/_[23]$/, '')] ?? ship;
 /** The muted line of a save: "Kestrel A · sector 3 · 120 scrap · hull 25/30 · 1 h 5 min · 2 h ago", or "Empty". */
 export function summaryLine(row) {
   if (!row.hasRun) return 'Empty';
   const s = row.meta?.summary ?? {};
-  const parts = [s.ship ?? s.shipId, s.sector ? 'sector ' + s.sector : null, s.scrap != null ? s.scrap + ' scrap' : null,
+  const parts = [shipLabel(s.ship ?? s.shipId), s.sector ? 'sector ' + s.sector : null, s.scrap != null ? s.scrap + ' scrap' : null,
     s.hull != null ? 'hull ' + s.hull + (s.maxHull ? '/' + s.maxHull : '') : null, s.playSeconds > 0 ? duration(s.playSeconds) : null, row.playedAt ? ago(row.playedAt) : null].filter(Boolean);
   return parts.join(' · ') || 'Run in progress';
 }
@@ -53,7 +64,8 @@ export function statusBadge(row, {local}) {
 }
 /** "In use on Pixel 8 · last seen 14:05" (another tab of this browser says so). */
 export function lockLine(lock, sameDevice) {
-  return 'In use on ' + (sameDevice ? 'another tab of this browser' : lock.device || 'another device') + (lock.lastSeen ? ' · last seen ' + clock(lock.lastSeen) : '');
+  const device = sameDevice ? 'another tab of this browser' : lock.device || 'another device';
+  return lock.lastSeen ? words('lockLine', {device, time: clock(lock.lastSeen)}) : words('lockTitle', {device});
 }
 
 // ⋯ menus close on an outside click or Escape.
@@ -129,7 +141,7 @@ export async function renderSaves({root, ctx, only = null, onPlay = null}) {
     if (played?.device) lines.push(el('div', {className: 'muted text-sm save-played'}, 'Last played on ' + played.device + (played.platform ? ' (' + played.platform + ')' : '')));
     if (r.lock) lines.push(el('div', {className: 'text-sm text-warning save-lock'}, lockLine(r.lock, service.sync.sameDevice(r.lock))));
     for (const m of missing.get(r.setup.key) ?? []) lines.push(el('div', {className: 'text-sm text-warning save-missing', dataset: {sha: m.sha256}}, m.inCatalogue ? 'Downloads when played: ' + modName(m) : 'missing mod: ' + m.name + ', ' + m.sha256));
-    if (r.error) lines.push(el('div', {className: 'text-sm text-warning save-error'}, 'Not synced: ' + r.error));
+    if (r.error) lines.push(el('div', {className: 'text-sm text-warning save-error'}, words('notSynced', {reason: r.error})));
     return el('li', {className: 'save-row', dataset: {id: r.id, setup: r.setup.key, status: r.decision?.status ?? '', current: String(isCurrent)}},
       el('div', {className: 'save-main'}, el('div', {className: 'save-title'}, el('strong', {}, r.name), ...badges), ...lines),
       el('div', {className: 'actions'}, play, menu));
@@ -147,15 +159,15 @@ async function renameSave(ctx, r) {
 
 async function deleteSave(ctx, r) {
   const {service} = ctx, inCloud = !!r.cloud;
-  const yes = await confirmAction({id: 'save-delete-dialog', title: 'Delete ' + r.name + '?', danger: true, yes: 'Delete',
-    text: inCloud ? 'The save is deleted in this browser and in your account. Its recovery snapshots are deleted with it.' : 'The save is deleted from this browser.'});
+  const yes = await confirmAction({id: 'save-delete-dialog', title: words('deleteTitle', {name: r.name}), danger: true, yes: 'Delete',
+    text: words(inCloud ? 'deleteCloud' : 'deleteLocal')});
   if (!yes) return;
   try { await service.sync.remove(r.id); }
   catch (e) {
     if (e.code !== 'locked') throw e;
     const lock = e.detail?.lock;
-    const force = await confirmAction({id: 'save-delete-locked-dialog', title: 'In use on ' + (lock?.device || 'another device'), danger: true, yes: 'Delete anyway',
-      text: lock ? lockLine(lock, service.sync.sameDevice(lock)) + '.' : 'Another game has this save open.', warning: 'That game may have progress and unlocks that have not synced yet. Deleting discards them.'});
+    const force = await confirmAction({id: 'save-delete-locked-dialog', title: words('lockTitle', {device: lock?.device || 'another device'}), danger: true, yes: words('deleteAnyway'),
+      text: lock ? lockLine(lock, service.sync.sameDevice(lock)) + '.' : 'Another game has this save open.', warning: words('deleteLockedWarning')});
     if (!force) return;
     await service.sync.remove(r.id, {override: true});
   }
@@ -166,7 +178,7 @@ async function snapshotsDialog(ctx, r) {
   const {service} = ctx, list = el('div', {className: 'snapshot-list', id: 'save-snapshots'}, el('p', {className: 'muted text-sm'}, 'Loading…'));
   const kinds = {auto: 'auto', manual: 'manual', import: 'import', restore: 'restore'};
   const shown = choose({id: 'save-snapshots-dialog', title: 'Recovery snapshots', eyebrow: r.name, className: 'slot-dialog',
-    text: 'The account keeps the last 10 versions of every save. Restoring makes a snapshot the newest version; the newer ones stay.', content: [list],
+    text: words('snapshotsText'), content: [list],
     actions: [{label: 'Close', value: null, kind: 'ghost', id: 'save-snapshots-close'}]});
   try {
     const snapshots = await service.sync.snapshots(r.id), current = snapshots[0]?.revision;
@@ -174,15 +186,15 @@ async function snapshotsDialog(ctx, r) {
       const restore = el('button', {className: 'btn btn-sm', type: 'button'}, 'Restore');
       restore.onclick = async () => {
         document.getElementById('save-snapshots-dialog')?.close();
-        const yes = await confirmAction({id: 'save-restore-dialog', title: 'Restore the save from ' + clock(s.createdUtc) + '?', yes: 'Restore', danger: true,
-          text: 'The save becomes this snapshot as its newest version; the newer snapshots stay, so this can be undone.', warning: r.local?.dirty ? 'Progress in this browser that has not synced yet is discarded.' : null});
+        const yes = await confirmAction({id: 'save-restore-dialog', title: words('restoreTitle', {time: clock(s.createdUtc)}), yes: 'Restore', danger: true,
+          text: words('restoreText'), warning: r.local?.dirty ? words('restoreUnsynced') : null});
         if (!yes) return;
-        try { await service.sync.restore(r.id, s.revision); ctx.message('Restored ' + r.name + ' from ' + clock(s.createdUtc) + '.'); }
+        try { await service.sync.restore(r.id, s.revision); ctx.message(words('restored', {name: r.name, time: clock(s.createdUtc)})); }
         catch (e) { ctx.message(e.message); }
         refreshSaves();
       };
       const get = el('button', {className: 'btn btn-ghost btn-sm', type: 'button'}, 'Download');
-      get.onclick = async () => { try { const p = await service.sync.snapshot(r.id, s.revision); ctx.download({schema: 2, kind: 'ftl-save', name: p.name, setup: p.setup, meta: p.meta, run: p.run, revision: p.revision}, 'ftl-snapshot-' + s.revision + '.json'); } catch (e) { ctx.message(e.message); } };
+      get.onclick = async () => { try { const p = await service.sync.snapshot(r.id, s.revision); ctx.download(snapshotBackup(p), 'ftl-snapshot-' + s.revision + '.json'); } catch (e) { ctx.message(e.message); } };
       return el('div', {className: 'snapshot-row', dataset: {revision: String(s.revision)}},
         el('span', {}, [clock(s.createdUtc), kinds[s.kind] ?? s.kind, 'revision ' + s.revision, s.revision === current ? 'current' : null].filter(Boolean).join(' · ')),
         el('div', {className: 'actions'}, s.revision === current || ctx.playing() === r.id ? null : restore, get));
@@ -260,7 +272,7 @@ export async function newSave({ctx, onLeave = null}) {
     let finished = false;
     const done = value => { if (finished) return; finished = true; if (dialog.open) dialog.close(); dialog.remove(); resolve(value); };
     const full = rows.length >= SAVES_LIMIT, blockedNow = ctx.blocked();
-    note.textContent = blockedNow ?? (full ? `An account has at most ${SAVES_LIMIT} saves. Delete one first.` : '');
+    note.textContent = blockedNow ?? (full ? words('savesFull', {count: SAVES_LIMIT}) : '');
     create.disabled = full || !!blockedNow;
     change.disabled = !!blockedNow;
     cancel.onclick = () => done(null);
@@ -345,28 +357,34 @@ export function manageSaves({ctx, enabled, label}) {
 /** A save open elsewhere: "Override lock" after a warning, or Cancel. Resolves true to override. */
 export function askOverride(lock, sameDevice) {
   const where = sameDevice ? 'another tab of this browser' : lock?.device || 'another device';
-  return confirmAction({id: 'save-lock-dialog', title: 'In use on ' + where, yes: 'Override lock', danger: true,
+  return confirmAction({id: 'save-lock-dialog', title: words('lockTitle', {device: where}), yes: words('override'), danger: true,
     text: lockLine(lock ?? {}, sameDevice) + '.',
-    warning: sameDevice ? 'That tab stops at once; what it played since its last save is lost.' : where + ' may have progress and unlocks that have not synced yet. Overriding discards them; nothing is kept.'});
+    warning: sameDevice ? 'That tab stops at once; what it played since its last save is lost.' : words('overrideWarning', {device: where})});
 }
 /** Changed in two places: resolves 'cloud', 'mine' or null. */
 export function askConflict(name) {
-  return choose({id: 'save-conflict-dialog', title: name + ' changed in two places', cancel: null,
-    text: ['The account has a newer version than the one this browser\'s unsynced progress started from.',
-      el('p', {className: 'muted text-sm'}, 'Use the cloud copy: the progress and unlocks in this browser that have not synced are discarded. Keep this device\'s copy: it replaces the version in your account, unlocks too (that version stays a recovery snapshot).')],
-    actions: [{label: 'Cancel', value: null, kind: 'ghost', id: 'save-conflict-cancel'}, {label: 'Use the cloud copy', value: 'cloud', id: 'save-conflict-cloud'}, {label: 'Keep this device\'s copy', value: 'mine', kind: 'primary', id: 'save-conflict-mine'}]});
+  return choose({id: 'save-conflict-dialog', title: words('conflictTitle', {name}), cancel: null,
+    text: [words('conflictText'), el('p', {className: 'muted text-sm'}, words('conflictChoices'))],
+    actions: [{label: 'Cancel', value: null, kind: 'ghost', id: 'save-conflict-cancel'}, {label: words('useCloud'), value: 'cloud', id: 'save-conflict-cloud'}, {label: words('keepMine'), value: 'mine', kind: 'primary', id: 'save-conflict-mine'}]});
 }
 /** The save was taken over: the notice, once. */
 export function showOverridden(by, at, anotherTab = false) {
-  return notice({id: 'save-overridden-dialog', title: 'Save taken over', required: true,
+  return notice({id: 'save-overridden-dialog', title: words('overriddenTitle'), required: true,
     text: anotherTab ? 'This save was taken over in another tab of this browser. It goes on there from its last save.'
-      : 'This save was taken over on ' + (by || 'another device') + (at ? ' at ' + clock(at) : '') + '. Progress and unlocks since your last sync were discarded.'});
+      : words(at ? 'overriddenAt' : 'overridden', {device: by || 'another device', time: at ? clock(at) : ''})});
 }
 /** Deleted on another device with unsynced progress here: resolves 'upload', 'delete' or null. */
 export function askDeleted(name) {
-  return choose({id: 'save-deleted-dialog', title: name + ' was deleted on another device', cancel: null,
-    text: 'This browser has progress of it that never synced.',
-    actions: [{label: 'Cancel', value: null, kind: 'ghost', id: 'save-deleted-cancel'}, {label: 'Delete here too', value: 'delete', kind: 'danger', id: 'save-deleted-delete'}, {label: 'Upload again', value: 'upload', kind: 'primary', id: 'save-deleted-upload'}]});
+  return choose({id: 'save-deleted-dialog', title: words('deletedTitle', {name}), cancel: null,
+    text: words('deletedText'),
+    actions: [{label: 'Cancel', value: null, kind: 'ghost', id: 'save-deleted-cancel'}, {label: words('deleteHereToo'), value: 'delete', kind: 'danger', id: 'save-deleted-delete'}, {label: words('uploadAgain'), value: 'upload', kind: 'primary', id: 'save-deleted-upload'}]});
+}
+/**
+ * A recovery snapshot as a file: the backup format of Download backup (save-service.mjs, schema 3) with the snapshot's
+ * profile, so an import keeps its unlocks. A snapshot from before save model 3 has no profile (null, as schema 2 had).
+ */
+export function snapshotBackup(p) {
+  return {schema: 3, kind: 'ftl-save', name: p.name, setup: p.setup, meta: p.meta ?? {}, run: p.run ?? null, profile: p.profile ?? null, savedUtc: new Date().toISOString()};
 }
 /** What a loaded save lost because the game files or mods lack it. */
 export function showMissingContent(names) {

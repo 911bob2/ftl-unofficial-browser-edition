@@ -88,8 +88,9 @@ object HsSystemsLua {
     }
 
     /** ShipSystem::GetMaxPower: the levels left after damage and the event loss/limit (the ion lock not counted). */
+    /** ShipSystem::GetMaxPower with HS's hook (CustomCrew.cpp): iTempPowerLoss from the current additionalPowerLoss. */
     private fun maxPower(s: AbstractSystem): Int {
-        var m = s.energyLevels - s.damagedEnergyLevels - s.scriptedPowerLoss - (s.hsExt?.appliedLoss ?: 0)
+        var m = s.energyLevels - s.damagedEnergyLevels - (s.hsExt?.liveLoss() ?: s.scriptedPowerLoss)
         s.scriptedPowerLimit?.let { m = minOf(m, it) }
         return max(0, m)
     }
@@ -170,7 +171,7 @@ object HsSystemsLua {
             val n = v.toInt()
             sys(o).scriptedPowerLimit = if (n > 7) null else max(0, n)
         })
-        LuaReg.num(A.A_ShipSystem_iTempPowerLoss, NumGet { val s = sys(it); (s.scriptedPowerLoss + (s.hsExt?.appliedLoss ?: 0)).toDouble() }, NumSet { o, v ->
+        LuaReg.num(A.A_ShipSystem_iTempPowerLoss, NumGet { val s = sys(it); (s.hsExt?.liveLoss() ?: s.scriptedPowerLoss).toDouble() }, NumSet { o, v ->
             val s = sys(o)
             s.scriptedPowerLoss = max(0, v.toInt() - (s.hsExt?.appliedLoss ?: 0))
         })

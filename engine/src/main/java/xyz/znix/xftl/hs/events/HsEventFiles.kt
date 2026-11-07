@@ -16,11 +16,17 @@ import xyz.znix.xftl.hs.HS
  *    ReadCustomEventFiles: `data/events_hyperspace.xml` and `data/events_<eventFile>.xml`, before the vanilla files.
  * 2. The vanilla event files (EventsParser::LoadEvents).
  * 3. Later (LoadAchievementDescriptions hook): the rest of `<events>` (ParseCustomEventNode), then PostProcess.
+ *
+ * A bad number ends a pass (HsConfig): each step reads hyperspace.xml only as far as its pass got
+ * ([HsConfig.passRoot]); after an early-pass error HS reads no event files, after a main-pass error no PostProcess.
  */
 object HsEventFiles {
     /** Steps 1: returns the HS event files in load order (missing ones skipped, as LoadFile returns null). */
-    fun beforeVanilla(hs: HsEventParser, hyperspaceRoot: Element?, df: Datafile): List<String> {
+    fun beforeVanilla(hs: HsEventParser, fullRoot: Element?, df: Datafile): List<String> {
         val files = ArrayList<String>()
+        val cfg = HS.config
+        val earlyRoot = cfg?.passRoot(fullRoot, true) ?: fullRoot
+        val hyperspaceRoot = cfg?.passRoot(fullRoot, false) ?: fullRoot
         // Event buttons are parsed with the events (render: hs.render.HsEventButtons) and saved with the run.
         xyz.znix.xftl.hs.render.HsEventButtons.resetDefs { df.getOrNull(it) != null }
         xyz.znix.xftl.hs.render.HsEventButtons.registerSave()
@@ -41,12 +47,14 @@ object HsEventFiles {
         // CustomRewardsManager::ParseRewardsNode for each <rewards> (Resources.cpp).
         HsRewards.reset()
         hyperspaceRoot?.getChildren("rewards")?.forEach { HsRewards.parse(it) }
-        if (hyperspaceRoot != null) {
-            hs.readDefaults(hyperspaceRoot)
+        if (earlyRoot != null) {
+            hs.readDefaults(earlyRoot)
             // Every `<events>` node in file order: HS's early pass visits each root node (an add-on's hyperspace.xml
             // append often brings a second `<events>` block with its own eventFiles).
-            for (events in hyperspaceRoot.getChildren("events")) hs.earlyParse(events)
+            for (events in earlyRoot.getChildren("events")) hs.earlyParse(events)
         }
+        // ReadCustomEventFiles comes after the early loop, inside its try.
+        if (cfg != null && cfg.earlyStop >= 0) return files
         if (df.getOrNull("data/events_hyperspace.xml") != null) files += "data/events_hyperspace.xml"
         for (name in hs.eventFiles) {
             val file = "data/events_$name.xml"
@@ -57,10 +65,13 @@ object HsEventFiles {
     }
 
     /** Step 3, once the event files and blueprints are loaded. */
-    fun afterEvents(hs: HsEventParser, hyperspaceRoot: Element?, bp: BlueprintManager) {
+    fun afterEvents(hs: HsEventParser, fullRoot: Element?, bp: BlueprintManager) {
+        val cfg = HS.config
+        val hyperspaceRoot = cfg?.passRoot(fullRoot, false) ?: fullRoot
         hyperspaceRoot?.getChildren("events")?.forEach { hs.parseCustomEventNode(it) }
         hs.resolveReqLists { list -> (bp.getOrNull(list) as? BlueprintList)?.names?.toList() ?: emptyList() }
-        hs.postProcess()
+        // PostProcessCustomEvents follows the main loop inside its try.
+        if (cfg == null || cfg.mainStop < 0) hs.postProcess()
         // A new profile: WipeProfile's initial meta variables (the fixed ones; ranged ones need a game, see resetProfile).
         if (HsEvents.profileNeedsReset) {
             HsEvents.profileNeedsReset = false

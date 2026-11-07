@@ -206,6 +206,29 @@ The Mouse shadow lives per frame as MouseControl does (sixth pass below).
   Evidence: oracle session `.build/hs/reports/hs-hud-android/sessions/sh16h.json` (the player's shields raised to 16 by
   Lua; the Sylvan switch itself hangs the oracle). The enemy's circles are Hyperspace's ten (CustomSuperShield.cpp).
 
+## In-flight HUD with the mouse (parity sweep U1; vanilla and HS)
+- Triggered-event boxes and warnings (TriggeredEvents.cpp ShipStatus::OnRender hook) are drawn with the status, so they
+  stay lit over a window's dimming like the top bar and the More Info button (oracle `ps-u1-trig` t-ship, t-map).
+- A right press that drops an armed weapon, teleporter, mind control, hacking, temporal or overclocker target goes no
+  further than the weapon and drone slots (CommandGui::RButtonDown, CombatControl::MouseRClick and the two HS hooks):
+  no system loses power and no crew is ordered by it.
+- The subsystem holder and boxes are drawn with the system boxes, before the weapon and drone boxes (CommandGui::
+  RenderStatic), so a long system row's drone box covers the subsystem icons.
+- A drone slot's tooltip is the original's (DroneBox, 1.6.14 0x56d960): description, state, hotkey, rearrange line.
+  Slots past three name HS's `drone4..6` keys (oracle `ps-u1-d5` d5-h3: "Hotkey: 8").
+- Where a subsystem box lies under a drone box, both take the hover (CommandGui::MouseMove gives the point to
+  CombatControl, then SystemControl) and the subsystem's tooltip is shown (oracle `ps-u1-d5` d5-h4: the fifth drone
+  box glows, the tooltip is the sensors').
+- The cursor turns to the hover arrow over system boxes and filled weapon and drone slots like the original's.
+- A system box takes the hover (glow, cursor, click) in its 20 px icon square (SystemBox::MouseMove) and shows its
+  tooltip there and over the 14 px column of its bars (u1v-h, u1v-i). Open: over a manning or fire icon above the bars
+  the original's column reaches higher. The SUBSYSTEMS label shows its "subsystems" tooltip (SystemControl::MouseMove,
+  u1v-j).
+- The hull warning is one 6 s message (ShipStatus::OnInit): a fall past 75 %, 50 % or 25 % sets its text and starts it,
+  a second fall while it runs changes only the text; below 25 % it loops until a repair lifts the hull above 25 %.
+- The system tooltip ends parts and bullets with the original's trailing space (0x4df760), which widens the box where
+  such a line is the widest. Frame pairs and evidence: `.build/hs/reports/ps-u1.md`.
+
 ## Left
 Not reachable or not in HS: rapidxml's memory_pool allocators (`%ignore memory_pool` in rapidxml.i), Animation Save/LoadState (need an FTL file
 descriptor; `FileHelper` is commented out in hyperspace.i), the Lua ErrorMessage dialog (nil in HS),

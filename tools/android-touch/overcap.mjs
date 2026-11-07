@@ -6,8 +6,9 @@
 // Checks: one over-capacity box at a time, on the screen and clear of the window, the Accept button and the pager's
 // arrows; with both boxes in use the pager's arrow (a tap) shows the other one (--multiple, Multiverse's
 // multipleOverCapacity: Hyperspace's own pager of the two waiting items); every crew member has a box and a
-// dismiss button on the screen, none under the crew screen's over-capacity box; a tap on the extra crew member's
-// dismiss button and then on Yes dismisses them. Frames: <dir>/<name>-*.png.
+// dismiss button on the screen, none under the crew screen's over-capacity box; without Hyperspace a crew box dragged
+// onto another goes back, the order kept (no reorder there; Hyperspace's CustomCrewManifest swaps); a tap on the extra
+// crew member's dismiss button and then on Yes dismisses them. Frames: <dir>/<name>-*.png.
 import { Device, sleep } from './device.mjs';
 
 const arg = (name, dflt) => {
@@ -58,6 +59,15 @@ async function tapRect(s, o, r) {
     const scale = h / 768;
     const cx = o.x + r.x + r.w / 2, cy = o.y + r.y + r.h / 2;
     d.shell(`input tap ${Math.round((w - s.canvasW * scale) / 2 + cx * scale)} ${Math.round(cy * scale)}`);
+    await sleep(700);
+}
+
+/** One finger pressed on crew box [a]'s portrait (above its name) and slid to the same spot on box [b], in 0.8 s. */
+async function dragRect(s, o, a, b) {
+    const { w, h } = landscape();
+    const scale = h / 768;
+    const at = (r) => [Math.round((w - s.canvasW * scale) / 2 + (o.x + r.x + r.w / 2) * scale), Math.round((o.y + r.y + 30) * scale)];
+    d.shell(`input swipe ${at(a).join(' ')} ${at(b).join(' ')} 800`);
     await sleep(700);
 }
 
@@ -126,6 +136,17 @@ for (const c of b.crew) {
     check(inside(c, b.screen), `crew box ${c.id} on the screen`, JSON.stringify(c));
     check(!overlap(c, b.drop), `crew box ${c.id} (${c.crew}) clear of the over-capacity box`, JSON.stringify(c));
     if (c.crew) check(!!c.dismiss && inside(c.dismiss, b.screen) && !overlap(c.dismiss, b.drop), `${c.crew}'s dismiss button is free`);
+}
+// Without Hyperspace the crew screen has no reorder: a crew box dragged onto another goes back (Hyperspace's
+// CustomCrewManifest swaps them).
+if (!s.hsActive && withCrew.length >= 2) {
+    const [from, to] = withCrew;
+    await dragRect(s, b.origin, from, to);
+    b = await boxes();
+    const order = b.crew.filter((c) => c.crew).map((c) => c.crew);
+    d.frame(`${name}-4b-crew-dragged`);
+    check(order[0] === from.crew && order[1] === to.crew,
+        `${from.crew}'s box dragged onto ${to.crew}'s: the order stays (no reorder without Hyperspace)`, JSON.stringify(order));
 }
 // the extra one: Hyperspace's own box, else the grid's ninth
 const extra = b.crew.find((c) => c.over && c.crew) ?? withCrew.at(-1);

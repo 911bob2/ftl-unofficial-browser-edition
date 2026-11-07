@@ -96,12 +96,15 @@ object HsStarMap {
         }
     }
 
-    /** StarMap::MouseMove hook: Button::MouseMove over the button's image rectangle. */
+    /**
+     * StarMap::MouseMove hook: GenericButton::MouseMove (1.6.9 0x573850, 1.6.14 0x58dd90) over the hitbox Button::OnInit
+     * took from the image: the test is strict on all four edges, so the hitbox's own border never hovers.
+     */
     @JvmStatic
     fun mouseMoveGrid(game: InGameState, x: Int, y: Int, choosingSector: Boolean) {
         if (!HS.active || !HS.cfg().splitAllNodeView || choosingSector) { gridHover = false; return }
         val img = images(game)[0]
-        gridHover = x >= GRID_X && x < GRID_X + img.width && y >= GRID_Y && y < GRID_Y + img.height
+        gridHover = x > GRID_X && x < GRID_X + img.width && y > GRID_Y && y < GRID_Y + img.height
     }
 
     /** StarMap::MouseClick hook: a click on the hovered button toggles the view, with the More Info sounds. */

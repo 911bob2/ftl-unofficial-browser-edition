@@ -285,7 +285,7 @@ class Ship(
     // Transient on purpose - not saved, the longest flight is ~0.3s.
     val crewShots: MutableList<CrewShot> = ArrayList()
 
-    private val damageNumbers = ArrayList<DamageNumber>()
+    internal val damageNumbers = ArrayList<DamageNumber>()
 
     /**
      * A list of all the drones (friendly or otherwise) that are deployed
@@ -2075,12 +2075,15 @@ class Ship(
 
         // Hyperspace: the tail of TemporalSystem.cpp's ShipManager::OnLoop hook (room animations).
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.afterShipUpdate(this, dt)
-        // Hyperspace: ShipManager::OnLoop (CustomCrew.cpp) restarts every system's additionalPowerLoss before SHIP_LOOP.
+        // Hyperspace: ShipManager::OnLoop (CustomCrew.cpp) restarts every system's additionalPowerLoss at the crew's
+        // POWER_DRAIN and runs CheckMaxPower and CheckForRepower on every system; SHIP_LOOP comes after it (its hook has
+        // priority -100, InternalEvents.cpp). A script's addition there takes power only when the script calls
+        // CheckMaxPower itself (Multiverse's sys-limit.lua does); otherwise it only lowers GetMaxPower until the next
+        // loop (HS oracle ps-c1-ex: engines and shields keep 8 bars under an added loss of 1 and 3, GetMaxPower 7 and 5).
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSysExt.resetLoop(this)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSysExt.commit(this)
         // Hyperspace SHIP_LOOP: ShipManager::OnLoop hook, after the original
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.shipLoop(this)
-        // Hyperspace: CheckMaxPower with the frame's additionalPowerLoss (crew drain and SHIP_LOOP scripts).
-        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSysExt.commit(this)
     }
 
     private fun updateCrew(dt: Float) {
@@ -2439,20 +2442,12 @@ class Ship(
         // damage; system damage, crew damage and fires still apply. Only
         // ROCK_ARMOR is rolled: HULL_ARMOR/ADV_HULL_ARMOR are commented out
         // in the vanilla data.
-        val hullArmorNegates = damage.hullDamage >= 0 && (rockArmourRoll ?: rollRockArmour())
-
-        // Titanium System Casing (SYSTEM_CASING): the same roll; a proc on a
-        // system that isn't completely destroyed, from a hit with hull or
-        // system damage, takes both out of the system damage. Ion damage,
-        // crew damage, fires and breaches all still apply, and so does the
-        // hull damage.
-        val systemCasingChance = getAugmentValueOrNull(AugmentBlueprint.SYSTEM_CASING)
-        val casingRoll = systemCasingChance != null &&
-                ftl.browser.BrowserRandom.nextInt(100) + 1 <= (systemCasingChance * 100).toInt()
-        val casingSystem = target.system
-        val casingNegates = casingRoll && casingSystem != null &&
-                casingSystem.damagedEnergyLevels < casingSystem.energyLevels &&
-                (damage.hullDamage > 0 || damage.effectiveSysDamage > 0)
+        // DamageArea rolls it on every hit, also one with negative hull damage (which it doesn't stop).
+        val rockRoll = rockArmourRoll ?: rollRockArmour()
+        val hullArmorNegates = damage.hullDamage >= 0 && rockRoll
+        // Hyperspace replaces ShipManager::DamageArea (CustomCrew.cpp, priority 9999) with its own body; where
+        // it differs from 1.6.14, the HS rule is noted below.
+        val hsArea = xyz.znix.xftl.hs.HS.active
 
         // Reverse Ion Field (ION_ARMOR): a chance to negate the incoming
         // ion damage entirely. Hull, system and crew damage are all
@@ -2468,21 +2463,61 @@ class Ship(
         val ionNegated = resisted.ionDamage > 0 && ionArmourNegates()
         val appliedIonDamage = if (ionNegated) 0 else resisted.ionDamage
 
+        crewWeaponDamage(target, damage.effectiveCrewDamage.f, damage)
+
+        // ShipManager::DamageArea (1.6.14 0x4a6100, 1.6.9 0x499fb0) rolls the fire, then (without one) the breach,
+        // before the system and hull damage. Fire and breach are mutually exclusive. A Rock Plating proc stops a
+        // breach, except a certain one (breachChance 10 exactly: Heavy Crystal II, the Anti-Ship Battery's shot).
+        // In 1.6.14 that breach also ends the proc, so the hull damage goes through and no RESIST shows; Hyperspace's
+        // DamageArea breaches and keeps the proc (no hull damage, RESIST).
+        var rockProc = hullArmorNegates
+        if (!sys.debugFlags.noDmg.set) {
+            if (ftl.browser.BrowserRandom.rollChance(damage.fireChance)) {
+                // Spawns two fires (or possibly only one, if they both roll on the same cell).
+                target.spawnFire()
+                target.spawnFire()
+            } else if (ftl.browser.BrowserRandom.rollChance(damage.breachChance)) {
+                if (!rockProc || damage.breachChance == 100) {
+                    target.spawnBreach()
+                    if (!hsArea) rockProc = false
+                }
+            }
+        }
+
+        // Titanium System Casing (SYSTEM_CASING): rolled after the breach, the same way as Rock Plating. A proc
+        // from a hit with hull or system damage takes both out of the system damage. Ion damage, crew damage, fires
+        // and breaches all still apply, and so does the hull damage. 1.6.14 rolls on every hit and ignores the proc
+        // on a completely destroyed system; Hyperspace rolls only in a room with a system and has no such check.
+        val casingSystem = target.system
+        val systemCasingChance = getAugmentValueOrNull(AugmentBlueprint.SYSTEM_CASING)
+        val casingRoll = systemCasingChance != null && (!hsArea || casingSystem != null) &&
+                ftl.browser.BrowserRandom.nextInt(100) + 1 <= (systemCasingChance * 100).toInt()
+        val casingNegates = casingRoll && casingSystem != null &&
+                (hsArea || casingSystem.damagedEnergyLevels < casingSystem.energyLevels) &&
+                (damage.hullDamage > 0 || damage.effectiveSysDamage > 0)
+
+        // The numbers, in the native order: ShipManager::DamageSystem (1.6.14 0x4a4ab0) shows the ion armour's RESIST
+        // or the ion number, then the system damage number (Damage.iSystemDamage: what a hit adds to its hull
+        // damage) of the room's system; DamageArea then shows RESIST when Rock Plating stopped damage or the System
+        // Casing took the system damage (the casing passes DamageSystem no hull or system damage), else the hull
+        // number. Hyperspace's DamageArea shows its RESIST or hull number only for a hit with hull damage, so a
+        // casing proc on system-only damage shows nothing there.
         if (ionNegated)
             target.showDamageText("text_resist", DAMAGE_COLOUR_ION, textPos)
-
-        if (hullArmorNegates && hullDamage > 0)
+        val shownSysDamage = if (casingNegates) 0 else resisted.effectiveSysDamage - damage.hullDamage.coerceAtLeast(0)
+        if (target.system != null) {
+            if (appliedIonDamage > 0) target.showDamageText(appliedIonDamage, DAMAGE_COLOUR_ION, textPos)
+            if (shownSysDamage > 0) target.showDamageText(shownSysDamage, DAMAGE_COLOUR_SYSTEM, textPos)
+        }
+        if ((rockProc && damage.hullDamage > 0) || (casingNegates && (!hsArea || damage.hullDamage > 0)))
             target.showDamageText("text_resist", Colour.white, textPos)
-        else if (hullArmorNegates)
-            showDamageText(target, 0, if (casingNegates) 0 else resisted.effectiveSysDamage, appliedIonDamage, textPos)
-        else
-            showDamageText(target, hullDamage, if (casingNegates) 0 else resisted.effectiveSysDamage, appliedIonDamage, textPos)
-        crewWeaponDamage(target, damage.effectiveCrewDamage.f, damage)
+        else if (!rockProc && hullDamage > 0)
+            target.showDamageText(hullDamage, Colour.white, textPos)
 
         if (sys.debugFlags.noDmg.set)
             return
 
-        if (!hullArmorNegates) {
+        if (!rockProc) {
             health -= hullDamage
 
             // The player's last hull damage drives the screen shake (ShipManager +0x49c).
@@ -2499,19 +2534,8 @@ class Ship(
             else target.lockdown(hitPos?.x?.toFloat(), hitPos?.y?.toFloat())
         }
 
-        // Fire and breach are mutually exclusive, if a fire spawns then a breach cannot.
-        if (ftl.browser.BrowserRandom.rollChance(damage.fireChance)) {
-            // Spawns two fires (or possibly only one, if they both roll on the same cell).
-            target.spawnFire()
-            target.spawnFire()
-        } else if (ftl.browser.BrowserRandom.rollChance(damage.breachChance) &&
-            (!hullArmorNegates || damage.breachChance >= 100)
-        ) {
-            target.spawnBreach()
-        }
-
         // Crystal Vengeance (CRYSTAL_SHARDS, 0x4a5df0): only hull damage that gets through rolls a shard.
-        if (hullDamage > 0 && !hullArmorNegates) checkCrystalAugment(target.pixelCentre)
+        if (hullDamage > 0 && !rockProc) checkCrystalAugment(target.pixelCentre)
     }
 
     /**
@@ -2542,26 +2566,6 @@ class Ship(
     fun playDamageEffect(type: AbstractWeaponBlueprint, position: IPoint): FloatingAnimation {
         val animation = sys.animations.orEmpty(type.explosion ?: "")
         return playCentredAnimation(animation, position)
-    }
-
-    private fun showDamageText(target: Room, damage: Int, systemDamage: Int, ionDamage: Int, pos: IPoint?) {
-        // Don't show the popup for system damage in a system-less room.
-        if (target.system == null && damage == 0)
-            return
-
-        // Damage numbers split based on their type, also huge thanks to Gabriel Cooper
-        // for helpfully providing data on the order of damage numbers!
-        if (ionDamage > 0 && target.system != null) {
-            target.showDamageText(ionDamage, DAMAGE_COLOUR_ION, pos)
-        }
-        val extraSystemDamage = systemDamage - damage.coerceAtLeast(0)
-        if (extraSystemDamage > 0 && target.system != null) {
-            // because the specific sys damage shown is that that exceeds the hull damage
-            target.showDamageText(extraSystemDamage, DAMAGE_COLOUR_SYSTEM, pos)
-        }
-        if (damage > 0) {
-            target.showDamageText(damage, Colour.white, pos)
-        }
     }
 
     /**
@@ -2682,6 +2686,18 @@ class Ship(
         }
         if (!leftBeacon)
             resetDoorsForJump()
+        // ShipManager::JumpArrive (0x49d490): after a beacon that was safe, MindSystem::ForceReady and LockSystem(0) on
+        // the shields, engines, weapons and piloting end their ion locks and cooldowns (and the Hyperspace temporal
+        // system's, TemporalSystem.cpp JumpArrive hook).
+        if (browserWasSafe) {
+            mindControl?.lockUnits(0)
+            for (system in listOfNotNull(shields, engines, weapons, piloting)) {
+                system.lockUnits(0)
+            }
+            if (xyz.znix.xftl.hs.HS.active)
+                systems.filterIsInstance<xyz.znix.xftl.hs.systems.Temporal>().forEach { it.lockUnits(0) }
+        }
+        browserWasSafe = false
         // Hyperspace JUMP_ARRIVE: ShipManager::JumpArrive hook, after the original
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaEvents.jumpArrive(this)
     }
@@ -2702,6 +2718,9 @@ class Ship(
         }
         resetDoorsForJump()
         browserLeftBeacon = true
+        // ShipManager::JumpLeave (1.6.14 0x49c9c0, 1.6.9 0x491b70) ends with PlaySoundMix("jumpLeave") whichever ship
+        // leaves: an escaping enemy too. The player's jump plays it in InGameState.beginJumpOut.
+        if (!isPlayerShip) sys.sounds.getSampleOrWarn("jumpLeave")?.play()
         // Hyperspace: the rooms lose their temporal dilation (TemporalSystem.cpp ShipManager::JumpLeave hook).
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.jumpLeave(this)
         // Hyperspace JUMP_LEAVE: ShipManager::JumpLeave hook, after the original
@@ -2732,6 +2751,7 @@ class Ship(
      * cloak's and the battery's cooldowns end.
      */
     fun browserSetSafe() {
+        browserWasSafe = true
         teleporter?.hsForceReady()
         for (system in systems) {
             if ((system is xyz.znix.xftl.systems.Cloaking || system is xyz.znix.xftl.systems.BackupBattery) &&
@@ -2762,7 +2782,14 @@ class Ship(
         for (system in listOfNotNull(shields, engines, weapons, piloting)) {
             system.lockUnits(0)
         }
+        browserWasSafe = false
     }
+
+    /**
+     * ShipManager::bWasSafe (+0x8bc): set by SetSafe (0x49b5b0) while nothing is hostile, cleared by JumpArrive and
+     * Wait. Not saved: the first frame after a load sets it again when the beacon is safe.
+     */
+    private var browserWasSafe = false
 
     /**
      * This updates the power limits imposed on systems by scripted events.

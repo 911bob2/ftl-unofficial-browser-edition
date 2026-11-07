@@ -6,6 +6,8 @@
 // createSync({core, store, call, instance, deviceId}): `store` is a device store (web/device-store.mjs), `call(path,
 // {method, body, headers})` an API call that adds X-FTL-Instance/X-FTL-Device and throws errors with `status`, `code`
 // and `detail` (the JSON body) for HTTP failures and without a status when the network failed.
+import {words} from './save-words.mjs';
+
 export const offline = e => !e?.status;
 
 /**
@@ -317,7 +319,7 @@ export function createSync({core, store, call, instance, deviceId, now = () => n
     if (state.cloud.has(id) || (local?.base ?? 0) > 0) {
       try { await call(path(id) + (override ? '?override=true' : ''), {method: 'DELETE'}); }
       catch (e) {
-        if (offline(e)) { wentOffline(e); throw Object.assign(Error('Connect to delete this save from your account.'), {offline: true}); }
+        if (offline(e)) { wentOffline(e); throw Object.assign(Error(words('deleteOffline')), {offline: true}); }
         if (e.status !== 404) throw e;
       }
       state.cloud.delete(id);
@@ -338,7 +340,7 @@ export function createSync({core, store, call, instance, deviceId, now = () => n
   const restore = (id, revision) => exclusive(async () => {
     const current = await fetchCloud(id);
     const taken = await lockNow(id, false);
-    if (taken.result === 'held' || taken.result === 'overridden') throw Object.assign(Error('This save is in use on ' + (taken.lock?.device || 'another device') + '.'), {code: 'locked', lock: taken.lock});
+    if (taken.result === 'held' || taken.result === 'overridden') throw Object.assign(Error(words('restoreHeld', {device: taken.lock?.device || 'another device'})), {code: 'locked', lock: taken.lock});
     if (taken.result !== 'granted') throw Error('Connect to restore a recovery snapshot.');
     await call(path(id) + '/snapshots/' + revision + '/restore', {method: 'POST', headers: headers(current.cloud.revision)});
     const {cloud, run, profile} = await fetchCloud(id);

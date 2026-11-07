@@ -117,7 +117,9 @@ class Damage() {
     var friendlyFire: Boolean = false
 
     /**
-     * Apply the effect of a weapon that uses damage-chaining.
+     * Apply the effect of a weapon that uses damage-chaining: ProjectileFactory::Update (1.6.9 0x40ccd0) adds
+     * (boostLevel - 1) x amount to the first of iDamage, iIonDamage, iPersDamage and iSystemDamage that is above
+     * zero. iPersDamage is in crew units, 15 health each ([pureCrewDamage] is in health).
      */
     fun applyWeaponChaining(chainDamage: Int) {
         if (chainDamage <= 0)
@@ -126,7 +128,7 @@ class Damage() {
         when {
             hullDamage > 0 -> hullDamage += chainDamage
             ionDamage > 0 -> ionDamage += chainDamage
-            pureCrewDamage > 0 -> pureCrewDamage += chainDamage
+            pureCrewDamage > 0 -> pureCrewDamage += chainDamage * 15
             pureSysDamage > 0 -> pureSysDamage += chainDamage
         }
     }

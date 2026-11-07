@@ -365,7 +365,74 @@ assert(HSW.areaHull == $before - 1, 'hull after hit ' .. tostring(HSW.areaHull))
             check(missing.isEmpty()) { "iconReplace without animation: ${missing.take(10)}" }
             out += "iconReplace ${named.size} resolved"
         }
+        out += statBoostOrder(state)
         return "PASS hs-weapons units: " + out.joinToString("; ")
+    }
+
+    /**
+     * Weapon stat boosts load as the original builds the weapons (parity sweep C3, O-M2-1): CApp::OnExecute (1.6.9
+     * 0x403700) runs LoadBlueprints for blueprints, names, autoBlueprints, dlcPirateBlueprints, dlcBlueprints,
+     * dlcBlueprintsOverwrite and bosses before LoadAchievementDescriptions, where HS parses hyperspace.xml; HS parses
+     * a weapon's `<statBoosts>` inside ProcessWeaponBlueprint (CustomWeapons.cpp:129-136), so a `save=` is there for a
+     * later weapon's or hyperspace.xml's `load=` (StatBoost.cpp ParseStatBoostNode), and the weapons' realBoostIds
+     * come first. First the session's own content, then authored blueprints whose loads only resolve in that order
+     * (a boss-file weapon loading a dlc-file save); the session's content is loaded again afterwards.
+     */
+    private fun statBoostOrder(state: InGameState): String {
+        val sb = xyz.znix.xftl.hs.stat.StatBoostDefs
+        val order = state.blueprintManager.hsWeaponsInLoadOrder()
+        check(order.size >= 700) { "only ${order.size} weapons in load order" }
+        val end0 = sb.weaponEnd
+        var n = 0
+        for (bp in order) for (d in bp.hs!!.damage.statBoostDefs + bp.hs!!.damage.roomStatBoostDefs) {
+            check(d.realBoostId in 0 until end0) { "${bp.name}: realBoostId ${d.realBoostId}, weapons end at $end0" }
+            n++
+        }
+        val unresolved = HS.capability.keys.filter { it.contains("Unable to load stat boost") }
+        check(unresolved.isEmpty()) { "unresolved stat boost loads: ${unresolved.take(5)}" }
+        val live = "session: $n weapon stat boosts below $end0, no unresolved load"
+
+        val wpn = { name: String, boosts: String ->
+            "<weaponBlueprint name=\"$name\"><type>LASER</type><damage>1</damage><shots>1</shots><cooldown>10</cooldown>" +
+                "<power>1</power><weaponArt></weaponArt><image></image><statBoosts>$boosts</statBoosts></weaponBlueprint>"
+        }
+        val boost = { save: String, amount: String ->
+            "<statBoost name=\"healSpeed\" save=\"$save\"><boostType>MULT</boostType><amount>$amount</amount>" +
+                "<shipTarget>ALL</shipTarget><crewTarget>ALL</crewTarget><duration>15</duration></statBoost>"
+        }
+        val doc = { body: String -> BrowserXml.parse("<FTL>$body</FTL>") }
+        val df = state.eventManager.df
+        val bm = xyz.znix.xftl.BlueprintManager.createForTestsFiles(df, listOf(
+            "bosses.xml" to doc(wpn("PS_C3_LOAD_A", "<statBoost name=\"healSpeed\" load=\"PS_C3_SB2\"/>")),
+            "blueprints.xml" to doc(wpn("PS_C3_SAVE", boost("PS_C3_SB", "0.25"))),
+            "dlcBlueprints.xml" to doc(wpn("PS_C3_SAVE2", boost("PS_C3_SB2", "0.5")) + wpn("PS_C3_LOAD_B", "<statBoost name=\"healSpeed\" load=\"PS_C3_SB\"/>")),
+        ))
+        val config = HS.config
+        val damageDefs = xyz.znix.xftl.hs.weapons.HsDamageDef.defs.size
+        try {
+            HS.config = xyz.znix.xftl.hs.HsConfig.parse(BrowserXml.parse("<FTL><version>^1.23.2</version><augments><aug name=\"PS_C3_AUG\"><statBoosts>" +
+                "<statBoost name=\"healSpeed\" load=\"PS_C3_SB\"/></statBoosts></aug></augments></FTL>").rootElement)
+            xyz.znix.xftl.hs.crew.HsCrewContent.load(bm)
+            val def = { name: String -> (bm[name] as AbstractWeaponBlueprint).hs!!.damage.statBoostDefs.single() }
+            val ids = listOf("PS_C3_SAVE", "PS_C3_SAVE2", "PS_C3_LOAD_B", "PS_C3_LOAD_A").map { def(it).realBoostId }
+            check(ids == listOf(0, 1, 2, 3) && sb.weaponEnd == 4) { "realBoostIds in load order $ids, weapons end ${sb.weaponEnd}" }
+            check(def("PS_C3_LOAD_A").amount == .5f && def("PS_C3_LOAD_A").duration == 15f) { "PS_C3_LOAD_A loaded ${def("PS_C3_LOAD_A").amount}" }
+            check(def("PS_C3_LOAD_B").amount == .25f) { "PS_C3_LOAD_B loaded ${def("PS_C3_LOAD_B").amount}" }
+            val aug = sb.defs.getOrNull(4)
+            check(aug != null && aug.amount == .25f && aug.realBoostId == 4) { "hyperspace.xml augment's load: ${aug?.amount} id ${aug?.realBoostId}" }
+            check(sb.bySavedId(4, "3") === aug && sb.bySavedId(0, null) === aug && sb.bySavedId(4, "2") === aug) {
+                "saved ids: 3 ${sb.bySavedId(4, "3")?.realBoostId}, none ${sb.bySavedId(0, null)?.realBoostId}, 2 ${sb.bySavedId(4, "2")?.realBoostId}"
+            }
+            val bad = HS.capability.keys.filter { it.contains("Unable to load stat boost: PS_C3") }
+            check(bad.isEmpty()) { "authored loads unresolved: $bad" }
+        } finally {
+            HS.config = config
+            xyz.znix.xftl.hs.crew.HsCrewContent.load(state.blueprintManager)
+            val defs = xyz.znix.xftl.hs.weapons.HsDamageDef.defs
+            while (defs.size > damageDefs) defs.removeAt(defs.size - 1)
+        }
+        check(sb.weaponEnd == end0) { "session content not restored: weapons end at ${sb.weaponEnd}, was $end0" }
+        return "stat boost load order ($live; authored: boss-file load of a dlc-file save, hyperspace.xml load of a weapon save)"
     }
 
     /** FOCUS_1 against the PIRATE fixture under 20 seeds: the damage dealt, with the enemy's blueprint on a miss. */

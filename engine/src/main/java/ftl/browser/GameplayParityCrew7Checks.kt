@@ -167,7 +167,9 @@ internal object GameplayParityCrew7Checks {
         check(shooter.icon.spec.name == "human_shoot_down") { "Human aims with ${shooter.icon.spec.name}" }
         check(log.frames.drop(2).all { it == 2 }) { "Human shoot frames ${log.frames.toSet()}" }
         check(log.hits.isNotEmpty() && log.hits.all { it.second in 2.99f..7.01f }) { "Human hits ${log.hits}" }
-        check(log.landed.first() - times.first() >= 0.2f) { "Shot landed ${log.landed.first()} after ${times.first()}" }
+        // The shortest flight: the aim moved 8 px towards the shooter on both axes, 27 * sqrt(2) = 38 px at 8 px a step,
+        // lands on the fourth step, the first of them on the spawn frame: 0.15 s after it.
+        check(log.landed.first() - times.first() >= 0.149f) { "Shot landed ${log.landed.first()} after ${times.first()}" }
         check(log.hits.first().first >= log.landed.first()) { "Damage ${log.hits.first()} before arrival ${log.landed.first()}" }
         val puff = log.removed.first() - log.landed.first()
         check(puff in 0.45f..0.6f) { "Impact puff lasted $puff s" }

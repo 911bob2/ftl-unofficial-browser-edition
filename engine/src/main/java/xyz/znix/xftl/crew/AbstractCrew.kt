@@ -1388,8 +1388,11 @@ abstract class AbstractCrew(
         val x1 = x.f + portraitImage.width * scale
         val y1 = y.f + portraitImage.height * scale
 
+        // CrewAnimation::RenderIcon(true) (1.6.14 0x47df60, the crew box's CrewBox::RenderIcon): the icon's border in
+        // one global colour, whatever the crew member's selection (native frames u1v-a a-h-crew1, a-crew2-sel: a
+        // hovered or selected crew box's portrait keeps the yellow border; the green one is the ship's sprite only).
         if (backgroundHighlight) {
-            drawBackground(portraitImage, x.f, y.f, x1, y1, 1f)
+            drawBackground(portraitImage, x.f, y.f, x1, y1, 1f, CREW_DESELECTED_BG)
         }
 
         drawImage(
@@ -1398,7 +1401,7 @@ abstract class AbstractCrew(
         )
     }
 
-    private fun drawBackground(image: Image, x0: Float, y0: Float, x1: Float, y1: Float, opacity: Float) {
+    private fun drawBackground(image: Image, x0: Float, y0: Float, x1: Float, y1: Float, opacity: Float, fixed: Colour? = null) {
         if (backImg == null) {
             return
         }
@@ -1417,6 +1420,7 @@ abstract class AbstractCrew(
             image.height
         )
         val backColour = when {
+            fixed != null -> fixed
             showRedOutline -> CREW_HOSTILE_BG
             isSelected -> CREW_SELECTED_BG
             else -> CREW_DESELECTED_BG

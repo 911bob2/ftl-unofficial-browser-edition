@@ -1080,11 +1080,10 @@ class HsEventParser(
         }
 
         /**
-         * EventsParser::ParseBoolean. MV writes only lower-case `true`/`false`; the comparison is kept
-         * case-insensitive like the engine's vanilla attribute parsing.
+         * EventsParser::ParseBoolean ([xyz.znix.xftl.sector.parseBoolean]): "true", "TRUE" or "True" only.
          */
         @JvmStatic
-        fun parseBool(s: String): Boolean = s.trim().equals("true", ignoreCase = true)
+        fun parseBool(s: String): Boolean = xyz.znix.xftl.sector.parseBoolean(s)
 
         /** boost::lexical_cast<int>: an invalid number is an HS parse error (logged), read here as 0. */
         @JvmStatic
