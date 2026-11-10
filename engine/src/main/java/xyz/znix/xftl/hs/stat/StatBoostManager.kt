@@ -159,7 +159,7 @@ object StatBoostManager {
 
         for (other in checkingCrewList) {
             val ex = HsCrew.ex(other)
-            if (ex.functional) for (b in ex.outgoingStatBoosts) {
+            if (functional(other)) for (b in ex.outgoingStatBoosts) {
                 b.crewSource = other
                 createCrewBoost(b, other)
             }
@@ -184,8 +184,22 @@ object StatBoostManager {
         statCacheFrame++
     }
 
-    /** HS `!crew->bDead`: crew whose death has started are left out. */
-    private fun isDead(c: AbstractCrew) = c.health <= 0f
+    /**
+     * HS `crew->bDead`: set when the dying animation has finished (the ship's loop then drops or queues the crew member,
+     * so ours no longer lists it) or at once by a script's Kill. A dying crew member keeps giving its boosts until then
+     * (oracle ps-c6-pw dc: a rock_crusader's REPLACE_POWER still holds 0.5 s after its health ran out).
+     */
+    private fun isDead(c: AbstractCrew) = c.hsKilled
+
+    /**
+     * CrewMember::Functional (1.6.9 0x720b00) is `!IsDead()`, so bDead for crew (not health), unpowered for a crew drone
+     * (CrewDrone's IsDead); [CrewExtend.functional]'s health test is left out here.
+     */
+    private fun functional(c: AbstractCrew): Boolean {
+        if (isDead(c)) return false
+        val pawn = c as? xyz.znix.xftl.drones.AbstractIndoorsDrone.Pawn ?: return true
+        return pawn.drone.isPowered
+    }
 
     /** StatBoostManager::CreateTimedAugmentBoost: a timed (or persistent) boost on one crew member. */
     @JvmStatic

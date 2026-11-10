@@ -49,6 +49,28 @@ try{
  await page.waitForTimeout(1500);
  console.log('PASS hangar open');
  await shot('hangar-1');
+ // The seed box (HS Seeds.cpp), the oracle session ps-s1-seed's steps: hover, active, typed, Backspace, done (UNLOCKS
+ // DISABLED), Start hovered, cleared, left empty.
+ if(session){
+  // The canvas itself at 1280x720, as tools/ui-capture.mjs reads it, for frames.py against the oracle's shots.
+  // CSSOM writes, not a style tag: the page's CSP has no 'unsafe-inline'.
+  const fitStyle={position:'fixed',left:'0',top:'0',width:'1280px',height:'720px','z-index':'2147483647','aspect-ratio':'auto'};
+  const before=await page.evaluate(fit=>{const s=document.getElementById('game').style,old=s.cssText;for(const [k,v] of Object.entries(fit))s.setProperty(k,v,'important');return old;},fitStyle);
+  await page.waitForTimeout(500);
+  const shot=async name=>{await flush();const data=await page.evaluate(()=>document.getElementById('game').toDataURL('image/png'));
+   await writeFile(join(out,name+'.png'),Buffer.from(data.split(',')[1],'base64'));};
+  const keys=async s=>{for(const ch of s)await page.locator('#game').press(ch);await flush();};
+  await hover(640,700);await shot('seed-0-empty');
+  await hover(1150,81);await shot('seed-1-hover');
+  await click(1150,81);await shot('seed-2-active');
+  await keys('123');await shot('seed-3-typed');
+  await keys(['Backspace']);await shot('seed-4-back');
+  await keys('45');await click(640,450);await page.waitForTimeout(300);await shot('seed-5-done');
+  await hover(1150,40);await shot('seed-6-start-hover');
+  await click(1150,81);await keys(Array(6).fill('Backspace'));await shot('seed-7-cleared');
+  await click(640,450);await hover(640,700);await page.waitForTimeout(300);await shot('seed-8-empty-again');
+  await page.evaluate(old=>{document.getElementById('game').style.cssText=old;},before);await page.waitForTimeout(500);
+ }
  // Hover: the achievement strip, the reactor box, the victory-type strip, the trophy toggle.
  const spots=JSON.parse(process.env.HSH_SPOTS||'[[130,404,"ach0"],[200,404,"ach1"],[345,388,"reactor"],[345,415,"missiles"],[124,440,"vict0"],[260,454,"trophy"],[660,520,"aug0"]]');
  for(const [x,y,n] of spots){await hover(x,y);await shot('hover-'+n);}

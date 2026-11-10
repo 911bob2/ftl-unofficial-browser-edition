@@ -121,6 +121,17 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayWeaponBarChecks.run") { GameplayWeaponBarChecks.run(main, container) }
             step("GameplayHudU1Checks.run") { GameplayHudU1Checks.run(main, container, graphics) }
             step("GameplayParityPsB1Checks.run") { GameplayParityPsB1Checks.run(main, container) }
+            step("GameplayParityPsW5Checks.run") { GameplayParityPsW5Checks.run(main, container, graphics) }
+            step("GameplayParityPsC2Checks.run") { GameplayParityPsC2Checks.run(main, container) }
+            step("GameplayParityPsFu2Checks.run") { GameplayParityPsFu2Checks.run(main, container) }
+            step("GameplayParityPsFu1Checks.run") { GameplayParityPsFu1Checks.run(main, container) }
+            step("GameplayParityPsU3Checks.run") { GameplayParityPsU3Checks.run(main, container) }
+            step("GameplayParityPsU4Checks.run") { GameplayParityPsU4Checks.run(main, container) }
+            step("GameplayParityPsFu3Checks.run") { GameplayParityPsFu3Checks.run(main, container) }
+            step("GameplayParityPsFu4Checks.run") { GameplayParityPsFu4Checks.run(main, container, graphics) }
+            step("GameplayParityPsFu5Checks.run") { GameplayParityPsFu5Checks.run(main, container, graphics) }
+            step("GameplayParityPsFu6Checks.run") { GameplayParityPsFu6Checks.run(main, container) }
+            step("GameplayParityPsFu7Checks.run") { GameplayParityPsFu7Checks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)

@@ -61,14 +61,24 @@ object BrowserTutorialAdapterDiagnostics {
                 check(index >= 0) { "BrowserTutorialAdapterDiagnostics.kt:61" }
                 window.mouseClick(button, window.position.x + 62 + 66 * index, window.position.y + 180)
             }
-            // Clear the native starting dialogue before instruction actions.
-            repeat(90) {
+            fun dismiss() = repeat(90) {
                 main.update(container, .05f)
                 if (state.shipUI.isWindowOpen) {
                     BrowserEngine.key(49, '1'.code, true); BrowserEngine.step(0f)
                     BrowserEngine.key(49, '1'.code, false); BrowserEngine.step(0f)
                 }
             }
+            // CommandGui::KeyDown: in the tutorial Escape over the ship window opens the menu as well (native capture ps-u5
+            // u5-full s27e); a second Escape closes the menu.
+            fun escapeShip() {
+                check(state.shipUI.tutorialShipWindow != null) { "No ship window for Escape" }
+                state.cancelMenu()
+                check(state.shipUI.diagnosticPauseWindow is PauseWindow) { "Escape over the tutorial's ship window did not open the menu" }
+                state.cancelMenu()
+                check(state.shipUI.diagnosticPauseWindow == null) { "Escape did not close the menu" }
+            }
+            // Clear the native starting dialogue before instruction actions.
+            dismiss()
             check(!state.shipUI.isWindowOpen) { "BrowserTutorialAdapterDiagnostics.kt:72" }
             // Both inputs and disabled artwork use native opening permissions,
             // even when the ship is otherwise ready and out of danger.
@@ -122,7 +132,7 @@ object BrowserTutorialAdapterDiagnostics {
                 if (step.continueButton) {
                     if (step.id == "UPGRADES_1") {
                         val window = state.shipUI.tutorialShipWindow!!
-                        state.cancelMenu()
+                        escapeShip()
                         check(state.shipUI.tutorialShipWindow === window) { "Escape bypassed upgrade explanation" }
                     }
                     check(adapter.continueStep(state) != null) { "BrowserTutorialAdapterDiagnostics.kt:128" }
@@ -160,6 +170,16 @@ object BrowserTutorialAdapterDiagnostics {
                         airlock.open = false
                         room.fires[0] = FireInstance(room, 0)
                         refused()
+                        // CrewControl::MouseMove selects no door while crew is selected (the crew selected at
+                        // DAMAGE_SYSTEM_2 still is): a click on the airlock only drops the selection (native capture
+                        // ps-u5 u5-x4; the next click, with no crew selected, opens it there).
+                        check(state.shipUI.tutorialSelectedCrewCount > 0) { "Tutorial crew selection was lost before the airlock" }
+                        val at = state.playerShipRenderToScreen(airlock.pixelCentre.x, airlock.pixelCentre.y)
+                        BrowserEngine.mouse(at.x, at.y, 0, 0); main.update(container, 0f)
+                        BrowserEngine.mouse(at.x, at.y, 1, 0); main.update(container, 0f)
+                        BrowserEngine.mouse(at.x, at.y, 2, 0); main.update(container, 0f)
+                        check(!airlock.open && state.shipUI.tutorialSelectedCrewCount == 0) { "A click on a door with crew selected toggled it" }
+                        check(controller.step.id == "FIRE_PC_1") { "The airlock click with crew selected moved the lesson on" }
                         state.player.rooms.first { it.doors.any { d -> d.isAirlock } && it !== room }
                             .doors.first { it.isAirlock }.open = true
                         refused()
@@ -184,7 +204,23 @@ object BrowserTutorialAdapterDiagnostics {
                         check(!Buttons.JumpButton(xyz.znix.xftl.math.ConstPoint.ZERO, state.player, state) {}.disabled) { "BrowserTutorialAdapterDiagnostics.kt:184" }
                         hotkey(VanillaHotkeys.FTL_JUMP); tick()
                     }
-                    "STAR_MAP_1" -> { refused(); state.cancelMenu(); tick() }
+                    "STAR_MAP_1" -> {
+                        refused()
+                        // The tutorial's map closes only by a jump: Escape (CommandGui::KeyDown) and CANCEL
+                        // (StarMap::MouseClick, bTutorialGenerated) leave it open.
+                        val map = state.shipUI.tutorialJumpWindow!!
+                        state.cancelMenu(); tick()
+                        main.render(container, graphics)
+                        val cancel = map.cancelButton
+                        val at = xyz.znix.xftl.math.ConstPoint(cancel.pos.x + cancel.size.x / 2, cancel.pos.y + cancel.size.y / 2)
+                        BrowserEngine.mouse(at.x, at.y, 0, 0); main.update(container, 0f)
+                        BrowserEngine.mouse(at.x, at.y, 1, 0); main.update(container, 0f)
+                        BrowserEngine.mouse(at.x, at.y, 2, 0); main.update(container, 0f)
+                        check(state.shipUI.tutorialJumpWindow === map && controller.step.id == "STAR_MAP_1") {
+                            "Escape or CANCEL closed the tutorial map"
+                        }
+                        map.jump(null); tick() // fixture: the map closes without the jump (no encounter here)
+                    }
                     "COMBAT_0" -> {
                         check(!state.isPlayerPaused) { "BrowserTutorialAdapterDiagnostics.kt:189" }
                         state.shipUI.showOptionsWindow()
@@ -253,23 +289,23 @@ object BrowserTutorialAdapterDiagnostics {
                         val window = state.shipUI.tutorialShipWindow!!
                         state.player.cargoBlueprints[0] = state.blueprintManager["BEAM_2"] as AbstractWeaponBlueprint
                         check(!adapter.observation(state).beamEquipped) { "Cargo beam incorrectly satisfied equipped gate" }
-                        state.cancelMenu()
+                        escapeShip()
                         window.mouseClick(Input.MOUSE_LEFT_BUTTON, window.position.x + 480, window.position.y + 485)
                         check(state.shipUI.tutorialShipWindow === window) { "Accept/Escape bypassed missing beam" }
                         equip("BEAM_2", 1)
                         check(adapter.acceptShipWindow(state)) { "BrowserTutorialAdapterDiagnostics.kt:260" }
-                        state.cancelMenu(); tick()
+                        escapeShip(); tick()
                     }
                     "COMBAT_5" -> {
                         refused()
                         hotkey(VanillaHotkeys.SHIP_CREW); refused()
-                        state.cancelMenu()
+                        if (state.shipUI.tutorialShipWindow != null) escapeShip()
                         hotkey(VanillaHotkeys.SHIP_UPGRADES); tick()
                     }
                     "UPGRADES_1_2" -> {
                         refused()
                         val window = state.shipUI.tutorialShipWindow!!
-                        state.cancelMenu()
+                        escapeShip()
                         check(state.shipUI.tutorialShipWindow === window) { "BrowserTutorialAdapterDiagnostics.kt:273" }
                         state.player.scrap = 1000
                         upgradeClick(Input.MOUSE_LEFT_BUTTON)
@@ -277,7 +313,7 @@ object BrowserTutorialAdapterDiagnostics {
                         upgradeClick(Input.MOUSE_RIGHT_BUTTON)
                         check(window.pendingWeaponUpgrades == 0 && !adapter.acceptShipWindow(state)) { "Refunded upgrade left acceptance enabled" }
                         upgradeClick(Input.MOUSE_LEFT_BUTTON)
-                        state.cancelMenu(); tick()
+                        escapeShip(); tick()
                     }
                     "UPGRADES_2" -> {
                         refused()
@@ -296,6 +332,19 @@ object BrowserTutorialAdapterDiagnostics {
             main.endTutorialSession()
             check(main.profile === profile && BrowserXml.write(profile.snapshot()) == profileXml) { "BrowserTutorialAdapterDiagnostics.kt:297" }
             check(BrowserRandom.snapshot() == rng && main.gameContent.enableAdvancedEdition == mode) { "BrowserTutorialAdapterDiagnostics.kt:298" }
+            // CommandGui::CheckGameover (0x52c900): a loss in the tutorial reads gameover_tutorial whatever its cause
+            // (native capture ps-u5 u5-go: the hull destroyed in the first lesson), and the ordinary run stays.
+            state = main.startTutorialSession()
+            dismiss()
+            check(!state.shipUI.isWindowOpen) { "Tutorial start dialogue did not close" }
+            state.player.health = 0
+            repeat(1200) { if (state.shipUI.gameOverWindow == null) main.update(container, .05f) }
+            val over = state.shipUI.gameOverWindow
+            check(over != null) { "Destroyed tutorial ship showed no game over window" }
+            check(over.diagnosticBody == state.translator["gameover_tutorial"]) { "Tutorial game over text: ${over.diagnosticBody}" }
+            check(BrowserFiles.getRun() == run && BrowserFiles.getProfile() == storedProfile) { "Tutorial loss changed the ordinary run or profile" }
+            main.endTutorialSession()
+            check(main.profile === profile && BrowserXml.write(profile.snapshot()) == profileXml) { "Tutorial loss changed the profile" }
         } finally {
             main.endTutorialSession()
             BrowserFiles.hydrate(run, storedProfile)

@@ -1,6 +1,6 @@
 // A Lua tutorial's pointers on the touch HUD (engine TouchPointers), on a running emulator (adb only, no gRPC). See
 // docs/TESTS.md.
-//   node tools/android-touch/tutorial.mjs --serial emulator-5570 --out <dir> [--fight]
+//   node tools/android-touch/tutorial.mjs --serial emulator-5570 --out <dir> [--fight] [--only lesson,lesson]
 // Needs the debug build in Multiverse 5.5.1's tutorial (main menu, Tutorial), in flight with no window open. Each lesson
 // that draws a red arrow or outline is started through the debug console (the script's own TutorialLuaManager), and every
 // pointer it draws must have been moved to the touch place of the HUD element it marks on the desktop: an arrow's tip
@@ -39,6 +39,10 @@ const lessons = [
     { name: 'tutorial_map_open', want: [['arrow', 'button:jump']] },
 ];
 if (process.argv.includes('--fight')) lessons.push({ name: 'tutorial_fight_icon', want: [['arrow', 'target'], ['rect', 'target']] });
+// --only a,b: just these lessons. With a hostile ship in view, run --fight --only tutorial_fight_icon: the lessons before
+// the fight load their event buttons, which are inactive in danger, so their pointers keep the desktop places there.
+const only = arg('only', '').split(',').filter(Boolean);
+if (only.length) lessons.splice(0, lessons.length, ...lessons.filter((l) => only.includes(l.name)));
 
 /** Distance from (x, y) to the rectangle r (0 inside). */
 const dist = (x, y, r) => Math.hypot(Math.max(r[0] - x, 0, x - r[2]), Math.max(r[1] - y, 0, y - r[3]));

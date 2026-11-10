@@ -100,6 +100,16 @@ export async function prepareModdedLaunch({account, list, provider, onProgress =
   const stats = {archives: archives.length, cached: !!cached, files: files.size, removed: removed.size, audio: modAudio.size, warnings: result.cache.warnings.length,
     bootMs: Math.round(t1 - t0), mergeMs: Math.round(result.mergeMs), readMs: Math.round(result.readMs), totalMs: Math.round(t2 - t0)};
   globalThis.ftlModLaunchStats = stats; // read by tests and shown in diagnostics
+  // Which archive each script comes from (the last one that has the file): the launcher asks per mod before scripts
+  // that use io, os, debug or package run (mods/lua-consent.mjs).
+  async function scriptOwners() {
+    const owners = new Map(), left = new Set(session.scripts);
+    for (let i = archives.length - 1; i >= 0 && left.size; i--) {
+      const zip = await zipOf(i);
+      for (const s of [...left]) if (zip.get(s)) { owners.set(s, i); left.delete(s); }
+    }
+    return owners;
+  }
   return {session, stats, warnings: result.cache.warnings, manifest: {...manifest, audio}, fetchBoot: async () => packed, fetchAudio,
-    overlay: {files, removed, session}};
+    overlay: {files, removed, session}, mods, scriptOwners};
 }

@@ -127,6 +127,14 @@ try{
   await page.mouse.move(640,40);await shot('r23-achievements');
   await shut();
   pass(fixture+': an empty picker says why ("Nothing matches \'zzqx\'."'+(hs&&!multiverse?', "This run has none."':'')+'), inside the panel');
+  // Hyperspace starts its Lua state with or without mod scripts (Global.cpp:138, LuaScriptInit), so LUA runs on plain
+  // Hyperspace too (sweep M1, O-A1-2)
+  if(hs){
+   await run('LUA print("ps-m1 " .. 6 * 7)');const prof=JSON.parse(await page.evaluate(()=>window.hsProfile(false)));
+   assert.equal(prof.active,true,fixture+': the Lua runtime is up');
+   assert.ok(prof.log.includes('[print] ps-m1 42'),fixture+': LUA ran (log: '+prof.log.slice(-3).join(' / ')+')');
+   pass(fixture+': LUA runs'+(multiverse?'':' without mod scripts'));
+  }
   if(process.env.CONSOLE_PART==='empty'){assert.deepEqual(errors,[],'browser errors');console.log('PASS console empty pickers '+fixture);await browser.close();server.kill('SIGTERM');process.exit(0);}
  }
 

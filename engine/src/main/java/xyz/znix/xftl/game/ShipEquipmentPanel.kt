@@ -879,6 +879,14 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         dst.set(drag.blueprint)
         src.set(replacing)
 
+        // A drone that came from outside the drone boxes joins the ship now (ShipManager::AddDrone).
+        ship.drones?.let { drones ->
+            val to = droneButtons.indexOf(hovered)
+            val from = droneButtons.indexOf(drag)
+            if (to >= 0 && from < 0) drones.drones.getOrNull(to)?.let { drones.browserDroneEquipped(it) }
+            if (from >= 0 && to < 0) drones.drones.getOrNull(from)?.let { drones.browserDroneEquipped(it) }
+        }
+
         // Equipment::MouseUp hook: the shown over-capacity page takes what its box holds now.
         if (hsUi) xyz.znix.xftl.hs.ship.HsEquipment.syncOver(ship)
         ship.cargoUpdated()
@@ -1017,8 +1025,12 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         private val container: WidgetContainer,
         private val getDrag: () -> Blueprint?,
         private val getHovered: () -> Blueprint?,
+        private val hot: (() -> Boolean)? = null,
     ) :
         Button(game, pos, container.root.size) {
+
+        /** Which box this is (tests tell the crew screen's two boxes apart). */
+        val boxType: Type get() = type
 
         override val makesHoverNoise: Boolean get() = false
 
@@ -1047,7 +1059,8 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
 
             val draggingBlueprint = getDrag()
 
-            val hoverActive = hovered && draggingBlueprint != null
+            // The touch crew screen's DISMISSAL box lights while the dragged crew box is over it (its own test).
+            val hoverActive = hot?.invoke() ?: (hovered && draggingBlueprint != null)
             val image = when {
                 hoverActive -> game.getImg(hoverPath)
                 else -> game.getImg(normalPath)
@@ -1149,12 +1162,13 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
 
             fun create(
                 game: InGameState, type: Type, pos: IPoint,
-                getDrag: () -> Blueprint?, getHovered: () -> Blueprint?
+                getDrag: () -> Blueprint?, getHovered: () -> Blueprint?,
+                hot: (() -> Boolean)? = null
             ): SellDropBox {
                 val widgetName = when (type) {
                     Type.SELL_EQUIPMENT -> "sell_drop_box"
                     Type.TOO_MUCH_EQUIPMENT -> "crew_over_capacity"
-                    Type.TOO_MANY_CREW -> "crew_over_capacity"
+                    Type.TOO_MANY_CREW, Type.DISMISS_CREW -> "crew_over_capacity"
                 }
 
                 val widget: WidgetContainer = game.uiLoader.load(widgetName).mainWidget
@@ -1163,11 +1177,13 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
                     Type.SELL_EQUIPMENT -> "sell_box_title"
                     Type.TOO_MUCH_EQUIPMENT -> "overcapacity_item_title"
                     Type.TOO_MANY_CREW -> "overcapacity_crew_title"
+                    Type.DISMISS_CREW -> "dismiss_box_title"
                 }
                 val messageKey = when (type) {
                     Type.SELL_EQUIPMENT -> "sell_box_text"
                     Type.TOO_MUCH_EQUIPMENT -> "overcapacity_item_text1"
                     Type.TOO_MANY_CREW -> "overcapacity_crew_text"
+                    Type.DISMISS_CREW -> "dismiss_box_text"
                 }
 
                 (widget.byId["title"] as Label).text = game.translator[titleKey]
@@ -1225,7 +1241,7 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
                     }
                 }
 
-                return SellDropBox(game, pos, type, widget, getDrag, getHovered)
+                return SellDropBox(game, pos, type, widget, getDrag, getHovered, hot)
             }
         }
 
@@ -1233,6 +1249,8 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             SELL_EQUIPMENT,
             TOO_MUCH_EQUIPMENT,
             TOO_MANY_CREW,
+            /** The touch crew screen's DISMISSAL box (the iPad game's crew screen; `dismiss_box_title`). */
+            DISMISS_CREW,
         }
     }
 }

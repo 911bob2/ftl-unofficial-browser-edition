@@ -47,13 +47,13 @@ object EnvironmentAssets {
      */
     fun warmPaths(): List<String> = listOf("img/storeUI/store_buy_main.png", "img/storeUI/store_sell_main.png")
 
-    /** The plain environments draw the picked backdrop; the others draw their own scenery. */
+    /** Every environment but the pulsar and the nebula draws the picked backdrop (AbstractEnvironment.renderBackground). */
     fun usesPickedBackground(type: Beacon.EnvironmentType): Boolean =
-        type == Beacon.EnvironmentType.NORMAL || type == Beacon.EnvironmentType.PDS
+        type != Beacon.EnvironmentType.PULSAR && !type.isNebula
 
-    /** The star field that the asteroid, sun and pulsar beacons draw in place of the picked backdrop. */
+    /** The star field that the pulsar draws in place of the picked backdrop (SetPulsarLevel). */
     fun typeBackdrop(type: Beacon.EnvironmentType): List<String> = when (type) {
-        Beacon.EnvironmentType.ASTEROID, Beacon.EnvironmentType.SUN, Beacon.EnvironmentType.PULSAR -> listOf(SKY)
+        Beacon.EnvironmentType.PULSAR -> listOf(SKY)
         else -> emptyList()
     }
 

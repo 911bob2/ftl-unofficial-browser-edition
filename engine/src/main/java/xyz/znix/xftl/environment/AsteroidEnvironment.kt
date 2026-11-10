@@ -34,9 +34,6 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
 
     private var asteroidAnimationTimer = 0f
 
-    // The actual background
-    private val realBackground = game.getImg("img/stars/bg_dullstars.png")
-
     private val layer1 = game.getImg("img/asteroids/asteroid_back1.png")
     private val layer2 = game.getImg("img/asteroids/asteroid_back2.png")
     private val layer3 = game.getImg("img/asteroids/asteroid_back3.png")
@@ -76,15 +73,16 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
     /** Diagnostics (native 1.6.14 replay): state, phase timer, firing timer, next target index. */
     internal fun diagnosticTimers(): FloatArray = floatArrayOf(state.toFloat(), phaseTimeRemaining, firingTimer, targetIndex.toFloat())
 
-    override fun sceneBackdrop() = realBackground
-    override val drawsPlanet: Boolean get() = false
-
+    /**
+     * StartAsteroids (1.6.14 0x418a40) leaves the scene alone: SpaceManager::OnRenderBackground and OnRenderForeground
+     * draw the beacon's backdrop, planet and fleet as anywhere else (HS oracle wp6-map-env e03-stack: the planet behind
+     * the field), and OnRenderAsteroids (0x41a770) adds the three layers.
+     */
     override fun renderBackground(gc: GameContainer, g: Graphics) {
-        val ps = pauseShade(game)
-
-        // This draws the normal background with all its adjustments
-        if (hsBackdrop) realBackground.draw(0f, 0f, ps)
+        super.renderBackground(gc, g)
         if (!hsAsteroids) return
+        val ps = pauseShade(game)
+        browserDrawLog?.add("asteroids" to layer1)
 
         // Rough speeds measured from FTL
         // back img = ~13sec to traverse weapons bar (~400px)
@@ -95,9 +93,14 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
         // back img = ~13sec to traverse weapons bar (~400px)
         // middle img = ~10sec
         // foreground img = ~8sec
+        // CommandGui::RenderStatic (0x535070) draws OnRenderAsteroids(3) at 1 - 0.3 of the jump zoom about the hull
+        // centre (Hyperspace's layer pass applies it around its render events itself).
+        val scaled = hsPhase == 0
+        if (scaled) { g.pushTransform(); game.applyJumpAsteroids(g) }
         renderAsteroid(gc, layer1, 400f / 13, ps)
         renderAsteroid(gc, layer2, 400f / 10, ps)
         renderAsteroid(gc, layer3, 400f / 8, ps)
+        if (scaled) g.popTransform()
 
         if (game.debugFlags.showSunTimer.set) {
             game.getFont("HL2", 2f).drawString(
@@ -175,6 +178,11 @@ class AsteroidEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironme
         asteroid.setInitialPath(startPos, asteroid.target.pixelCentre)
 
         ship.projectiles.add(asteroid)
+    }
+
+    override fun renderFrontLayer(gc: GameContainer, g: Graphics) {
+        browserDrawLog?.add("asteroidsFront" to layer3)
+        renderAsteroid(gc, layer3, 400f / 8, pauseShade(game))
     }
 
     private fun renderAsteroid(gc: GameContainer, img: Image, speed: Float, colour: Colour) {

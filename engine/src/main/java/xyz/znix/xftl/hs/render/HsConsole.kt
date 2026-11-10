@@ -334,6 +334,7 @@ object HsConsole {
         val elem = org.jdom2.Element("ship").setAttribute("name", "").setAttribute("auto_blueprint", name)
         val spec = xyz.znix.xftl.shipgen.EnemyShipSpec(elem, game.blueprintManager, game.eventManager)
         game.clearLocation()
+        game.commandGuiClearLocation()
         game.debugSpawnShip(spec, game.difficulty, sector, 0)
     }
 
@@ -378,6 +379,7 @@ object HsConsole {
         val created = (if (game.eventManager.hs != null) HsFlow.getEvent(game, name, true, -1) else baseEvent(game, name)) ?: return
         HsFlow.beforeCreateLocation(null)
         game.clearLocation()
+        game.commandGuiClearLocation()
         val beacon = game.currentBeacon ?: return
         beacon.createdEvent = created
         // the new event's scene: SwitchBackground from its own lists (the start beacon's changeBackground station is gone)

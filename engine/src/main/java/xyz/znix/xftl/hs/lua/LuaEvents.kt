@@ -22,6 +22,7 @@ object LuaEvents {
     @JvmStatic
     fun onTick() {
         ticks++
+        HsLua.tick()
         LuaStored.endFrame()
         if (!HsLua.hasInt[A.EV_ON_TICK]) return
         LuaJs.fire(A.EV_ON_TICK, 0, 0)

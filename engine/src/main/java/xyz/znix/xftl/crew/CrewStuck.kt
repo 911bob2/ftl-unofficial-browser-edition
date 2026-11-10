@@ -37,18 +37,23 @@ object CrewStuck {
         return true
     }
 
-    /** ShipManager::CountCrew(boarders): living, non-drone crew aboard whose intruder flag is [boarders]. */
+    /**
+     * ShipManager::CountCrew(boarders): non-drone crew aboard that are not dead (bDead +0x1fc: a crew member in its
+     * death hold still counts) whose intruder flag is [boarders]. Ours keeps a dying crew member in the ship's list
+     * until its death animation ends (bDead), so every listed crew member counts but one a script killed (hsKilled).
+     */
     @JvmStatic
     fun countCrew(ship: Ship, boarders: Boolean): Int = ship.crew.count {
-        it is LivingCrew && it !is AbstractIndoorsDrone.Pawn && it.health > 0f &&
+        it is LivingCrew && it !is AbstractIndoorsDrone.Pawn && !(it.hsKilled && it.health <= 0f) &&
             (it.mode == AbstractCrew.SlotType.INTRUDER) == boarders
     }
 
     private fun bringHome(enemy: Ship, player: Ship) {
         val pilotRoom = player.piloting?.room
         for (crew in enemy.crew.toList()) {
-            // The original takes crew that are not yet dead (bDead); one in its death hold would die at home.
-            if (crew !is LivingCrew || crew is AbstractIndoorsDrone.Pawn || crew.health <= 0f) continue
+            // The original takes crew that are not yet dead (bDead): one in its death hold comes home too and dies
+            // there (HS oracle ps-fu6-stuck: boarder B at health 0 is in the cockpit 0.25 s later, bDead 1.5 s after).
+            if (crew !is LivingCrew || crew is AbstractIndoorsDrone.Pawn || (crew.hsKilled && crew.health <= 0f)) continue
             if (crew.ownerShip !== player) continue
             crew.removeFromShip()
             player.crew.add(crew)

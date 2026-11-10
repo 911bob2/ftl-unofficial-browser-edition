@@ -130,6 +130,13 @@ try{
    assert.ok(inside(c.drop,c.screen),name+': the over-capacity box on the screen');
    for(const o of c.others)assert.ok(!rectsOverlap(c.drop,o.rect),name+': the over-capacity box clear of the '+o.name);
    if(hs)assert.ok(c.crew.find(b=>b.over&&b.crew),name+": the extra crew member's own box");
+   // the iPad's DISMISSAL DropBox on the touch crew screen without Hyperspace (CrewManifest's second DropBox, at (600, 500));
+   // none on the mouse layout, none under Hyperspace (user, FU1-C1)
+   if(touch&&hs)assert.equal(c.dismissBox,null,'touch, Hyperspace: no DISMISSAL box');
+   else if(touch){assert.ok(c.dismissBox&&inside(c.dismissBox,c.screen),'touch: the DISMISSAL box on the screen '+JSON.stringify(c.dismissBox));
+    assert.deepEqual([c.dismissBox.x,c.dismissBox.y],[600,507],"touch: the DISMISSAL box at the iPad's (600, 500), the widget 7 px in");
+    for(const b of c.crew)assert.ok(!rectsOverlap(b,c.dismissBox),'touch: crew box '+b.id+' clear of the DISMISSAL box');}
+   else assert.equal(c.dismissBox,null,'mouse: no DISMISSAL box');
    if(!touch){
     assert.deepEqual([c.drop.x,c.drop.y],[-275,107],"mouse: the crew DropBox as CrewManifest's (-275, 100), the widget 7 px in");
     if(hs){const extra=c.crew.find(b=>b.over);

@@ -55,6 +55,10 @@ try{
  const bad=json.ships.filter(s=>s.error);
  console.log('statcrew: races='+json.races+' powerDefs='+json.powerDefs+' statBoostDefs='+json.statBoostDefs+' ships='+json.ships.length+' errors='+bad.length);
  for(const s of bad)console.log('SHIP ERROR '+s.bp+' '+s.error);
+ // parity sweep C6 regression checks (BrowserPsC6Checks), on every Hyperspace ship
+ const c6=json.ships.flatMap(s=>(s.c6||[]).map(c=>({...c,bp:s.bp}))).concat((json.c6win||[]).map(c=>({...c,bp:'win run'})));
+ for(const c of c6)console.log((c.ok?'PASS':'FAIL')+' c6 '+c.bp+' '+c.name+(c.detail?' '+c.detail:''));
+ assert.ok(c6.every(c=>c.ok),'ps-c6 checks');
  if(process.env.HS_REPORT)await writeFile(process.env.HS_REPORT,await page.evaluate(()=>JSON.stringify(JSON.parse(window.hsCapabilityReport()),null,1)));
  await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).state==='MainMenuState');
  // MV ship starts log CSP inline-style errors (open item in reports/hscore.md, not crew): counted, not failed.

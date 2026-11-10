@@ -8,7 +8,8 @@
 // multipleOverCapacity: Hyperspace's own pager of the two waiting items); every crew member has a box and a
 // dismiss button on the screen, none under the crew screen's over-capacity box; without Hyperspace a crew box dragged
 // onto another goes back, the order kept (no reorder there; Hyperspace's CustomCrewManifest swaps); a tap on the extra
-// crew member's dismiss button and then on Yes dismisses them. Frames: <dir>/<name>-*.png.
+// crew member's dismiss button and then on Yes dismisses them; a crew box carried onto the DISMISSAL box (the iPad's)
+// lights it and, lifted there, asks the same and dismisses on Yes. Frames: <dir>/<name>-*.png.
 import { Device, sleep } from './device.mjs';
 
 const arg = (name, dflt) => {
@@ -165,5 +166,51 @@ if (extra) {
             `${extra.crew} is dismissed`, JSON.stringify(left?.map((c) => c.crew)));
     }
 }
+// The iPad's DISMISSAL box (touch, ps-fu1): beside the crew grid and clear of it; a crew box picked up, carried onto
+// it (it lights while the box is over it) and lifted there opens the same confirmation, and Yes dismisses.
+b = await boxes();
+if (b.window !== null && b.tab === 'CREW') {
+    if (check(!!b.dismissBox, 'the crew screen has its DISMISSAL box', JSON.stringify(b).slice(0, 200))) {
+        check(inside(b.dismissBox, b.screen), 'the DISMISSAL box is on the screen', JSON.stringify(b.dismissBox));
+        for (const o of b.others.filter((o) => o.name !== 'dismissBox'))
+            check(!overlap(b.dismissBox, o.rect), `the DISMISSAL box is clear of the ${o.name}`, JSON.stringify(o.rect));
+        for (const c of b.crew) check(!overlap(c, b.dismissBox), `crew box ${c.id} clear of the DISMISSAL box`, JSON.stringify(c));
+        if (b.drop) check(!overlap(b.drop, b.dismissBox), 'the DISMISSAL box is clear of the over-capacity box');
+        const crewBefore = b.crew.filter((c) => c.crew);
+        const victim = crewBefore[0];
+        const { w, h } = landscape();
+        const scale = h / 768;
+        const px = (x) => Math.round((w - s.canvasW * scale) / 2 + (b.origin.x + x) * scale);
+        const py = (y) => Math.round((b.origin.y + y) * scale);
+        // pressed on the portrait (box + (50, 30)), so the box's (50, 46) ends 16 below the finger
+        const from = [px(victim.x + 50), py(victim.y + 30)];
+        const to = [px(b.dismissBox.x + b.dismissBox.w / 2), py(b.dismissBox.y + b.dismissBox.h / 2 - 16)];
+        d.shell(`input motionevent DOWN ${from.join(' ')}`);
+        await sleep(150);
+        for (let i = 1; i <= 8; i++) {
+            const t = i / 8;
+            d.shell(`input motionevent MOVE ${Math.round(from[0] + (to[0] - from[0]) * t)} ${Math.round(from[1] + (to[1] - from[1]) * t)}`);
+            await sleep(80);
+        }
+        await sleep(400);
+        const mid = await boxes();
+        d.frame(`${name}-7-over-dismissal`);
+        check(mid.dismissHot === true, `${victim.crew}'s box carried over the DISMISSAL box lights it`, String(mid.dismissHot));
+        d.shell(`input motionevent UP ${to.join(' ')}`);
+        await sleep(700);
+        b = await boxes();
+        d.frame(`${name}-8-dismissal-confirm`);
+        if (check(!!b.confirmYes, `lifted on the DISMISSAL box: the confirmation for ${victim.crew} opens`) &&
+            check(inside(b.confirm, b.screen), 'the confirmation is on the screen', JSON.stringify(b.confirm))) {
+            await tapRect(s, b.origin, b.confirmYes);
+            await sleep(500);
+            b = await boxes();
+            d.frame(`${name}-9-dismissal-done`);
+            const left = b.crew.filter((c) => c.crew);
+            check(left.length === crewBefore.length - 1 && !left.some((c) => c.crew === victim.crew),
+                `${victim.crew} is dismissed through the DISMISSAL box`, JSON.stringify(left.map((c) => c.crew)));
+        }
+    }
+} else check(false, 'the crew screen is still open for the DISMISSAL box step', JSON.stringify(b).slice(0, 200));
 console.log(failed ? `FAILED ${failed}` : 'PASS overcap touch');
 process.exit(failed ? 1 : 0);

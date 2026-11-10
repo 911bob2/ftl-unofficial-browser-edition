@@ -122,6 +122,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
      */
     private fun currentFriendlyCrew(): List<AbstractCrew> = ship.crew.filter { it.mode == AbstractCrew.SlotType.CREW }
     internal val touchIsTargeting: Boolean get() = game.clickEvent != null || beamTargeting != null
+    /** CrewControl::MouseMove has a selected door only without selected crew and with nothing armed. */
+    private val doorSelectable: Boolean get() = selectedCrew.isEmpty() && game.clickEvent == null && beamTargeting == null
     internal val touchArmedIsBeam: Boolean get() = beamTargeting != null ||
         targetingSelectedWeapon?.let { ship.hardpoints.getOrNull(it)?.weapon is BeamBlueprint.BeamInstance } == true
     internal val isEventOpen: Boolean get() = currentWindow is DialogueWindow
@@ -448,6 +450,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
      * for them must go through [toBarSpace].
      */
     private val systemsBarButtons = ArrayList<Button>()
+
+    /** MouseControl's valid flag on the last frame (see the hover beep in the mouse update). */
+    private var pointerWasValid = false
 
     /**
      * The subsystems' buttons: in [buttons] for input, drawn by render with the system boxes, under the weapon and
@@ -1450,7 +1455,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // click too (when the doors work) and then orders no crew. A door is only selected while no crew is
         // (native capture wp3-rclick: with a crew member selected the right click orders it to the room instead).
         // Hyperspace's rightClickDoorOpening off drops the door first (TileBasedCrewMovement.cpp).
-        if (button == Input.MOUSE_LEFT_BUTTON || (button == Input.MOUSE_RIGHT_BUTTON && selectedCrew.isEmpty() &&
+        // A left click toggles only the selected door, and CrewControl::MouseMove selects none while a crew member is
+        // selected or something is armed: the click then only drops the crew selection (CrewControl::LButtonUp 0x502dd0;
+        // native capture ps-u5 u5-x4: crew selected, the airlock's first click leaves it shut, the second opens it).
+        if ((button == Input.MOUSE_LEFT_BUTTON && doorSelectable) || (button == Input.MOUSE_RIGHT_BUTTON && selectedCrew.isEmpty() &&
                 xyz.znix.xftl.hs.crew.HsTileMovement.rightClickOpensDoors())
         ) {
             val doorPos = screenToShipRender(x, y, playerShipPosition)
@@ -2260,6 +2268,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.systems.HsSystemBox.playerFrame(game)
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.systems.HsSystemBox.enemyFrame(game)
         if (HS.luaActive) hsDroneBoxes = ship.drones?.drones?.filterNotNull() ?: emptyList()
+        // Hyperspace CrewBox::OnLoop (CustomCrew.cpp): every crew box sets its power buttons from PowerReady each frame,
+        // so POWER_READY (and POWER_REQ) run every frame (oracle ps-m1-ev ev|idle POWER_READY).
+        if (HS.luaActive) for (crew in hsVisibleCrew()) for (p in xyz.znix.xftl.hs.crew.HsCrew.ex(crew).crewPowers)
+            if (p.enabled && !p.def.hideButton) xyz.znix.xftl.hs.crew.HsCrewUi.buttonActive(crew, p)
         doorCursorTime += dt
         (currentWindow as? DialogueWindow)?.updateChoiceClock(dt)
         tutorialVisuals?.let { visuals ->
@@ -2819,9 +2831,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                                 body.powered -> "powered_deployed"
                                 else -> "unpowered_deployed"
                             }
-                            // Hyperspace's drone4..6 (drone_slot_4..6) key the boxes past three (oracle ps-u1-d5 d5-h3: "Hotkey: 8"),
-                            // shifted after five or more weapon boxes (DroneControl::ArmamentHotkey hook)
-                            val key = game.getButtonNameForHotkey(armamentHotkey(false, i)?.id, "")
+                            // Hyperspace's drone4..6 (drone_slot_4..6) name the boxes past three (oracle ps-u1-d5 d5-h3: "Hotkey: 8")
+                            val key = armamentTooltipKey(false, i)
                             return (body.type.desc?.let { tr[it] } ?: "") + " \n\n" + tr[state] + "\n\n" +
                                     tr["hotkey"].replace("\\1", key) + "\n" + tr["rearrange"]
                         }
@@ -3869,17 +3880,27 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             hsWorldCurrentMouse.x = w.x; hsWorldCurrentMouse.y = w.y
         }
 
+        // CommandGui::MouseMove (1.6.14 0x535e00, 1.6.9 0x5217c0): while CombatControl::MouseMove reports a target being
+        // picked (its UpdateTarget, 1.6.14 0x57dd70: a weapon, the teleporter, hacking or mind control armed) the system
+        // boxes (SystemControl), the jump, ship, store and options buttons get (-1,-1): no hover and no tooltip, so a
+        // click on them does nothing (native ps-fu4-van fu4-armed x-armed-hover, x-armed-click: the engines stay
+        // unpowered). The weapon and drone boxes and autofire (CombatControl's own) and the crew boxes keep the mouse.
+        val pickingTarget = game.clickEvent != null || beamTargeting != null
         for (button in systemsBarButtons) {
             val (bx, by) = toBarSpace(x, y)
             // While a weapon or drone is dragged its strip shows no hover (0x56f750).
             if (weaponDragMoved && button is WeaponDroneButton && button.ownerSystem === weaponDragSystem)
                 button.update(-1, -1)
+            else if (pickingTarget && button !is WeaponDroneButton && button !is AutofireButton)
+                button.update(-1, -1, true)
             else
                 button.update(bx, by)
         }
 
         for (button in buttons) {
-            button.update(x, y)
+            if (pickingTarget && (button === jumpButtonRef || button === shipButtonRef || button === storeButtonRef ||
+                        button === settingsButtonRef)) button.update(-1, -1, true)
+            else button.update(x, y)
         }
 
         if (beamTargeting != null) {
@@ -3890,9 +3911,20 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         updateHoveredCrew(x, y, playerShipPosition)
 
-        // Update the door hover markers
+        // MouseControl::OnRender (1.6.14 0x4e6240) plays hoverBeep when the pointer's valid flag rises, or when a
+        // GenericButton newly hovered forces it (GenericButton::MouseMove 0x58dd90: SetValid(1, !wasHovered)). A system
+        // box or a filled weapon or drone box sets the flag without forcing it, so going from one box straight to the
+        // next is silent (native sound trace ps-fu4-van fu4-beep: shields -> engines -> medbay and weapon 1 -> weapon 2
+        // beep once). The crew boxes set it silently (MouseControl::SetSilentValid from CrewControl::OnLoop).
+        val boxValid = systemsBarButtons.any { it.hovered && (it is SystemPowerButton || (it is WeaponDroneButton && !it.empty)) }
+        if (boxValid && !pointerWasValid) game.sounds.getSample("hoverBeep").play()
+        pointerWasValid = boxValid || buttons.any { it.hovered } || hoveredCrew.isNotEmpty()
+
+        // Update the door hover markers. CrewControl::MouseMove (1.6.9 0x4f4380) selects a door only while no crew
+        // member is selected and nothing is armed (CombatControl::WeaponsArmed); otherwise it has no selected door.
         for (door in ship.doors) {
-            door.updateMouseHover(x - playerShipPosition.x, y - playerShipPosition.y)
+            if (doorSelectable) door.updateMouseHover(x - playerShipPosition.x, y - playerShipPosition.y)
+            else door.clearMouseHover()
         }
 
         // Hyperspace background objects (the CombatControl::MouseMove hook: the original took the mouse while a
@@ -3942,6 +3974,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     val luaHoveredCrew: MutableList<AbstractCrew> get() = hoveredCrew
 
     /** Diagnostics: replace the crew selection. */
+    /** A system's power box on the bar (desktop layout), for the checks. */
+    internal fun diagnosticSystemBox(system: AbstractSystem): Button? =
+        systemsBarButtons.firstOrNull { it is SystemPowerButton && it.system === system }
+
     fun diagnosticSelectCrew(crew: List<AbstractCrew>) { selectedCrew.clear(); selectedCrew += crew }
 
     /** Diagnostics: the crew hover tooltip of [target] at [point] (ship render pixels). */
@@ -4064,6 +4100,17 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         return game.hotkeyManager.groups.flatMap { it.hotkeys }.firstOrNull { it.uiName == name }
     }
 
+    /**
+     * The key a weapon or drone box's tooltip names ("Hotkey: \1"): the settings hotkey weapon<n> or drone<n> of the box's own
+     * number, keycap_none ("None") without one. Hyperspace's ArmamentHotkey hooks move only the keys: with five weapon boxes the
+     * fifth reads "None" and the drone boxes 5 and 6, though 5 and 6 fire the fifth weapon and the first drone (oracle ps-fu4-w5).
+     */
+    fun armamentTooltipKey(weapon: Boolean, slot: Int): String {
+        val name = "hotkey_" + (if (weapon) "weapon" else "drone") + (slot + 1)
+        val hk = game.hotkeyManager.groups.flatMap { it.hotkeys }.firstOrNull { it.uiName == name }
+        return game.getButtonNameForHotkey(hk?.id, game.translator["keycap_none"])
+    }
+
     /** The box's number (ArmamentBox::hotKey), Hyperspace's drone renumbering included. */
     fun armamentBoxNumber(weapon: Boolean, slot: Int): Int = xyz.znix.xftl.hs.render.HsHotkeys.armamentBoxNumber(
         xyz.znix.xftl.hs.HS.active, armamentBoxCount(true), armamentBoxCount(false), weapon, slot)
@@ -4142,6 +4189,15 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         return selectedCrew.contains(crew) || hoveredCrew.contains(crew)
     }
 
+    /** CommandGui::ClearLocation's CrewControl step (1.6.14 0x503110): no crew selected or hovered. */
+    fun clearCrewSelection() {
+        selectedCrew.clear()
+        hoveredCrew.clear()
+    }
+
+    /** CrewMember::selectionState 1 (CrewControl::OnLoop: selected; 2 is hovered only). */
+    fun isCrewSelected(crew: AbstractCrew): Boolean = selectedCrew.contains(crew)
+
     fun escapePressed() {
         pauseWindow?.let { win ->
             win.escapePressed()
@@ -4149,6 +4205,14 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         }
 
         currentWindow?.let { win ->
+            // CommandGui::KeyDown (1.6.9 0x5201f0): while the tutorial runs, Escape over the ship window opens the menu
+            // and the window still takes the key, closing where the lesson lets it (native capture ps-u5 u5-full s27e:
+            // INVENTORY_2 with the beam fitted, the window closed under the menu).
+            if (win is ShipWindow && game.mainGame?.isTutorialRunning == true) {
+                win.escapePressed()
+                showPauseWindow()
+                return
+            }
             if (!arrivalHidden) win.escapePressed()
             return
         }
@@ -4231,8 +4295,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             noEnemyShipWarning.startFor(WARNING_TIME)
             return
         }
-        // A drone being rebuilt is refused without a message.
-        if (info.cooldown != null)
+        // A drone being rebuilt is refused without a message, as is one with no target since it was equipped
+        // (DroneSystem::PowerDrone's CanBeDeployed test, Drones.browserDroneEquipped).
+        if (info.cooldown != null || (info.browserTargetless && info.instance == null))
             return
         armamentPowerFailed(drones, info.type.power - drones.getDroneForcedPower(slot), dronePowerWarning)
     }
@@ -4258,7 +4323,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // Hyperspace CustomSpaceStatus.cpp: every hazard of the scene, the neutral ASB, the per-target fleet tooltips.
         if (HS.active) {
             val target = env.layers.firstNotNullOfOrNull { it as? xyz.znix.xftl.environment.AsbEnvironment }?.pdsTarget ?: 0
-            xyz.znix.xftl.hs.sector.HsSpaceStatus.render(game, g, env, target, beacon.isOvertaken, mouseX, mouseY)?.let { g.tooltip = it }
+            xyz.znix.xftl.hs.sector.HsSpaceStatus.render(game, g, env, target, env.diagnosticHasFleet, mouseX, mouseY)?.let { g.tooltip = it }
             return
         }
         var allies = false
@@ -4271,8 +4336,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             Beacon.EnvironmentType.PDS -> {
                 val target = (env as? xyz.znix.xftl.environment.AsbEnvironment)?.pdsTarget ?: 0
                 allies = target == 1
+                // SpaceStatus::MouseMove (0x501df0): PDS_FLEET while the fleet is behind the scene (SpaceManager +0xb4).
                 val key = when {
-                    beacon.isOvertaken -> "PDS_FLEET"
+                    env.diagnosticHasFleet -> "PDS_FLEET"
                     target == 0 -> "PDS_PLAYER"
                     target == 1 -> "PDS_ENEMY"
                     else -> "PDS_ALL"
@@ -4581,7 +4647,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
                 continue
             if (key.id == "sys_power_${system.codename}") {
                 val powerUp: Boolean = !input.isKeyDown(Input.KEY_LSHIFT) && !input.isKeyDown(Input.KEY_RSHIFT)
-                changeSystemPower(system, powerUp)
+                // SystemBox::KeyDown (1.6.9 0x4cdf50): the power hotkey is the box's MouseClick(true), so Hyperspace's
+                // SYSTEM_BOX_MOUSE_CLICK runs with true and a pre-empting callback stops it (oracle ps-m1-ev ev|ret)
+                val preempted = powerUp && HS.luaActive && xyz.znix.xftl.hs.systems.HsSystemBox.existing(system)
+                    ?.let { xyz.znix.xftl.hs.systems.HsSystemBox.mouseClick(it, true) } == true
+                if (!preempted) changeSystemPower(system, powerUp)
             }
             if (key.id == "sys_power_${system.codename}_off") {
                 changeSystemPower(system, false)
@@ -4948,6 +5018,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
         abstract val empty: Boolean
         abstract val name: String
+
+        // The box's beep is the valid pointer's rise (see pointerWasValid), not its own hover.
+        override val makesHoverNoise: Boolean get() = false
         abstract val chargeTime: Float
         abstract val chargeProgress: Float
 
@@ -5200,6 +5273,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // to activate any hovering-related stuff for something you can't click.
         override val disabled: Boolean get() = system !is MainSystem
 
+        // The box's beep is the valid pointer's rise (see pointerWasValid), not its own hover.
+        override val makesHoverNoise: Boolean get() = false
+
         private val tooltip = ownSystem.createTooltip()
 
         /** Hyperspace's Lua SystemBox for this button (null without HS Lua); see HsSystemBox. */
@@ -5207,8 +5283,6 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         // the current box (CreateSystemBoxes may have replaced it since this button was made)
         private val hsBox: xyz.znix.xftl.hs.systems.HsSystemBox? get() = xyz.znix.xftl.hs.systems.HsSystemBox.existing(ownSystem) ?: hsBoxMade
         val system: AbstractSystem get() = hsBox?.shown ?: ownSystem
-        private var hsLastX = Int.MIN_VALUE
-        private var hsLastY = Int.MIN_VALUE
         private var hsMovePreempted = false
         /** This box's SYSTEM_BOX_MOUSE_CLICK of the current click was pre-empted. */
         var hsClickPreempted = false
@@ -5231,11 +5305,11 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
          * location.x + 24, 15 wide, from the power boxes' top to location.y + 31): x location + 25..38, y from the top
          * bar - 3 (RenderPowerBoxes 0x63c310 returns the top bar - 20 where it draws no status icon) to location.y + 30
          * (native frame pairs u1v-i i-sh-x82..x97 at the bars, h-sh-y682). Where the original draws an icon over the
-         * bars (manning, fire) the column goes higher still (u1v-i i-sh-y632); not here.
+         * bars (manning, fire) the column goes higher by what the icon lifts (u1v-i i-sh-y632; AbstractSystem.drawnTooltipTop).
          */
         private fun inTooltipColumn(x: Int, y: Int, drawX: Int, drawY: Int): Boolean {
             if (PlatformSpecific.INSTANCE.isTouchUi || mouseObstructed) return false
-            val top = system.drawnPowerBarsTop
+            val top = system.drawnTooltipTop
             return x in drawX + 6..drawX + 19 && top != Int.MAX_VALUE && y in top - 3..drawY + 11
         }
 
@@ -5243,11 +5317,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             mouseX = x; mouseY = y
             val box = hsBox
             if (box != null) {
-                // SystemControl::MouseMove reaches every box on each move; a pre-empted move skips SystemBox's own.
-                if (x != hsLastX || y != hsLastY) {
-                    hsLastX = x; hsLastY = y
-                    hsMovePreempted = xyz.znix.xftl.hs.systems.HsSystemBox.mouseMove(box, x, y)
-                }
+                // CommandGui::OnLoop calls CommandGui::MouseMove every frame, which hands SystemControl::MouseMove the
+                // mouse (-1, -1 under a window) and it every box (1.6.9 0x5217c0, 0x4b87d0; oracle ps-m1-ev ev|idle
+                // SYSTEM_BOX_MOUSE_MOVE with the mouse still): a pre-empted move skips SystemBox's own.
+                hsMovePreempted = xyz.znix.xftl.hs.systems.HsSystemBox.mouseMove(box, x, y)
                 if (hsMovePreempted) return
                 super.update(x - box.shiftX, y - box.shiftY, blockHover)
                 return

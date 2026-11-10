@@ -55,6 +55,14 @@ class Beacon(
      * the bare template (console and test paths, vanilla imports).
      */
     var createdEvent: CreatedEvent = createdEvent
+        set(value) {
+            // A new LocationEvent starts with an empty ShipEvent::actualBlueprint (see [shipSaved]).
+            if (value !== field) {
+                shipSaved = false
+                hazardKept = false
+            }
+            field = value
+        }
 
     var event: Event
         get() = createdEvent.template
@@ -104,6 +112,21 @@ class Beacon(
     var eventCleared: Boolean = false
 
     /**
+     * The event's ShipEvent::actualBlueprint has a name (LocationEvent +0x1cc, its length +0x1d0): ClearLocation
+     * (0x614d00) saved a hostile ship still here into the event (ShipManager::SaveToBlueprint), and WorldManager::
+     * CreateShip (0x6149c0) builds the ship from it on a return. Nothing empties it again while the event stays (the
+     * ship being destroyed later only clears ShipEvent::present), so it outlives the ship.
+     */
+    @JvmField var shipSaved: Boolean = false
+
+    /**
+     * ClearEvent ran with [shipSaved]: its +0x1d0 branch keeps the location's environment (an ion storm stays a storm
+     * and gets the storm's effect, no nebula sensors cap; asteroids, a sun, a pulsar or an ASB stay too) instead of
+     * leaving only a nebula. Set by the first clear; a hazard already gone stays gone.
+     */
+    @JvmField var hazardKept: Boolean = false
+
+    /**
      * ClearEvent (0x6119f0) for a beacon whose LocationEvent is [force]d or not: a fleet event (+0x610) survives
      * an unforced clear, and the exit beacon (+0x614) keeps its hazard. [dropLive] also drops the running
      * environment (the player left); the flagship's step leaves the one already active.
@@ -111,11 +134,25 @@ class Beacon(
     fun clearEvent(force: Boolean, dropLive: Boolean) {
         if (hasFleetEvent && !force)
             return
+        // ClearEvent first empties the event's status effects (LocationEvent +0x644), so a later arrival (CreateLocation
+        // 0x6183a0 applies them again with 0x613a10, after ClearLocation's ClearStatusAll 0x49e2b0) has none of them.
+        powerLimitEffects.clear()
+        powerLossEffects.clear()
         if (isExit)
             return
+        if (!eventCleared)
+            hazardKept = shipSaved
         eventCleared = true
         if (dropLive)
             actualEnvironment = null
+        // ... then, with no ship saved in the event (+0x1d0 empty), a nebula or ion storm location (+0x604 3 or 4)
+        // becomes a plain nebula and gets StatusEffect::GetNebulaEffect back (exe data 0x8848f0: limit, sensors, 0,
+        // both ships): the sensors stay capped on a return (native ps-w5-van w5-rev); any other hazard goes. With a
+        // ship saved the environment stays: a nebula gets the nebula's effect, a storm the storm's (0x884900, which
+        // the storm's environment applies here), anything else none.
+        val type = nativeEnvironmentType
+        if (if (hazardKept) type == EnvironmentType.NEBULA else type.isNebula)
+            powerLimitEffects["sensors"] = 0
     }
 
     /** Nebula for map purposes: in a cloud, or a nebula event (older saves). */
@@ -161,7 +198,7 @@ class Beacon(
             // none for the easy exit's FLEET_EASY_BEACON and NO_FUEL_FLEET, a nebula for an exit in a cloud (+0x604 = 3).
             if (isOvertaken && hasFleetEvent)
                 return type
-            if (eventCleared)
+            if (eventCleared && !hazardKept)
                 type = if (type.isNebula) EnvironmentType.NEBULA else EnvironmentType.NORMAL
             return when {
                 !isOvertaken -> type
@@ -473,6 +510,9 @@ class Beacon(
             elem.setAttribute("browserForcedNebula", "true")
         if (eventCleared)
             elem.setAttribute("browserEventCleared", "true")
+        elem.setAttribute("browserShipSaved", shipSaved.toString())
+        if (hazardKept)
+            elem.setAttribute("browserHazardKept", "true")
         elem.setAttribute("browserOvertaken", isOvertaken.toString())
         elem.setAttribute("browserFleetThreatened", browserFleetThreatened.toString())
         if (hasFleetEvent)
@@ -616,6 +656,9 @@ class Beacon(
             // Deserialise the enemy ship, if present
             val shipElem = elem.getChild("enemyShip")
             beacon.ship = shipElem?.let { game.deserialiseSingleShip(it, refs, null) }
+            // Saves from before this flag: a ship left here is the one saved in the event.
+            beacon.shipSaved = elem.getAttributeValue("browserShipSaved")?.toBoolean() ?: (beacon.ship != null)
+            beacon.hazardKept = elem.getAttributeValue("browserHazardKept") == "true"
 
             for (powerLimit in elem.getChildren("powerLimit")) {
                 val system = powerLimit.getAttributeValue("system")

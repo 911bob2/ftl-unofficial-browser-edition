@@ -244,6 +244,10 @@ class Sector {
         beacon.isOvertaken = true
         beacon.browserFleetThreatened = false
         beacon.clearEnvironment()
+        // OvertakeLocation clears the old event (ClearEvent 0x6119f0 empties its status effects); the fleet event's own
+        // statuses apply when the ship arrives.
+        beacon.powerLimitEffects.clear()
+        beacon.powerLossEffects.clear()
 
         val creator = game.eventCreator
         if (xyz.znix.xftl.hs.HS.active && game.eventManager.hs != null) {

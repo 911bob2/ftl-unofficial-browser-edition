@@ -9,16 +9,18 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := hslua
 LUA_CORE := lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm \
     lundump lzio
-LUA_LIBS := lauxlib lbaselib lbitlib lmathlib lstrlib ltablib lutf8lib
-LOCAL_SRC_FILES := $(foreach f,$(LUA_CORE) $(LUA_LIBS),$(LUA_SRC)/$(f).c) $(HS_LUA)/hslua-lvm.c $(HS_LUA)/linit.c $(HS_LUA)/gen/hs_api.c \
-    hslua_jni.c
+LUA_LIBS := lbaselib lcorolib ldblib lmathlib lstrlib ltablib lutf8lib
+# lauxlib, liolib and loadlib through hs-lua/hs-*.c (their file calls on the private file system, hs-lua/hslibs.c)
+LOCAL_SRC_FILES := $(foreach f,$(LUA_CORE) $(LUA_LIBS),$(LUA_SRC)/$(f).c) $(HS_LUA)/hs-lauxlib.c $(HS_LUA)/hs-liolib.c \
+    $(HS_LUA)/hs-loadlib.c $(HS_LUA)/hslibs.c $(HS_LUA)/hslua-lvm.c $(HS_LUA)/linit.c $(HS_LUA)/gen/hs_api.c hslua_jni.c
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/$(LUA_SRC) $(LOCAL_PATH)/$(HS_LUA)
-# As the wasm build: gnu99, LUA_COMPAT_5_2, hsconf.h forced in. Native additions: LUA_USE_POSIX only switches Lua's
-# error jumps to _setjmp/_longjmp (bionic's setjmp saves the signal mask with a syscall on every pcall; what else it
-# selects is io/os code, not compiled, and the stock math.random, which HS replaces), hidden symbols except the JNI
+# As the wasm build: gnu99, no LUA_COMPAT_5_2 (HS 1.23.2 has no bit32 or math.pow), hsconf.h forced in. Native additions: LUA_USE_POSIX only switches Lua's
+# error jumps to _setjmp/_longjmp (bionic's setjmp saves the signal mask with a syscall on every pcall; in liolib it
+# selects popen, used only by an approved script with "Disable Lua sandboxing" on, and getc_unlocked; loslib is not
+# compiled; the stock math.random, which HS replaces), no LUA_USE_DLOPEN (no C modules), hidden symbols except the JNI
 # entry points, stack clash probes (64-bit ABIs).
 # hslua.c's wasm export/import attributes are ignored here; lundump.c's LUA_SIGNATURE + 1 is intended.
-LOCAL_CFLAGS := -std=gnu99 -DLUA_COMPAT_5_2 -include $(LOCAL_PATH)/$(HS_LUA)/hsconf.h -DLUA_USE_POSIX -O2 -fvisibility=hidden \
+LOCAL_CFLAGS := -std=gnu99 -include $(LOCAL_PATH)/$(HS_LUA)/hsconf.h -DLUA_USE_POSIX -O2 -fvisibility=hidden \
     -Wno-unknown-attributes -Wno-string-plus-int
 ifneq ($(filter arm64-v8a x86_64,$(TARGET_ARCH_ABI)),)
 LOCAL_CFLAGS += -fstack-clash-protection

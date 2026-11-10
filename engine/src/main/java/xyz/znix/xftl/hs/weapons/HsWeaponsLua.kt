@@ -482,7 +482,8 @@ object HsWeaponsLua {
      * ShipManager::DamageSystem (priority -100): DAMAGE_SYSTEM(ship, projectile, roomId, damage) with the current
      * projectile; true = pre-empted (the system takes no damage). Ported from FTL-Hyperspace (GPL-3.0-or-later)
      * 1b05a07 src/game/Gameplay/CustomDamage.cpp. The engine resolves DamageArea in one function (Ship.damage), so
-     * this fires where the system damage is applied, for every hit on a room with a system.
+     * this fires where the system damage is applied, for every room hit (one without a system too, as DamageArea calls
+     * DamageSystem for any room).
      */
     @JvmStatic
     fun damageSystem(ship: Ship, roomId: Int, damage: Damage): Boolean {

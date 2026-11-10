@@ -59,8 +59,22 @@ object LuaAdapters {
     /** Global::GetShipManager: player 0, the current enemy 1, null outside a run (hangar ship: not modelled yet). */
     @JvmStatic fun shipManager(id: Int): Ship? {
         val s = inGame() ?: return null
-        return when (id) { 0 -> s.player; 1 -> s.browserRetainedEnemy; else -> null }
+        return when (id) { 0 -> s.player; 1 -> s.browserRetainedEnemy ?: escaped(s); else -> null }
     }
+
+    /**
+     * The enemy that escaped at this beacon. WorldManager keeps playerShip->enemyShip until the location changes, so
+     * Global::GetShipManager(1) still answers with it, but no longer loops it; its crew are gone (KillEveryone) and
+     * bDestroyed and bJumping are set (oracle ps-m1-ev esc and loop rows). The engine drops the ship; only Lua sees it.
+     */
+    private var escapedEnemy: Ship? = null
+    private var escapedAt: Any? = null
+    @JvmStatic fun enemyEscaped(game: InGameState, ship: Ship) { escapedEnemy = ship; escapedAt = game.currentBeacon }
+    private fun escaped(s: InGameState): Ship? {
+        if (escapedEnemy != null && escapedAt !== s.currentBeacon) { escapedEnemy = null; escapedAt = null }
+        return escapedEnemy
+    }
+    @JvmStatic fun isEscaped(o: Any?): Boolean = o != null && o === escapedEnemy
 
     /** ShipManager::iShipId: 0 for the run's player ship object, 1 otherwise (by identity, not by blueprint name). */
     @JvmStatic fun shipId(ship: Ship): Int = xyz.znix.xftl.hs.crew.HsCrew.shipIdOf(ship)
@@ -138,9 +152,9 @@ object LuaAdapters {
             }
         } })
         LuaReg.obj(A.A_Drone_blueprint, ObjGet { (it as AbstractDrone).type })
-        LuaReg.obj(A.A_ShipManager_vCrewList, ObjGet { LuaViews.cached(it!!, A.A_ShipManager_vCrewList) { o -> ListView(A.T_vector_CrewMember, A.T_CrewMember) { (o as Ship).crew } } })
+        LuaReg.obj(A.A_ShipManager_vCrewList, ObjGet { LuaViews.cached(it!!, A.A_ShipManager_vCrewList) { o -> ListView(A.T_vector_CrewMember, A.T_CrewMember) { if (isEscaped(o)) emptyList() else (o as Ship).crew } } })
         LuaReg.num(A.A_ShipManager_currentScrap, NumGet { (it as Ship).scrap.toDouble() }, NumSet { o, v -> (o as Ship).scrap = v.toInt() })
-        LuaReg.bool(A.A_ShipManager_bDestroyed, { (it as Ship).nativeDestroyed })
+        LuaReg.bool(A.A_ShipManager_bDestroyed, { (it as Ship).nativeDestroyed || isEscaped(it) })
         LuaReg.bool(A.A_ShipManager_bJumping, { (it as Ship).browserJumping })
         LuaReg.obj(A.A_Ship_hullIntegrity, ObjGet { o ->
             LuaViews.cached((o as LuaShipGeom).ship, A.A_Ship_hullIntegrity) { s ->

@@ -329,6 +329,24 @@ corrected with focused no-draw/depower/restore/re-power regressions. Tutorial
 saves skip serialization while preserving ordinary checkpoints. Firefox
 closed-context gesture/launch audio cancellation has a shared regression.
 
+## Original captures (parity sweep U5, 2026-11-08)
+
+The desktop tutorial was played in the original 1.6.14 (capture container, `tools/native-capture/sessions/ps-u5-tutorial.json`)
+and in ours with the same clicks and keys (`tools/ui-capture.sh`), from the main menu to the main menu: every lesson
+panel, its text, Continue and place are the same within the sweep's tolerance (`.build/hs/sweep/frames.py`, 2/255 and
+1 px) at every shot; the arrows pulse white to red in about 0.75 s on both. The beacon map is random on both sides, so
+the session's `mapjump` step (both drivers) clicks the beacon nearest the current one. Rules the captures found, now in
+ours (desktop and touch, vanilla and Hyperspace; [ORIGINAL_BEHAVIOR.md](ORIGINAL_BEHAVIOR.md#tutorial-input-parity-sweep-u5-2026-11-08)):
+
+- The tutorial's beacon map closes only by a jump: Escape and CANCEL leave it open.
+- Escape over the ship window opens the pause menu; the window still takes the key (closing where the lesson lets it).
+- A left click on a door selects nothing while a crew member is selected or something is armed: the click only drops the
+  selection (FIRE_PC_1 after DAMAGE_SYSTEM_2's selection needs two clicks on the airlock, as in the original).
+- Dying in the tutorial shows gameover_tutorial (`ps-u5-gameover.json`); `BrowserTutorialAdapterDiagnostics` checks it.
+
+The iPad lesson panel keeps the desktop's 212 minimum height (the iOS TutorialManager's description box has the same
+rule); touch places as before ([ANDROID.md](ANDROID.md#touch-controls)).
+
 ## Multiverse tutorial
 
 Multiverse 5.5.1 turns the lesson list off (`<disableDefaultTutorial>`) and teaches from `data/mv_scripts/tutorial.lua`:
@@ -341,9 +359,11 @@ fuel and red until the fight lesson.
 `tests/hs-mv-tutorial.mjs` plays the tutorial from the main menu with the clicks and keys of oracle session
 `bt-mv-tutorial4` (`tools/hs-oracle/sessions/bugs-tests.json`) and compares the lesson and first text box logged at each
 step, and on every change of lesson, with the original's (start, crew power, toggle 1 and 2, info button, crew order,
-tile control, storage initial and main, fight start). The original's console does not open over a choice box, so the
-toggle and storage lessons are read by the change watcher only. Screenshots of each step go to `MVT_OUT` for comparison
-with the oracle's. Lessons after the first jump (fight, quest, map) are not compared yet.
+tile control, storage initial and main, fight start), then from the first jump to the end with the steps of oracle
+session `ps-u5-mvt` (`tools/hs-oracle/sessions/ps-u5-mv-tutorial.json`: fight check and icon, empty beacon, notoriety,
+map, immune beacon, sector choice, atlas and augment, reroute, guard, end). The original's console does not open over a
+choice box, so those lessons are read by the change watcher only. Screenshots of each step go to `MVT_OUT` for
+comparison with the oracle's.
 
 Two Hyperspace rules the later lessons need. `CustomEventsParser::LoadEvent` calls `WorldManager::UpdateLocation`, which
 sets CommandGui's one choice box: an event a script loads while a choice box is showing its event (from an

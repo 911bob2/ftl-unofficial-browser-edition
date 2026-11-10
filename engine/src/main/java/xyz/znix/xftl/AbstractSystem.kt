@@ -75,9 +75,17 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
      */
     var scriptedPowerLimit: Int? = null
         set(value) {
+            scriptedPowerCap = value
             field = value?.coerceIn(0..energyLevels)
             powerLimitChanged()
         }
+
+    /**
+     * ShipSystem::iTempPowerCap (+0x11c) as the status effect wrote it: SetPowerCap (1.6.14 0x63d220) keeps the
+     * amount unclamped, while [scriptedPowerLimit] is clamped to the level. Read by [statusBlocksBoost].
+     */
+    var scriptedPowerCap: Int? = null
+        private set
 
     /**
      * ShipSystem +0x120, the `loss` status (ShipManager 0x49e3f0 -> 0x63d300): levels subtracted from the
@@ -586,6 +594,19 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
     var drawnPowerBarsTop: Int = Int.MAX_VALUE
         private set
 
+    /**
+     * The top of the box's tooltip column as [drawIconAndPower] last drew it: ShipSystem::RenderPowerBoxes (1.6.14
+     * 0x63c310; Hyperspace's CustomSystems.cpp rewrite the same) returns the top bar - 20, raised by each icon it stacks
+     * over the bars (the crew slot 16, or 24 for a green or yellow one, a subsystem's crew bar 8; the lock box 3 and its
+     * padlock 21; the hacking laptop 22; sabotage 24; fire 22), and SystemBox::OnRender (0x4d8eb0) puts the hit box's top
+     * 16 below that, so the first row is the top bar - 3 without icons (u1v-i frames: 19 px higher over a crew slot).
+     */
+    var drawnTooltipTop: Int = Int.MAX_VALUE
+        private set
+
+    /** What the crew-slot icon [drawManningIcon] just drew adds to the tooltip column (see [drawnTooltipTop]). */
+    protected var manningIconLift = 0
+
     open fun drawIconAndPower(
         game: InGameState,
         g: Graphics,
@@ -666,6 +687,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         val bottomBarBaseY = y - 11 + 6
         val topBarY = drawPowerBars(g, barX, bottomBarBaseY, hoverGlow)
         drawnPowerBarsTop = topBarY
+        var tooltipLift = 0
 
         // If a status icon (ion or hacking) is drawn, this is the Y of it's base.
         var statusIconY = topBarY - 3
@@ -687,7 +709,9 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
             // outline around it.
             g.colour = Constants.SYSTEM_HACKED
             drawIonOrHackBar()
+            tooltipLift += 3
         } else if (hasWhiteLockingBox) {
+            tooltipLift += 3 + 21
             g.colour = Colour.white
             drawIonOrHackBar()
 
@@ -699,6 +723,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
             // the latter is shifted upwards.
             statusIconY -= 21
         } else if (isIonised) {
+            tooltipLift += 3 + 21
             // If the system is ionised, draw the 'locked' bar around it
             g.colour = Constants.SYSTEM_IONISED
             drawIonOrHackBar()
@@ -723,29 +748,41 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
             val lockImg = game.getImg("img/icons/s_hacked.png")
             lockImg.draw(barX + 1f - 9f, statusIconY - 24f)
             showManning = false
+            tooltipLift += 22
         }
 
         // If the system is being burnt or sabotaged, draw the fist above it
         val hasIntruders = room!!.crew.any { it.mode == AbstractCrew.SlotType.INTRUDER }
         val hasFires = room!!.fires.any { it != null }
 
+        // ShipSystem::BlockedBoosted (1.6.14 0x63b8a0), which the power-bar render (0x63c310) asks before it draws the
+        // crew-slot icon, is true while bOccupied (+0x141) is set, and ShipManager::OnLoop (0x4abd40) sets that for a
+        // system whose room holds intruders: no icon at all while boarders stand in the room, sabotaging or not.
+        if (hasIntruders)
+            showManning = false
+
         if (damageProgress != 0f && hasIntruders) {
             val sabotageIcon = game.getImg("img/icons/s_sabatoge.png") // (sic)
             sabotageIcon.draw(barX - 9, statusIconY - 26)
             statusIconY -= 24
             showManning = false
+            tooltipLift += 24
         }
 
         if (hasFires) {
             val fireIcon = game.getImg("img/icons/s_fire2.png")
             fireIcon.draw(barX - 9, statusIconY - 24)
             showManning = false
+            tooltipLift += 22
         }
 
         // Only draw the manning icon if there isn't another status icon
         if (showManning) {
+            manningIconLift = 0
             drawManningIcon(g, barX, statusIconY)
+            tooltipLift += manningIconLift
         }
+        drawnTooltipTop = topBarY - tooltipLift
     }
 
     open fun createTooltip(): ITooltipProvider {
@@ -757,6 +794,15 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
 
     /** Whether the system has power for its crew-slot icon; subsystems always do. */
     protected open val manningIconPowered: Boolean get() = true
+
+    /** Diagnostics: whether the box would draw the crew-slot icon (see [manningIconPowered]). */
+    internal val boxCrewSlotShown: Boolean get() = manningIconPowered
+
+    /** Diagnostics: whether the desktop box draws its crew-slot icon now (the choice the box render makes above). */
+    internal val boxCrewSlotIconDrawn: Boolean
+        get() = !isHackActive && !hasWhiteLockingBox && !isIonised && !damaged && manningIconPowered &&
+            hackedBy?.isPoweredUp != true && room!!.crew.none { it.mode == AbstractCrew.SlotType.INTRUDER } &&
+            room!!.fires.none { it != null }
 
     /** Hyperspace custom systems: the person icon of [drawManningSkillIcon]. */
     internal fun hsDrawManningSkillIcon(x: Int, y: Int, level: SkillLevel?) = drawManningSkillIcon(x, y, level)
@@ -771,6 +817,8 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
 
         val img = ship.sys.getImg(iconPath)
         img.draw(x + 1, y + 3 - img.height)
+        // RenderPowerBoxes: the outline and the white crew slot (iActiveManned 0 or 1) lift by 16, green and yellow by 24
+        manningIconLift = if (level == SkillLevel.PARTIAL || level == SkillLevel.MAX) 24 else 16
     }
 
     /**
@@ -786,13 +834,43 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         // (canBeManned enables automatic computer placement)
         return configuration.computerPoint != null
                 && hackedBy?.isPoweredUp != true
+                // ShipSystem::BlockedBoosted (1.6.9 0x6155f0), which CrewMember::SetCurrentSystem asks before manning:
+                // blocked while iHackEffect > 1, or > 0 with bUnderAttack; a script's SetHackingLevel counts too.
+                && !isHackActive
+                && !(hsHackLevel >= 1 && xyz.znix.xftl.hs.lua.LuaAdaptersWP5Systems.underAttack(this))
                 && undamagedEnergy > 0
                 && info.canBeManned
                 // Hyperspace: a Lua-defined system is manned while its bBoostable is (a script may clear it)
                 && (info !is xyz.znix.xftl.hs.systems.HsCustomSystemInfo || xyz.znix.xftl.hs.systems.HsSystemState.of(this).bBoostable)
                 && !isIonised
-                && scriptedPowerLimit == null
-                && scriptedPowerLoss == 0
+                && !statusBlocksBoost(true)
+    }
+
+    /** iTempPowerLoss: the event's power loss plus Hyperspace's additionalPowerLoss in effect (CheckMaxPower hook). */
+    val totalPowerLoss: Int get() = scriptedPowerLoss + (hsExt?.appliedLoss ?: 0)
+
+    /**
+     * bBoostable && bLevelBoostable: the sensors and the doors, whose manning adds a bar (Hyperspace: as a script
+     * set the flags).
+     */
+    val levelBoostable: Boolean
+        get() = hsState?.let { it.bBoostable && it.bLevelBoostable }
+            ?: (this is xyz.znix.xftl.systems.Sensors || this is xyz.znix.xftl.systems.Doors)
+
+    /**
+     * The status part of ShipSystem::BlockedBoosted(countLimit) (1.6.14 0x63b8a0, 1.6.9 0x6155f0): any power loss
+     * (iTempPowerLoss) blocks the manning boost; with [countLimit] so does a power cap (iTempPowerCap) below the
+     * level, or below the level plus one for a [levelBoostable] system (a cap equal to the sensors' level blocks).
+     * CrewMember::SetCurrentSystem (1.6.14 0x47b190, 1.6.9 0x46e210) asks with countLimit before it sets
+     * bActiveManning and iActiveManned, so a crew member at a capped console stands idle there: no typing
+     * (CrewAnimation bTyping is bActiveManning), no bonus (IsMannedBoost 0x63bbc0) and no skill gain
+     * (CrewMember::CheckSkills); only bManned is set.
+     */
+    fun statusBlocksBoost(countLimit: Boolean): Boolean {
+        if (totalPowerLoss >= 1) return true
+        if (!countLimit) return false
+        val cap = scriptedPowerCap ?: return false
+        return cap < energyLevels + (if (levelBoostable) 1 else 0)
     }
 
     /**
@@ -899,6 +977,8 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         SaveUtil.addAttrInt(elem, "damage", damagedEnergyLevels)
         SaveUtil.addTagInt(elem, "scriptedLimit", scriptedPowerLimit, null)
         SaveUtil.addTagInt(elem, "scriptedLoss", scriptedPowerLoss, 0)
+        // Optional: the cap as the status gave it, when above the level (the limit above is clamped).
+        SaveUtil.addTagInt(elem, "scriptedCap", scriptedPowerCap, scriptedPowerLimit)
         SaveUtil.addTagFloat(elem, "ionTimer", ionTimer, 0f)
         SaveUtil.addTagInt(elem, "ionPowerLimit", ionPowerLimit, null)
         SaveUtil.addTagFloat(elem, "repairProgress", repairProgress, 0f)
@@ -920,6 +1000,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         damagedEnergyLevels = SaveUtil.getAttrInt(elem, "damage")
         scriptedPowerLimit = SaveUtil.getOptionalTagInt(elem, "scriptedLimit")
         scriptedPowerLoss = SaveUtil.getOptionalTagInt(elem, "scriptedLoss") ?: 0
+        SaveUtil.getOptionalTagInt(elem, "scriptedCap")?.let { if (scriptedPowerLimit != null) scriptedPowerCap = it }
         ionTimer = SaveUtil.getOptionalTagFloat(elem, "ionTimer") ?: 0f
         ionPowerLimit = SaveUtil.getOptionalTagInt(elem, "ionPowerLimit")
         repairProgress = SaveUtil.getOptionalTagFloat(elem, "repairProgress") ?: 0f

@@ -40,6 +40,9 @@ class GameOverWindow(private val game: InGameState, val outcome: Outcome) : Wind
         }
     }]
 
+    /** The text under the title, for diagnostics. */
+    internal val diagnosticBody: String get() = body
+
     private val bottomLabels = listOf(
         "gameover_button_restart" to ::restartClicked,
         "gameover_button_hangar" to ::hangarClicked,
@@ -139,7 +142,7 @@ class GameOverWindow(private val game: InGameState, val outcome: Outcome) : Wind
         openTime += dt
         if (openTime >= VICTORY_MUSIC_TIME)
             // Hyperspace (Credits.cpp's GameOver::OnLoop): the victory event's music instead of the title's
-            game.sounds.getTrackOrNull(xyz.znix.xftl.hs.render.HsCredits.creditsMusic())?.let { game.sounds.switchMusicList(listOf(it)) }
+            game.sounds.switchMusicList(listOf(game.sounds.getTrack(xyz.znix.xftl.hs.render.HsCredits.creditsMusic())))
     }
 
     /** The statistics opened from here draw this game behind them without the window. */

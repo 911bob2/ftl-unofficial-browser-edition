@@ -1,5 +1,5 @@
-// Hyperspace Lua runtime (Lua 5.3.6 + bridge in web/vendor/hs-lua.wasm). Loaded only when the mod session lists Lua
-// scripts (window.ftlModSession.scripts); vanilla play never imports this module. The engine (TeaVM) drives it through
+// Hyperspace Lua runtime (Lua 5.3.6 + bridge in web/vendor/hs-lua.wasm). Loaded when the mod session is Hyperspace or
+// lists Lua scripts (window.ftlModSession.hyperspace / .scripts); vanilla play never imports this module. The engine (TeaVM) drives it through
 // window.ftlHsLua and answers the wasm imports through its exported hsLua* functions (BrowserEngine).
 const HOST_NAMES = ['log', 'rand32', 'srand32', 'getn', 'gets', 'geto', 'setn', 'sets', 'seto', 'call', 'release', 'tableid', 'registered'];
 
@@ -23,11 +23,26 @@ export async function createHsLua(wasm, host, files = null) {
   const get = (len, offset = 0) => { const ptr = e.hs_sbuf(); return dec.decode(view().subarray(ptr + offset, ptr + offset + len)); };
   let error = '';
   const errorResult = msg => put(String(msg)) + 1;
+  // os.date's zone (msvcrt names it with %z and %Z): the standard and summer names, from the Intl long form
+  const zoneNames = [null, null];
+  const zoneName = isdst => {
+    if (zoneNames[isdst] == null) {
+      const y = new Date().getFullYear(), jan = new Date(y, 0, 1), jul = new Date(y, 6, 1);
+      const std = jan.getTimezoneOffset() >= jul.getTimezoneOffset() ? jan : jul, dst = std === jan ? jul : jan;
+      try {
+        const name = d => new Intl.DateTimeFormat('en-US', {timeZoneName: 'long'}).formatToParts(d).find(p => p.type === 'timeZoneName')?.value ?? '';
+        zoneNames[0] = name(std); zoneNames[1] = std.getTimezoneOffset() === dst.getTimezoneOffset() ? zoneNames[0] : name(dst);
+      } catch { zoneNames[0] = zoneNames[1] = ''; }
+    }
+    return zoneNames[isdst];
+  };
   const h = host;
   const env = {
     log: (kind, p, len) => h.log(kind, dec.decode(view().subarray(p, p + len))),
     now: () => performance.now(),
     epoch: () => Date.now(),
+    tzoffset: t => -new Date(t * 1000).getTimezoneOffset(),
+    tzname: (isdst, ptr, cap) => enc.encodeInto(zoneName(isdst ? 1 : 0), view().subarray(ptr, ptr + cap)).written,
     rand32: () => h.rand32(),
     srand32: seed => h.srand32(seed),
     getn: h.getn,
@@ -43,13 +58,30 @@ export async function createHsLua(wasm, host, files = null) {
     emscripten_notify_memory_growth: () => { u8 = new Uint8Array(mem.buffer); },
     __syscall_dup3: () => -52,
   };
-  const wasi = {fd_read: () => 52, fd_write: () => 52, fd_close: () => 52, fd_seek: () => 52};
+  // No process environment (os.getenv is nil; loadlib.c reads LUA_PATH at start), no file descriptors (hslibs.c's files are its own).
+  const wasi = {fd_read: () => 52, fd_write: () => 52, fd_close: () => 52, fd_seek: () => 52,
+    environ_sizes_get: (count, size) => { const d = new DataView(mem.buffer); d.setUint32(count, 0, true); d.setUint32(size, 0, true); return 0; },
+    environ_get: () => 0};
   const {instance} = wasm instanceof WebAssembly.Module
     ? {instance: await WebAssembly.instantiate(wasm, {env, wasi_snapshot_preview1: wasi})}
     : await WebAssembly.instantiate(wasm, {env, wasi_snapshot_preview1: wasi});
   e = instance.exports; mem = e.memory; u8 = new Uint8Array(mem.buffer);
   e._initialize();
   e.hs_init();
+  let filesAccount = null, filesStore = null, syncing = Promise.resolve();
+  /** The changes the scripts made to the private folder since the last call: [{kind: 1 write | 2 remove, name, data}]. */
+  const takeChanges = () => {
+    const n = e.hs_vfs_changes(), out = [];
+    for (let i = 0; i < n; i++) {
+      const p = e.hs_vfs_change(i);
+      if (!p) break;
+      const d = new DataView(mem.buffer, p, 20), kind = d.getInt32(0, true), name = d.getUint32(4, true), nameLen = d.getInt32(8, true);
+      const data = d.getUint32(12, true), len = d.getInt32(16, true);
+      out.push({kind, name: dec.decode(view().subarray(name, name + nameLen)), data: kind === 1 ? view().slice(data, data + len) : null});
+    }
+    if (n) e.hs_vfs_settle();
+    return out;
+  };
   return {
     e,
     /** Error text for the next negative return of host.call. */
@@ -76,6 +108,29 @@ export async function createHsLua(wasm, host, files = null) {
     reinit() { e.hs_init(); },
     gameEvent(name, loading) { e.hs_game_event(put(name), loading ? 1 : 0); },
     profile(reset = false) { const n = e.hs_profile(reset ? 1 : 0); return n < 0 ? '{}' : get(n); },
+    /** Loads the account's private folder (web/lua-files.mjs or `store`: {read(account), write(account, changes)}) into the runtime. */
+    async mountFiles(account, store = null) {
+      filesStore = store ?? await import('./lua-files.mjs' + new URL(import.meta.url).search).then(m => ({read: m.readLuaFiles, write: m.writeLuaFiles}));
+      const list = await filesStore.read(account);
+      e.hs_vfs_reset();
+      for (const f of list) {
+        const n = put(f.name), ptr = e.hs_sbuf_grow(n + f.data.byteLength + 1);
+        view().set(f.data, ptr + n);
+        e.hs_vfs_put(n, f.data.byteLength);
+      }
+      filesAccount = account;
+      return list.length;
+    },
+    /** Writes what the scripts changed to the account's folder (the engine calls it every few seconds and at the end). */
+    syncFiles() {
+      if (filesAccount == null) return syncing;
+      const changes = takeChanges();
+      if (changes.length) syncing = syncing.then(() => filesStore.write(filesAccount, changes)).catch(err => h.log(3, 'Lua files could not be saved: ' + (err?.message ?? err)));
+      return syncing;
+    },
+    filesUsed() { return e.hs_vfs_used(); },
+    /** os.exit: {code, source} once a script called it, else null. */
+    exitState() { return e.hs_exit_state() ? {code: e.hs_exit_code(), source: get(e.hs_exit_source())} : null; },
   };
 }
 
@@ -93,5 +148,6 @@ export async function loadHsLua(version = '') {
   }
   const rt = await createHsLua(await res.arrayBuffer(), host);
   window.ftlHsLua = rt;
+  window.addEventListener('pagehide', () => { rt.syncFiles(); });
   return rt;
 }

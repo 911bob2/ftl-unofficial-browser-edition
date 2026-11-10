@@ -833,6 +833,7 @@ abstract class AbstractCrew(
 
                 // Move to the other ship
                 destination.ship.crew.add(this)
+                onBoardedShip(destination.ship)
 
                 // Set the current room to *somewhere* on the enemy ship, so
                 // the mode is then correct.
@@ -1121,17 +1122,22 @@ abstract class AbstractCrew(
             }
         }
 
-        if (canManSystem && system?.isMannableBy(this) == true) {
-            val computerPoint = system.configuration.computerPoint!!
+        // CrewMember::OnLoop (1.6.14 0x482a80, 1.6.9 0x4747f0) walks a crew member who is not busy to the room's
+        // free console (Ship::IsPrimarySlotFilled, MoveToRoom) whatever state its system is in; at the console,
+        // CrewMember::SetCurrentSystem (1.6.14 0x47b190) lets them man it (type, boost it, train) only while
+        // isMannableBy holds, so at a capped, unpowered or ionised system they stand idle at its console.
+        val station = system
+        val computerPoint = station?.configuration?.computerPoint
+        if (canManSystem && computerPoint != null && station.info.canBeManned) {
             if (computerPoint posEq roomPosition) {
-                currentAction = Action.MANNING
-                return
-            }
-
-            // Walk to the computer if no-one is occupying that slot.
-            // (don't specify ourselves as the allow argument, as we don't want
-            //  to constantly call setTargetRoom when we're standing there)
-            if (room.isSlotFree(computerPoint, mode)) {
+                if (station.isMannableBy(this)) {
+                    currentAction = Action.MANNING
+                    return
+                }
+            } else if (room.isSlotFree(computerPoint, mode)) {
+                // Walk to the computer if no-one is occupying that slot.
+                // (don't specify ourselves as the allow argument, as we don't want
+                //  to constantly call setTargetRoom when we're standing there)
                 setTargetRoom(room)
             }
         }
@@ -1231,6 +1237,13 @@ abstract class AbstractCrew(
             }
     }
 
+    /** The body's tint while [draw] runs: white, or [SELECTED_SPRITE_TINT] for a selected crew member of the player's. */
+    @JvmField var spriteTint: Colour = Colour.white
+
+    internal fun selectionSpriteTint(): Colour =
+        if (currentAction != Action.DYING && (this as? LivingCrew)?.ownerShip?.isPlayerShip == true &&
+            game.shipUI.isCrewSelected(this)) SELECTED_SPRITE_TINT else Colour.white
+
     /** Hyperspace Lua CrewMember::OnRender(outlineOnly): 1 draws the outline alone (0: outline and body, oracle sw3-crewr). */
     @JvmField var hsRenderPart = 0
 
@@ -1244,6 +1257,10 @@ abstract class AbstractCrew(
 
         // Hyperspace (CrewAnimation::OnRender): an active temporary power may hide the body and draws strips over it
         val strips = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewRender.strips(this) else null
+
+        // CrewAnimation::OnRender (1.6.14 0x477f20, 1.6.9 0x46c7f0): a player's crew member in selection state 1 (selected,
+        // not only hovered) has its body and colour layers multiplied by (0.5, 1, 0.5), the green tint.
+        spriteTint = selectionSpriteTint()
 
         // Draw the actual image
         // This is moved into its own function so that living crew with layered
@@ -1271,6 +1288,7 @@ abstract class AbstractCrew(
                 )
             }
         }
+        spriteTint = Colour.white
         if (xyz.znix.xftl.hs.HS.active && currentAction != Action.DYING) xyz.znix.xftl.hs.crew.HsCrewRender.drawBody(this)
     }
 
@@ -1439,7 +1457,7 @@ abstract class AbstractCrew(
 
         alpha: Float
     ) {
-        baseFrame.draw(x0, y0, x1, y1, 0f, 0f, baseFrame.width.f, baseFrame.height.f, alpha, Colour.white)
+        baseFrame.draw(x0, y0, x1, y1, 0f, 0f, baseFrame.width.f, baseFrame.height.f, alpha, spriteTint)
     }
 
     open fun drawForeground(g: Graphics) {
@@ -2378,6 +2396,10 @@ abstract class AbstractCrew(
     protected open fun onMidTeleport() {
     }
 
+    /** Called when a teleport moves this crew member onto [ship] (before its room changes). */
+    protected open fun onBoardedShip(ship: Ship) {
+    }
+
     /**
      * Find the RoomPos that best fits our current pixel position.
      *
@@ -2715,6 +2737,9 @@ abstract class AbstractCrew(
     }
 
     companion object {
+        /** CrewAnimation::OnRender's body colour for selection state 1: 0.5 (1.6.14 DAT_00879120), 1, 0.5. */
+        @JvmField val SELECTED_SPRITE_TINT = Colour(0.5f, 1f, 0.5f, 1f)
+
         /**
          * When one of the player's crew is damaged across this many HP
          * (int-truncated, vanilla semantics), the lowCrewHealth warning

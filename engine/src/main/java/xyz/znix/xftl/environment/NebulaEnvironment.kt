@@ -31,8 +31,6 @@ class NebulaEnvironment(game: InGameState, beacon: Beacon, val ionStorm: Boolean
     // volume at every nebula beacon, ion storms included.
     private val ambience = game.sounds.getLoop("nebula")
 
-    override val drawsPlanet: Boolean get() = false
-
     /** Diagnostics: the number of clouds. */
     val browserCloudCount: Int get() = clouds.size
 
@@ -80,6 +78,7 @@ class NebulaEnvironment(game: InGameState, beacon: Beacon, val ionStorm: Boolean
 
     override fun renderBackground(gc: GameContainer, g: Graphics) {
         if (!hsBackdrop) return
+        browserDrawLog?.add("clouds" to clouds.size)
         for (cloud in clouds) {
             g.pushTransform()
             g.translate(cloud.centre.x.f, cloud.centre.y.f)
@@ -178,7 +177,7 @@ class NebulaEnvironment(game: InGameState, beacon: Beacon, val ionStorm: Boolean
                 timer = 1_000_000f
                 val volume = (NativeRandom.next31() % 101 + 900) / 1000f
                 val sound = game.sounds.getSampleOrWarn("lightning${NativeRandom.next31() % 4 + 1}")
-                sound?.play()?.volume = volume
+                sound?.playAt(volume)
             }
             if (flashRunning && flashTime >= FLASH_TIME) {
                 timer = (NativeRandom.next31() % 201 + 100).toFloat()

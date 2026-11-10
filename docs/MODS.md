@@ -20,6 +20,20 @@ button. The panel has three parts:
   uses Hyperspace wants Hyperspace.ftl above it ([Hyperspace mod without Hyperspace](#hyperspace-mod-without-hyperspace));
   Multiverse Data wants Multiverse Assets above it.
 
+**Mod scripts** (the panel's last part; Android: the Mods screen's Mod scripts box). Hyperspace mods may run Lua
+scripts, and the original game lets them read and write files and run programs on the computer. Here they keep their
+files in a private folder in this browser (per account, at most 50 MiB, not synced) and cannot run programs or reach
+other files ([HS_LUA.md](HS_LUA.md#files-programs-and-the-sandbox)). Before a mod whose scripts use files, programs, the
+debug library or `require` first runs, the launcher asks: *"Run this mod's scripts?"*, naming what they use (for example
+"files (io.open) and system commands (os.execute)"), with **Run** and **Don't run** (Don't run starts nothing). It is
+the only question about scripts, the same for Custom and catalogue mods: scripts that use none of these start without
+one. Run is
+remembered for that file (its SHA-256) and account; the Mod scripts box lists the allowed mods with **Ask again**, shows
+how much the folder holds and has **Clear mod files**. *Disable Lua sandboxing (dangerous)* is an Android setting
+(Settings, Mod scripts; per device, off by default, a second confirmation to turn it on): mods allowed with it on get the
+app's real files and a shell. The browser shows it disabled: a web page cannot give scripts files or programs. If a
+script calls `os.exit` (which closes the original game) the game ends and the launcher names the mod.
+
 Buttons that change their label with their state (Enable / Enabled, Download / Resume, the preset dialog's Download /
 Downloading… and Cancel / Pause and close, Launch FTL / Launch FTL with mods) keep one width: the other labels sit
 invisibly in the same grid cell (`fixedButton`, `.btn-fixed` in `web/styles.css`).

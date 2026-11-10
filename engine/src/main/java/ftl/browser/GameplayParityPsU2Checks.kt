@@ -191,7 +191,38 @@ internal object GameplayParityPsU2Checks {
         check(state.shipUI.diagnosticPauseWindow == null) { "Escape opened the menu during the jump" }
         press(main, container, Input.KEY_U)
         check(!state.shipUI.isWindowOpen) { "U opened the ship window during the jump: ${state.shipUI.diagnosticWindow}" }
-        return "jump holds Space, Escape, U"
+        // ShipManager::OnRender (1.6.14 0x4a3c00) clears bJumping only when the reversed jump animation ends: the arrival
+        // (fly-in) holds the keys as well (parity sweep FU4, O-U2-2).
+        var frames = 0
+        while (state.isPlayerJumpingOut && frames++ < 400) main.update(container, 0.05f)
+        check(!state.isPlayerJumpingOut && state.isShipJumping) { "No fly-in after the jump-out" }
+        // The arrival's event box, already open (hidden) during the fly-in, takes the keys first as CommandGui::KeyDown
+        // gives them; the hold is checked on a jump whose arrival has none.
+        if (state.shipUI.diagnosticDialogue != null && !flyInHold(main, container))
+            return "jump holds Space, Escape, U; every neighbour's arrival has a box"
+        return "jump and fly-in hold Space, Escape, U"
+    }
+
+    /** A jump to each neighbour in turn until one arrives without an event box: its fly-in holds Space and U. */
+    private fun flyInHold(main: MainGame, container: GameContainer): Boolean {
+        // Each fresh run draws its own map, so the neighbour list is read from the run that jumps.
+        for (n in 0 until 8) {
+            val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+            val neighbours = state.currentBeacon!!.neighbours
+            if (n >= neighbours.size) break
+            state.beginJumpOut(neighbours[n])
+            val paused = state.isPlayerPaused
+            var frames = 0
+            while (state.isPlayerJumpingOut && frames++ < 400) main.update(container, 0.05f)
+            if (!state.isShipJumping || state.shipUI.diagnosticDialogue != null) continue
+            check(state.keysHeldByJump()) { "The fly-in does not hold the keys" }
+            press(main, container, Input.KEY_SPACE)
+            check(state.isPlayerPaused == paused) { "Space paused during the fly-in" }
+            press(main, container, Input.KEY_U)
+            check(!state.shipUI.isWindowOpen) { "U opened the ship window during the fly-in: ${state.shipUI.diagnosticWindow}" }
+            return true
+        }
+        return false
     }
 
     /** CommandGui::SpaceBar with the event box open: the pause is set (not toggled), so it stays once the box closes. */

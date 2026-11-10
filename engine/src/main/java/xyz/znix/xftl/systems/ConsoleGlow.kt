@@ -15,8 +15,20 @@ object ConsoleGlow {
 
     private fun load(game: InGameState): Map<String, Glow> {
         if (tableOf === game) table?.let { return it }
+        return parse(game.datafile).also { table = it; tableOf = game }
+    }
+
+    private var hangarTable: Map<String, Glow>? = null
+    private var hangarTableOf: xyz.znix.xftl.Datafile? = null
+
+    /** The glow of a room image path in the hangar, which has no [InGameState]. */
+    fun of(df: xyz.znix.xftl.Datafile, interiorImage: String): Glow? {
+        val m = if (hangarTableOf === df) hangarTable!! else parse(df).also { hangarTable = it; hangarTableOf = df }
+        return m[interiorImage.substringAfterLast('/').removeSuffix(".png").removePrefix("room_")]
+    }
+
+    private fun parse(df: xyz.znix.xftl.Datafile): Map<String, Glow> {
         val m = HashMap<String, Glow>()
-        val df = game.datafile
         val file = df.getOrNull("data/rooms.xml")
         if (file != null) {
             for (layout in df.parseXML(file).rootElement.getChildren("roomLayout")) {
@@ -26,7 +38,6 @@ object ConsoleGlow {
                     glow.getAttributeValue("y")?.toIntOrNull() ?: 0, glow.getAttributeValue("dir") ?: "DOWN")
             }
         }
-        table = m; tableOf = game
         return m
     }
 

@@ -107,7 +107,7 @@ try{
  await click(...centre(hud.shipButton));assert.equal((await snapshot()).window,'ShipWindow','the next click is the game\'s');
  await key('Escape');await closeWindows();
  pass(mode+': a press the console took stays the console\'s when it closes');
- // The pause menu (the top bar's Options button), Continue let go over an enemy room with a weapon armed: the press
+ // The pause menu (opened by Escape), Continue let go over an enemy room with a weapon armed: the press
  // was the menu's, no shot is aimed.
  await page.evaluate(()=>window.ftlEngine.consoleExecute('spawn-ship REBEL 1.normal'));await page.waitForTimeout(800);await closeWindows();
  s=await snapshot();const room=s.clickTargets.enemyRooms[0];assert.ok(room,'an enemy room on screen');
@@ -116,7 +116,10 @@ try{
  for(let i=s.weapons.length-1;slot<0&&i>=0;i--)if(s.weapons[i].weapon){await key('Digit'+(i+1));if((await snapshot()).weapons[i].powered)slot=i;}
  assert.ok(slot>=0,'a powered weapon: '+JSON.stringify((await snapshot()).weapons.filter(w=>w.weapon)));
  await key('Digit'+(slot+1));assert.equal((await snapshot()).clickTargets.armed,true,'the weapon is armed');
- await click(...centre(hud.settingsButton));s=await snapshot();assert.equal(s.window,'PauseWindow','the top bar opens the pause menu');
+ // While a target is being picked the top bar's buttons take no click (CommandGui::MouseMove): Escape opens the menu.
+ await click(...centre(hud.settingsButton));s=await snapshot();assert.equal(s.window,'game','the top bar takes no click while a weapon is armed');
+ assert.equal(s.clickTargets.armed,true,'the click on the top bar keeps the weapon armed');
+ await key('Escape');s=await snapshot();assert.equal(s.window,'PauseWindow','Escape opens the pause menu');
  assert.equal(s.clickTargets.armed,true,'the weapon stays armed under the pause menu');
  // a right click on the menu is the menu's: the weapon stays armed
  await click(...centre(s.clickTargets.windowButtons[0]),'right');s=await snapshot();

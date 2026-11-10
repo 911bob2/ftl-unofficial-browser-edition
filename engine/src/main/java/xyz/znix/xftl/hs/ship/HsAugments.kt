@@ -143,7 +143,9 @@ object HsAugments {
     /** Ship.getAugmentValueOrNull under HS: null when the count is 0, else [value]. */
     @JvmStatic
     fun valueOrNull(ship: Ship, name: String): Float? {
-        if (count(ship, name) <= 0) return null
+        // HS runs GET_AUGMENTATION_VALUE on the result even when the ship has none (0): a script's value counts then too
+        // (CustomAugments.cpp ShipObject::GetAugmentationValue hook; oracle ps-m1-ev ret|augv 2.5)
+        if (count(ship, name) <= 0) return augmentationValueHook?.invoke(ship, name, 0f)?.takeIf { it != 0f }
         return value(ship, name, ship.sys.blueprintManager.getOrNull(name) as? AugmentBlueprint)
     }
 

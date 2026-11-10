@@ -478,8 +478,10 @@ abstract class AbstractWeaponInstance(type: AbstractWeaponBlueprint, val ship: S
         if (type.stun != 0) {
             sb.append(tr["stun_damage"].replaceArg(type.stun) + LINE_END)
         }
-        if (type.personnelDamage != 0) {
-            sb.append(tr["personnel_damage"].replaceArg(type.personnelDamage) + LINE_END)
+        // WeaponBlueprint::GetDescription (1.6.14 0x605a80, 1.6.9 0x5e2070, which WeaponBox::GenerateTooltip 0x4f5b80
+        // calls): the crew damage line only for a positive value, in health points (x15), as in the store.
+        if (type.personnelDamage > 0) {
+            sb.append(tr["personnel_damage"].replaceArg(type.personnelDamage * 15) + LINE_END)
         }
         if (type.sysDamage != 0) {
             sb.append(tr["system_damage"].replaceArg(type.sysDamage) + LINE_END)
@@ -500,7 +502,7 @@ abstract class AbstractWeaponInstance(type: AbstractWeaponBlueprint, val ship: S
         return object : WeaponButtonTooltip(ship.sys, text) {
             override fun getText(): String {
                 val slot = ship.hardpoints.indexOfFirst { it.weapon === this@AbstractWeaponInstance }
-                return text.replace("\\1", ship.sys.getButtonNameForHotkey(if (slot < 0) null else ship.sys.shipUI.armamentHotkey(true, slot)?.id, ""))
+                return text.replace("\\1", if (slot < 0) "" else ship.sys.shipUI.armamentTooltipKey(true, slot))
             }
         }
     }

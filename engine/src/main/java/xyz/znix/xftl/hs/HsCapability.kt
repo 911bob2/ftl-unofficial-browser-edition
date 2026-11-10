@@ -178,14 +178,16 @@ object HsCapability {
             val p = line.split('\t')
             if (p.size != 4) continue
             val file = p[0]; val kind = p[1]; val name = p[2]; val count = p[3].toIntOrNull() ?: 1
+            // Only names no engine source reads (HsTagsUnread, generated) are gaps: the rest have a reader, whose fidelity
+            // docs/HYPERSPACE.md tracks per feature.
             when (kind) {
                 "top" -> when {
                     name !in HsConfig.TOP_LEVEL -> ignore("$file|$name", count)
-                    name in OPTION_NODES || isImplemented(name) -> {}
+                    name in OPTION_NODES || isImplemented(name) || name !in HsTagsUnread.ELEMENTS -> {}
                     else -> HS.unsupported("xml", file, name, count)
                 }
-                "hs" -> if (!isImplemented(name)) HS.unsupported("xml", file, name, count)
-                "attr" -> if (!isImplemented(name)) HS.unsupported("xml-attr", file, name, count)
+                "hs" -> if (name in HsTagsUnread.ELEMENTS && !isImplemented(name)) HS.unsupported("xml", file, name, count)
+                "attr" -> if (name.substringAfter('@') in HsTagsUnread.ATTRIBUTES && !isImplemented(name)) HS.unsupported("xml-attr", file, name, count)
                 "other" -> ignore("$file|$name", count)
             }
         }

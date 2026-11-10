@@ -81,7 +81,11 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
     protected open val minimumPoweredLevel: Int get() = 1
     val isNativePowered: Boolean get() = powerSupplied >= minimumPoweredLevel
 
-    override val manningIconPowered: Boolean get() = isNativePowered
+    /**
+     * ShipSystem::RenderPowerBoxes (1.6.14 FUN_0063c310) draws a main system's crew slot only while
+     * BlockedBoosted(true) does not block it: powered, and no status cap below the level or power loss.
+     */
+    override val manningIconPowered: Boolean get() = isNativePowered && !statusBlocksBoost(true)
 
     /**
      * The power sources that were in use before [consumePowerFirst] was called.
@@ -200,14 +204,16 @@ abstract class MainSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint
             nextLevel++
         }
 
+        // ShipSystem::RenderPowerBoxes (1.6.14 0x63c310; Hyperspace's CustomSystems.cpp rewrite the same): while the box
+        // is hovered and no hacking pulse runs, each bar below the cap and the damage has icons/bar_backgroundglow.png
+        // twice behind it, the primitive ShipSystem's constructor (0x642370) makes at (-10, -12) from the bar, 35 x 32;
+        // a damaged or capped bar has none (native ps-fu4-van fu4-glow gl-h-cap).
         fun drawGlow() {
-            if (!hoverGlow) {
+            if (!hoverGlow || isHackActive) {
                 return
             }
 
-            // Vanilla draws this image twice to make the glow stronger
-            powerBarGlow.drawAlignedCentred(x + 16 / 2, nextBarY + 6 / 2)
-            powerBarGlow.drawAlignedCentred(x + 16 / 2, nextBarY + 6 / 2)
+            repeat(2) { powerBarGlow.draw(x - 10f, nextBarY - 12f, 35f, 32f) }
         }
 
         // ShipSystem's bar render (0x0063c310) stacks the reactor's bars first, then the battery's, then the

@@ -37,11 +37,10 @@ class SaveProfile private constructor() {
     private var progressionAchievements: Achievement.AchievementTable? = null
     /**
      * A popup to show: an achievement, a ship or layout unlock, or ([questShip]) the quest achievement that
-     * follows an event's ship unlock. [silent] skips the popup's own sound when the unlock already played one.
+     * follows an event's ship unlock.
      */
     data class ProgressNotification(
         val achievement: String? = null, val ship: String? = null, val questShip: String? = null,
-        val silent: Boolean = false,
         /** A Hyperspace custom achievement (HsAchievements), shown as the original shows any CAchievement. */
         val hsAchievement: String? = null,
         /** A Hyperspace victory achievement of this ship; [hsVictoryType] null for the plain ship victory. */
@@ -55,7 +54,10 @@ class SaveProfile private constructor() {
     private var suppressNotifications = false
     val pendingNotificationCount get() = pendingNotifications.size
     fun pollNotification(): ProgressNotification? = if (pendingNotifications.isEmpty()) null else pendingNotifications.removeAt(0)
-    fun clearNotifications() { pendingNotifications.clear() }
+    /** [keepShipUnlocks]: drop all but the ship and layout unlock popups (vanilla with the popup option off). */
+    fun clearNotifications(keepShipUnlocks: Boolean = false) {
+        if (keepShipUnlocks) pendingNotifications.retainAll { it.ship != null } else pendingNotifications.clear()
+    }
     /** Hyperspace ship unlock popups (HsProfileHooks), shown like the vanilla ones. */
     fun addHsNotification(n: ProgressNotification) { if (achievementPopups && !suppressNotifications) pendingNotifications.add(n) }
 
@@ -100,7 +102,7 @@ class SaveProfile private constructor() {
         val firstUnlock = !unlockedLayouts.containsKey(ship)
         unlockedLayouts[ship] = AchievementUnlockInfo(difficulty)
         dirty = true
-        if (firstUnlock && popup && achievementPopups && !suppressNotifications) pendingNotifications.add(ProgressNotification(ship = ship))
+        if (firstUnlock && popup && shipPopups && !suppressNotifications) pendingNotifications.add(ProgressNotification(ship = ship))
         ftl.browser.BrowserDebug.record("progression", "layout.unlock", "{\"ship\":${ftl.browser.BrowserDebug.quote(ship)},\"difficulty\":${ftl.browser.BrowserDebug.quote(difficulty.name)}}")
     }
 
@@ -340,31 +342,39 @@ class SaveProfile private constructor() {
     }
 
     /**
-     * Unlock a ship family's first ship. An event's unlock ([fromEvent], which plays the unlock sound itself)
-     * pops up "Ship Unlocked!" and then its quest achievement, " Quest" (quest_ach_title).
+     * A ship or layout unlock's popup (AchievementTracker::UnlockShip). The original queues it whatever the achievement
+     * popup option says (1.6.9 0x42ef50; native capture ps-s1-unlock2 s1-nopop: "Ship Unlocked!" with ach_pop=0, the
+     * quest achievement after it not); Hyperspace's hook of it (ShipUnlocks.cpp) checks the option.
      */
-    fun unlockShip(shipFamily: ShipFamily, difficulty: Difficulty, fromEvent: Boolean = false) {
+    private val shipPopups get() = achievementPopups || !xyz.znix.xftl.hs.HS.active
+
+    /**
+     * An event's `<unlockShip>` (WorldManager 1.6.14 0x61b080 / 0x6183a0, HS CustomStore.cpp:2187): a ship type not yet
+     * unlocked ([isVanillaShipUnlocked], GetShipUnlocked(id, 0)) is unlocked with its "Ship Unlocked!" popup, and its
+     * quest achievement (<ship>_QUEST, a multi-difficulty achievement) is set either way: first earned, or earned again
+     * on a harder difficulty, it pops up under the achievement popup option. Returns whether the ship was newly unlocked
+     * (the event then adds the unlock line). [fromEvent] false (debug unlocks) records the quest without its popup.
+     */
+    fun unlockShip(shipFamily: ShipFamily, difficulty: Difficulty, fromEvent: Boolean = false): Boolean {
         requireNotNull(shipFamily.unlockId)
         // Hyperspace's ScoreKeeper::UnlockShip hook (Seeds.cpp): a seeded run unlocks nothing unless <seeds allowUnlocks>.
-        if (xyz.znix.xftl.hs.HS.active && !xyz.znix.xftl.hs.ship.HsShipUnlocks.unlocksAllowed()) return
+        if (xyz.znix.xftl.hs.HS.active && !xyz.znix.xftl.hs.ship.HsShipUnlocks.unlocksAllowed()) return false
 
+        val ship = shipFamily.ships.first()
+        val newlyUnlocked = !isVanillaShipUnlocked(ship)
+        if (newlyUnlocked && shipPopups && !suppressNotifications)
+            pendingNotifications.add(ProgressNotification(ship = ship))
+
+        // AchievementTracker::SetAchievement keeps the hardest difficulty and pops up again for a harder one.
         val current = unlockedShips[shipFamily.unlockId]
-        if (current == null && achievementPopups && !suppressNotifications) {
-            val ship = shipFamily.ships.first()
-            pendingNotifications.add(ProgressNotification(ship = ship, silent = fromEvent))
-            if (fromEvent)
-                pendingNotifications.add(ProgressNotification(questShip = ship))
-        }
-
-        // If we've already unlocked the achievement on a harder difficulty,
-        // don't overwrite it with the easier unlock.
-        if (current != null && current.difficulty.ordinal >= difficulty.ordinal) {
-            return
-        }
+        if (current != null && current.difficulty.ordinal >= difficulty.ordinal) return newlyUnlocked
+        if (fromEvent && achievementPopups && !suppressNotifications)
+            pendingNotifications.add(ProgressNotification(questShip = ship))
 
         unlockedShips[shipFamily.unlockId] = AchievementUnlockInfo(difficulty)
         dirty = true
         reconcileProgression()
+        return newlyUnlocked
     }
 
     fun getKeybinds(): Map<String, String?> {

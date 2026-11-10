@@ -154,6 +154,7 @@ fun ModsPanel(work: ModWork, scope: CoroutineScope, onClose: () -> Unit) {
             }
         }
     }
+    ModScripts(mods)
 
     remove?.let { m ->
         val used = app.store.list().count { s -> s.setup.mods.any { it.sha256 == m.sha256 } }
@@ -236,5 +237,40 @@ fun AdvancedDialog(id: String, first: String? = null, onChanged: () -> Unit = {}
             FtlButton(if (kept) "Remove" else "Keep", { chosen = if (kept) chosen - m.sha256 else chosen + m.sha256 })
         }
         ModPicker(library, chosen) { chosen = it }
+    }
+}
+
+/**
+ * Mod scripts (sweep M1b, docs/HS_LUA.md): the private folder their io and os write to (this account, this device), with
+ * Clear mod files, and the mods allowed to run scripts that use files or programs, each with Ask again.
+ */
+@Composable
+private fun ModScripts(mods: List<ModLibrary.Mod>) {
+    val context = LocalContext.current
+    var tick by remember { mutableStateOf(0) }
+    val used = remember(tick) { ftl.android.app.mods.LuaSandbox.used(context) }
+    val answers = remember(tick) { ftl.android.app.mods.LuaSandbox.answers(context) }
+    var confirm by remember { mutableStateOf(false) }
+    Panel(tab = "Mod scripts") {
+        Txt("Files mod scripts wrote on this device: " + (if (used == 0L) "none" else if (used < 1024) "$used bytes" else "%.1f KiB".format(used / 1024.0)) +
+            " (at most 50 MiB, not synced).", Ftl.small)
+        FtlButton("Clear mod files", { confirm = true }, kind = ButtonKind.DANGER, enabled = used > 0)
+        if (answers.isEmpty()) Txt("No mod has been allowed to run scripts that use files or system commands. The game asks before it starts one.", Ftl.small)
+        for ((sha, answer) in answers) Row(Modifier.fillMaxWidth().background(Ftl.surface).border(1.dp, Ftl.line).padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            val name = mods.firstOrNull { it.sha256 == sha }?.label ?: "SHA-256 ${sha.take(12)}…"
+            Column(Modifier.weight(1f)) {
+                Txt(name, Ftl.h2)
+                Txt((if (answer == "real") "Allowed with Lua sandboxing off: real files and programs." else "Allowed to run in the private folder.") + " SHA-256 ${sha.take(12)}…", Ftl.small)
+            }
+            FtlButton("Ask again", { ftl.android.app.mods.LuaSandbox.setAnswer(context, sha, null); tick++ }, kind = ButtonKind.GHOST)
+        }
+        Txt("Lua sandboxing is in Settings.", Ftl.small)
+    }
+    if (confirm) FtlDialog("Clear mod files?", { confirm = false }, {
+        FtlButton("Cancel", { confirm = false })
+        FtlButton("Clear", { ftl.android.app.mods.LuaSandbox.clear(context); confirm = false; tick++ }, kind = ButtonKind.DANGER)
+    }) {
+        Txt("Delete the files mod scripts wrote on this device for this account? Mods that keep settings or progress in files start over.")
     }
 }

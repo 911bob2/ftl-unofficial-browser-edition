@@ -3,7 +3,6 @@
 // AddCrewMemberFromString race lists), src/game/Ship/CrewSpawn.cpp (CrewSpawn::SpawnCrew)
 package xyz.znix.xftl.hs.crew
 
-import org.jdom2.Element
 import xyz.znix.xftl.Ship
 import xyz.znix.xftl.crew.AbstractCrew
 import xyz.znix.xftl.crew.CrewBlueprint
@@ -18,11 +17,6 @@ import xyz.znix.xftl.hs.stat.StatBoostManager
 import xyz.znix.xftl.weapons.Damage
 import kotlin.random.Random
 
-/** Hooks other workstreams provide (events queue inline/named events; lockdown customisation). */
-object HsCrewHooks {
-    /** CustomEventsParser::QueueEvent(name, -1). */
-    @JvmField var queueEvent: ((String, Element?) -> Unit)? = null
-}
 
 /** `!bDead`: a crew member whose health ran out counts as dead for HS's loops. */
 fun HsCrew.isDead(c: AbstractCrew): Boolean = c.health <= 0f
@@ -49,9 +43,27 @@ fun HsCrew.directModifyHealth(crew: AbstractCrew, healthMod: Float): Boolean {
     return before > 0f && crew.health <= 0f
 }
 
-fun HsCrew.queueEvent(name: String, node: Element?) {
-    val q = HsCrewHooks.queueEvent
-    if (q == null) HS.unsupported("event", "crew power", name) else q(name, node)
+/**
+ * CustomEventsParser::QueueEvent(name, -1) (CustomEvents.cpp): an ability's or a death effect's event goes to the back
+ * of the event queue, unseeded, without a label; CheckEventQueue loads it once no choice box is open.
+ */
+fun HsCrew.queueEvent(name: String) {
+    xyz.znix.xftl.hs.events.HsEvents.eventQueue.addLast(xyz.znix.xftl.hs.events.EventQueueEvent(name, "", -1))
+}
+
+/**
+ * CrewMember::Kill(noClone) from Lua (1.6.9 0x4701c0, 1.6.14 0x47ba00): health 0 and bDead at once (no dying animation,
+ * the clone queue takes it next frame), the repair target and bFighting cleared, the door it held let go, the slot
+ * emptied. Ending the fight matters for the save: a queued body that kept its target pointed into a ship that may be
+ * gone ("Unregistered object", found by C2 for BoardersLost).
+ */
+fun HsCrew.luaKill(c: AbstractCrew, noClone: Boolean) {
+    if (noClone) ex(c).noClone = true
+    c.health = 0f
+    c.hsKilled = true
+    c.hsClearFight()
+    // Kill's EmptySlot: the slot is free at once (oracle sweep-crew4 slot|before)
+    c.room.ship.updateCrewReservedSlots()
 }
 
 /** CrewControl::ClearCrewBoxes for a player-side crew member. */
@@ -140,13 +152,16 @@ fun HsCrew.toDamage(d: HsDamage, owner: Ship?): Damage {
 
 /**
  * ShipManager::DamageArea for crew effects (death explosions, activated powers): with shipFriendlyFire false
- * (CustomCrew.cpp DamageArea hook) damage on the owner's own ship only reaches the crew of the room.
+ * (CustomCrew.cpp DamageArea hook, priority 200) damage on the owner's own ship only reaches the crew of the room,
+ * each through DamageCrew with the whole Damage: (max(0, iDamage) + iPersDamage) x 15 health (oracle ps-c6-pw dm: an
+ * intruder loses 45 to damage 1 + persDamage 2), no system, hull, fire or breach.
  */
 fun HsCrew.damageArea(ship: Ship, room: xyz.znix.xftl.layout.Room, dmg: Damage, shipFriendlyFire: Boolean) {
     if (!shipFriendlyFire && dmg.ownerShip === ship) {
+        val crewDamage = dmg.effectiveCrewDamage.toFloat()
         dmg.hullDamage = 0; dmg.ionDamage = 0; dmg.pureSysDamage = 0; dmg.noSysDamage = true; dmg.noCrewDamage = true
         dmg.fireChance = 0; dmg.breachChance = 0; dmg.emptyRoomBonus = 0
-        ship.crewWeaponDamage(room, dmg.effectiveCrewDamage.toFloat(), dmg)
+        ship.crewWeaponDamage(room, crewDamage, dmg)
     } else if (dmg.hullDamage != 0 || dmg.ionDamage != 0 || dmg.pureSysDamage != 0 || dmg.pureCrewDamage != 0 ||
         dmg.fireChance != 0 || dmg.breachChance != 0 || dmg.stunDuration != 0f || dmg.stunChance != 0 || dmg.lockdown
     ) {
@@ -209,7 +224,7 @@ fun HsCrew.deathExplosion(crew: AbstractCrew, ex: CrewExtend) {
         for (s in e.crewSpawns) spawnCrew(s, ship, ex.currentShipId != ex.shipId, c.x.toFloat(), c.y.toFloat())
     }
     val shipId = ex.shipId
-    if (e.event[shipId].isNotEmpty()) queueEvent(e.event[shipId], e.eventNodes[shipId])
+    if (e.event[shipId].isNotEmpty()) queueEvent(e.event[shipId])
 }
 
 // Ported from FTL-Hyperspace (GPL-3.0-or-later) 1b05a07 src/game/Ship/CrewSpawn.cpp

@@ -41,9 +41,10 @@ neighbour, jump-out and arrival): SHIP_JUMP 240 calls with two arguments (`Ship 
 the same `missing` list (`b-jump`: SHIP_JUMP and LAYER_FRONT 58 each over the jump-out frames; the one extra first-frame
 SHIP_JUMP is not matched).
 
-Order difference: FTL draws the ship status after the FTL button and space status (their oracle markers are covered
-by it); the engine draws the status first. Lua drawing in those stages lands in the same place, only the overlap
-order differs.
+Order: as CommandGui::RenderStatic (1.6.9 0x520a70, 1.6.14 0x535070), the enemy's target window first
+(CombatControl::OnRenderCombat), then the player HUD, with the ship status after the FTL button, the systems, the
+weapons and space status. So SHIP_STATUS drawing lies over the target window (parity sweep U5: Multiverse's tutorial
+boxes, oracle ps-u5-mvt 14-fight-icon; `hs-mv-tutorial` checks the box frame's white there).
 
 ### Frames
 
@@ -101,4 +102,4 @@ Measured with marker scripts against the oracle (`.build/render/sessions/markers
 
 `<changeBackground>` is the events workstream's (`AbstractEnvironment.hsChangeBackground`).
 
-Not implemented: the HS command console (pending decision U4; the console hotkey is listed but does nothing), backgroundObject `<timerAction>`, `transform`, random animations and the FRONT layer, ShieldDroneManager definitions (MV uses none of the tags; the tooltip prints HS's defaults), customTextStyle and `<choiceColors>` (both unused by MV). The `Hyperspace SWIG Lua loaded` line is not shown on screen (HS prints it before the resources load; the oracle never shows it).
+All of the earlier "not implemented" list is now in the engine (parity sweep U3 checked it, 2026-11-07): the HS command console (docs/CONSOLE.md), backgroundObject `<timerAction>`, `transform`, random animations and the FRONT layer (HsBackgroundObjects, the rows above), ShieldDroneManager definitions (HsShieldDrones), customTextStyle (HsTextStyle) and `<choiceColors>` (HsColors); their HYPERSPACE.md rows say how each was compared. Still not shown: the `Hyperspace SWIG Lua loaded` line (HS prints it before the resources load; the oracle never shows it).

@@ -215,7 +215,9 @@ The Mouse shadow lives per frame as MouseControl does (sixth pass below).
 - The subsystem holder and boxes are drawn with the system boxes, before the weapon and drone boxes (CommandGui::
   RenderStatic), so a long system row's drone box covers the subsystem icons.
 - A drone slot's tooltip is the original's (DroneBox, 1.6.14 0x56d960): description, state, hotkey, rearrange line.
-  Slots past three name HS's `drone4..6` keys (oracle `ps-u1-d5` d5-h3: "Hotkey: 8").
+  Slots past three name HS's `drone4..6` keys (oracle `ps-u1-d5` d5-h3: "Hotkey: 8"). A tooltip names the key of the
+  box's own number (weapon<n>, drone<n>) whatever the ArmamentHotkey hooks bind: with five weapon boxes the fifth reads
+  "None" and the drone boxes 5 and 6 (oracle `ps-fu4-w5`).
 - Where a subsystem box lies under a drone box, both take the hover (CommandGui::MouseMove gives the point to
   CombatControl, then SystemControl) and the subsystem's tooltip is shown (oracle `ps-u1-d5` d5-h4: the fifth drone
   box glows, the tooltip is the sensors').

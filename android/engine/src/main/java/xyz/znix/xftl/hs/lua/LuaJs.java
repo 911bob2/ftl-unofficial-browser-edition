@@ -43,8 +43,38 @@ public final class LuaJs {
         return text(nRun(utf8(name), bytes, false));
     }
 
-    /** A fresh lua_State (HS's LuaScriptInit), dropping every registration of the previous one. */
-    public static void reinit() { nInit(); }
+    /**
+     * A fresh lua_State (HS's LuaScriptInit), dropping every registration of the previous one. The private folder of
+     * mod scripts is written out first and loaded again from the app's storage, with this game's sandbox settings
+     * ({@link ftl.android.LuaLibs}).
+     */
+    public static void reinit() {
+        if (mounted) nVfsSync();
+        nInit();
+        ftl.android.LuaLibs cfg = ftl.android.LuaLibs.current;
+        mounted = cfg != null && cfg.folder != null;
+        if (mounted) nVfsMount(utf8(cfg.folder));
+        nLibsReal(cfg != null && cfg.real, cfg != null && cfg.real && cfg.root != null ? utf8(cfg.root) : null);
+        nLibsAllow(null);
+        if (cfg != null && cfg.real) for (String s : cfg.sources) nLibsAllow(utf8(s));
+    }
+
+    private static boolean mounted;
+
+    /** Writes what the scripts changed in their private folder to the app's storage. */
+    public static void vfsSync() { if (LOADED && mounted) nVfsSync(); }
+
+    /** Bytes the private folder holds. */
+    public static double vfsUsed() { return LOADED ? nVfsUsed() : 0; }
+
+    /** A script called os.exit (the session ends). */
+    public static boolean exitRequested() { return LOADED && nExitRequested(); }
+
+    /** The chunk name of the script that called os.exit. */
+    public static String exitSource() { return text(nExitSource()); }
+
+    /** os.exit: the app ends the game session with a message naming the mod. */
+    public static void hostExit(String source, int code) { AndroidHost.get().luaExit(source); }
 
     public static void pageLog(int kind, String text) { AndroidHost.get().luaLog(kind, text); }
 
@@ -118,6 +148,13 @@ public final class LuaJs {
     public static native void rawseti(int t, int i);
 
     private static native void nInit();
+    private static native int nVfsMount(byte[] dir);
+    private static native int nVfsSync();
+    private static native double nVfsUsed();
+    private static native void nLibsReal(boolean on, byte[] root);
+    private static native void nLibsAllow(byte[] source);
+    private static native boolean nExitRequested();
+    private static native byte[] nExitSource();
     private static native byte[] nRun(byte[] name, byte[] code, boolean console);
     private static native void nGameEvent(byte[] name, boolean loading);
     private static native byte[] nProfile(boolean reset);
@@ -129,6 +166,12 @@ public final class LuaJs {
     // ---- the runtime's imports (the browser's wasm env), called from C on the game thread ----
 
     static void hostLog(int kind, byte[] text) { HsLua.log(kind, text(text)); }
+
+    /** os.date's %Z: the device zone's long English name, standard or summer, as msvcrt names the zone. */
+    static byte[] hostTzName(boolean dst) {
+        java.util.TimeZone z = java.util.TimeZone.getDefault();
+        return utf8(z.getDisplayName(dst && z.useDaylightTime(), java.util.TimeZone.LONG, java.util.Locale.US));
+    }
 
     static int hostRand32() { return LuaRng.rand32(); }
 

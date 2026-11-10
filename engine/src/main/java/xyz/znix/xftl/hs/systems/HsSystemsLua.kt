@@ -99,9 +99,15 @@ object HsSystemsLua {
      * SET_BONUS_POWER(system, amount) -> (Chain, amount) at ShipSystem::SetBonusPower: the scripts change the bonus
      * power [amount] (the Zoltan bars); a PREEMPT keeps the bonus the system had ([previous]).
      */
+    /** The system a Lua SetBonusPower call is applying (its power update runs SET_BONUS_POWER for that one only). */
+    @JvmField var luaBonusCall: MainSystem? = null
+
     @JvmStatic
     fun setBonusPower(s: MainSystem, amount: Int, previous: Int): Int {
         if (!HsLua.hasInt[A.EV_SET_BONUS_POWER]) return amount
+        // a script's SetBonusPower is ShipSystem::SetBonusPower on that system alone: the others keep their bonus
+        // (oracle ps-m1-ev sys|rb: the weapons keep their bar)
+        luaBonusCall?.let { if (it !== s) return previous }
         ret.obj(s, A.T_ShipSystem)
         LuaJs.pushinteger(amount.toDouble())
         val preempt = LuaJs.fireChain(A.EV_SET_BONUS_POWER, 2, 1)

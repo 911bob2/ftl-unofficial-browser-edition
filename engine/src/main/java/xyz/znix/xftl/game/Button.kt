@@ -127,6 +127,17 @@ abstract class Button(protected val game: InGameState, pos: IPoint, size: IPoint
     protected open fun positionUpdated() {
         pos = basePos + windowOffset
     }
+
+    /**
+     * This button replaces one that was hovered (a window rebuilding its buttons under a still mouse): it starts out
+     * hovered, so it plays no hover beep the original's lasting button would not play (GenericButton::MouseMove beeps
+     * only when its bHover turns on).
+     */
+    fun carryHover() {
+        if (disabled || mouseObstructed) return
+        hovered = true
+        rawHovered = true
+    }
 }
 
 class SimpleButton(

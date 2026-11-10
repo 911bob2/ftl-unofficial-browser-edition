@@ -142,7 +142,9 @@ object LuaAdaptersWP5Crew {
      * spendDrone stay as WP4 registered them.
      */
     private fun hacking() {
-        LuaReg.bool(A.A_HackingSystem_bHacking, { hk(it).hsHacking }, { o, v -> hk(o).hsSetHacking(v) })
+        // bHacking (+0x1c0): the drone is out (set at the launch by HackingSystem::OnLoop 0x62dc80, cleared by StopHacking
+        // 0x62db00 or the drone's loss), with or without a pulse.
+        LuaReg.bool(A.A_HackingSystem_bHacking, { hk(it).droneLaunched || hk(it).hsHacking }, { o, v -> hk(o).hsSetHacking(v) })
         LuaReg.bool(A.A_HackingSystem_bBlocked, { hk(it).hsBlocked }, { o, v -> hk(o).hsBlockedValue = v })
         LuaReg.bool(A.A_HackingSystem_bArmed, { hk(it).hsArmed }, { o, v -> hk(o).hsArmed = v })
         LuaReg.bool(A.A_HackingSystem_bCanHack, { hk(it).hsCanHack }, { o, v -> hk(o).hsCanHackValue = v })

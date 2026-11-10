@@ -230,11 +230,6 @@ class ModLibrary(root: File, assets: AssetManager) {
         }
     }
 
-    /** The Custom mods of a set that contain Lua scripts: scripts run in this app's process when the game starts them. */
-    fun customWithScripts(setup: ftl.saves.Setup): List<Mod> = setup.mods.mapNotNull { get(it.sha256) }.filter { m ->
-        !m.file.verified && Zip.open(file(m.sha256)).use { z -> z.entries.any { it.name.endsWith(".lua", ignoreCase = true) } }
-    }
-
     companion object {
         const val MAX_ARCHIVE = 1L shl 30
         const val MAX_ENTRY = 256L shl 20

@@ -1,0 +1,18 @@
+[
+ {"src": "local t = os.clock() + os.time() print(os.date('%c'))", "uses": []},
+ {"src": "local f = io.open('x.txt', 'w') f:write('a') f:close()", "uses": ["io.open"]},
+ {"src": "os.execute('rm -rf /')", "uses": ["os.execute"]},
+ {"src": "local p = io.popen('ls')", "uses": ["io.popen"]},
+ {"src": "-- io.open('commented')\n--[[ os.execute('x') ]]\n--[==[ debug.sethook ]==] print('os.remove(x)')", "uses": []},
+ {"src": "local s = [[ require 'x' ]] local t = \"io.open\"", "uses": []},
+ {"src": "local m = require 'mymod' local n = require('other')", "uses": ["require"]},
+ {"src": "local o = os local d = debug", "uses": ["debug", "os"]},
+ {"src": "_G.io.open('x') _G['os'].remove('y') _G[\"require\"]('z')", "uses": ["io.open", "os.remove", "require"]},
+ {"src": "io['lines']('x') debug.getinfo(1) package.loadlib('a', 'b')", "uses": ["debug.getinfo", "io.lines", "package.loadlib"]},
+ {"src": "local t = {} t.io = 1 t.os.execute = 2 self.debug:x()", "uses": []},
+ {"src": "io.write('hi') io.read() print(io.type(x)) io.stdout:write('y')", "uses": []},
+ {"src": "os.getenv('HOME') os.exit(1) os.tmpname() os.rename('a','b')", "uses": ["os.exit", "os.getenv", "os.rename", "os.tmpname"]},
+ {"src": "local g = _G['i' .. 'o'] g.open('x')", "uses": []},
+ {"src": "if os == nil then end", "uses": ["os"]},
+ {"src": "io = nil", "uses": []}
+]

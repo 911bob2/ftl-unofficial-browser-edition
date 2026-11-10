@@ -144,12 +144,14 @@ fun SettingsPage(withSaves: Boolean, onChanged: () -> Unit, onClose: () -> Unit)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     UpdatesSection()
+                    ModScriptsSection()
                     LogSection()
                 }
             } else Column(page, verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 GeneralSection()
                 if (withSaves) SavesSection(onChanged, onClose)
                 UpdatesSection()
+                ModScriptsSection()
                 LogSection()
                 version()
             }
@@ -354,6 +356,32 @@ private fun UpdatesSection() {
             if (auto) "On. Once a day the launcher asks GitHub whether a newer version is out. Only this app's version is sent, nothing about you or this device."
             else "Off: no request is made. Check for updates asks GitHub when you tap it.",
             auto, framed = true) { on -> updates.auto = on; auto = on }
+    }
+}
+
+/**
+ * "Disable Lua sandboxing (dangerous)" (sweep M1b, docs/HS_LUA.md): off by default, per device. On, mods the player
+ * lets run (asked again with the dangers) get real files in this app's storage and /system/bin/sh. Turning it on asks
+ * twice; turning it off asks nothing.
+ */
+@Composable
+private fun ModScriptsSection() {
+    val context = LocalContext.current
+    var on by remember { mutableStateOf(ftl.android.app.mods.LuaSandbox.unsandboxed(context)) }
+    var confirm by remember { mutableStateOf(false) }
+    Panel(tab = "Mod scripts") {
+        SwitchRow("Disable Lua sandboxing (dangerous)",
+            if (on) "On. Mods you allow again when a game starts can use this app's files and run programs."
+            else "Off: mod scripts keep their files in a private folder and cannot run programs. Only for mods you trust.",
+            on, framed = true) { want -> if (want) confirm = true else { ftl.android.app.mods.LuaSandbox.setUnsandboxed(context, false); on = false } }
+    }
+    if (confirm) FtlDialog("Disable Lua sandboxing?", { confirm = false }, {
+        FtlButton("Cancel", { confirm = false }, kind = ButtonKind.GHOST)
+        FtlButton("Disable sandboxing", { ftl.android.app.mods.LuaSandbox.setUnsandboxed(context, true); on = true; confirm = false }, kind = ButtonKind.DANGER)
+    }) {
+        Txt("Only for mods you trust. A mod could delete your saves, read your account sign-in and send it anywhere.")
+        Txt("Scripts of the mods you allow then read and write this app's own files, not a private folder, and run programs on this device as this app (/system/bin/sh), which can reach the network. Each mod that uses files or programs is asked about again when a game starts. Mods you do not allow stay sandboxed.", Ftl.small)
+        Txt("You can turn it off at any time; that needs no confirmation.", Ftl.small)
     }
 }
 

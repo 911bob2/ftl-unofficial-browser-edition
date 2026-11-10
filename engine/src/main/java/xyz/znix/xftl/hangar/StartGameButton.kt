@@ -71,7 +71,7 @@ class StartGameButton(val state: SelectShipState) {
         val height = DIFFICULTY_HEIGHT
 
         val text = state.translator[difficulty.startButtonKey]
-        val isHovering = state.mousePos.x in x until x + width && state.mousePos.y in y until y + height
+        val isHovering = hoveredControl == difficulty.name
 
         val bgColour = when {
             selected == difficulty -> xyz.znix.xftl.hs.render.HsColors.tbSelected()
@@ -89,7 +89,7 @@ class StartGameButton(val state: SelectShipState) {
         val height = START_HEIGHT
         val text = if (state.isSelectedUnlocked) state.translator["start_button"] else "LOCKED"
 
-        val hoveringStart = state.isSelectedUnlocked && state.mousePos.x in x until x + width && state.mousePos.y in y until y + height
+        val hoveringStart = state.isSelectedUnlocked && hoveredControl == "start"
 
         val bgColour = when {
             !state.isSelectedUnlocked -> xyz.znix.xftl.hs.render.HsColors.tbInactive()
@@ -107,10 +107,16 @@ class StartGameButton(val state: SelectShipState) {
         font.printButtonLabel(x, y, width, height, text, xyz.znix.xftl.hs.render.HsColors.tbText())
     }
 
+    /**
+     * ShipBuilder::MouseMove (1.6.14 0x4ebea0): while the ship's or a crew member's name is typed (or the ship list is
+     * open) it passes the pointer to none of its buttons, so Start and the difficulty buttons keep the hover they had
+     * (none, since the Rename or LIST press took the pointer there) instead of following the pointer.
+     */
     fun updateHover(enabled: Boolean) {
+        if (!enabled) return
         val x = state.mousePos.x
         val y = state.mousePos.y
-        val next = if (!enabled) null else when {
+        val next = when {
             state.isSelectedUnlocked && x in startX until startX + START_WIDTH &&
                     y in startY until startY + START_HEIGHT -> "start"
             x in difficultyX until difficultyX + difficultyWidth ->

@@ -228,17 +228,12 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             return
         }
 
-        // If the crew disappears (most notably because they died), then
-        // go to cooldown right away.
-        if (!crew.room.ship.crew.contains(crew)) {
-            switchToCooldown()
-            return
-        }
-
-        // If the crew is no longer mind-controlled by us, something odd
-        // happened - so go onto cooldown.
-        if (crew.mindControlledBy != this) {
-            switchToCooldown()
+        // MindSystem::OnLoop (0x630360) drops a crew member that is out of the game, in its death animation (CrewAnimation
+        // state 3), dead or no longer mind controlled from its list without a sound; the empty list then releases
+        // (0x62f740: the end sound only for crew still listed) and locks the system.
+        if (!crew.room.ship.crew.contains(crew) || crew.health <= 0f ||
+            crew.currentAction == AbstractCrew.Action.DYING || crew.mindControlledBy != this) {
+            switchToCooldown(playSound = false)
             return
         }
     }

@@ -89,6 +89,7 @@ class SelectShipState(
     val isShipListVisible get() = shipListVisible
     val isShipListTutorialOpen get() = shipListVisible && shipList.isTutorialOpen
     val shipListPage get() = shipList.diagnosticPage
+    val shipListButtonHover get() = shipList.diagnosticButtonHover
     val shipListCards get() = shipList.diagnosticCards
 
     var isShipEdited = false
@@ -262,11 +263,8 @@ class SelectShipState(
         screenSize.x = container.width
         screenSize.y = container.height
 
-        // On touch the ship can reach down to these: they go over it instead.
-        if (!touch) {
-            startGameButton.draw(g)
-            seedBox?.draw(g)
-        }
+        // ShipBuilder::OnRender: the boxes and headings under the ship (on desktop), box_start and the buttons over it.
+        presentation.drawUnderShip(g)
 
         // File-based ship editing is outside the browser game scope.
 
@@ -278,24 +276,21 @@ class SelectShipState(
         shipOffset.y = 30 + currentBlueprint.layoutShift.y + currentBlueprint.roomOffset.y * Constants.ROOM_SIZE
         g.translate(shipOffset.x.f, shipOffset.y.f)
         // The hangar shows a real ShipManager: without powered sensors only crewed rooms
-        // (and those a Slug's doors lead to) are visible, and without a powered oxygen
+        // (and those next to a Slug's) are visible, and without a powered oxygen
         // system its rooms hold none, like the rooms Lanius crew stand in.
         val systems = current.rooms.mapNotNull { it.system }
-        val sensors = systems.any { it.type == "sensors" && it.startingPower > 0 }
         val oxygen = systems.any { it.type == "oxygen" && it.startingPower > 0 }
-        val seen = presentation.crewRooms().toHashSet()
-        for (slugRoom in presentation.slugRooms()) {
-            for (door in current.doors.filter { it.isRoomNeighbour(slugRoom) })
-                door.findNeighbourRoom(current, slugRoom)?.let { seen.add(it) }
-        }
+        val visible = previewVisibleRooms()
         val drained = presentation.anaerobicRooms()
-        current.draw(g, this, true, { sensors || it in seen }, { !oxygen || it in drained })
+        current.draw(g, this, true, { it in visible }, { !oxygen || it in drained })
         presentation.drawThrusters()
         presentation.drawShipCrew()
         editor.editorWidth = container.width - shipOffset.x
         editor.editorHeight = container.height - shipOffset.y
         g.popTransform()
-        if (touch) startGameButton.draw(g)
+        startGameButton.draw(g)
+        // Hyperspace's seed box (Seeds.cpp ShipBuilder::OnRender hook, after the original's).
+        if (!touch) seedBox?.draw(g)
         presentation.draw(g)
         if (touch) seedBox?.draw(g)
 
@@ -417,6 +412,29 @@ class SelectShipState(
             editor.mouseDragged(oldX - shipOffset.x, oldY - shipOffset.y, newX - shipOffset.x, newY - shipOffset.y)
         }
     }
+
+    /** The preview's rooms that are not blacked out: all with powered sensors, else the crewed rooms and those a Slug sees. */
+    fun previewVisibleRooms(): Set<EditableRoom> {
+        val systems = current.rooms.mapNotNull { it.system }
+        val sensors = systems.any { it.type == "sensors" && it.startingPower > 0 }
+        if (sensors) return current.rooms.toSet()
+        val seen = presentation.crewRooms().toHashSet()
+        // A Slug shows the rooms that share a wall with its own, door or not: native 1.6.14 Stealth C hangar
+        // (ps-s1-starts.json) lights the drone room under the Slug's weapons room, which no door joins.
+        for (slugRoom in presentation.slugRooms()) {
+            for (room in current.rooms) {
+                val sideBySide = (room.x + room.w == slugRoom.x || slugRoom.x + slugRoom.w == room.x) &&
+                    room.y < slugRoom.y + slugRoom.h && slugRoom.y < room.y + room.h
+                val stacked = (room.y + room.h == slugRoom.y || slugRoom.y + slugRoom.h == room.y) &&
+                    room.x < slugRoom.x + slugRoom.w && slugRoom.x < room.x + room.w
+                if (sideBySide || stacked) seen.add(room)
+            }
+        }
+        return seen
+    }
+
+    /** The preview room at layout index [index] (diagnostics). */
+    fun previewRoom(index: Int): EditableRoom = current.rooms[index]
 
     override fun mouseMoved(oldX: Int, oldY: Int, newX: Int, newY: Int) {
         if (shipListVisible)

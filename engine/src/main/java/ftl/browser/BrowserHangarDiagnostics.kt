@@ -30,6 +30,13 @@ object BrowserHangarDiagnostics {
                     check(ui.crew.size==hangar.blueprint.initialCrew.sumOf { it.amount }) { "BrowserHangarDiagnostics.kt:30" }
                     check(ui.crew.all { it.name.isNotBlank() }) { "BrowserHangarDiagnostics.kt:31" }
                     check(ui.shipName.isNotBlank()) { "BrowserHangarDiagnostics.kt:32" }
+                    // Native 1.6.14 Stealth C hangar: no sensors; the Slug in the weapons room (3) shows the rooms
+                    // sharing a wall with it, the drone room (11) without a door too, not the corner room (10).
+                    if (ship.name=="PLAYER_SHIP_STEALTH_3") {
+                        val seen=hangar.previewVisibleRooms()
+                        check(listOf(2,3,6,11).all { hangar.previewRoom(it) in seen }) { "Slug: a room next to its own is dark" }
+                        check(hangar.previewRoom(10) !in seen) { "Slug: the corner room is lit" }
+                    }
                 }
                 check(before==BrowserXml.write(main.profile.snapshot())) { "Preview changed progression" }
                 check(seed==BrowserRandom.snapshot()) { "Preview consumed gameplay RNG" }
@@ -52,6 +59,18 @@ object BrowserHangarDiagnostics {
                 hangar.restoreSelection("PLAYER_SHIP_HARD_2",Difficulty.NORMAL)
                 hangar.selectNextShip(1);check(hangar.selectedShipId=="PLAYER_SHIP_CIRCLE_2") { "BrowserHangarDiagnostics.kt:53" }
                 hangar.selectNextShip(-1);check(hangar.selectedShipId=="PLAYER_SHIP_HARD_2") { "BrowserHangarDiagnostics.kt:54" }
+                // ShipSelect::MouseMove (1.6.9 0x513bb0): while the list's tutorial is open only the box takes the
+                // pointer, so the type tabs (and Hyperspace's page arrows) do not hover under it.
+                phase="list tutorial hover $ae"
+                hangar.openShipList()
+                check(hangar.isShipListTutorialOpen) { "A blank profile's list opened without its tutorial" }
+                hangar.mousePos.x=700;hangar.mousePos.y=130;main.render(container,graphics)
+                check(hangar.shipListButtonHover=="tab=null page=null") { "A list button hovered under the tutorial: ${hangar.shipListButtonHover}" }
+                repeat(2) { if(hangar.isShipListTutorialOpen) hangar.keyPressed(0,'1') }
+                check(!hangar.isShipListTutorialOpen) { "The list tutorial did not close" }
+                hangar.mousePos.x=700;hangar.mousePos.y=130
+                check(hangar.shipListButtonHover.startsWith("tab=0 ")) { "Type A did not hover after the tutorial: ${hangar.shipListButtonHover}" }
+                hangar.keyPressed(xyz.znix.xftl.sys.Input.KEY_ESCAPE,'\u001b')
                 main.profile.restore(SaveProfile.createBlank().snapshot())
             }
             phase="name input"
@@ -101,7 +120,7 @@ object BrowserHangarDiagnostics {
             check(saved.contains("displayName=\"Parity ship\"")) { "BrowserHangarDiagnostics.kt:101" }
             main.restartGame();game=main.currentState as InGameState
             check(game.player.displayName=="Parity ship" && game.player.name==ShipProgression.KESTREL) { "BrowserHangarDiagnostics.kt:103" }
-            return "PASS 18 vanilla/28 AE previews, unchanged profile and gameplay RNG, locked selection/Start, unlocked random selection, ship/crew naming and colour, append/confirm/blank/16-character input, crew modal blocking, AE music/choice retention, blueprint identity and display-name save/restore/restart with legacy default"
+            return "PASS 18 vanilla/28 AE previews, unchanged profile and gameplay RNG, locked selection/Start, unlocked random selection, no list button hover under its tutorial, ship/crew naming and colour, append/confirm/blank/16-character input, crew modal blocking, AE music/choice retention, blueprint identity and display-name save/restore/restart with legacy default"
         } catch(e: Exception) { throw IllegalStateException("Hangar $phase: ${e.message}",e) }
         finally {
             main.changeHangarMode(mode,ShipProgression.KESTREL,Difficulty.NORMAL)

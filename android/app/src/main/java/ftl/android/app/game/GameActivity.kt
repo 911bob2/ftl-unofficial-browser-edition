@@ -33,7 +33,6 @@ import ftl.android.audio.AudioMixer
 import ftl.browser.BrowserEngine
 import ftl.android.app.mods.ModLaunch
 import ftl.android.app.sync.SyncEngine
-import ftl.saves.Setup
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.CountDownLatch
@@ -66,6 +65,7 @@ class GameActivity : Activity() {
         // xml is null when the engine removed the file: a new run or a destroyed ship clears the run, as on the website.
         override fun onSave(kind: String, xml: String?) { session?.onSave(kind, xml) }
         override fun exit() { runOnUiThread { saveAndClose() } }
+        override fun luaExit(source: String) { runOnUiThread { onLuaExit(source) } }
         override fun openUrl(url: String) { runOnUiThread { runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } } }
         override fun setWindowTitle(title: String) { runOnUiThread { setTitle(title) } }
         override fun luaLog(kind: Int, text: String) { Log.println(if (kind >= 2) Log.WARN else Log.INFO, "FTL-Lua", text) }
@@ -113,17 +113,18 @@ class GameActivity : Activity() {
         }
         scope.launch(Dispatchers.Main) {
             try {
-                // Scripts of a Custom mod run in this process, which also holds the sign-in: the player says yes first.
-                if (!save.setup.vanilla && !allowCustomScripts(save.setup)) {
-                    finish()
-                    return@launch
-                }
                 // A modded save: its archives merged over the game data first (web/mods/boot.mjs does the same).
                 val launch = if (save.setup.vanilla) null else withContext(Dispatchers.IO) {
                     ModLaunch.prepare(app.filesDir, app.gameData, app.mods, save.setup, app.assets) { msg -> runOnUiThread { loading.text = msg } }
                 }
                 modLaunch = launch
                 launch?.warnings?.forEach { Log.i("FTL", "Mod merge: $it") }
+                // Ask before running (sweep M1b): scripts that use io, os, debug or package wait for the player's Run.
+                ftl.android.LuaLibs.current = null
+                if (launch != null && !allowLuaLibraries(launch)) {
+                    finish()
+                    return@launch
+                }
                 GameFiles.install(launch?.files ?: app.gameData.files())
                 ModSession.current = launch?.session
                 startGame()
@@ -144,24 +145,45 @@ class GameActivity : Activity() {
     private lateinit var frame: FrameLayout
     private var modLaunch: ModLaunch? = null
 
-    private suspend fun allowCustomScripts(setup: Setup): Boolean {
-        val app = FtlApplication.app
-        val prefs = getSharedPreferences("mod-scripts", MODE_PRIVATE)
-        val allowed = prefs.getStringSet("allowed", emptySet()).orEmpty()
-        val asking = withContext(Dispatchers.IO) { app.mods.customWithScripts(setup) }.filter { it.sha256 !in allowed }
-        if (asking.isEmpty()) return true
-        val yes = suspendCancellableCoroutine { done ->
-            AlertDialog.Builder(this)
-                .setTitle("Run scripts from a Custom mod?")
-                .setMessage(asking.joinToString { it.label } + (if (asking.size == 1) " is a Custom mod and contains" else " are Custom mods and contain") +
-                    " Lua scripts. They are not files this site has checked, and a script can reach what this app can, including your sign-in on this device. Only run mods you trust.")
-                .setPositiveButton("Run") { _, _ -> done.resume(true) }
-                .setNegativeButton("Go back") { _, _ -> done.resume(false) }
-                .setCancelable(false)
-                .show()
+    /** Scans the session's scripts, asks about the mods not yet allowed, and sets this game's sandbox (LuaLibs). */
+    private suspend fun allowLuaLibraries(launch: ModLaunch): Boolean {
+        val real = ftl.android.app.mods.LuaSandbox.unsandboxed(this)
+        val found = withContext(Dispatchers.IO) {
+            ftl.mods.LuaScan.scanLaunch(launch.mods.map { it.label }, launch.mods.map { it.sha256 }, launch.session.scripts,
+                { launch.files.read(it) }, launch.scriptOwners)
         }
-        if (yes) prefs.edit().putStringSet("allowed", allowed + asking.map { it.sha256 }).apply()
-        return yes
+        val asking = found.filter { !ftl.android.app.mods.LuaSandbox.allowed(this, it.sha256, real) }
+        if (asking.isNotEmpty()) {
+            val yes = suspendCancellableCoroutine { done ->
+                AlertDialog.Builder(this)
+                    .setTitle(if (asking.size == 1) "Run this mod's scripts?" else "Run these mods' scripts?")
+                    .setMessage(ftl.mods.LuaScan.promptText(asking, real).joinToString("\n\n"))
+                    .setPositiveButton("Run") { _, _ -> done.resume(true) }
+                    .setNegativeButton("Don't run") { _, _ -> done.resume(false) }
+                    .setCancelable(false)
+                    .show()
+            }
+            if (!yes) return false
+            for (m in asking) ftl.android.app.mods.LuaSandbox.setAnswer(this, m.sha256, if (real) "real" else "run")
+        }
+        // Real files and a shell only for the scripts of mods allowed with the sandbox off; everything else stays inside.
+        val approved = launch.mods.indices.filter { real && ftl.android.app.mods.LuaSandbox.answer(this, launch.mods[it].sha256) == "real" }.toSet()
+        val sources = launch.scriptOwners.filter { it.value in approved }.keys.toList()
+        val folder = ftl.android.app.mods.LuaSandbox.folder(this).apply { mkdirs() }
+        ftl.android.LuaLibs.current = ftl.android.LuaLibs(folder.path, real, filesDir.path, sources)
+        return true
+    }
+
+    /** A mod script called os.exit (the original closes FTL): nothing more is saved, the launcher names the mod. */
+    private fun onLuaExit(source: String) {
+        if (closing) return
+        session?.frozen = true
+        val launch = modLaunch
+        val mod = launch?.scriptOwners?.get(source)?.let { launch.mods.getOrNull(it)?.label } ?: source.ifEmpty { "A mod" }
+        AlertDialog.Builder(this).setCancelable(false).setTitle("The game was closed by a mod")
+            .setMessage("$mod's script called os.exit, which closes the game in the original. Your last save is kept.")
+            .setPositiveButton("Back to the launcher") { _, _ -> closing = true; setResult(RESULT_OK, Intent().putExtra(EXTRA_SAVE, session?.id).putExtra(EXTRA_CLOSED, true)); finish() }
+            .show()
     }
 
     private fun startGame() {

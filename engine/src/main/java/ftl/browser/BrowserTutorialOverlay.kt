@@ -318,8 +318,9 @@ class BrowserTutorialOverlay(private val main: MainGame) {
         val rawText = game.content.translator[step.text]
         val lines = font.wrapString(rawText, TEXT_WRAP_WIDTH)
         val textHeight = lines.size * TEXT_LINE_SPACING
-        // TutorialManager::UpdateDescBox (0x00410930): text height + 22, at least 212.
-        val height = if (TouchMode.enabled) textHeight + 22 else max(MIN_BOX_HEIGHT, textHeight + 22)
+        // TutorialManager::UpdateDescBox (0x00410930): text height + 22, at least 212. The iPad game's panel has the
+        // same rule (its text measured with the same font and width, at least 212 high), so touch keeps it too.
+        val height = max(MIN_BOX_HEIGHT, textHeight + 22)
 
         cachedStepId = step.id
         cachedLines = lines

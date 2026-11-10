@@ -80,7 +80,8 @@ object BrowserStatCrewDiagnostics {
                         StatBoostManager.onLoop(state)
                         sb.append("],\"crewLoop\":[")
                         crewList(sb, state)
-                        sb.append("],\"powerSmoke\":[")
+                        sb.append("],\"c6\":").append(BrowserPsC6Checks.run(state))
+                        sb.append(",\"powerSmoke\":[")
                         powerSmoke(sb, state)
                     }
                     sb.append("]")
@@ -93,7 +94,10 @@ object BrowserStatCrewDiagnostics {
             BrowserRandom.restore(rng)
             main.switchToMainMenu()
         }
-        sb.append("]}")
+        sb.append("]")
+        // parity sweep C6: a win power ends a run of its own
+        if (HS.active) sb.append(",\"c6win\":").append(BrowserPsC6Checks.win(main))
+        sb.append("}")
         return sb.toString()
     }
 

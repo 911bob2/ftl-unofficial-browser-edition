@@ -56,6 +56,13 @@ class CreatedEvent(val template: Event, val level: Int) {
     @JvmField var hsExtraText: String? = null
 
     /**
+     * Hyperspace (CustomEvents.cpp's WorldManager::CreateLocation / UpdateLocation hooks, priority 100): the event was
+     * shown while the player's ship held none of its own crew (CountCrew(false) 0), so its crew loss is 0
+     * (LocationEvent::stuff.crew and reward.crew), nobody is picked and its box has no crew line. Not saved.
+     */
+    @JvmField var hsCrewLossCleared: Boolean = false
+
+    /**
      * The status effects this event applies in place of its template's (`LocationEvent::statusEffects` as the
      * creator left them); null keeps the template's. Hyperspace's BossShip::GetEvent hook (CustomBoss.cpp) clears the
      * list of the flagship's events.

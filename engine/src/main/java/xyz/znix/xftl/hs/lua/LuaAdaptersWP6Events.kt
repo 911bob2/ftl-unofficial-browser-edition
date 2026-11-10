@@ -184,7 +184,7 @@ object LuaAdaptersWP6Events {
 
     private fun CreatedEvent.crewAmount(): Int = when {
         crew != null -> maxOf(1, template.crewMemberAmount)
-        template.removedCrew.isNotEmpty() -> -template.removedCrew.size
+        template.removedCrew.isNotEmpty() -> if (hsCrewLossCleared) 0 else -template.removedCrew.size
         else -> 0
     }
 

@@ -66,6 +66,8 @@ class FtlApplication : Application() {
         gameData = GameData(filesDir, assets) { account.user?.takeIf { it.serverAssets }?.let { "${it.server}|${it.id}" } }
         gameData.reconcile()
         mods = ModLibrary(filesDir, assets)
+        // The old "Run scripts from a Custom mod?" answers: no longer asked (only file and program use is, LuaSandbox).
+        deleteSharedPreferences("mod-scripts")
         sync = SyncEngine(this, account, store, identity.instanceId)
     }
 

@@ -20,8 +20,6 @@ import kotlin.random.Random
 class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(game, beacon) {
     override val type: Beacon.EnvironmentType get() = Beacon.EnvironmentType.SUN
 
-    private val realBackground = game.getImg("img/stars/bg_dullstars.png")
-
     private val sunImage = game.getImg("img/stars/planet_sun1.png")
     private val glowImage = game.getImg("img/stars/planet_sun2.png")
 
@@ -43,14 +41,13 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
         prepareNextFlare(ftl.browser.NativeRandom)
     }
 
-    override fun renderBackground(gc: GameContainer, g: Graphics) {
-        val ps = pauseShade(game)
-
-        // This draws the normal background with all its adjustments
-        if (hsBackdrop) realBackground.draw(0f, 0f, ps)
-        if (!hsForeground) return
-
+    /**
+     * SpaceManager::OnRenderForeground (1.6.14 0x419e30): the sun and its glows take the planet's place; the beacon's
+     * backdrop stays behind them (SetFireLevel 0x418ae0 leaves it) and the background fleet comes after.
+     */
+    override fun renderForegroundArt(g: Graphics, ps: Colour) {
         // The sun and its glows are SpaceManager's foreground, drawn at the jump's planet scale.
+        browserDrawLog?.add("sun" to sunImage)
         g.pushTransform()
         game.applyJumpScene(g)
 
@@ -106,9 +103,6 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
 
     override val flashFilter: Colour get() = Constants.SOLAR_FLARE_FILTER
 
-    override fun sceneBackdrop() = realBackground
-    override val drawsPlanet: Boolean get() = false
-
     override fun update(dt: Float) {
         super.update(dt)
 
@@ -152,6 +146,8 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
     }
 
     private fun dealFlareDamage(ship: Ship) {
+        // ShipManager::SunDamage (0x4a4e80) returns at once for a ship in its jump (GetIsJumping, bJumping).
+        if (ship.browserJumping) return
         val normalShieldUp = ship.shields?.activeShields?.let { it > 0 } ?: false
         val hasShields = ship.superShield > 0 || normalShieldUp
 

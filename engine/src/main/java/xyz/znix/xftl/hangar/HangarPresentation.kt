@@ -237,8 +237,10 @@ class HangarPresentation(private val state: SelectShipState) {
         blink += delta
         if (blink > 1f) blink = 0f
         // ShipBuilder::MouseMove does not run under the open ship list, so the
-        // LIST button keeps the hover it had when clicked.
-        if (!state.isShipListVisible) refreshHover()
+        // LIST button keeps the hover it had when clicked. While a name is typed it
+        // skips the buttons too (ShipBuilder::MouseMove 1.6.14 0x4ebea0), so Rename
+        // stays lit from its click until Enter.
+        if (!state.isShipListVisible && !isEditing) refreshHover()
     }
 
     /** ShipBuilder::MouseMove; also run before a click, as native queues the move first. */
@@ -310,8 +312,9 @@ class HangarPresentation(private val state: SelectShipState) {
         return true
     }
 
-    fun draw(g: Graphics) {
-        // ShipBuilder::OnRender panel order: equipment, ship select, achievements, AE.
+    /** The boxes, the frame headings and the two box titles, in ShipBuilder::OnRender's order: equipment, ship select,
+     *  achievements, AE. */
+    private fun drawPanels(g: Graphics) {
         if (touch) {
             drawTouchPanel("box_shipequip",0,526,1024,242)
             drawTouchPanel("box_shipselect",0,118,TOUCH_SHIP_BOX_WIDTH,269)
@@ -321,8 +324,6 @@ class HangarPresentation(private val state: SelectShipState) {
         }
         atAchievements(g) { drawAchievementBox() }
         if (!xyz.znix.xftl.hs.HS.forceDlc()) drawAdvancedBox()
-        if (touch) state.getImgOrNull("img/ipad/customizeUI/box_mainmenu.png")?.let { xyz.znix.xftl.game.TouchArt.frame(it,808,8,209,50,13) }
-        state.getImg("img/customizeUI/box_shipname.png").draw(pick(6,7),8)
         heading.drawStringFromTop(pick(19,20).f,pick(117,129).f,state.translator["hangar_frame_ship"],Constants.JUMP_DISABLED_TEXT)
         heading.drawStringFromTop(pick(19,20).f,pick(219,253).f,state.translator["hangar_frame_layout"],Constants.JUMP_DISABLED_TEXT)
         heading.drawStringFromTop(pick(19,20).f,pick(489,535).f,state.translator["hangar_frame_crew"],Constants.JUMP_DISABLED_TEXT)
@@ -332,6 +333,22 @@ class HangarPresentation(private val state: SelectShipState) {
         // ShipBuilder::OnRender prints both titles with font 13 in the idle button colour.
         if (hs == null) font(13).printCenter((achievementPadding/2+124+HangarLayout.achievementDx).f,(374+HangarLayout.achievementDy).f,state.translator["hangar_achievements_title"],Constants.TEXT_BUTTON_NORMAL)
         if (!xyz.znix.xftl.hs.HS.forceDlc()) font(13).printCenter((advancedBox.start/2+advancedX+134).f,pick(400,374).f,state.translator["hangar_advanced_title"],Constants.TEXT_BUTTON_NORMAL)
+    }
+
+    /**
+     * ShipBuilder::OnRender (1.6.14 0x4edb80) draws the background, the equipment, ship select, achievement and AE
+     * boxes and the frame headings before the ship (ShipManager at +365,+30), then box_start and the buttons over it:
+     * a hull that reaches a box covers it (native ps-s1-starts: Lanius A/B over the equipment box, Crystal A/B under the
+     * difficulty box). On touch the panels stay over the ship.
+     */
+    fun drawUnderShip(g: Graphics) {
+        if (!touch) drawPanels(g)
+    }
+
+    fun draw(g: Graphics) {
+        if (touch) drawPanels(g)
+        if (touch) state.getImgOrNull("img/ipad/customizeUI/box_mainmenu.png")?.let { xyz.znix.xftl.game.TouchArt.frame(it,808,8,209,50,13) }
+        state.getImg("img/customizeUI/box_shipname.png").draw(pick(6,7),8)
         // TextInput::OnRender(font 24, (273,7)): centred on 273 (ShipBuilder::OnRender).
         drawNativeName(g,if(editing==-1) text else shipName,pick(273,274),7,editing==-1,font(24))
         controls().forEach { control ->
@@ -578,7 +595,7 @@ class HangarPresentation(private val state: SelectShipState) {
         }
     }
 
-    /** Rooms with Slug crew, whose telepathy also reveals the rooms their doors lead to. */
+    /** Rooms with Slug crew, whose telepathy also reveals the rooms sharing a wall with theirs. */
     fun slugRooms(): Set<EditableRoom> =
         crewRooms().filterIndexed { i, _ -> crew[i].species == "slug" }.toSet()
 

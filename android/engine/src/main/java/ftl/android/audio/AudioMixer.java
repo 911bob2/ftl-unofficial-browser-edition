@@ -312,8 +312,14 @@ public final class AudioMixer {
     private void play(Source s) {
         s.state = AL_PLAYING;
         Buffer b = buffers.get(s.buffer);
-        if (b == null || b.failed) {
+        if (b == null) {
             s.state = AL_STOPPED;
+            return;
+        }
+        // A file that is missing or does not decode never plays: AL_INITIAL rather than AL_STOPPED, so a missing
+        // music track is not taken for one that ended (web/audio.mjs does the same).
+        if (b.failed) {
+            s.state = AL_INITIAL;
             return;
         }
         s.started = false;
@@ -382,7 +388,7 @@ public final class AudioMixer {
                 continue;
             }
             if (b.failed) {
-                s.state = AL_STOPPED;
+                s.state = AL_INITIAL;
                 continue;
             }
             Pcm pcm = b.pcm;

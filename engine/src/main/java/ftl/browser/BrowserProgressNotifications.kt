@@ -15,19 +15,16 @@ class BrowserProgressNotifications(private val main: MainGame) {
 
     fun update(delta: Float) {
         if (main.isTutorialRunning) return
-        if (!main.profile.achievementPopups) {
-            current = null
-            remaining = 0f
-            main.profile.clearNotifications()
-            return
-        }
+        // The option only decides what is queued (SaveProfile; vanilla queues a ship or layout unlock's popup whatever it
+        // says): AchievementTracker::OnLoop (1.6.9 0x42e630, Hyperspace's hook only picks the sound) shows what is already
+        // queued with no look at it, so switching popups off keeps the queued ones.
         remaining -= max(0f, delta)
         if (remaining <= 0f) {
             current = main.profile.pollNotification()
             while (current?.let(::shows) == false) current = main.profile.pollNotification()
             // The native tracker constructor initializes a three-second popup.
             remaining = if (current != null) 3f else 0f
-            current?.takeIf { !it.silent }?.let {
+            current?.let {
                 // Hyperspace: a custom achievement's <sound> replaces the popup sound (AchievementTracker::OnLoop hook).
                 val custom = it.hsAchievement?.let { n -> xyz.znix.xftl.hs.ship.HsAchievements.customAchievements[n]?.sound }?.takeIf { s -> s.isNotEmpty() }
                 main.gameContent.sounds.getSampleOrWarn(custom ?: if (it.ship != null) "unlock" else "achievement")?.play()

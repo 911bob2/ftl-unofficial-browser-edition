@@ -38,6 +38,12 @@ export async function presentationUiChecks(page,{snapshot,state,click,pass,name}
  await hover(700,480);await color(1140,30,[235,245,229],'Start idle fill');
  await hover(1150,50);await color(1140,30,[255,230,94],'Start hover fill');
  await hover(700,480);await capture('hangar-fidelity');
+ // Room images at 0.75 alpha, as in game: native 1.6.14 Kestrel A medbay cross (sweep S1, D3 tolerance 2/255).
+ {const actual=await pixel(702,145),expected=[203,128,98];assert.ok(actual.every((c,i)=>Math.abs(c-expected[i])<=2),`Hangar room image alpha: ${actual} instead of ${expected}`);}
+ // ShipBuilder::MouseMove skips the buttons while a name is typed: Rename keeps the hover of its click (native frames).
+ {const name=(await snapshot()).shipName;await click(50,30);await flush();await hover(640,700);
+  await color(100,40,[255,230,94],'Rename lit while typing');await page.locator('#game').press('Enter');await flush();
+  await color(100,40,[235,245,229],'Rename idle after Enter');assert.equal((await snapshot()).shipName,name);}
  await glyphRows(19,117,85,20,[2,17],'Hangar SHIP native baseline');
  const crew=(await snapshot()).controls.find(c=>c.id==='crew0');
  assert.deepEqual({x:crew.x,y:crew.y,width:crew.width,height:crew.height},{x:70,y:585,width:100,height:20});
@@ -95,6 +101,20 @@ export async function presentationUiChecks(page,{snapshot,state,click,pass,name}
   assert.equal((await snapshot()).armaments.autofire,null,'Two-slot tutorial shows an autofire button');
   await hover(900,400);await capture('weapons-2');
   pass('Native weapon slot dimensions/stride and autofire art, colors, hover, tooltip and pointer bounds across 2/3/4 slots');
+
+  // ShipBuilder::OnRender draws the hangar panels under the ship and box_start
+  // over it: native 1.6.14 shows the Start box over Crystal A's hull at (972,81).
+  await page.evaluate(({profile,ae})=>{
+   const doc=new DOMParser().parseFromString(profile,'application/xml'),layout=doc.createElement('layout');
+   layout.setAttribute('ship','PLAYER_SHIP_CRYSTAL');layout.setAttribute('diff','NORMAL');doc.documentElement.append(layout);
+   window.start(ae,null,new XMLSerializer().serializeToString(doc));
+  },ordinary);await state('MainMenuState');
+  await click(1180,353);await state('SelectShipState');
+  await click(100,158);await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).shipList);
+  await click(726,133);await flush();await click(1071,400);await page.waitForFunction(()=>!JSON.parse(window.ftlEngine.debugSnapshot()).shipList);
+  assert.equal((await snapshot()).ship,'PLAYER_SHIP_CRYSTAL');
+  await hover(640,700);await color(972,81,[235,245,229],'Start box over the Crystal A hull');await capture('hangar-crystal-a');
+  pass('Hangar panels under the ship and the Start box over it');
  } catch(error) {
   await capture('presentation-failure');console.log(name+' presentation state:',await snapshot());throw error;
  } finally {

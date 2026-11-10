@@ -8,7 +8,6 @@ import xyz.znix.xftl.hs.HS
 import xyz.znix.xftl.hs.HsConfig
 import xyz.znix.xftl.hs.events.HsGnuStringMap
 import xyz.znix.xftl.hs.ship.HsAugments
-import xyz.znix.xftl.math.ConstPoint
 import xyz.znix.xftl.math.IPoint
 import xyz.znix.xftl.weapons.AbstractWeaponBlueprint
 import xyz.znix.xftl.weapons.AbstractWeaponProjectile
@@ -17,8 +16,6 @@ import xyz.znix.xftl.weapons.BombBlueprint
 import xyz.znix.xftl.weapons.FlakBlueprint
 import xyz.znix.xftl.weapons.LaserBlueprint
 import xyz.znix.xftl.weapons.MissileBlueprint
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
  * Custom augments' crystal shards. After the vanilla Crystal Vengeance roll, every augment the ship carries adds its
@@ -85,7 +82,7 @@ object HsCrystalShards {
      * at a random room on a random heading, a beam from a random room centre towards another, a bomb in every room in
      * a shuffled order, a flak burst at a random room. Each shot then plays a random launch sound.
      */
-    private fun fire(ship: Ship, target: Ship, weapon: String, chance: Float, pos: IPoint) {
+    internal fun fire(ship: Ship, target: Ship, weapon: String, chance: Float, pos: IPoint) {
         if (HsWeapons.r32() % 100 >= chance * 100f) return
         val bp = ship.sys.blueprintManager.getOrNull(weapon) as? AbstractWeaponBlueprint ?: return
         if (target.rooms.isEmpty()) return
@@ -102,10 +99,13 @@ object HsCrystalShards {
             when (bp) {
                 is LaserBlueprint, is MissileBlueprint -> {
                     val room = randomRoom()
-                    val heading = Math.toRadians((HsWeapons.r32() % 360).toDouble())
+                    val heading = (HsWeapons.r32() % 360).toFloat()
                     val shot: AbstractWeaponProjectile = if (bp is LaserBlueprint) bp.LaserProjectile(room) else (bp as MissileBlueprint).MissileProjectile(room)
                     mark(shot)
-                    shot.setInitialPath(pos, ConstPoint(pos.x + (5000 * cos(heading)).toInt(), pos.y + (5000 * sin(heading)).toInt()))
+                    // LaserBlast / Missile(pos, ship, targetId, the room's centre[, heading]): the target is the room's
+                    // centre from the start; the shot leaves on its heading and, in the target's space, flies at it.
+                    shot.setInitialPath(pos, room.pixelCentre)
+                    shot.hsSetHeading(heading)
                     ship.projectiles.add(shot)
                 }
                 is BeamBlueprint -> xyz.znix.xftl.hs.ship.HsBoss.fireCrystalBeam(ship, target, bp, randomRoom())

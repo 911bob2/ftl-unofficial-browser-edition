@@ -339,6 +339,23 @@ class ActivatedPower(@JvmField var def: ActivatedPowerDefinition, ex: CrewExtend
         }
     }
 
+    /**
+     * ActivatedPower::ActivatePower's win effect (CrewAbilities.cpp): StopPlaylist(100), the victory sound,
+     * ScoreKeeper::SetVictory, the custom victory type cleared, AchievementTracker::SetVictoryAchievement, gameover and
+     * CommandGui::Victory. SetVictoryAchievement is the ship's victory alone (1.6.9 0x430040, no ACH_WIN_*); the victory
+     * screen does gameover, Victory and the HS unlock hooks.
+     */
+    private fun win() {
+        game.sounds.stopPlaylist(0.1f)
+        HsCrew.playSound(game, "victory")
+        // CustomShipUnlocks::setCustomVictoryType = "": SetVictoryAchievement skips the DEFEAT_FLAGSHIP unlocks and the
+        // typed victory (MV's "Multiversal Victory"), and resets it to "flagship" itself.
+        xyz.znix.xftl.hs.ship.HsShipUnlocks.setCustomVictoryType = ""
+        xyz.znix.xftl.hs.events.HsFinalBoss.victoryType = ""
+        game.browserProgress.shipVictoryOnly()
+        game.shipUI.showGameOverScreen(xyz.znix.xftl.game.GameOverWindow.Outcome.WIN)
+    }
+
     /** ActivatedPower::ActivatePower (ACTIVATE_POWER(power, ship) first; a PREEMPT skips it). */
     fun activatePower() {
         val ship = HsCrew.shipById(crew, powerShip)
@@ -348,7 +365,7 @@ class ActivatedPower(@JvmField var def: ActivatedPowerDefinition, ex: CrewExtend
         if (def.damage.bLockdown) {
             HsCrew.lockdown(crew, def.customLockdown)
         }
-        if (def.win) xyz.znix.xftl.hs.HS.unsupported("crewPower", "activatePower", "win")
+        if (def.win) win()
 
         val ownerShip = ex.powerOwner
         if (def.effectSounds.isNotEmpty() && (def.effectSoundsEnemy || ex.shipId == 0 || ownerShip == 0))
@@ -398,7 +415,7 @@ class ActivatedPower(@JvmField var def: ActivatedPowerDefinition, ex: CrewExtend
         if (ship != null) for (spawn in def.crewSpawns)
             HsCrew.spawnCrew(spawn, ship, HsCrew.shipIdOf(ship) != ownerShip, effectWorldPosX, effectWorldPosY)
 
-        if (def.event[ownerShip].isNotEmpty()) HsCrew.queueEvent(def.event[ownerShip], def.eventNodes[ownerShip])
+        if (def.event[ownerShip].isNotEmpty()) HsCrew.queueEvent(def.event[ownerShip])
     }
 
     /** ActivatedPower::CancelPower (CANCEL_POWER(power, clearAnim) first; a PREEMPT skips it). */

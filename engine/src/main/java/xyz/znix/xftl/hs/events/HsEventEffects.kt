@@ -159,7 +159,12 @@ object HsEventEffects {
         // replaceGameOverText: GameOver::OpenText shows the event's text (HsFinalBoss.takeGameOverText)
         HsFinalBoss.gameOverText = def.text
         // the victory's credits text, backdrop and music (render: hs.render.HsCredits)
-        if (def.victory) xyz.znix.xftl.hs.render.HsCredits.victoryEvent(game, def.creditsText, def.creditsBackground, def.creditsMusic)
+        if (def.victory) {
+            xyz.znix.xftl.hs.render.HsCredits.victoryEvent(game, def.creditsText, def.creditsBackground, def.creditsMusic)
+            // CustomEvents.cpp 5643-5646: ScoreKeeper::SetVictory, setCustomVictoryType = the event's ach, then
+            // AchievementTracker::SetVictoryAchievement alone (the victory screen: BrowserRunProgress.finish).
+            xyz.znix.xftl.hs.ship.HsShipUnlocks.setCustomVictoryType = def.ach
+        }
         game.shipUI.showGameOverScreen(
             if (def.victory) xyz.znix.xftl.game.GameOverWindow.Outcome.WIN else xyz.znix.xftl.game.GameOverWindow.Outcome.LOOSE_HULL
         )

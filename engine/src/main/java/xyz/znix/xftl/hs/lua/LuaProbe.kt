@@ -132,14 +132,63 @@ function bench_counter() return counter end
             out.append(micro(state)).append('\n')
             // ---- 4. semantics
             out.append(LuaSemantics.run()).append('\n')
+            // ---- 5. SoundControl:PlaySoundMix's volume goes to PlaySoundMix (0x5d5160) as it is: -1 (0 or less) plays the
+            // sound at its sounds.xml volume, 0.25 sets the channel's volume (O-U4-1; U4's FTLSound.playAt)
+            (state.content.sounds as? xyz.znix.xftl.game.RealSoundManager)?.let { sounds ->
+                val e = HsLua.runString("snd.lua", "local s = Hyperspace.Global.GetInstance():GetSoundControl() s:PlaySoundMix('explosion1', -1, false) " +
+                    "s:PlaySoundMix('explosion1', 0.25, false)")
+                check(e == null) { "PlaySoundMix: $e" }
+                val own = LuaAdaptersSweepUi.lastSoundChannel(1)?.let { sounds.diagnosticChannelVolume(it) }
+                val quiet = LuaAdaptersSweepUi.lastSoundChannel(0)?.let { sounds.diagnosticChannelVolume(it) }
+                // without audio output there are no channels to measure (null): nothing to compare
+                val ok = quiet == null || (kotlin.math.abs(quiet - .25f) < 1e-4f && own != null && own > 0f && own < 1f)
+                out.append(if (ok) "PASS" else "FAIL").append(" PlaySoundMix volume: -1 -> ").append(own).append(", 0.25 -> ").append(quiet).append('\n')
+                check(ok) { "PlaySoundMix volume: -1 -> $own, 0.25 -> $quiet" }
+            }
+            // ---- 6. Room.bBlackedOut is the room's darkness to the player (ShipManager::OnLoop 0x4a05b0 / CheckVision
+            // 0x491620 every frame; O-FU2-1): reads, a Lua write holding until the next frame, tempVision lighting a room once
+            out.append(blackout(main, container, state)).append('\n')
             out.append("PROFILE ").append(HsLua.profileJson(false).take(600))
             if (gateFailed) return "FAIL gate (0.5 ms per MV-sized frame)\n$out"
         } finally {
             HsLua.stop()
             // a modded session gets its own scripts back (fresh state, as after a page load)
-            if (HS.scripts.isNotEmpty()) HsLua.startForSession(main, graphics)
+            if (HS.active || HS.scripts.isNotEmpty()) HsLua.startForSession(main, graphics)
         }
         return out.toString()
+    }
+
+    private fun blackout(main: MainGame, container: GameContainer, state: InGameState): String {
+        fun lua(code: String) { val e = HsLua.runString("blackout.lua", code); check(e == null) { "bBlackedOut: $e" } }
+        fun dark(s: xyz.znix.xftl.Ship) = s.rooms.sortedBy { it.id }.joinToString("") { if (it.playerHasVision) "0" else "1" }
+        fun read(which: String) = "local l = Hyperspace.ships.$which.ship.vRoomList local t = {} " +
+            "for k = 0, l:size() - 1 do t[#t + 1] = l[k].bBlackedOut and '1' or '0' end local got = table.concat(t) "
+        val enemy = state.enemy!!
+        for ((which, s) in listOf("player" to state.player, "enemy" to enemy))
+            lua(read(which) + "if got ~= '${dark(s)}' then error('$which reads ' .. got .. ', rooms ${dark(s)}') end")
+        // a write: the room reads it (and ShipGraph::GetRoomBlackedOut too) until the next frame sets it again
+        val room = enemy.rooms.first { it.id == 0 }
+        val before = room.playerHasVision
+        lua("local r = Hyperspace.ships.enemy.ship.vRoomList[0] r.bBlackedOut = not r.bBlackedOut " +
+            "if Hyperspace.ShipGraph.GetShipInfo(1):GetRoomBlackedOut(0) ~= r.bBlackedOut then error('GetRoomBlackedOut') end")
+        check(room.playerHasVision == !before) { "bBlackedOut write not seen by the room" }
+        main.update(container, 1f / 60f)
+        check(room.playerHasVision == before) { "bBlackedOut write outlived the frame" }
+        // tempVision lights a dark room for one frame and is cleared
+        val darkRoom = enemy.rooms.firstOrNull { !it.playerHasVision }
+        var temp = "no dark enemy room"
+        if (darkRoom != null) {
+            lua("Hyperspace.ships.enemy.tempVision[${darkRoom.id}] = true if not Hyperspace.ships.enemy.tempVision[${darkRoom.id}] then error('tempVision write') end")
+            val st = HsShipLuaState.of(enemy)
+            val held = st.tempVision.toList()
+            main.update(container, 1f / 60f)
+            check(darkRoom.playerHasVision) { "tempVision did not light room ${darkRoom.id} (held $held, now ${st.tempVision})" }
+            lua("if Hyperspace.ships.enemy.tempVision[${darkRoom.id}] then error('tempVision kept') end")
+            main.update(container, 1f / 60f)
+            check(!darkRoom.playerHasVision) { "tempVision lit room ${darkRoom.id} past one frame" }
+            temp = "room ${darkRoom.id} lit one frame"
+        }
+        return "PASS Room.bBlackedOut: player ${dark(state.player)}, enemy ${dark(enemy)}; write held to the next frame; tempVision $temp"
     }
 
     private val MICRO = listOf(

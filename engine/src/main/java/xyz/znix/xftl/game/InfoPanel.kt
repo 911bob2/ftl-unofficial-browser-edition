@@ -351,6 +351,14 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
 
         val maxNonUndoable = energyLevels - undoablePower
 
+        // InfoBox::OnRender (1.6.9 0x54c710): details_base_A at the box's x, then details_base_B whole, (width - A - C) / B
+        // times, then details_base_C after the last B; the level rows are A - 75 + 10 + B x that count wide (rather
+        // than B stretched up to a C at the right edge: the ship window has room for two Bs)
+        val leftSideImg = getImg("img/upgradeUI/details_base_A.png")
+        val middleImg = getImg("img/upgradeUI/details_base_B.png")
+        val rightSideImg = getImg("img/upgradeUI/details_base_C.png")
+        val (middleCount, rowWidth) = detailsLayout(totalWidth, leftSideImg.width, middleImg.width, rightSideImg.width)
+
         val scroll = xyz.znix.xftl.hs.HS.active && maxPower > 8
         var increment = 0
         if (scroll) {
@@ -375,7 +383,7 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
                 false -> xyz.znix.xftl.hs.render.HsColors.detailsBarOff()
             }
             // Ends inside the right frame: 261px in the 333px ship window, 251px in the hangar.
-            g.fillRect(x + 68f, boxY.f, (totalWidth - 72).f, 24f)
+            g.fillRect(x + 68f, boxY.f, rowWidth.f, 24f)
 
             if (!canHaveLevel) {
                 continue
@@ -398,20 +406,13 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
         val offsetY = y + 6 // Due to the ledge at the top of the left side
 
         // The images are drawn on top of the text
-        val leftSideImg = getImg("img/upgradeUI/details_base_A.png")
         leftSideImg.draw(x - ShipWindow.GLOW_WIDTH, y - ShipWindow.GLOW_WIDTH)
-
-        val rightSideImg = getImg("img/upgradeUI/details_base_C.png")
-        val rightX = x + totalWidth + ShipWindow.GLOW_WIDTH - rightSideImg.width
-        rightSideImg.draw(rightX, offsetY - ShipWindow.GLOW_WIDTH)
-
-        val middleImg = getImg("img/upgradeUI/details_base_B.png")
-        val rightSideOfLeftImg = x - ShipWindow.GLOW_WIDTH + leftSideImg.width
-        middleImg.draw(
-            rightSideOfLeftImg.f, offsetY.f - ShipWindow.GLOW_WIDTH,
-            rightX.f, offsetY.f - ShipWindow.GLOW_WIDTH + middleImg.height,
-            0f, 0f, middleImg.width.f, middleImg.height.f
-        )
+        var partX = x - ShipWindow.GLOW_WIDTH + leftSideImg.width
+        repeat(middleCount) {
+            middleImg.draw(partX, offsetY - ShipWindow.GLOW_WIDTH)
+            partX += middleImg.width
+        }
+        rightSideImg.draw(partX, offsetY - ShipWindow.GLOW_WIDTH)
 
         // Finally, draw on the energy bars
         for (i in increment until minOf(maxPower, increment + 8)) {
@@ -446,6 +447,16 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
     }
 
     companion object {
+        /**
+         * InfoBox::OnRender's level box for a panel [panelWidth] wide (the box is that plus the glow on both sides): how
+         * many whole details_base_B go between A and C, and how wide the level rows are (A - 75 + 10 + B x count).
+         */
+        @JvmStatic
+        fun detailsLayout(panelWidth: Int, left: Int, middle: Int, right: Int): Pair<Int, Int> {
+            val count = (panelWidth + 2 * ShipWindow.GLOW_WIDTH - left - right) / maxOf(1, middle)
+            return count to left - 75 + 10 + middle * count
+        }
+
         /** InfoBox::OnRender's warning colour (0x87e390: 1, 120/255, 120/255, 1). */
         private val WARNING_COLOUR = Colour(255, 120, 120)
         const val INFO_HEIGHT_SYSTEM = 121

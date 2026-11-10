@@ -22,7 +22,7 @@ object BrowserDebugState {
         if (state is xyz.znix.xftl.game.MainMenuState) return "{$common,\"window\":${BrowserDebug.quote(state.diagnosticWindow)},\"windowRect\":${state.diagnosticWindowRect},\"confirmation\":${state.diagnosticConfirmation},\"buttons\":${state.diagnosticButtons}}"
         val game = state as? InGameState ?: return "{$common}"
         val dialogue = game.shipUI.diagnosticDialogue
-        val dialogueState = if (dialogue == null) "null" else "{\"openTime\":${dialogue.openTime},\"ready\":${dialogue.choiceInputReady},\"choices\":${dialogue.diagnosticChoiceBounds}}"
+        val dialogueState = if (dialogue == null) "null" else "{\"openTime\":${dialogue.openTime},\"ready\":${dialogue.choiceInputReady},\"event\":${BrowserDebug.quote(dialogue.hsOpenEvent)},\"choices\":${dialogue.diagnosticChoiceBounds}}"
         val tutorialState = "\"tutorialStep\":${BrowserDebug.quote(tutorial?.step?.id)},\"tutorialContinue\":${tutorial?.canContinue ?: false},\"tutorialCompleted\":${tutorial?.completed ?: false},\"tutorialUI\":${BrowserTutorialUiState.snapshot(main, game)}"
         val ship=game.player
         val weapons=ship.weapons
@@ -45,6 +45,6 @@ object BrowserDebugState {
             }
             if(w==null) "{\"slot\":$index,\"weapon\":null}" else "{\"slot\":$index,\"identity\":${System.identityHashCode(w)},\"weapon\":${BrowserDebug.quote(w.type.name)},\"powered\":${w.isPowered},\"charge\":${w.timeCharged},\"charges\":${w.extraCharges},\"chain\":${w.chainCount},\"firing\":${w.isFiring},\"autofireOverride\":${w.autofireOverride},\"target\":$targetJson}"
         }.joinToString(",")
-        return "{$common,$tutorialState,$details,\"ship\":${BrowserDebug.quote(ship.type.name)},\"ae\":${game.content.enableAdvancedEdition},\"difficulty\":${BrowserDebug.quote(game.difficulty.name)},\"paused\":${game.isPaused},\"playerPaused\":${game.isPlayerPaused},\"window\":${BrowserDebug.quote(game.shipUI.diagnosticWindow)},\"windowRect\":${game.shipUI.diagnosticWindowBounds},\"notice\":${game.shipUI.diagnosticNotice},\"confirmation\":${game.shipUI.diagnosticConfirmation},\"console\":${game.isDebugConsoleVisible},\"clickTargets\":${game.shipUI.diagnosticClickTargets},\"scrap\":${ship.scrap},\"fuel\":${ship.fuelCount},\"missiles\":${ship.missilesCount},\"drones\":${ship.dronesCount},\"autofire\":${weapons?.autofire},\"armaments\":${game.shipUI.diagnosticArmaments},\"weapons\":[$slots]}"
+        return "{$common,$tutorialState,$details,\"ship\":${BrowserDebug.quote(ship.type.name)},\"ae\":${game.content.enableAdvancedEdition},\"difficulty\":${BrowserDebug.quote(game.difficulty.name)},\"paused\":${game.isPaused},\"playerPaused\":${game.isPlayerPaused},\"playerJumping\":${game.isShipJumping},\"window\":${BrowserDebug.quote(game.shipUI.diagnosticWindow)},\"windowRect\":${game.shipUI.diagnosticWindowBounds},\"notice\":${game.shipUI.diagnosticNotice},\"confirmation\":${game.shipUI.diagnosticConfirmation},\"console\":${game.isDebugConsoleVisible},\"clickTargets\":${game.shipUI.diagnosticClickTargets},\"scrap\":${ship.scrap},\"fuel\":${ship.fuelCount},\"missiles\":${ship.missilesCount},\"drones\":${ship.dronesCount},\"autofire\":${weapons?.autofire},\"armaments\":${game.shipUI.diagnosticArmaments},\"weapons\":[$slots]}"
     }
 }

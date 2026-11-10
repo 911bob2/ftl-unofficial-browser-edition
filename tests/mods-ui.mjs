@@ -107,7 +107,9 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     const order = () => page.evaluate(() => [...document.querySelectorAll('#mods-panel [aria-label="Mod load order"] .mod-row strong')].map(e => e.textContent));
     assert.deepEqual(await order(), ['F1 Content', 'F1 Override']);
     const label = () => page.locator('#mods-set').textContent();
-    assert.equal(await label(), 'Id ' + hash.slice(0, 12));
+    // The panel draws the rows first and fills the set's id after hashing it (library.mjs renders, then awaits modSetHash).
+    await page.waitForFunction(id => document.getElementById('mods-set')?.textContent === id, 'Id ' + hash.slice(0, 12), {timeout: 10000})
+      .catch(async () => assert.equal(await label(), 'Id ' + hash.slice(0, 12)));
     await page.getByRole('button', {name: 'Move down F1 Content'}).click();
     await page.waitForFunction(() => document.querySelector('#mods-panel [aria-label="Mod load order"] .mod-row strong').textContent === 'F1 Override');
     // A refresh during a press (the window regains focus) waits for the release: the row is not replaced under the

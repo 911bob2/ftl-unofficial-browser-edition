@@ -292,7 +292,10 @@ object LuaAdaptersWP5Ship {
         val name = xyz.znix.xftl.hs.systems.HsSystems.idToName(id)
         // AddSystem has no check for a system the ship has already: it makes a second one (HsSystemInstall.duplicate)
         if (id != 11) s.systems.firstOrNull { it.blueprint.name == name }?.let { return xyz.znix.xftl.hs.systems.HsSystemInstall.duplicate(s, it) }
-        val slot = s.systemSlots.firstOrNull { it.system.name == name && it.room.system == null } ?: return null
+        // The HS hook (CustomSystems.cpp) removes the system it replaces (SystemWillReplace: exclusivity, medbay and clone
+        // bay) first, so the room that system holds is free for the new one (oracle ps-c2-bd: AddSystem(13) on a medbay ship).
+        val replaced = xyz.znix.xftl.hs.systems.HsSystemInstall.willReplace(s, name)
+        val slot = s.systemSlots.firstOrNull { it.system.name == name && (it.room.system == null || it.room.system === replaced) } ?: return null
         // vSystemList takes the new system at its end, in the order of the calls (oracle wp5-ship sm-after: 9, 14, 15)
         HsShipLuaState.systemList(s)
         val sys = xyz.znix.xftl.hs.systems.HsSystemInstall.install(s, slot) ?: return null
@@ -779,7 +782,7 @@ object LuaAdaptersWP5Ship {
         })
         LuaReg.method(A.M_Ship_RoomLocked, LuaMethod { ret.bool(room(geom(arg.obj(1)), arg.int(2))?.isLockedDown == true) })
         LuaReg.method(A.M_Ship_SetRoomBlackout, LuaMethod {
-            room(geom(arg.obj(1)), arg.int(2))?.let { HsShipLuaState.of(it.ship).blackout[it.id] = arg.bool(3) }
+            room(geom(arg.obj(1)), arg.int(2))?.let { it.playerHasVision = !arg.bool(3) }
             0
         })
         LuaReg.method(A.M_Ship_SetSelectedRoom, LuaMethod { HsShipLuaState.of(geom(arg.obj(1))).selectedRoom = arg.int(2); 0 })
@@ -951,7 +954,7 @@ object LuaAdaptersWP5Ship {
         LuaReg.method(A.M_ShipGraph_GetRoomOxygen, LuaMethod { ret.num(((rooms().firstOrNull { it.id == arg.int(2) }?.oxygen ?: 0f) * 100f).toDouble()) })
         LuaReg.method(A.M_ShipGraph_GetRoomBlackedOut, LuaMethod {
             val r = rooms().firstOrNull { it.id == arg.int(2) }
-            ret.bool(r != null && HsShipLuaState.of(r.ship).blackout[r.id] == true)
+            ret.bool(r != null && !r.playerHasVision)
         })
         LuaReg.method(A.M_ShipGraph_IsRoomConnected, LuaMethod {
             val a = arg.int(2); val b = arg.int(3)
@@ -1173,7 +1176,10 @@ object LuaAdaptersWP5Ship {
     // ---------------------------------------------------------------- rooms
     private fun rooms() {
         fun r(o: Any?) = o as Room
-        LuaReg.bool(A.A_Room_bBlackedOut, { o -> HsShipLuaState.of(r(o).ship).blackout[r(o).id] == true }, { o, v -> HsShipLuaState.of(r(o).ship).blackout[r(o).id] = v })
+        // Room::bBlackedOut is the room's darkness to the player: ShipManager::OnLoop (1.6.9 0x4a05b0) sets it for every
+        // room each frame from the sensors, the crew loop and CheckVision light rooms (oracle ps-fu2-sl); a Lua write
+        // holds until then.
+        LuaReg.bool(A.A_Room_bBlackedOut, { o -> !r(o).playerHasVision }, { o, v -> r(o).playerHasVision = !v })
         // highlight GL_Primitives: built by Room::Room (drawn by the engine's own renderer)
         for (a in intArrayOf(A.A_Room_highlightPrimitive, A.A_Room_highlightPrimitive2))
             LuaReg.obj(a, ObjGet { o -> opaque(o!!, a, A.T_GL_Primitive) }, ObjSet { _, _ -> })
@@ -1303,8 +1309,7 @@ object LuaAdaptersWP5Ship {
         })
         val add = LuaMethod {
             val s = self(); val name = arg.str(2) ?: ""
-            addAugmentation(s, name)
-            0
+            ret.bool(addAugmentation(s, name))
         }
         LuaReg.method(A.M_ShipObject_AddAugmentation__SWIG_0, add)
         LuaReg.method(A.M_ShipObject_AddAugmentation__SWIG_1, add)
@@ -1549,7 +1554,6 @@ class HsShipLuaState {
     @JvmField val flags = HashMap<Int, Boolean>()
     @JvmField val ints = HashMap<Int, Int>()
     @JvmField val tempVision = HashSet<Int>()
-    @JvmField val blackout = HashMap<Int, Boolean>()
     @JvmField var selectedRoom = -1
     @JvmField var lastEngineStatus: Boolean? = null
     @JvmField var shipLevel = 0
@@ -1635,15 +1639,19 @@ private fun dilationStrength(level: Int): Float = xyz.znix.xftl.hs.systems.HsSys
 
 /**
  * ShipObject::AddAugmentation(name): `augList[name]++`; a "HIDDEN x" name is a hidden augment, anything else a cargo
- * augment (no slot limit, as natively: Lua may add a fourth).
+ * augment. A cargo augment is refused (false, nothing added) while the ship holds its augment slots' worth: Hyperspace's
+ * hook (CustomEquipment.cpp, ShipObject::AddAugmentation priority 1000) calls the original only while augCount is below
+ * the definition's augSlots plus AUGMENT_SLOT, as the original's own `augCount < 3` (1.6.9 0x4624c0).
  */
-private fun addAugmentation(s: Ship, name: String) {
-    if (name.startsWith("HIDDEN ")) { s.hs?.addHidden(name.removePrefix("HIDDEN ")); return }
-    val game = LuaAdapters.inGame() ?: return
-    val bp = game.blueprintManager.getOrNull(name) as? xyz.znix.xftl.augments.AugmentBlueprint ?: return
+private fun addAugmentation(s: Ship, name: String): Boolean {
+    if (name.startsWith("HIDDEN ")) { s.hs?.addHidden(name.removePrefix("HIDDEN ")); return true }
+    val game = LuaAdapters.inGame() ?: return false
+    val bp = game.blueprintManager.getOrNull(name) as? xyz.znix.xftl.augments.AugmentBlueprint ?: return false
+    if (s.augments.size >= xyz.znix.xftl.hs.ship.HsEquipment.augCapacity(s)) return false
     HsShipLuaState.of(s).zeroAugs.remove(name)
     s.augments.add(bp)
     s.cargoUpdated()
+    return true
 }
 
 /** ShipObject::RemoveAugmentation(name): `augList[name]--` (the entry stays, at 0, as std::map's does). */

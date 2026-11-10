@@ -510,6 +510,10 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
                     if (weapon != null) {
                         total += weapon.power
                         addWeapon(weapon)
+                    } else {
+                        // Hyperspace's AddOverrideWeapons: the default blueprint's power (0) counts, and the weapon
+                        // made from it is a Basic Laser (HsShipStart.missingWeapon).
+                        xyz.znix.xftl.hs.ship.HsShipStart.missingWeapon(bp)?.let { addWeapon(it) }
                     }
                     names.removeAt(index)
                 }

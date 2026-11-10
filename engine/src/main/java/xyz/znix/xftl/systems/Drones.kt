@@ -226,6 +226,12 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
                 return
             }
 
+            // DroneSystem::PowerDrone (1.6.14 0x638b80): a drone that cannot be deployed (CanBeDeployed) and is not
+            // out already stays off. A combat or boarding drone equipped after the other ship came has no target.
+            if (info.browserTargetless && info.instance == null) {
+                return
+            }
+
             // Check the drone isn't on it's destroy cooldown
             if (info.cooldown != null) {
                 return
@@ -274,6 +280,37 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
     }
 
+    /**
+     * ShipManager::SetTarget (1.6.14 0x4a2b30), called when another ship comes to the beacon or leaves it
+     * (CombatControl::AddEnemyShip, CombatControl::Clear; not when it turns hostile): every equipped space drone takes
+     * that ship as its movement and weapon target, so every drone has one again.
+     */
+    fun browserTargetShipChanged() {
+        for (drone in drones) drone?.browserTargetless = false
+    }
+
+    /**
+     * A drone equipped now (ShipManager::AddDrone 0x4b1020: the equipment screen, an event's reward, the console).
+     * In vanilla ShipManager::CreateSpaceDrone (0x4b0b60) gives a new combat or boarding drone no target, and
+     * ShipManager::SetTarget only runs when a ship comes, so while one is at the beacon the drone cannot be deployed
+     * (CombatDrone::CanBeDeployed 0x4202c0 is HasTarget, BoarderPodDrone::CanBeDeployed 1.6.9 0x41e860 needs the
+     * target) until the next ship. Hyperspace's CreateSpaceDrone hook (CustomDrones.cpp) aims both at the current
+     * target, see [browserHsTargetless].
+     */
+    fun browserDroneEquipped(info: DroneInfo) {
+        val type = info.type.type
+        val present = ship.sys.enemy != null && ship.sys.enemy !== ship
+        info.browserTargetless = present && (type == DroneBlueprint.DroneType.COMBAT || type == DroneBlueprint.DroneType.BOARDER) &&
+            (!xyz.znix.xftl.hs.HS.active || browserHsTargetless(type))
+    }
+
+    /**
+     * Hyperspace: CreateSpaceDrone's hook gives a combat drone both targets, so it launches; a boarding drone equipped
+     * during the fight still does not launch until the next ship (HS oracle ps-fu3-pdrone and -pdrone2: COMBAT_1 powers,
+     * BOARDER stays off with the reactor and the drone system free, clicked first or second, no drone part spent).
+     */
+    private fun browserHsTargetless(type: DroneBlueprint.DroneType): Boolean = type == DroneBlueprint.DroneType.BOARDER
+
     fun getDroneForcedPower(slot: Int): Int {
         return powerManager.getForcedPower(slot)
     }
@@ -317,7 +354,10 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
      * One equipped drone: the native Drone object ([xyz.znix.xftl.drones.NativeDrone]), made when the drone joins
      * the ship and kept while it stays equipped; [instance] is its actor while deployed.
      */
-    class DroneInfo(type: DroneBlueprint, instance: AbstractDrone? = null) : xyz.znix.xftl.drones.NativeDrone(type, instance)
+    class DroneInfo(type: DroneBlueprint, instance: AbstractDrone? = null) : xyz.znix.xftl.drones.NativeDrone(type, instance) {
+        /** No ShipManager::SetTarget since this drone was equipped ([browserDroneEquipped]): it cannot be deployed. */
+        @JvmField var browserTargetless = false
+    }
 
     private inner class DronePowerAccess : WeaponPowerManager.ItemAccess {
         // The flagship has more drones than slots, so slots are added either

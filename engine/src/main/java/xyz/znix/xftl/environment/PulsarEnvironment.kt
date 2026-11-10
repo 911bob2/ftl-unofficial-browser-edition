@@ -5,7 +5,6 @@ import xyz.znix.xftl.AbstractSystem
 import xyz.znix.xftl.Constants
 import xyz.znix.xftl.Ship
 import xyz.znix.xftl.game.InGameState
-import xyz.znix.xftl.random
 import xyz.znix.xftl.rendering.Colour
 import xyz.znix.xftl.rendering.Graphics
 import xyz.znix.xftl.savegame.SaveUtil
@@ -41,6 +40,9 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
     val showWarning: Boolean
         get() = timeToPulse < 5f
 
+    /** The seconds to the next pulse, for the parity checks. */
+    val diagnosticTimeToPulse: Float get() = timeToPulse
+
     init {
         // SetPulsarLevel starts its timer on the global stream; a loaded save restores the timer.
         prepareNextFlare(if (game.isCurrentlyLoadingSave) ftl.browser.BrowserRandom else ftl.browser.NativeRandom)
@@ -48,11 +50,17 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
 
     override fun renderBackground(gc: GameContainer, g: Graphics) {
         val ps = pauseShade(game)
+        if (hsBackdrop) renderPulsar(ps)
+        // SpaceManager::OnRenderForeground (0x419e30) draws the background fleet after the pulsar.
+        if (hsForeground) renderFleet(g, ps)
+    }
 
+    private fun renderPulsar(ps: Colour) {
         // This draws the normal background with all its adjustments
         // (Hyperspace render layers: the pulsar is drawn with the backdrop, as the engine draws it unscaled.)
-        if (!hsBackdrop) return
         realBackground.draw(0f, 0f, ps)
+        browserDrawLog?.add("back" to realBackground)
+        browserDrawLog?.add("pulsar" to sunBlack)
 
         val whiteAlpha = alphaCycle(7f, 0.1f, 1f)
 
@@ -110,7 +118,6 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
     override val flashFilter: Colour get() = Constants.PULSAR_PULSE_FILTER
 
     override fun sceneBackdrop() = realBackground
-    override val drawsPlanet: Boolean get() = false
 
     override fun update(dt: Float) {
         super.update(dt)
@@ -158,14 +165,21 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
         return min + changing * (max - min)
     }
 
+    /**
+     * SpaceManager::SetPulsarLevel (1.6.14 0x418f70, 1.6.9 0x417440): TimerHelper::ResetMinMax(11000, 18000) and
+     * Start(-1) (0x5cb0b0), a goal of `(random32() % 7000 + 11000) / 1000` seconds; TimerHelper::Done (0x5cb200)
+     * draws the next goal the same way when it loops. Later pulses follow real-time frames and use the combat stream.
+     */
     private fun prepareNextFlare(random: kotlin.random.Random = ftl.browser.BrowserRandom) {
-        timeToPulse = (11f..18f).random(random)
+        timeToPulse = (11000 + random.nextBits(31) % 7000) / 1000f
         hasPlayedSound = false
         hasPlayedWarning = false
     }
 
     // ShipManager's pulsar hit (0x4a36b0) and Shields::PulsarDamage (0x6329c0).
     private fun dealIonDamage(ship: Ship) {
+        // ShipManager::GetIsJumping: a ship in its jump (bJumping) takes no pulse.
+        if (ship.browserJumping) return
         val resistDamage = ship.ionArmourNegates()
         val shields = ship.shields
 

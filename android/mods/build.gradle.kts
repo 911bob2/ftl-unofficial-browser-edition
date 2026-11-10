@@ -23,6 +23,10 @@ val modVectors = tasks.register<Exec>("modVectors") {
 tasks.test {
     dependsOn(modVectors)
     systemProperty("vectors", vectors.get().asFile.absolutePath)
+    // LuaScanTest: the website's scan cases (web/mods/lua-scan.mjs)
+    val scanCases = File(rootProject.file(".."), "tests/hs-lua/lua-scan-cases.json")
+    inputs.file(scanCases)
+    systemProperty("luaScanCases", scanCases.absolutePath)
     // Opt-in RealModsTest: a folder of tools/mods/merge-manifest.mjs manifests (real mod sets need a larger heap).
     val modsReal = System.getenv("FTL_MODS_REAL") ?: ""
     inputs.property("modsReal", modsReal)

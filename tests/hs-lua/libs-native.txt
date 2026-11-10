@@ -1,0 +1,253 @@
+lb|start|Lua 5.3
+lb|open-missing|ok|nil|ps_m1b_missing.txt: No such file or directory|2
+lb|open-missing-r|ok|nil|ps_m1b_missing.txt: No such file or directory|2
+lb|open-mode-bad|err|bad argument #2 to 'io.open' (invalid mode)
+lb|open-mode-plus-bad|err|bad argument #2 to 'io.open' (invalid mode)
+lb|open-nodir|ok|nil|ps_m1b_nodir/x.txt: No such file or directory|2
+lb|open-nodir-bs|ok|nil|ps_m1b_nodir\x.txt: No such file or directory|2
+lb|open-badchar|ok|nil|ps_m1b_a?.txt: Invalid argument|22
+lb|open-empty|ok|nil|: No such file or directory|2
+lb|open-w|userdata|file|file (...)
+lb|write-returns-self|ok|true
+lb|write-bad|err|[string "data/hs_oracle/ps-m1b.lua"]:68: bad argument #1 to 'write' (string expected, got table)
+lb|seek-cur|ok|15
+lb|seek-set|ok|0
+lb|seek-end|ok|15
+lb|seek-neg|ok|nil|Invalid argument|22
+lb|seek-badopt|err|[string "data/hs_oracle/ps-m1b.lua"]:73: bad argument #1 to 'seek' (invalid option 'bad')
+lb|setvbuf-no|ok|true
+lb|setvbuf-full|ok|true
+lb|setvbuf-line|ok|true
+lb|flush|ok|false
+lb|read-on-w|ok|nil
+lb|close|ok|true
+lb|io.type-closed|ok|closed file
+lb|tostring-closed|ok|file (closed)
+lb|write-closed|err|[string "data/hs_oracle/ps-m1b.lua"]:82: attempt to use a closed file
+lb|close-twice|err|[string "data/hs_oracle/ps-m1b.lua"]:83: attempt to use a closed file
+lb|io.type-num|ok|nil
+lb|read-l|ok|hello
+lb|read-n2|ok|42|1.5
+lb|read-L|ok|\n
+lb|read-a|ok|
+lb|read-a-eof|ok|
+lb|read-l-eof|ok|nil
+lb|read-0-eof|ok|nil
+lb|seek-set-2|ok|2
+lb|read-3|ok|llo
+lb|read-0|ok|
+lb|read-star-l|ok|
+lb|read-badfmt|err|[string "data/hs_oracle/ps-m1b.lua"]:97: bad argument #1 to 'read' (invalid format)
+lb|write-on-r|ok|userdata:file
+lb|seek-end-r|ok|15
+lb|read-numbers|ok|31|100.0|-3|0.5|7.0
+lb|read-number-bad|ok|nil
+lb|read-after-bad|ok| 99999999999999999999 abc
+lb|io.lines|4|[1],[2],[],[3]
+lb|io.lines-L|4|[1\n],[2\n],[\n],[3]
+lb|io.lines-1n|2|1:2,\n:3
+lb|io.lines-missing|err|[string "data/hs_oracle/ps-m1b.lua"]:118: cannot open file 'ps_m1b_missing.txt' (No such file or directory)
+lb|f:lines-n|3|1,2,3
+lb|f:lines-closed|err|[string "data/hs_oracle/ps-m1b.lua"]:123: attempt to use a closed file
+lb|append|hello\r/42 1.5\r/more\r/
+lb|r+|Jello
+lb|w+|bc
+lb|a+|abcdef
+lb|binary|6|x\0y\r\nz
+lb|text-mode-read|5|x\0y\nz
+lb|text-mode-write|4|a\r\nb
+lb|case-insensitive|ok|case
+lb|trailing-dot|ok|case
+lb|rename|ok|true
+lb|rename-missing|ok|nil|No such file or directory|2
+lb|rename-onto|ok|nil|File exists|17
+lb|remove|ok|true
+lb|remove-again|ok|nil|ps_m1b_b.txt: No such file or directory|2
+lb|remove-missing|ok|nil|ps_m1b_missing.txt: No such file or directory|2
+lb|remove-empty|ok|nil|: No such file or directory|2
+lb|remove-dot|ok|nil|.: Permission denied|13
+lb|remove-open|ok|nil|ps_m1b_held.txt: Permission denied|13
+lb|rename-open|ok|nil|Permission denied|13
+lb|io.open-dir|ok|nil|.: Permission denied|13
+lb|io.type-stdout|ok|file
+lb|io.output-is-stdout|ok|true
+lb|io.write|ok|true
+lb|io.close-stdout|ok|nil|cannot close standard file
+lb|stdout-close|ok|nil|cannot close standard file
+lb|io.read-stdin|ok|nil
+lb|stdin-seek|ok|0
+lb|io.input-file|ok|in1|in2|nil
+lb|io.input-restore|ok|true
+lb|io.output-file|ok|out
+lb|io.input-missing|err|[string "data/hs_oracle/ps-m1b.lua"]:169: cannot open file 'ps_m1b_missing.txt' (No such file or directory)
+lb|tmpfile|ok|closed file|tmp
+lb|tmpname|ok|string|\www.
+lb|tmpname-exists|no
+lb|tmpname-writable|no
+lb|execute-none|ok|true
+lb|execute-exit3|ok|nil|exit|3
+lb|execute-true|ok|true|exit|0
+lb|popen|ok|closed file|ps_m1b\n|true|exit|0
+lb|popen-mode-bad|ok|userdata:file
+lb|getenv-none|ok|nil
+lb|getenv-path-type|ok|string
+lb|getenv-bad|err|[string "data/hs_oracle/ps-m1b.lua"]:192: bad argument #1 to 'getenv' (string expected, got no value)
+lb|os.exit|function
+lb|setlocale-query|ok|C
+lb|setlocale-C|ok|C
+lb|setlocale-C-numeric|ok|C
+lb|setlocale-bogus|ok|nil
+lb|setlocale-badcat|err|bad argument #2 to 'os.setlocale' (invalid option 'bogus')
+lb|setlocale-query-after|ok|C
+lb|format-after-locale|ok|1.5
+lb|date %a|ok|Fri
+lb|date %A|ok|Friday
+lb|date %b|ok|Jan
+lb|date %B|ok|January
+lb|date %c|ok|01/01/71 03:04:05
+lb|date %d|ok|01
+lb|date %H|ok|03
+lb|date %I|ok|03
+lb|date %j|ok|001
+lb|date %m|ok|01
+lb|date %M|ok|04
+lb|date %p|ok|AM
+lb|date %S|ok|05
+lb|date %U|ok|00
+lb|date %w|ok|5
+lb|date %W|ok|00
+lb|date %x|ok|01/01/71
+lb|date %X|ok|03:04:05
+lb|date %y|ok|71
+lb|date %Y|ok|1971
+lb|date %%|ok|%
+lb|date %#c|ok|Friday, January 01, 1971 03:04:05
+lb|date %#x|ok|Friday, January 01, 1971
+lb|date %#d|ok|1
+lb|date %#H|ok|3
+lb|date %#I|ok|3
+lb|date %#j|ok|1
+lb|date %#m|ok|1
+lb|date %#M|ok|4
+lb|date %#S|ok|5
+lb|date %#U|ok|0
+lb|date %#w|ok|5
+lb|date %#W|ok|0
+lb|date %#y|ok|71
+lb|date %#Y|ok|1971
+lb|date x%dy|ok|x01y
+lb|date-bad %D|err|bad argument #1 to 'os.date' (invalid conversion specifier '%D')
+lb|date-bad %e|err|bad argument #1 to 'os.date' (invalid conversion specifier '%e')
+lb|date-bad %F|err|bad argument #1 to 'os.date' (invalid conversion specifier '%F')
+lb|date-bad %T|err|bad argument #1 to 'os.date' (invalid conversion specifier '%T')
+lb|date-bad %E|err|bad argument #1 to 'os.date' (invalid conversion specifier '%E')
+lb|date-bad %Ec|err|bad argument #1 to 'os.date' (invalid conversion specifier '%Ec')
+lb|date-bad %Od|err|bad argument #1 to 'os.date' (invalid conversion specifier '%Od')
+lb|date-bad %#|err|bad argument #1 to 'os.date' (invalid conversion specifier '%#')
+lb|date-bad %|err|bad argument #1 to 'os.date' (invalid conversion specifier '%')
+lb|date-bad %#a|err|bad argument #1 to 'os.date' (invalid conversion specifier '%#a')
+lb|date-bad %z|ok|Greenwich Standard Time
+lb|date-bad %Z|ok|Greenwich Standard Time
+lb|date-bad %C|err|bad argument #1 to 'os.date' (invalid conversion specifier '%C')
+lb|date-bad %g|err|bad argument #1 to 'os.date' (invalid conversion specifier '%g')
+lb|date-bad %n|err|bad argument #1 to 'os.date' (invalid conversion specifier '%n')
+lb|date-bad %t|err|bad argument #1 to 'os.date' (invalid conversion specifier '%t')
+lb|date-bad %u|err|bad argument #1 to 'os.date' (invalid conversion specifier '%u')
+lb|date-bad %V|err|bad argument #1 to 'os.date' (invalid conversion specifier '%V')
+lb|date-bad %G|err|bad argument #1 to 'os.date' (invalid conversion specifier '%G')
+lb|date-bad %h|err|bad argument #1 to 'os.date' (invalid conversion specifier '%h')
+lb|date-bad %r|err|bad argument #1 to 'os.date' (invalid conversion specifier '%r')
+lb|date-bad %R|err|bad argument #1 to 'os.date' (invalid conversion specifier '%R')
+lb|date-*t|1971|1|1|3|4|5|6|1|false
+lb|date-z-type|ok|string|string
+lb|date-default-type|ok|string
+lb|date-neg|err|time result cannot be represented in this installation
+lb|date-3000|err|bad argument #2 to 'os.date' (time out-of-bounds)
+lb|date-3001|err|bad argument #2 to 'os.date' (time out-of-bounds)
+lb|date-huge|err|bad argument #2 to 'os.date' (time out-of-bounds)
+lb|date-float|err|bad argument #2 to 'os.date' (number has no integer representation)
+lb|date-bad-arg|err|bad argument #2 to 'os.date' (number expected, got string)
+lb|time-type|ok|integer
+lb|time-diff|ok|43200
+lb|time-noon-default|ok|43200
+lb|time-norm|ok|2001|2|1
+lb|time-1960|err|time result cannot be represented in this installation
+lb|time-1969|err|time result cannot be represented in this installation
+lb|time-3001|err|time result cannot be represented in this installation
+lb|time-nomonth|err|field 'month' missing in date table
+lb|time-field-float|err|field 'month' is not an integer
+lb|time-not-table|err|bad argument #1 to 'os.time' (table expected, got number)
+lb|clock-type|ok|float
+lb|difftime|ok|2.0
+lb|difftime-1|err|[string "data/hs_oracle/ps-m1b.lua"]:235: bad argument #2 to 'difftime' (number expected, got no value)
+lb|package.config|\\n;\n?\n!\n-\n
+lb|package.path|!\lua\?.lua;!\lua\?\init.lua;!\?.lua;!\?\init.lua;!\..\share\lua\5.3\?.lua;!\..\share\lua\5.3\?\init.lua;.\?.lua;.\?\init.lua
+lb|package.cpath|!\?.dll;!\..\lib\lua\5.3\?.dll;!\loadall.dll;.\?.dll
+lb|package.searchers|4
+lb|package keys|config cpath loaded loadlib path preload searchers searchpath
+lb|package.loaded keys|_G coroutine debug io math os package script string table utf8
+lb|loaded._G|ok|true|true|true
+lb|require|ok|7|ps_m1b_mod|!\ps_m1b_mod.lua
+lb|require-cached|ok|true
+lb|require-missing|err|module 'ps_m1b_none' not found:\n	no field package.preload['ps_m1b_none']\n	no file '!\lua\ps_m1b_none.lua'\n	no file '!\lua\ps_m1b_none\init.lua'\n	no file '!\ps_m1b_none.lua'\n	no file '!\ps_m1b_none\init.lua'\n	no file '!\..\share\lua\5.3\ps_m1b_none.lua'\n	no file '!\..\share\lua\5.3\ps_m1b_none\init.lua'\n	no file '.\ps_m1b_none.lua'\n	no file '.\ps_m1b_none\init.lua'\n	no file '!\ps_m1b_none.dll'\n	no file '!\..\lib\lua\5.3\ps_m1b_none.dll'\n	no file '!\loadall.dll'\n	no file '.\ps_m1b_none.dll'
+lb|require-dotted|err|module 'ps_m1b_none.sub' not found:\n	no field package.preload['ps_m1b_none.sub']\n	no file '!\lua\ps_m1b_none\sub.lua'\n	no file '!\lua\ps_m1b_none\sub\init.lua'\n	no file '!\ps_m1b_none\sub.lua'\n	no file '!\ps_m1b_none\sub\init.lua'\n	no file '!\..\share\lua\5.3\ps_m1b_none\sub.lua'\n	no file '!\..\share\lua\5.3\ps_m1b_none\sub\init.lua'\n	no file '.\ps_m1b_none\sub.lua'\n	no file '.\ps_m1b_none\sub\init.lua'\n	no file '!\ps_m1b_none\sub.dll'\n	no file '!\..\lib\lua\5.3\ps_m1b_none\sub.dll'\n	no file '!\loadall.dll'\n	no file '.\ps_m1b_none\sub.dll'\n	no file '!\ps_m1b_none.dll'\n	no file '!\..\lib\lua\5.3\ps_m1b_none.dll'\n	no file '!\loadall.dll'\n	no file '.\ps_m1b_none.dll'
+lb|require-bad|err|bad argument #1 to 'require' (string expected, got no value)
+lb|searchpath|ok|.\ps_m1b_mod.lua
+lb|searchpath-missing|ok|nil|\n	no file '.\ps_m1b_none.lua'\n	no file 'ps_m1b_none.x'
+lb|searchpath-sep|ok|nil|\n	no file 'a|b.lua'
+lb|loadlib|ok|nil|Module not found.\r\n|open
+lb|loadlib-star|ok|nil|Module not found.\r\n|open
+lb|preload|ok|pre:ps_m1b_pre
+lb|require-bytecode|ok|from bytecode
+lb|require-error|ok|false|!\ps_m1b_err.lua:1: in module
+lb|require-syntax|ok|false|error loading module 'ps_m1b_syn' from file '!\ps_m1b_syn.lua':\n	!\ps_m1b_syn.lua:1: unexpected symbol near '+'
+lb|traceback-type|ok|string
+lb|traceback-msg|ok|msg\nstack traceback:\n	[string "data/hs_oracle/ps-m1b.lua"]:287: in function <[string "data/hs_oracle/ps-m1b.lua"]:287>
+lb|traceback-nonstring|ok|true|string
+lb|traceback-level|ok|m\nstack traceback:
+lb|getinfo-S|ok|data/hs_oracle/ps-m1b.lua|[string "data/hs_oracle/ps-m1b.lua"]|Lua|true
+lb|getinfo-l|ok|true
+lb|getinfo-C|ok|C|=[C]|[C]|-1|-1|0
+lb|getinfo-u|ok|2|true|0
+lb|getinfo-n|ok|named|local
+lb|getinfo-t|ok|false
+lb|getinfo-far|ok|nil
+lb|getinfo-badopt|err|[string "data/hs_oracle/ps-m1b.lua"]:297: bad argument #2 to 'getinfo' (invalid option)
+lb|getinfo-badopt2|ok|table
+lb|getinfo-f|ok|true
+lb|getinfo-L|ok|2
+lb|getlocal|ok|abc|5
+lb|getlocal-fn|ok|q
+lb|setlocal|ok|abc|9
+lb|getlocal-bad|err|[string "data/hs_oracle/ps-m1b.lua"]:305: bad argument #1 to 'getlocal' (level out of range)
+lb|getlocal-C|ok|(*temporary)|true
+lb|getupvalue|ok|up|3
+lb|setupvalue|ok|up|4
+lb|getupvalue-C|ok||a
+lb|upvalueid|ok|userdata
+lb|upvalueid-bad|err|[string "data/hs_oracle/ps-m1b.lua"]:313: bad argument #2 to 'upvalueid' (invalid upvalue index)
+lb|upvaluejoin|ok|2
+lb|getmetatable-str|ok|true
+lb|getmetatable-file|ok|table|true
+lb|setmetatable-num|ok|10
+lb|setmetatable-ret|ok|true
+lb|setmetatable-bad|err|[string "data/hs_oracle/ps-m1b.lua"]:319: bad argument #2 to 'setmetatable' (nil or table expected)
+lb|registry|ok|table|table|true|true|thread
+lb|getuservalue|ok|nil
+lb|getuservalue-tab|ok|nil
+lb|setuservalue-bad|err|[string "data/hs_oracle/ps-m1b.lua"]:323: bad argument #1 to 'setuservalue' (userdata expected, got table)
+lb|debug.debug|ok|function
+lb|debug keys|debug gethook getinfo getlocal getmetatable getregistry getupvalue getuservalue sethook setlocal setmetatable setupvalue setuservalue traceback upvalueid upvaluejoin
+lb|gethook-none|ok|nil||0
+lb|sethook-count|ok|true|function||100
+lb|sethook-line|ok|line:n|true
+lb|sethook-call|ok|return,call,return,call
+lb|sethook-mask|ok|crl|7
+lb|gethook-after|ok|nil||0
+lb|sethook-error|err|[string "data/hs_oracle/ps-m1b.lua"]:358: hookerr
+lb|sethook-coroutine|ok|true|done|true|nil
+lb|sethook-badmask|ok|
+lb|sethook-getinfo-in-hook|ok|[string "data/hs_oracle/ps-m1b.lua"]
+lb|setlocale-empty|ok|English_United States.1252
+lb|format-in-locale|ok|1.5
+lb|end

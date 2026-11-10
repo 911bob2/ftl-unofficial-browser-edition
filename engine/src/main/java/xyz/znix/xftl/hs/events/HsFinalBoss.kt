@@ -31,6 +31,8 @@ object HsFinalBoss {
     @JvmStatic
     fun newGame() {
         bossDefeated = false; alreadyWon = false; alreadyWonCustom = false; gameOverText = ""; victoryType = ""
+        // CustomEvents.cpp new game: CustomShipUnlocks::setCustomVictoryType = "flagship".
+        xyz.znix.xftl.hs.ship.HsShipUnlocks.setCustomVictoryType = "flagship"
     }
 
     /** WorldManager::OnLoop (unpaused): the current ship event's enemy destroyed. */
@@ -63,6 +65,9 @@ object HsFinalBoss {
             gameOverText = def.text
             xyz.znix.xftl.hs.render.HsCredits.victoryEvent(game, def.creditsText, def.creditsBackground, def.creditsMusic)
             victoryType = def.ach
+            // HS keeps one variable: the boss's ach is the victory type SetVictoryAchievement records (CustomEvents.cpp
+            // 6957 and 7025, CustomShipUnlocks::setCustomVictoryType), not "flagship" and its DEFEAT_FLAGSHIP unlocks.
+            xyz.znix.xftl.hs.ship.HsShipUnlocks.setCustomVictoryType = def.ach
         }
         return true
     }
@@ -84,12 +89,17 @@ object HsFinalBoss {
         xyz.znix.xftl.hs.save.HsSave.register("finalBoss", xyz.znix.xftl.hs.save.HsSave.Scope.RUN, { e ->
             e.setAttribute("alreadyWon", alreadyWon.toString()).setAttribute("alreadyWonCustom", alreadyWonCustom.toString())
                 .setAttribute("text", gameOverText).setAttribute("victoryType", victoryType)
+                .setAttribute("customVictoryType", xyz.znix.xftl.hs.ship.HsShipUnlocks.setCustomVictoryType)
         }, { e ->
             bossDefeated = false
             alreadyWon = e?.getAttributeValue("alreadyWon") == "true"
             alreadyWonCustom = e?.getAttributeValue("alreadyWonCustom") == "true"
             gameOverText = e?.getAttributeValue("text") ?: ""
             victoryType = e?.getAttributeValue("victoryType") ?: ""
+            // StarMap::LoadGame reads setCustomVictoryType (CustomEvents.cpp 6210); a save written before it was kept
+            // here takes the boss's type when one was won.
+            xyz.znix.xftl.hs.ship.HsShipUnlocks.setCustomVictoryType = e?.getAttributeValue("customVictoryType")
+                ?: victoryType.ifEmpty { "flagship" }
         })
     }
 }

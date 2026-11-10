@@ -559,6 +559,17 @@ class SectorMapWindow(private val game: InGameState, private val selectedCallbac
         selectedCallback(null)
     }
 
+    /**
+     * StarMap::KeyDown (1.6.14 0x5ea590, 1.6.9 0x5c6440): while the next sector is being chosen, 1 and 2 choose the current sector's first
+     * and second next sector, the ones labelled "1." and "2." (oracle ps-u5-mvt: 1 at the sector choice entered the
+     * sector labelled 1). Clicking stays as it was.
+     */
+    override fun onTextInput(key: Int, c: Char): Boolean {
+        val index = when (key) { '1'.code -> 0; '2'.code -> 1; else -> return false }
+        nextSectors.getOrNull(index)?.let(selectedCallback)
+        return true
+    }
+
     companion object {
         const val SECTOR_Y_SPACING = 50
         const val SECTOR_X_SPACING = 66

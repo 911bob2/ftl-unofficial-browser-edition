@@ -14,6 +14,6 @@ class CrewHuman(blueprint: CrewBlueprint, animations: Animations, room: Room, mo
         // when it builds the strips; the sex is still taken from the crew info.
         val skipColours = ownerShip?.isPlayerShip != true
 
-        info.drawImage(x0, y0, x1, y1, baseFrame, alpha, skipColours)
+        info.drawImage(x0, y0, x1, y1, baseFrame, alpha, skipColours, spriteTint)
     }
 }

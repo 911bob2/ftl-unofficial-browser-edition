@@ -81,6 +81,13 @@ class ShipList(private val state: SelectShipState, private val touch: Boolean = 
     private val tabLeft get() = if (touch) ORIGIN_X + 448 else 685
     private val tabTop get() = if (touch) ORIGIN_Y + 437 else 122
     private val tabHeight get() = if (touch) 33 else 22
+    /**
+     * The type tab and the Hyperspace page arrow under the pointer. ShipSelect::MouseMove (1.6.9 0x513bb0) only moves
+     * the tutorial box while it is open and Hyperspace's CustomShipSelect::MouseMove returns then: no hover under it.
+     */
+    private val hoveredTab get() = if (tutorial != null) null else tabAt(state.mousePos.x, state.mousePos.y)
+    private val hoveredPageButton get() = if (tutorial != null) null else pageButtonAt(state.mousePos.x, state.mousePos.y)
+    val diagnosticButtonHover get() = "tab=$hoveredTab page=$hoveredPageButton"
     private fun tabAt(x: Int,y: Int) = if(y in tabTop until tabTop+tabHeight) (0..2).firstOrNull { x in tabLeft+it*tabStride until tabLeft+it*tabStride+tabWidth } else null
     // The tutorial box is laid out for the 1280x720 frame: on the block it moves to the middle.
     private val tutorialDx get() = if (touch) TouchMode.HUD_W / 2 - 640 else 0
@@ -162,7 +169,7 @@ class ShipList(private val state: SelectShipState, private val touch: Boolean = 
         if (touch) drawTouchTabFrames() else drawTabFrame()
         for(i in 0..2) {
             val x=tabLeft+i*tabStride
-            val over=tabAt(state.mousePos.x,state.mousePos.y)==i
+            val over=hoveredTab==i
             val isSelected=i==layout
             val bgColour = when {
                 isSelected -> xyz.znix.xftl.hs.render.HsColors.tbSelected()
@@ -403,7 +410,7 @@ class ShipList(private val state: SelectShipState, private val touch: Boolean = 
     }
 
     private fun drawPageButtons(g: Graphics) {
-        val over = pageButtonAt(state.mousePos.x, state.mousePos.y)
+        val over = hoveredPageButton
         val y = 119 + pageDy
         for ((dir, x) in listOf(-1 to 1100 + pageDx, 1 to 1135 + pageDx)) {
             val suffix = if (!pageButtonsActive) "off" else if (over == dir) "select2" else "on"

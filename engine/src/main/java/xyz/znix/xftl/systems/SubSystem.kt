@@ -43,10 +43,7 @@ abstract class SubSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint)
      */
     private val boxPowered: Boolean get() = undamagedEnergy + hsPowerWrite > 0
 
-    override val manningIconPowered: Boolean get() = boxPowered && scriptedPowerLoss == 0
-
-    /** Diagnostics: whether the box would draw the crew-slot icon (see [manningIconPowered]). */
-    internal val boxCrewSlotShown: Boolean get() = manningIconPowered
+    override val manningIconPowered: Boolean get() = boxPowered && !statusBlocksBoost(false)
 
     override val iconColourName: String
         get() = super.iconColourName.let { if (it == "green" && !isIonised && !boxPowered) "grey" else it }
@@ -111,30 +108,34 @@ abstract class SubSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint)
         return baseY - (energyLevels - 1) * 8
     }
 
+    /**
+     * The crew-slot bar of the box: on while manned; ion while ionised, or (ShipSystem::RenderPowerBoxes, 1.6.14
+     * FUN_0063c310) while BlockedBoosted(true) blocks a system that BlockedBoosted(false) lets through, that is a
+     * powered system under a status cap below its level plus one, such as the sensors capped at their level.
+     */
+    internal val manningBarName: String
+        get() = when {
+            isIonised -> "ion"
+            manningCrew != null -> "on"
+            statusBlocksBoost(true) -> "ion"
+            else -> "off"
+        }
+
     override fun drawManningIcon(g: Graphics, x: Int, y: Int) {
         if (!info.canBeManned)
             return
 
-        val iconPath = when {
-            isIonised -> "img/systemUI/manning_bar_ion.png"
-            manningCrew != null -> "img/systemUI/manning_bar_on.png"
-            else -> "img/systemUI/manning_bar_off.png"
-        }
-
-        val img = ship.sys.getImg(iconPath)
+        val img = ship.sys.getImg("img/systemUI/manning_bar_$manningBarName.png")
         img.draw(x, y + 2 - img.height)
+        // RenderPowerBoxes: a subsystem's crew bar lifts the box's tooltip column by one bar (height + gap)
+        manningIconLift = 8
     }
 
     override fun touchDrawManning(g: Graphics, x: Int, y: Int) {
         if (!info.canBeManned)
             return
 
-        val name = when {
-            isIonised -> "ion"
-            manningCrew != null -> "on"
-            else -> "off"
-        }
-        ship.sys.getImg("img/ipad/systemUI/manning_bar_$name.png").draw(x - 7, y - 14)
+        ship.sys.getImg("img/ipad/systemUI/manning_bar_$manningBarName.png").draw(x - 7, y - 14)
     }
 
     // List of the default systems, for sorting purposes

@@ -499,6 +499,8 @@ object LuaAdaptersSweepUi {
     }
 
     private val channels = HashMap<Int, xyz.znix.xftl.game.SoundInstance>()
+    /** Diagnostics (LuaProbe): the sound of the [back]-th last PlaySoundMix channel (0: the last one). */
+    @JvmStatic fun lastSoundChannel(back: Int): xyz.znix.xftl.game.SoundInstance? = channels[nextChannel - 1 - back]
     private var nextChannel = 0x1000001
 
     /**
@@ -512,9 +514,10 @@ object LuaAdaptersSweepUi {
             val sample = g?.sounds?.getSampleOrWarn(name)
             val spec = (sample as? xyz.znix.xftl.game.FTLSound)
             if (spec == null) return@LuaMethod ret.num(0)
-            val inst = try { sample.play() } catch (e: IllegalArgumentException) { null } // a looping sound has no one-shot play
+            // hyperspace.i passes the volume straight to PlaySoundMix (0x5d5160): above 0 it is the channel's volume, 0 or
+            // less (scripts pass -1, as HS's own calls do) the sound's own sounds.xml volume (FTLSound.playAt, U4)
+            val inst = try { sample.playAt(arg.float(3)) } catch (e: IllegalArgumentException) { null } // a looping sound has no one-shot play
             if (inst == null) return@LuaMethod ret.num(0)
-            inst.volume = arg.float(3)
             val ch = nextChannel++
             channels[ch] = inst
             ret.num(ch)
@@ -722,6 +725,7 @@ object LuaAdaptersSweepUi {
     private val dormant = xyz.znix.xftl.hs.lua.HsRunMaps.run(java.util.IdentityHashMap<xyz.znix.xftl.drones.NativeDrone, xyz.znix.xftl.drones.AbstractIndoorsDrone>())
 
     private fun crewList(ship: xyz.znix.xftl.Ship): List<Any?> {
+        if (LuaAdapters.isEscaped(ship)) return emptyList()
         val system = ship.drones ?: return ship.crew
         val room = system.room ?: return ship.crew
         val idle = ArrayList<Any?>()

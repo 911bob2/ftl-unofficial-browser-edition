@@ -148,7 +148,9 @@ The cog in the header, on every launcher screen after the notice, so the log can
 fail. All of it belongs to the device, not to a save or an account. Settings lies over the screen it was opened from, which stays
 as it was (typed text, a mod download, the place in the list). One page in the launcher's frames, two columns where it is wide
 enough: **General** (Screen, Haptics, Language, App icon, each a row that opens its dialog, and the Magnifier switch), **Saves** (not before the game files are in),
-**Updates** (Check for updates, the automatic check's switch), **Help** (debug log, Enable debug console). The title and Back stay on screen while the page scrolls; Back, the system's back or the cog return. The
+**Updates** (Check for updates, the automatic check's switch), **Mod scripts** (Disable Lua sandboxing (dangerous): off by
+default, a second confirmation naming the dangers to turn it on, nothing to turn it off; [HS_LUA.md](HS_LUA.md#files-programs-and-the-sandbox)),
+**Help** (debug log, Enable debug console). The title and Back stay on screen while the page scrolls; Back, the system's back or the cog return. The
 launcher's strings are plain English in the code: it has no translation system.
 
 **Language** writes the same `language` value the game's own list writes into `settings.xml` (`GameLanguage`); the game reads it
@@ -403,7 +405,10 @@ on yet.
 - **Tutorials** on touch. Vanilla plays the iPad lessons (`BrowserTutorialDefinition`, IPAD order and lines): like the iOS
   game it opens the engines box for IPAD_TOOLTIPS and the weapons box for COMBAT_1 and keeps them open (a finger elsewhere
   does not close them), opens the weapons box for INVENTORY_1 and COMBAT_5, closes the boxes at DAMAGE_SYSTEM_1 and after
-  INVENTORY_2, and shows the hand only while a lesson waits for its action. Any text id `<name>` reads `<name>_TOUCH`
+  INVENTORY_2, and shows the hand only while a lesson waits for its action. The lesson panel is at least 212 high, as the
+  desktop's and the iOS game's. CANCEL on the tutorial's map does nothing, as on the iPad (its CANCEL takes no pointer
+  there). The back gesture is Escape there too: it leaves the tutorial's map open and, over the ship window, opens the
+  pause menu (the desktop rules, [TUTORIAL.md](TUTORIAL.md#original-captures-parity-sweep-u5-2026-11-08)). Any text id `<name>` reads `<name>_TOUCH`
   where the files have one (a mod's or our touch wording, for any touch layout), else `<name>_IPAD` (the original's own
   iPad lines), unless the language translates `<name>` but not the touch line (`Translator.touchKey`). A script's pointers (`game/TouchPointers.kt`): a `Hyperspace.TutorialArrow` or
   `GL_DrawRectOutline` drawn by Lua HUD drawing over a desktop HUD element the touch HUD knows (crew boxes, top buttons,
@@ -423,6 +428,13 @@ on yet.
 
 ## Testing
 
+- Mod scripts' libraries (sweep M1b): `LuaScanTest` (`:mods:test`) and, on the emulator with Hyperspace.ftl and a test mod
+  whose script uses `io.open` and `os.execute`: the question before the game starts (sandboxed and unsandboxed
+  wording), Don't run back on the launcher, the file in `files/lua-files/<account>/` (`run-as`), a planted symbolic link
+  there neither read nor overwritten, the setting's confirmation, real files and `os.execute()` true only for a mod
+  allowed with it on, `LUA <a function of the mod's that calls os.exit>` (debug ConsoleReceiver, in flight) and its
+  message, Clear mod files and Ask again (`.build/hs/reports/ps-m1b.md`).
+
 - `./gradlew --offline :savecore:test` (shared vectors), `:mods:test` (merge and MEGA against the website's
   fixtures; with `FTL_MODS_REAL=<folder>` also `RealModsTest`: the merge of real mod sets against the website's, from
   manifests `node tools/mods/merge-manifest.mjs` writes; sets with Lua patch scripts need the device runner below), `:engine:testDebugUnitTest`, `:app:testDebugUnitTest`.
@@ -435,7 +447,9 @@ on yet.
   in flight on a new run (`--multiple` for Multiverse): the debug console's get fills augments, cargo and crew, the
   receiver's `overcap` gives the open ship window's boxes (`overcappage` turns the equipment pager); checks one box at a
   time, a tap on the pager's arrow, every crew member's box and dismiss button clear of the over-capacity box, without
-  Hyperspace a crew box dragged onto another keeping the order (the crew screen has no reorder; Hyperspace's swaps), and a
+  Hyperspace a crew box dragged onto another keeping the order (the crew screen has no reorder; Hyperspace's swaps), a
+  crew box carried onto the DISMISSAL box (the iPad's crew screen, without Hyperspace: it lights, and lifted there asks
+  to dismiss), and a
   dismiss by taps with the confirmation on the screen; phone and tablet shapes through `wm size` ([TESTS.md](TESTS.md#over-capacity-boxes)).
 - Desktop HUD elements on touch: `TouchExtrasTest` (places, the event button restore and the storage crate an older save
   lost, the settled measure, the shelf's alignment, the probe's solid art) and, on the emulator,
@@ -476,7 +490,7 @@ on yet.
   holds a finger for screenshots.
 - Tutorial pointers: `TouchPointersTest` (an arrow's element, its place and side; an outline over one element or several;
   the `_TOUCH` / `_IPAD` rule; the touch layers' archives) and, on the emulator in Multiverse's tutorial,
-  `node tools/android-touch/tutorial.mjs --serial <serial> --out <dir> [--fight]`: starts each lesson with pointers through
+  `node tools/android-touch/tutorial.mjs --serial <serial> --out <dir> [--fight] [--only lesson,lesson]`: starts each lesson with pointers through
   the debug console and checks every arrow's tip is within 10 px of its element's touch place and every outline on it
   (`pointers` in `touchstate`: kind, desktop and canvas places, the element). `touchstate` also has `tutorial` (the vanilla
   lesson, whether Continue shows), `crewOrder` and `crewHeld`. Crew reorder:

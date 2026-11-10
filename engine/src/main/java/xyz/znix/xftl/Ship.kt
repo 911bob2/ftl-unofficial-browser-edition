@@ -862,6 +862,7 @@ class Ship(
             augment.onShipSpawn(this)
             augments.add(augment)
         }
+        sortAugmentsByName()
 
         // If we don't have an oxygen system, the rooms start with no oxygen by default
         if (oxygen == null) {
@@ -1779,7 +1780,7 @@ class Ship(
                 if (!destructionSoundPlayed) {
                     blowApart()
                     destructionSoundPlayed = true
-                    sys.sounds.getSampleOrWarn("explosion1")?.play()
+                    sys.sounds.getSampleOrWarn("explosion1")?.playAt(1f)
                 } else {
                     for (gib in gibs)
                         gib.update(dt)
@@ -1925,7 +1926,7 @@ class Ship(
             if (destructionSoundTimer >= 0f)
                 return
         }
-        sys.sounds.getSampleOrWarn("explosion${ftl.browser.BrowserRandom.nextInt(4) + 1}")?.play()?.volume = 0.25f
+        sys.sounds.getSampleOrWarn("explosion${ftl.browser.BrowserRandom.nextInt(4) + 1}")?.playAt(0.25f)
         destructionSoundTimer = (ftl.browser.BrowserRandom.nextInt(3) + 1) * 0.3f
     }
 
@@ -1955,9 +1956,8 @@ class Ship(
             xyz.znix.xftl.hs.ship.HsNavAugments.nanobots(this, dt)
             hs?.lua?.let {
                 it.lastEngineStatus = xyz.znix.xftl.hs.lua.LuaAdaptersWP5Ship.engineStatus(this)
-                // ShipManager::CheckVision reveals and clears every tempVision flag; OnLoop
-                // zeroes damageCloaked while the ship is not cloaked (oracle sweep-world-ys1: 0 a second after a write)
-                it.tempVision.clear()
+                // OnLoop zeroes damageCloaked while the ship is not cloaked (oracle sweep-world-ys1: 0 a second after a
+                // write); tempVision is read and cleared by CheckVision, after the rooms (below)
                 if (!isCloakActive) it.ints.remove(xyz.znix.xftl.hs.lua.LuaApi.A_ShipManager_damageCloaked)
             }
             hsFireRoomCount = IntArray(rooms.size) { i -> rooms[i].fires.count { it != null } }
@@ -2006,6 +2006,8 @@ class Ship(
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsOxygen.beginFrame(this)
         for (room in rooms)
             room.update(dt)
+        // ShipManager::CheckVision (1.6.9 0x491620): every tempVision flag is cleared once the rooms have read theirs
+        if (dt > 0f) hs?.lua?.tempVision?.clear()
         // Hyperspace ShipManager::UpdateEnvironment hook (ErosionEffect.cpp): eroding rooms.
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsErosionRoom.update(this, dt)
 
@@ -2513,6 +2515,14 @@ class Ship(
             target.showDamageText("text_resist", Colour.white, textPos)
         else if (!rockProc && hullDamage > 0)
             target.showDamageText(hullDamage, Colour.white, textPos)
+        // 1.6.14 DamageArea shows ShipManager::iLastDamage (+0x49c) as the hull number. A Rock Plating proc on a hit
+        // without hull damage (an ion shot) leaves it as the last hull hit left it, so that number shows again. The
+        // player's is cleared every frame (CommandGui::OnLoop reads it through GetLastDamage 0x49c8a0 for the shake),
+        // an enemy's is not. Hyperspace's DamageArea shows numbers only for a hit with hull damage.
+        else if (!hsArea && rockProc && damage.hullDamage == 0 && !casingNegates && nativeLastDamage > 0)
+            target.showDamageText(nativeLastDamage, Colour.white, textPos)
+        // DamageArea's hull path (both 1.6.14 and Hyperspace's): iLastDamage = the hull damage, also 0
+        if (!rockProc) nativeLastDamage = hullDamage
 
         if (sys.debugFlags.noDmg.set)
             return
@@ -2524,8 +2534,9 @@ class Ship(
             if (sys.player === this)
                 sys.shakeForHullDamage(hullDamage)
         }
-        // Hyperspace ShipManager::DamageSystem: DAMAGE_SYSTEM may pre-empt the system damage.
-        if (!(xyz.znix.xftl.hs.HS.luaActive && target.system != null && xyz.znix.xftl.hs.weapons.HsWeaponsLua.damageSystem(this, target.id, damage)))
+        // Hyperspace ShipManager::DamageSystem: DAMAGE_SYSTEM may pre-empt the system damage. DamageArea calls DamageSystem
+        // for every room it hits, one without a system too (HS oracle ps-fu6-fight: DAMAGE_SYSTEM for the player's room 19).
+        if (!(xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.weapons.HsWeaponsLua.damageSystem(this, target.id, damage)))
             target.system?.dealDamage(if (casingNegates) 0 else resisted.effectiveSysDamage, appliedIonDamage)
         if (damage.lockdown) {
             // ShipManager::DamageArea runs with currentLockdown = the weapon's customLockdown (CustomLockdowns.cpp Ship::LockdownRoom)
@@ -3002,7 +3013,18 @@ class Ship(
     /** Every ordinary cargo slot is taken (the store boxes for weapons and drones are disabled then). */
     fun cargoFull(): Boolean = (0 until cargoSlotCount).all { cargoAt(it) != null }
 
+    /**
+     * The original keeps a ship's augments in a std::map (ShipInfo::augList) and every augment box shows the n-th entry of
+     * ShipObject::GetAugmentationList (AugmentEquipBox::CheckContents 1.6.9 0x52bf80; Hyperspace's CustomEquipment and
+     * hidden-augment list use the same map), so the equipment window, the store's sell tab and the save list them by
+     * name, wherever an augment was bought or dropped (the 1.6.14 save of Stealth A: ADV_SCANNERS, SYSTEM_CASING).
+     */
+    fun sortAugmentsByName() {
+        if (augments.zipWithNext().any { (a, b) -> a.name > b.name }) augments.sortBy { it.name }
+    }
+
     fun cargoUpdated() {
+        sortAugmentsByName()
         // Weapon slots are persistent, including intentionally empty slots.
         weapons?.selectedTargets?.reindex()
 
@@ -3127,7 +3149,7 @@ class Ship(
                 if (drones.drones[slot] != null)
                     continue
 
-                drones.drones[slot] = Drones.DroneInfo(item, null)
+                drones.drones[slot] = Drones.DroneInfo(item, null).also { drones.browserDroneEquipped(it) }
                 cargoUpdated()
                 return true
             }
@@ -3870,6 +3892,7 @@ class Ship(
             val name = SaveUtil.getAttr(augElem, "name")
             augments.add(sys.blueprintManager[name] as AugmentBlueprint)
         }
+        sortAugmentsByName()
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.ship.HsShipState.load(this, rootElem)
 
         // Deserialise loose cargo

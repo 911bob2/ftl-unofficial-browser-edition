@@ -20,12 +20,18 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
         }
 
         val levelText: String = when {
-            power <= 0 -> when (system.codename) {
-                // Two ids do not follow the system's name; the systems without an off text have none.
-                "engines" -> game.translator["engine_off"]
-                "clonebay" -> game.translator["clone_off"]
-                "shields", "oxygen", "weapons", "drones", "medbay", "pilot", "sensors", "doors", "artillery" -> game.translator[system.codename + "_off"]
-                else -> ""
+            // SystemBox::GenerateTooltip (1.6.9 0x4d0710) asks GetLevelDescription(power - 1, tooltip) at power 0 too, so
+            // Hyperspace's GET_LEVEL_DESCRIPTION runs with level 0 and its text replaces the off line (oracle ps-m1-ev ev|ui)
+            power <= 0 -> xyz.znix.xftl.hs.lua.LuaShipEvents.levelDescription(
+                xyz.znix.xftl.hs.systems.HsSystems.nameToId(system.blueprint.name), -1, true
+            ) {
+                when (system.codename) {
+                    // Two ids do not follow the system's name; the systems without an off text have none.
+                    "engines" -> game.translator["engine_off"]
+                    "clonebay" -> game.translator["clone_off"]
+                    "shields", "oxygen", "weapons", "drones", "medbay", "pilot", "sensors", "doors", "artillery" -> game.translator[system.codename + "_off"]
+                    else -> ""
+                }
             }
             else -> {
                 // ShipSystem::GetLevelDescription (0x63fbf0) with the tooltip flag: the clone bay reads "clone" (the
@@ -82,7 +88,8 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
         }
         if (powerStateKey != null) lines += "-" + game.translator[powerStateKey] + " "
 
-        if (power > 0 && system.info.canBeManned && system.manningCrew == null) {
+        // 0x004df760: "unmanned" only while BlockedBoosted(true) lets the system be manned (no cap below the level).
+        if (power > 0 && system.info.canBeManned && !system.statusBlocksBoost(true) && system.manningCrew == null) {
             lines += "-" + game.translator["unmanned"] + " "
         }
 

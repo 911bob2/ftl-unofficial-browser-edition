@@ -170,7 +170,17 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
         super.onEnemyShipUpdated()
 
         // If we're on the former enemy ship, destroy ourselves.
-        if (pawn != null && ship != ownerShip && ship != ownerShip.sys.getEnemyOf(ownerShip)) {
+        val p = pawn
+        if (p != null && ship != ownerShip && ship != ownerShip.sys.getEnemyOf(ownerShip)) {
+            // The enemy's drone when the fight ends with its ship still here and whole (its crew died, it
+            // surrendered): the original powers the pod off and its crew drone gets 0 health at once, so it dies with
+            // its explosion where it stands (HS oracle ps-fu5-edrone2: the explosion in the first 0.3 s after the
+            // fight's end; ps-fu3-edrone rows: health 0 at once, dead 1.8 s later). A ship that left or broke up
+            // takes its drone along as before.
+            if (!ownerShip.isPlayerShip && ownerShip.sys.isShipPresent(ownerShip) && !ownerShip.isDead && explosionSpec != null) {
+                ship.playCentredAnimation(explodeAnimation, p.getPixelPositionCentre())
+                explodeSound.play()
+            }
             destroy()
         }
     }

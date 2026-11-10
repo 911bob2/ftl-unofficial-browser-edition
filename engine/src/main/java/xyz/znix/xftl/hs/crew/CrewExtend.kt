@@ -93,10 +93,15 @@ class CrewExtend(@JvmField val crew: AbstractCrew) {
     /** CrewMember::intruder: standing on a ship other than its own. */
     val intruder: Boolean get() = currentShipId != shipId
 
-    /** CrewMember::Functional = !IsDead(): bDead for crew, unpowered for drones. */
+    /**
+     * CrewMember::Functional = !IsDead() (1.6.9 0x720b00): bDead for crew, unpowered for drones. bDead is set when the
+     * dying animation has ended (or at once by a script's Kill), so a crew member whose health ran out stays functional
+     * through its death hold: its bonus power, power drain, room effects and lifeform detection last until it is gone
+     * (oracle ps-fu2-zf). Healing a dying crew member stays out ([HsCrewMember.updateHealHs] needs health).
+     */
     val functional: Boolean
         get() {
-            if (crew.health <= 0f || crew.currentAction == AbstractCrew.Action.DYING) return false
+            if (crew.hsKilled) return false
             val pawn = crew as? AbstractIndoorsDrone.Pawn
             return pawn == null || pawn.drone.isPowered
         }
@@ -137,8 +142,7 @@ class CrewExtend(@JvmField val crew: AbstractCrew) {
     // ----- BoostCheck -----
 
     /** CrewMember_Extend::CheckExtraCondition. */
-    fun checkExtraCondition(c: CrewExtraCondition): Boolean {
-        val a = crew.currentAction
+    fun checkExtraCondition(c: CrewExtraCondition, a: AbstractCrew.Action = crew.currentAction): Boolean {
         return when (c) {
             CrewExtraCondition.BURNING -> crew.room.fires.any { it != null }
             CrewExtraCondition.SUFFOCATING -> crew.room.isOxygenCritical
@@ -151,13 +155,30 @@ class CrewExtend(@JvmField val crew: AbstractCrew) {
             CrewExtraCondition.SABOTAGING -> a == AbstractCrew.Action.SABOTAGE
             CrewExtraCondition.FIGHTING -> a == AbstractCrew.Action.FIGHTING
             CrewExtraCondition.SHOOTING -> crew.hsShooting && crew.stunTime <= 0f
-            CrewExtraCondition.MOVING -> a != AbstractCrew.Action.TELEPORTING && crew.health > 0f && a == AbstractCrew.Action.MOVING
-            CrewExtraCondition.IDLE -> a != AbstractCrew.Action.TELEPORTING && crew.health > 0f && a == AbstractCrew.Action.IDLE
+            CrewExtraCondition.MOVING -> !animStatus6(a) && crew.health > 0f && !atFinalGoal()
+            CrewExtraCondition.IDLE -> !animStatus6(a) && crew.health > 0f && !isBusy(a)
             CrewExtraCondition.MANNING -> a == AbstractCrew.Action.MANNING
             CrewExtraCondition.FIREFIGHTING -> a == AbstractCrew.Action.FIRE_FIGHTING
             CrewExtraCondition.DYING -> a == AbstractCrew.Action.DYING
             CrewExtraCondition.TELEPORTING -> crew.hsTeleporting // customTele.teleporting (HsCustomTeleport)
         }
+    }
+
+    /** CrewAnimation status 6: a teleport or a clone's arrival. */
+    private fun animStatus6(a: AbstractCrew.Action) = a == AbstractCrew.Action.TELEPORTING || a == AbstractCrew.Action.CLONING
+
+    /** CrewMember::AtFinalGoal (1.6.9 0x471210): standing on its slot's spot. */
+    private fun atFinalGoal() = crew.pathingTarget == null && crew.standingPosition != null
+
+    /**
+     * CrewMember::IsBusy (1.6.9 0x46fa20): a repair target (systems, fires, breaches, or a system an intruder damages),
+     * bFighting (a fight or a door), else away from its slot's spot or frozen (0x46d500). Manning is not busy (oracle
+     * ps-c6-en rc: an extraConditions idle power of a crew member manning the shields in combat is ready).
+     */
+    private fun isBusy(a: AbstractCrew.Action): Boolean = when (a) {
+        AbstractCrew.Action.REPAIRING, AbstractCrew.Action.REPAIRING_BREACH, AbstractCrew.Action.FIRE_FIGHTING,
+        AbstractCrew.Action.SABOTAGE, AbstractCrew.Action.FIGHTING, AbstractCrew.Action.ATTACKING_DOOR -> true
+        else -> !atFinalGoal() || crew.hsFrozen
     }
 
     /** CrewMember_Extend::BoostCheck. */
@@ -392,10 +413,12 @@ class CrewExtend(@JvmField val crew: AbstractCrew) {
                 isEffect = true
             }
             CrewStat.POWER_CHARGES_PER_JUMP -> {
+                // modifiedChargesPerJump is a float in HS: the default 1073741823 is 2^30 there, so a jump takes an
+                // uncharged power from 2147483646 to -1073741826 (oracle ps-c6-js); the browser keeps doubles, hence f32
                 for (p in crewPowers) if (p.enabled || p.def.disabledCharges == PowerConst.DISABLED_COOLDOWN_CONTINUE)
-                    p.modifiedChargesPerJump = p.def.chargesPerJump.toFloat()
+                    p.modifiedChargesPerJump = f32(p.def.chargesPerJump.toFloat())
                 for (r in powerResources) if (r.enabled || r.def.disabledCharges == PowerConst.DISABLED_COOLDOWN_CONTINUE)
-                    r.modifiedChargesPerJump = r.def.chargesPerJump.toFloat()
+                    r.modifiedChargesPerJump = f32(r.def.chargesPerJump.toFloat())
                 isEffect = true
             }
             CrewStat.POWER_COOLDOWN -> {
@@ -540,12 +563,12 @@ class CrewExtend(@JvmField val crew: AbstractCrew) {
                 for (p in crewPowers) {
                     if (!p.enabled && p.def.disabledCharges != PowerConst.DISABLED_COOLDOWN_CONTINUE) continue
                     if (!d.isTargetPower(p.def)) continue
-                    p.modifiedChargesPerJump = applyNumber(d.boostType, p.modifiedChargesPerJump, d, scaling)
+                    p.modifiedChargesPerJump = f32(applyNumber(d.boostType, p.modifiedChargesPerJump, d, scaling))
                 }
                 for (r in powerResources) {
                     if (!r.enabled && r.def.disabledCharges != PowerConst.DISABLED_COOLDOWN_CONTINUE) continue
                     if (!d.isTargetPower(r.def)) continue
-                    r.modifiedChargesPerJump = applyNumber(d.boostType, r.modifiedChargesPerJump, d, scaling)
+                    r.modifiedChargesPerJump = f32(applyNumber(d.boostType, r.modifiedChargesPerJump, d, scaling))
                 }
             }
             CrewStat.POWER_COOLDOWN -> {
@@ -788,3 +811,6 @@ object HsCrew {
         else -> 0
     }
 }
+
+/** A float rounded to 32 bits as the native float is (the browser build keeps doubles). */
+private fun f32(v: Float): Float = java.lang.Float.intBitsToFloat(java.lang.Float.floatToIntBits(v))

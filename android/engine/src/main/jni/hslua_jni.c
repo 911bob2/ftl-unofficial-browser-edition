@@ -30,7 +30,7 @@
 static JavaVM *jvm;
 static jclass host;   /* xyz.znix.xftl.hs.lua.LuaJs (global ref) */
 static jmethodID mLog, mRand32, mSrand32, mGetn, mGets, mGeto, mSetn, mSets, mSeto, mCall, mError, mRelease, mTableid,
-    mRegistered, mThrowableText;
+    mRegistered, mThrowableText, mTzName;
 
 /* ---------------------------------------------------------------- Lua heap cap */
 static size_t heapUsed;
@@ -150,6 +150,21 @@ double js_epoch(void) {
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
   return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+/* os.date's zone (hs-lua/hslibs.c): the device's offset, and its name as Java has it (msvcrt prints a long name) */
+int js_tzoffset(double t) {
+  time_t tt = (time_t)t; struct tm tm;
+  if (!localtime_r(&tt, &tm)) return 0;
+  return (int)(tm.tm_gmtoff / 60);
+}
+int js_tzname(int isdst, char *buf, int cap) {
+  HostCall hc; JNIEnv *env = enter(&hc);
+  jbyteArray a = env ? (jbyteArray)(*env)->CallStaticObjectMethod(env, host, mTzName, (jboolean)(isdst != 0)) : NULL;
+  int n = 0;
+  if (leave(env, &hc)) failure_log(&hc, "tzname");
+  else if (a) { n = (*env)->GetArrayLength(env, a); if (n > cap) n = cap; (*env)->GetByteArrayRegion(env, a, 0, n, (jbyte *)buf); }
+  if (a) (*env)->DeleteLocalRef(env, a);
+  return n;
 }
 double js_getn(int h, int attr) {
   HostCall hc; JNIEnv *env = enter(&hc);
@@ -406,6 +421,45 @@ FN(void, rawseti)(JNIEnv *env, jclass c, jint t, jint i) {
 
 /* ---- private natives behind LuaJs's String methods */
 FN(void, nInit)(JNIEnv *env, jclass c) { (void)env; (void)c; init_state(); }
+
+/* ---- the private folder, "Disable Lua sandboxing" and os.exit (hs-lua/hslibs.c; no Lua code runs in these) */
+int hs_vfs_mount_dir(const char *dir);
+int hs_vfs_sync_dir(void);
+double hs_vfs_used(void);
+void hs_libs_set_real(int on, const char *root);
+void hs_libs_clear_sources(void);
+void hs_libs_allow_source(const char *s);
+static char *c_string(JNIEnv *env, jbyteArray a) {   /* NULL for null or on failure */
+  if (!a) return NULL;
+  jsize n = (*env)->GetArrayLength(env, a);
+  char *s = malloc((size_t)n + 1);
+  if (!s) return NULL;
+  (*env)->GetByteArrayRegion(env, a, 0, n, (jbyte *)s);
+  s[n] = 0;
+  if (strlen(s) != (size_t)n) { free(s); return NULL; }   /* an embedded NUL */
+  return s;
+}
+FN(jint, nVfsMount)(JNIEnv *env, jclass c, jbyteArray dir) {
+  (void)c; char *d = c_string(env, dir);
+  int n = d ? hs_vfs_mount_dir(d) : 0;
+  free(d); return n;
+}
+FN(jint, nVfsSync)(JNIEnv *env, jclass c) { (void)env; (void)c; return hs_vfs_sync_dir(); }
+FN(jdouble, nVfsUsed)(JNIEnv *env, jclass c) { (void)env; (void)c; return hs_vfs_used(); }
+FN(void, nLibsReal)(JNIEnv *env, jclass c, jboolean on, jbyteArray root) {
+  (void)c; char *r = c_string(env, root);
+  hs_libs_set_real(on && r != NULL, r);
+  free(r);
+}
+FN(void, nLibsAllow)(JNIEnv *env, jclass c, jbyteArray source) {
+  (void)c;
+  if (!source) { hs_libs_clear_sources(); return; }
+  char *s = c_string(env, source);
+  if (s) hs_libs_allow_source(s);
+  free(s);
+}
+FN(jboolean, nExitRequested)(JNIEnv *env, jclass c) { (void)env; (void)c; return hs_exit_state() ? JNI_TRUE : JNI_FALSE; }
+FN(jbyteArray, nExitSource)(JNIEnv *env, jclass c) { (void)c; int n = hs_exit_source(); return to_java(env, sbuf, n); }
 FN(jbyteArray, nRun)(JNIEnv *env, jclass c, jbyteArray name, jbyteArray code, jboolean console) {
   (void)c; ready();
   int nl = from_java(env, name, 0), cl = nl < 0 ? -1 : from_java(env, code, nl);
@@ -487,8 +541,9 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   mRelease = static_method(env, "hostRelease", "(I)V");
   mTableid = static_method(env, "hostTableid", "(I)I");
   mRegistered = static_method(env, "hostRegistered", "(II)V");
+  mTzName = static_method(env, "hostTzName", "(Z)[B");
   if (!host || !mThrowableText || !mLog || !mRand32 || !mSrand32 || !mGetn || !mGets || !mGeto || !mSetn || !mSets ||
-      !mSeto || !mCall || !mError || !mRelease || !mTableid || !mRegistered) {
+      !mSeto || !mCall || !mError || !mRelease || !mTableid || !mRegistered || !mTzName) {
     (*env)->ExceptionClear(env);
     return JNI_ERR;   /* System.loadLibrary throws; LuaJs.available() is false */
   }

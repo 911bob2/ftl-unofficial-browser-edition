@@ -430,6 +430,7 @@ object BrowserDiagnostics {
             check(profile.isShipUnlocked("PLAYER_SHIP_HARD_3")) { "Console layout unlock failed" }
             consoleGame.debugConsole.execute("gameover WIN")
             check(profile.getLayoutVictory(ShipProgression.KESTREL)?.difficulty == Difficulty.NORMAL) { "Console victory did not affect progression" }
+            BrowserDebug.record("diagnostics", "ps-s1", BrowserDebug.quote(GameplayUnlockPsS1Checks.run(main, container)))
             main.switchToShipSelect()
             main.update(container, 0f); main.render(container, graphics)
             return "PASS fresh Kestrel-only availability, normal-start eligibility/mode guards, Kestrel-sector Engi, two-achievement B, AE/B-sector C, five-family Lanius, all quests/victory-chain successors, all eight A/B Crystal conditions, difficulty upgrades, idempotent profile restore and console-granted progression"
@@ -1043,6 +1044,8 @@ object BrowserDiagnostics {
         state = fresh(main, container, difficulty = Difficulty.HARD)
         state.givePlayerResources(ResourceSet().also { it.scrap = 101 })
         check(state.browserProgress.score == 166) { "Score did not floor the hard multiplier" }
+        // A flagship win: its breakup awards the win achievements (only the flagship's victory gives ACH_WIN_*).
+        state.browserProgress.flagshipDefeated()
         state.shipUI.showGameOverScreen(GameOverWindow.Outcome.WIN)
         state.shipUI.showGameOverScreen(GameOverWindow.Outcome.WIN)
         check(main.profile.browserGamesPlayed == gamesBefore + 1) { "New game or repeated completion counted incorrectly" }

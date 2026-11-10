@@ -162,9 +162,14 @@ class FriendlyCrewAI(private val ship: Ship) {
             if (isRoomDisabled(room))
                 continue
 
-            // One task for each intruder
+            // One task for each intruder (the count 0x49b930 CheckForProblems makes per room: intruders in the room,
+            // not dying). A mind-controlled crew member (+0x53d) only counts while it fights (bFighting +0x99): HS
+            // oracle ps-fu6-mc, the enemy's pilot taken over at its station draws nobody to fight it until it fights
+            // the crew member who came to man the piloting it left.
             for (crew in room.crew) {
                 if (crew.mode != AbstractCrew.SlotType.INTRUDER)
+                    continue
+                if (crew is LivingCrew && crew.isMindControlled && crew.currentAction != AbstractCrew.Action.FIGHTING)
                     continue
 
                 problemFound = true
@@ -185,10 +190,12 @@ class FriendlyCrewAI(private val ship: Ship) {
         // crew out in an attempt to board the enemy ship.
         val teleporter = ship.teleporter
         var teleportSend = false
+        // CrewAI +0x5c as this update reads it (see below).
+        var wanted = 0
         if (teleporter != null && !ship.isPlayerShip) {
             // CrewAI::OnLoop runs before ShipAI::OnLoop sets CrewAI +0x5c, so its tasks are the ones the previous
             // frame wanted: none on the first frame of a fight, when everyone takes a station first.
-            val wanted = sendCount
+            wanted = sendCount
             // ShipAI::OnLoop (0x625c50): the budget is the crew above the ones to keep, and it drops to zero once
             // two send waves have completed.
             // Don't create more tasks than the teleporter can fit (CrewAI +0x5c).
@@ -269,10 +276,26 @@ class FriendlyCrewAI(private val ship: Ship) {
         // health, or to full while nothing is going on. It only looks at crew that aren't already healing.
         val healingThreshold = if (isShipCalm) 0.99f else 0.25f
         val medbay = ship.medbay
-        for (crew in aiCrew) {
+        for ((index, crew) in aiCrew.withIndex()) {
             // Tasks can automatically reassign their crew, usually back to
             // idle. This matches the CrewAI::UpdateCrewMember logic.
             var task = assignments[crew]?.nextTask(crew)
+
+            // CrewAI::UpdateCrewMember (1.6.14 0x627df0): a crew member holding the teleporting task, walking or not,
+            // drops it (idle where it stands) while more crew hold it than CrewAI +0x5c asks for, counting the crew
+            // list as it stands at that moment (the ones before it already updated). So once the boarders have gone
+            // and the request is spent, whoever was still on the way turns back at once (oracle ps-fu2-fb: the
+            // engines crew member makes for the empty oxygen station the frame the oxygen crew member teleports).
+            if (task is TeleportingTask) {
+                var holders = 1
+                for ((otherIndex, other) in aiCrew.withIndex()) {
+                    if (other === crew) continue
+                    val held = if (otherIndex < index) newAssignments[other] else assignments[other]
+                    if (held is TeleportingTask) holders++
+                }
+                if (holders > wanted)
+                    task = null
+            }
 
             // CrewAI::UpdateCrewMember: idle crew take on their room's system unless someone else has it, so they
             // don't count as free for any task.
@@ -494,12 +517,15 @@ class FriendlyCrewAI(private val ship: Ship) {
         return room.doors.isEmpty()
     }
 
-    private fun getNumMoreBoarders(): Int {
+    internal fun getNumMoreBoarders(): Int {
         // See doc/ship-ai for information about this.
 
         // Find the number of boarders to send, from our initial crew.
+        // ShipAI::OnInit (1.6.14 0x625410, 1.6.9 0x600ac0) keeps the whole starting crew for a ship that doesn't
+        // board, so it still sends whoever joins its crew later (oracle ps-fu2-fb: one crew member added to a
+        // non-boarding ship of four, and its oxygen crew member teleports over).
         val sendTotal = when (ship.boardingStrategy) {
-            BoardingStrategy.NONE -> return 0
+            BoardingStrategy.NONE -> 0
             BoardingStrategy.SABOTAGE -> initialCrewCount / 2
             BoardingStrategy.INVASION -> initialCrewCount * 3 / 4
         }
@@ -512,10 +538,13 @@ class FriendlyCrewAI(private val ship: Ship) {
         // crew on our ship dying.
         // ShipAI::OnLoop counts the crew with ShipManager 0x49c180(false): everyone aboard who isn't an intruder,
         // dead or a drone, so the flagship's crew shut in its artillery rooms count too (they only stay out of the
-        // task list).
+        // task list). Dead is bDead (+0x1fc): a crew member in its death hold still counts until its death animation
+        // ends (ours keeps it in the list until then), one a script killed (Lua Kill: bDead at once) no longer does
+        // (HS oracle ps-fu7-mt / -en: the request drops to zero the moment C6's mind control scenario kills its crew,
+        // so the crew member on its way to the teleporter turns back and the boarder is chosen again).
         val aboard = ship.crew.count {
             it !is AbstractIndoorsDrone.Pawn && it.mode == AbstractCrew.SlotType.CREW &&
-                it.currentAction != AbstractCrew.Action.DYING && !it.playerControllable
+                !(it.hsKilled && it.health <= 0f) && !it.playerControllable
         }
         return aboard - toKeep
     }

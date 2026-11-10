@@ -315,7 +315,10 @@ async function launch(save){
   const {createAssetProvider}=await import('./asset-provider.mjs'+version);
   assetProvider=await createAssetProvider({api,accountId:me.id,fetchBytes:fetchAssetBytes,onProgress:(text,detail)=>loadingUpdate(text,{stage:'files',...detail})});
   manifest=assetProvider.manifest;
-  if(modded){const {prepareModdedLaunch}=await import('./mods/boot.mjs'+version);modLaunch=await prepareModdedLaunch({account:me.id,list:setup.mods.map(m=>({sha256:m.sha256})),provider:assetProvider,onProgress:loadingUpdate});manifest=modLaunch.manifest;}
+  if(modded){const {prepareModdedLaunch}=await import('./mods/boot.mjs'+version);modLaunch=await prepareModdedLaunch({account:me.id,list:setup.mods.map(m=>({sha256:m.sha256})),provider:assetProvider,onProgress:loadingUpdate});manifest=modLaunch.manifest;
+   // Ask before running (sweep M1b): scripts that use io, os, debug or package wait for the player's Run (kept per mod version).
+   if(modLaunch.session.scripts.length){const lc=await import('./mods/lua-consent.mjs'+version);const found=lc.scanLaunch({mods:modLaunch.mods,scripts:modLaunch.session.scripts,files:modLaunch.overlay.files,owners:await modLaunch.scriptOwners()});
+    if(found.length&&!await lc.askLuaConsent({account:me.id,found}))throw Error('The game did not start: you chose not to run the scripts of '+found.map(m=>m.name).join(', ')+'.');}}
   diagnostics?.setBuild(manifest.engineBuild);
   const {createGameSession}=await import('./game-session.mjs'+version);
   session=createGameSession({service:svc,save,manifest,onStatus:(text,bad)=>{$('save-status').textContent=text;if(bad)message(text);},onOverridden:(lock,at)=>takenOver(lock,at)});
@@ -328,6 +331,8 @@ async function launch(save){
   // A save that names content these game files lack loads without it (the engine drops it); say what went.
   missingTimer=setInterval(async()=>{const names=engine?.missingContent?.();if(names)(await savesUiModule()).showMissingContent(names.split('\n'));},700);
   window.ftlExit=()=>saveAndClose().catch(e=>message(e.message));
+  // A mod script called os.exit (the original closes FTL): the game ends without another save, the launcher says which mod.
+  window.ftlLuaExit=source=>luaExit(source).catch(e=>message(e.message));
  }catch(e){const id=session?.id??save.id;session?.close();session=null;delete window.ftlModSession;diagnostics?.record('runtime','engine.launch.failed',{message:e.message},'error');await diagnostics?.checkpoint('engine.launch.failed');assetProvider?.dispose();document.body.dataset.workload='';audioContext.close();console.error('Game launch failed',e);svc.sync.setPlaying(null);svc.sync.release(id).catch(()=>{});show('launch-panel');message(e.message);$('launch').disabled=false;}
 }
 $('launch').addEventListener('click',()=>launchFromButton());
@@ -358,6 +363,17 @@ async function saveAndClose(){
  const running=engine;engine=null;running.stop();assetProvider?.dispose();
  $('save-status').textContent='Syncing…';
  await withTimeout(saves.sync.finish(id).catch(()=>false),10000);
+ location.reload();
+}
+/** os.exit in a mod script: stop as the original's process ends (nothing more is saved), then name the mod. */
+async function luaExit(source){
+ const running=engine,id=session?.id;if(!running)return;
+ const mods=modLaunch?.mods??[],owners=modLaunch?await modLaunch.scriptOwners().catch(()=>new Map()):new Map();
+ const mod=mods[owners.get(source)??-1]?.name??(source?source:'A mod');
+ engine=null;clearInterval(missingTimer);session?.close();session=null;
+ try{running.stop();}catch{}assetProvider?.dispose();
+ if(id)await withTimeout(saves.sync.finish(id).catch(()=>false),10000);
+ await (await dialogsModule()).notice({id:'lua-exit-dialog',title:'The game was closed by a mod',text:[mod+"'s script called os.exit, which closes the game in the original. Your last save is kept."],okLabel:'Back to the launcher'});
  location.reload();
 }
 /** Another game took this save: stop at once (nothing more is kept) and say so. */

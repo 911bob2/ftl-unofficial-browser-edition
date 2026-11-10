@@ -1,4 +1,4 @@
-# Builds web/vendor/hs-lua.wasm: Lua 5.3.6 (third_party/lua-5.3.6, unmodified) + the Hyperspace bridge (hs-lua/), and
+# Builds web/vendor/hs-lua.wasm: Lua 5.3.6 (third_party/lua-5.3.6, unmodified) + the Hyperspace bridge and libraries (hs-lua/), and
 # web/vendor/ftlman-lua.wasm: the same Lua (with Lua 5.4's string arithmetic) and ftlman's patch-script API
 # (hs-lua/ftlman.c) for the mod merge.
 #   docker build -f hs-lua/Dockerfile --target out -o type=local,dest=web/vendor .
@@ -7,11 +7,13 @@ FROM emscripten/emsdk:3.1.74@sha256:af45409f3199d88db4b1b03af0098532c8fb33a375ac
 WORKDIR /src
 COPY third_party/lua-5.3.6/src/ lua/
 COPY hs-lua/ hs-lua/
+# lauxlib, liolib and loadlib through hs-lua/hs-*.c (their file calls on the private file system, hs-lua/hslibs.c).
 RUN mkdir -p /out && LUA_CORE="lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm lundump lzio" \
- && LUA_LIBS="lauxlib lbaselib lbitlib lmathlib lstrlib ltablib lutf8lib" \
+ && LUA_LIBS="lbaselib lcorolib ldblib lmathlib lstrlib ltablib lutf8lib" \
  && SRCS="" && for f in $LUA_CORE $LUA_LIBS; do SRCS="$SRCS lua/$f.c"; done \
- && emcc -O3 -flto -std=gnu99 -DLUA_COMPAT_5_2 -include hs-lua/hsconf.h -Ilua -Ihs-lua \
-      $SRCS hs-lua/hslua-lvm.c hs-lua/linit.c hs-lua/hslua.c hs-lua/gen/hs_api.c \
+ && emcc -O3 -flto -std=gnu99 -include hs-lua/hsconf.h -Ilua -Ihs-lua \
+      $SRCS hs-lua/hs-lauxlib.c hs-lua/hs-liolib.c hs-lua/hs-loadlib.c hs-lua/hslibs.c \
+      hs-lua/hslua-lvm.c hs-lua/linit.c hs-lua/hslua.c hs-lua/gen/hs_api.c \
       -o /out/hs-lua.wasm --no-entry -sSTANDALONE_WASM=1 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions \
       -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16MB -sSTACK_SIZE=1MB -sFILESYSTEM=0 \
       -sERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=_malloc,_free \

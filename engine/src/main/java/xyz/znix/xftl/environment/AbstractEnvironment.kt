@@ -33,10 +33,10 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
 
     /** SetPlanetaryDefense's first draw (TimerHelper::Start, `random32() % 5000` over 20000..25000) for an ASB. */
     protected var pdsTimerDraw = 0
-    /** The planet's list size, place and turn, for the parity checks. */
+    /** The planet's place, drawn size (the texture's, as SwitchPlanet) and turn, for the parity checks. */
     val diagnosticPlanet: List<Int>? get() = planetImage?.let { planet ->
         val img = planet.getImg(game)
-        listOf(planetX, planetY, planet.width ?: img.width, planet.height ?: img.height, if (planetTurned) 1 else 0)
+        listOf(planetX, planetY, img.width, img.height, if (planetTurned) 1 else 0)
     }
     val diagnosticPlanetImage: EnvironmentImage? get() = planetImage
     /** Whether the scene shows the rebel or Federation fleet in the background, for the parity checks. */
@@ -149,7 +149,7 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
     fun hsPlanetDesc(): Pair<String?, IntArray> {
         val planet = planetImage ?: return null to IntArray(5)
         val img = planet.getImg(game)
-        return planet.path.removePrefix("img/") to intArrayOf(planet.width ?: img.width, planet.height ?: img.height,
+        return planet.path.removePrefix("img/") to intArrayOf(img.width, img.height,
             planetX, planetY, if (planetTurned) 180 else 0)
     }
 
@@ -207,8 +207,8 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
             pick = list.getRandom(xyz.znix.xftl.hs.lua.LuaRng.rand32())
         planetImage = pick ?: return IntArray(5)
         val img = pick.getImg(game)
-        val w = pick.width ?: img.width
-        val h = pick.height ?: img.height
+        val w = img.width
+        val h = img.height
         planetX = xyz.znix.xftl.hs.lua.LuaRng.rand32() % maxOf(1, 1280 - w)
         planetY = xyz.znix.xftl.hs.lua.LuaRng.rand32() % maxOf(1, 720 - h)
         planetTurned = xyz.znix.xftl.hs.lua.LuaRng.rand32() % 2 == 1
@@ -224,9 +224,6 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
     /** The backdrop this scene shows (the hazard classes draw their own: [hsRemoveHazardsFrom] keeps what was drawn). */
     protected open fun sceneBackdrop(): Image? = backgroundImage?.getImg(game)
 
-    /** Whether this scene draws SpaceManager's planet (the hazard classes draw their own scenery instead). */
-    protected open val drawsPlanet: Boolean get() = true
-
     /** A backdrop taken over from the scene a removeHazards / removeNebula left ([hsKeepScene]). */
     private var keptBackdrop: Image? = null
 
@@ -238,11 +235,9 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
     private fun hsKeepScene(old: AbstractEnvironment) {
         keptBackdrop = old.sceneBackdrop()
         keptDull = old.keptDull
-        if (old.drawsPlanet) {
-            planetImage = old.planetImage; planetX = old.planetX; planetY = old.planetY; planetTurned = old.planetTurned
-        } else {
-            planetImage = null
-        }
+        // SpaceManager's planet (+0xbc) stays whatever hides it (the sun, a pulsar, a nebula: OnRenderForeground
+        // 0x419e30 only skips drawing it), so it shows again once they are gone.
+        planetImage = old.planetImage; planetX = old.planetX; planetY = old.planetY; planetTurned = old.planetTurned
         backgroundShips.clear()
         backgroundShips.addAll(old.backgroundShips)
     }
@@ -316,24 +311,41 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
     protected val hsForeground: Boolean get() = hsPhase == 0 || hsPhase == 2
     protected val hsAsteroids: Boolean get() = hsPhase == 0 || hsPhase == 3
 
+    /**
+     * SpaceManager::OnRenderBackground (1.6.14 0x4194c0) draws the backdrop (+0xb8) under every hazard but the nebula:
+     * only SetPulsarLevel (0x418f70) changes it (to the dull star field); the sun (SetFireLevel 0x418ae0) and the
+     * asteroid field (StartAsteroids 0x418a40) keep the beacon's. OnRenderForeground (0x419e30) then draws the planet,
+     * or the sun or the pulsar in its place ([renderForegroundArt]), and the background fleet in every case.
+     */
     open fun renderBackground(gc: GameContainer, g: Graphics) {
         // Here the background scenery is rendered with a
         // pause-darkness that depends on the hull health.
         val ps = pauseShade(game)
-        if (hsBackdrop) (keptBackdrop ?: backgroundImage?.getImg(game))?.draw(0f, 0f, ps)
+        if (hsBackdrop) (keptBackdrop ?: backgroundImage?.getImg(game))?.let { it.draw(0f, 0f, ps); browserDrawLog?.add("back" to it) }
         if (!hsForeground) return
+        renderForegroundArt(g, ps)
+        renderFleet(g, ps)
+    }
+
+    /** OnRenderForeground's first part: SpaceManager's planet (the sun overrides it with its own art). */
+    protected open fun renderForegroundArt(g: Graphics, ps: Colour) {
         planetImage?.let { planet ->
             val img = planet.getImg(game)
-            val w = (planet.width ?: img.width).toFloat()
-            val h = (planet.height ?: img.height).toFloat()
+            val w = img.width.toFloat()
+            val h = img.height.toFloat()
             g.pushTransform()
             game.applyJumpScene(g)
             if (planetTurned)
                 g.rotate(planetX + w / 2f, planetY + h / 2f, 180f)
             img.draw(planetX.toFloat(), planetY.toFloat(), w, h, ps)
             g.popTransform()
+            browserDrawLog?.add("planet" to img)
         }
+    }
 
+    /** OnRenderForeground's last part, under every hazard but the nebula. */
+    protected fun renderFleet(g: Graphics, ps: Colour) {
+        if (backgroundShips.isNotEmpty()) browserDrawLog?.add("fleet" to backgroundShips.size)
         // SpaceManager's fleet render (0x00419ca0): each ship 150 px up and left of its slot, under the same
         // tint as the background; the flagship at (550, 447), untinted, while the ASB is live.
         g.pushTransform()
@@ -405,9 +417,12 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
     fun stack(env: AbstractEnvironment) {
         fun family(e: AbstractEnvironment) = if (e.type.isNebula) Beacon.EnvironmentType.NEBULA else e.type
         val f = family(env)
-        // SpaceManager's asteroid field, sun and pulsar all put the dull starfield behind the scene when they start
-        if (env.type == Beacon.EnvironmentType.ASTEROID || env.type == Beacon.EnvironmentType.SUN || env.type == Beacon.EnvironmentType.PULSAR)
+        // Of the hazards only SetPulsarLevel (1.6.14 0x418f70) puts the dull starfield behind the scene; the asteroid
+        // field and the sun keep the backdrop
+        if (env.type == Beacon.EnvironmentType.PULSAR) {
             keptBackdrop = env.sceneBackdrop()
+            keptDull = true
+        }
         val i = stacked.indexOfFirst { family(it) == f }
         if (i >= 0) stacked[i] = env else stacked += env
     }
@@ -430,6 +445,18 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
     }
 
     /**
+     * SpaceManager::OnRenderAsteroids(1) (1.6.14 0x41a770: layers 3 - n .. 2, so only the front one), which
+     * CommandGui::RenderStatic (0x535070) draws over the player's ship while the jump zoom runs; nothing outside an
+     * asteroid field.
+     */
+    open fun renderFrontLayer(gc: GameContainer, g: Graphics) {}
+
+    /** [renderFrontLayer] for this scene and the hazards stacked on it. */
+    fun renderFrontStack(gc: GameContainer, g: Graphics) {
+        for (env in layers) env.renderFrontLayer(gc, g)
+    }
+
+    /**
      * [renderBackground] with the stacked layers: with [hsPhase] set (or 0, all three in turn) the scene draws its own
      * part, then each stacked hazard draws its own layer: nebula clouds with the backdrop, the sun, pulsar or ASB with the
      * foreground, asteroids with the asteroid layer.
@@ -438,12 +465,20 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
         if (stacked.isEmpty()) { renderBackground(gc, g); return }
         if (hsPhase == 0) {
             try {
-                for (ph in 1..3) { hsPhase = ph; renderStack(gc, g) }
+                for (ph in 1..3) {
+                    hsPhase = ph
+                    // the asteroid pass at the jump's asteroid scale (AsteroidEnvironment.renderBackground)
+                    if (ph == 3) { g.pushTransform(); game.applyJumpAsteroids(g) }
+                    try { renderStack(gc, g) } finally { if (ph == 3) g.popTransform() }
+                }
             } finally { hsPhase = 0 }
             return
         }
-        renderBackground(gc, g)
+        // SpaceManager::OnRenderBackground / OnRenderForeground (1.6.14 0x4194c0 / 0x419e30): while a nebula is up only
+        // its clouds are drawn, no backdrop, planet, sun, pulsar or fleet; the asteroid layer stays.
+        val nebulaUp = layers.any { it.type.isNebula }
         val ph = hsPhase
+        if (!nebulaUp || type.isNebula || ph == 3) renderBackground(gc, g)
         for (e in stacked) {
             val mine = when (e.type) {
                 Beacon.EnvironmentType.NEBULA, Beacon.EnvironmentType.ION_STORM -> 1
@@ -451,6 +486,7 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
                 else -> 2
             }
             if (mine != ph) continue
+            if (nebulaUp && !e.type.isNebula && ph != 3) continue
             e.hsPhase = ph
             try { e.renderBackground(gc, g) } finally { e.hsPhase = 0 }
         }
@@ -478,4 +514,9 @@ abstract class AbstractEnvironment(val game: InGameState, val beacon: Beacon) {
     }
 
     private class BackgroundShip(val image: Image, val x: Int, val y: Int)
+
+    companion object {
+        /** Diagnostics (GameplayParityPsW5Checks): while set, what the scene renders draw: backdrop, planet, sun, fleet... */
+        @JvmField var browserDrawLog: MutableList<Pair<String, Any?>>? = null
+    }
 }

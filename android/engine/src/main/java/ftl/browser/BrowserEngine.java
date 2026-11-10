@@ -45,7 +45,8 @@ public final class BrowserEngine {
         ShaderProgramme.getSHADER_SCREEN_SIZE().set(1280, 720);
         game = new MainGame(new MainGame.CommandLineArgs());
         game.init(container);
-        if (!xyz.znix.xftl.hs.HS.scripts.isEmpty()) xyz.znix.xftl.hs.lua.HsLua.startForSession(game, graphics);
+        // Hyperspace starts its Lua state at start-up (Global.cpp:138), scripts or not (the console's LUA on plain Hyperspace)
+        if (xyz.znix.xftl.hs.HS.active || !xyz.znix.xftl.hs.HS.scripts.isEmpty()) xyz.znix.xftl.hs.lua.HsLua.startForSession(game, graphics);
     }
 
     /** Hyperspace's start-up error boxes of this start (HS.errorBoxes): the app shows each before the first frame. */
@@ -111,6 +112,7 @@ public final class BrowserEngine {
     }
 
     public static void shutdown() {
+        if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.HsLua.shutdown();
         if (game != null) {
             game.shutdown();
             game = null;

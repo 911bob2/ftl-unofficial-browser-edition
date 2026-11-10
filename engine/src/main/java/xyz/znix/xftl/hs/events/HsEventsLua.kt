@@ -80,9 +80,26 @@ object HsEventsLua {
         } finally { LuaEvents.generation = prev }
     }
 
+    /** CommandGui::choiceBox before any box was made: the member's empty ChoiceBox. */
+    object NoChoiceBox : ChoiceBoxText {
+        override var mainText = ""
+        override val choiceEntries: List<ChoiceEntry> get() = emptyList()
+        override val potentialChoice get() = -1
+    }
+
+    /**
+     * CommandGui::choiceBox: one ChoiceBox member that every CreateChoiceBox fills and keeps after it closes (HS reads and
+     * writes `commandGui->choiceBox` itself, CustomEvents.cpp and CustomAugments.cpp; POST_CREATE_CHOICEBOX passes that
+     * object), so it is the last box made.
+     */
+    @JvmStatic
+    var commandGuiBox: ChoiceBoxText = NoChoiceBox
+        private set
+
     /** CreateChoiceBox, after the original: (choiceBox, event). */
     @JvmStatic
     fun postChoiceBox(box: ChoiceBoxText?, created: CreatedEvent) {
+        if (box != null) commandGuiBox = box
         if (!HS.luaActive || !HsLua.hasInt[A.EV_POST_CREATE_CHOICEBOX]) return
         val prev = LuaEvents.generation
         LuaEvents.generation = true

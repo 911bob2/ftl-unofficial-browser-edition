@@ -9,7 +9,11 @@ const ICON = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.
   '<stop offset="1" stop-color="#a40d08"/></radialGradient></defs><circle cx="16" cy="16" r="14.5" fill="url(#g)" stroke="#8a0a05"/>' +
   '<path d="M10.5 10.5l11 11m0-11l-11 11" stroke="#fff" stroke-width="3.6" stroke-linecap="round"/></svg>');
 
-/** Shows one box centred on the game canvas; resolves when it is dismissed. */
+/**
+ * Shows one box centred on the page (the browser's screen): HS passes no parent window (Global.cpp ErrorMessage,
+ * SDL_ShowSimpleMessageBox(..., NULL)), so the original's box sits in the middle of the screen, not of the game window
+ * (capture: centre y 369 of 720). Resolves when it is dismissed. [canvas] is kept for the callers.
+ */
 export function showHsErrorBox(canvas, text) {
   return new Promise(resolve => {
     const ok = el('button', {type: 'button', className: 'hs-error-ok', id: 'hs-error-box-ok'}, 'OK');
@@ -20,8 +24,6 @@ export function showHsErrorBox(canvas, text) {
     ok.onclick = done;
     // Escape is the box's cancel key; Enter presses the focused OK.
     dialog.addEventListener('cancel', e => { e.preventDefault(); done(); });
-    const r = canvas.getBoundingClientRect();
-    if (r.width > 0) { dialog.style.setProperty('--hs-box-x', Math.round(r.left + r.width / 2) + 'px'); dialog.style.setProperty('--hs-box-y', Math.round(r.top + r.height / 2) + 'px'); }
     (document.fullscreenElement ?? document.body).append(dialog);
     dialog.showModal();
     ok.focus();

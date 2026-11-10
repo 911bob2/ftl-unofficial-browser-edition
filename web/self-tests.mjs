@@ -46,6 +46,19 @@ export async function audioClockChecks(){
   assert.equal(audio.call('getSource',source,0x1010),0x1014);
   assert.equal(audio.sources.get(source).node,null);
   audio.call('deleteSource',source);assert.equal(audio.sources.has(source),false);
+  // A file the game files lack (a mod's sound or track) neither throws nor ends: the source stays AL_INITIAL, so the
+  // engine's playlist does not take a missing track for one that finished (SoundControl leaves it silent).
+  const quiet=console.error;console.error=()=>{};
+  try {
+    const missing=audio.call('source'),missingBuffer=audio.buffer('audio/waves/none.ogg');
+    audio.call('sourcei',missing,0x1009,missingBuffer);audio.call('play',missing);
+    await new Promise(resolve=>setTimeout(resolve,0));await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(audio.call('getSource',missing,0x1010),0x1011,'A missing sound must not play or end');
+    audio.music(missing,'audio/music/none.ogg');
+    await new Promise(resolve=>setTimeout(resolve,0));await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(audio.call('getSource',missing,0x1010),0x1011,'A missing track must not play or end');
+    audio.call('deleteSource',missing);
+  } finally {console.error=quiet;}
   // Firefox rejects a pending resume when a test/game closes its AudioContext.
   // Deleting the waiting source must consume that rejection and never start it.
   let rejectResume;
@@ -70,7 +83,7 @@ export async function audioClockChecks(){
   assert.deepEqual(failures,['Device unavailable']);
   gestureContext.resume=async()=>{gestureContext.state='running';};
   assert.equal(await resumeAudio(gestureContext,error=>failures.push(error.message)),true);
-  return 'PASS audio clock, pitch changes, pause/resume, seek, stop, pending source/gesture resume cancellation, retry and cleanup';
+  return 'PASS audio clock, pitch changes, pause/resume, seek, stop, missing files, pending source/gesture resume cancellation, retry and cleanup';
 }
 
 export async function framePacingChecks(){

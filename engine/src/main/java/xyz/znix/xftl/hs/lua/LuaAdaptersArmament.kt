@@ -241,10 +241,13 @@ object LuaAdaptersArmament {
     @JvmStatic fun boxWrites(ship: Ship, slot: Int): BoxWrites? =
         if (boxWritten) (LuaViews.cached(ship, BOX_KEY + slot) { ArmamentBoxView(ship, slot) } as ArmamentBoxView).writes else null
 
-    class ArmamentBoxView(@JvmField val ship: Ship, @JvmField val slot: Int) : LuaTyped {
+    class ArmamentBoxView(@JvmField val ship: Ship, @JvmField val slot: Int, @JvmField val drone: Boolean = false) : LuaTyped {
         override val luaType get() = A.T_ArmamentBox
-        @JvmField val writes = BoxWrites()
-        val weapon: AbstractWeaponInstance? get() = ship.hardpoints.getOrNull(slot)?.weapon
+        @JvmField val writes = BoxWrites().also { if (drone) it.nameWidth = 10049 }
+        val weapon: AbstractWeaponInstance? get() = if (drone) null else ship.hardpoints.getOrNull(slot)?.weapon
+        /** A drone box's drone: DroneControl::OnLoop hands box i the drone system's i-th drone. */
+        val droneInfo: xyz.znix.xftl.systems.Drones.DroneInfo?
+            get() = if (drone) ship.drones?.drones?.filterNotNull()?.getOrNull(slot) else null
     }
 
     /**
@@ -257,25 +260,46 @@ object LuaAdaptersArmament {
         LuaReg.obj(A.A_CommandGui_combatControl, ObjGet { if (LuaAdapters.inGame() != null) CombatControlView else null })
         LuaReg.obj(A.A_CombatControl_weapControl, ObjGet { WeaponControlView })
         LuaReg.obj(A.A_ArmamentControl_boxes, ObjGet { o ->
-            val ship = LuaAdapters.inGame()?.player
-            if (o !== WeaponControlView || ship == null) throw LuaError("ArmamentControl.boxes: only the player's weapon control")
-            ListView(A.T_vector_p_ArmamentBox, A.T_ArmamentBox) {
-                List(ship.weaponSlots ?: ship.hardpoints.size) { i -> LuaViews.cached(ship, BOX_KEY + i) { ArmamentBoxView(ship, i) } }
+            val ship = LuaAdapters.inGame()?.player ?: throw LuaError("ArmamentControl.boxes: no game")
+            when (o) {
+                WeaponControlView -> ListView(A.T_vector_p_ArmamentBox, A.T_ArmamentBox) {
+                    List(ship.weaponSlots ?: ship.hardpoints.size) { i -> LuaViews.cached(ship, BOX_KEY + i) { ArmamentBoxView(ship, i) } }
+                }
+                // DroneControl: a box per drone slot, also without a drone system (oracle ps-m1-ev box|start|d: 2 on
+                // the MV Kestrel; box|d5|d: 5 on PSU1_D5).
+                LuaAdaptersDrones.LuaDroneControl -> ListView(A.T_vector_p_ArmamentBox, A.T_ArmamentBox) {
+                    List(ship.droneSlots ?: 0) { i -> LuaViews.cached(ship, DRONE_BOX_KEY + i) { ArmamentBoxView(ship, i, drone = true) } }
+                }
+                else -> throw LuaError("ArmamentControl.boxes: only the player's weapon and drone controls")
             }
         })
         fun box(o: Any?) = o as? ArmamentBoxView ?: throw LuaError("expected ArmamentBox")
-        LuaReg.method(A.M_ArmamentBox_Powered, LuaMethod { ret.bool(box(arg.obj(1)).weapon?.isPowered == true) })
+        LuaReg.method(A.M_ArmamentBox_Powered, LuaMethod {
+            val b = box(arg.obj(1))
+            ret.bool(if (b.drone) b.droneInfo?.instance?.isPowered == true else b.weapon?.isPowered == true)
+        })
+        // A drone box (DroneBox, droneVariation) as the oracle reads it (ps-m1-ev box|start|d, box|d5|d, box|god|d):
+        // icon systemUI/weapbox_icon_D_<iconImage>.png on weapbox_inner_dronebox.png, largeIconOffset (0, 2), iconColor
+        // 150 and hotKey 5 + i with a drone; an empty one no icon on weapbox_inner_droneoff.png, (0, 0), 255, -1.
+        // xOffset 0, nameOffset (26, 3) and nameWidth 10049 (the same in every run: DroneBox leaves it) either way.
         LuaReg.str(A.A_ArmamentBox_iconName, StrGet { o ->
-            val w = box(o).weapon ?: return@StrGet ""
+            val b = box(o)
+            if (b.drone) return@StrGet b.droneInfo?.let { "systemUI/weapbox_icon_D_" + (it.type.iconImage ?: "") + ".png" } ?: ""
+            val w = b.weapon ?: return@StrGet ""
             "systemUI/weapbox_icon_W_" + (w.type.hsLuaFacts?.combatIcon ?: "") + ".png"
         })
         LuaReg.str(A.A_ArmamentBox_iconBackgroundName, StrGet { o ->
-            if (box(o).weapon != null) "systemUI/weapbox_inner_weaponbox.png" else "systemUI/weapbox_inner_droneoff.png"
+            val b = box(o)
+            when {
+                b.droneInfo != null -> "systemUI/weapbox_inner_dronebox.png"
+                b.weapon != null -> "systemUI/weapbox_inner_weaponbox.png"
+                else -> "systemUI/weapbox_inner_droneoff.png"
+            }
         })
         fun held(a: Int, x0: (ArmamentBoxView) -> Int, y0: Int, write: (BoxWrites, Int, Int) -> Unit) {
             LuaReg.obj(a, ObjGet { o ->
                 val b = box(o)
-                point(b, a, x0(b), y0).also { p -> p.onWrite = { boxWritten = true; write(b.writes, p.x - x0(b), p.y - y0) } }
+                point(b, a, x0(b), y0).also { p -> p.onWrite = { boxWritten = true; write(b.writes, p.x - x0(b), p.y - y0); droneBoxWrite(b) } }
             })
             LuaReg.objSet[a] = ObjSet { o, v ->
                 val p = LuaReg.objGet[a]!!.get(o) as LuaHeldPoint
@@ -286,25 +310,43 @@ object LuaAdaptersArmament {
         held(A.A_ArmamentBox_location, { 16 + 97 * it.slot }, 16) { w, dx, dy -> w.dx = dx; w.dy = dy }
         LuaReg.obj(A.A_ArmamentBox_lastIconPos, ObjGet { o -> point(box(o), A.A_ArmamentBox_lastIconPos, Int.MAX_VALUE, Int.MAX_VALUE) })
         LuaReg.obj(A.A_ArmamentBox_largeIconOffset, ObjGet { o ->
-            val b = box(o); if (b.weapon != null) point(b, A.A_ArmamentBox_largeIconOffset, -5, 2) else point(b, A.A_ArmamentBox_largeIconOffset, 0, 0)
+            val b = box(o)
+            when {
+                b.weapon != null -> point(b, A.A_ArmamentBox_largeIconOffset, -5, 2)
+                b.droneInfo != null -> point(b, A.A_ArmamentBox_largeIconOffset, 0, 2)
+                else -> point(b, A.A_ArmamentBox_largeIconOffset, 0, 0)
+            }
         })
-        held(A.A_ArmamentBox_nameOffset, { 34 }, 3) { w, dx, dy -> w.nameDx = dx; w.nameDy = dy }
-        LuaReg.num(A.A_ArmamentBox_xOffset, NumGet { (8 + box(it).writes.barDx).toDouble() }, NumSet { o, v -> boxWritten = true; box(o).writes.barDx = v.toInt() - 8 })
-        LuaReg.num(A.A_ArmamentBox_nameWidth, NumGet { box(it).writes.nameWidth.toDouble() }, NumSet { o, v -> boxWritten = true; box(o).writes.nameWidth = v.toInt() })
-        LuaReg.num(A.A_ArmamentBox_hotKey, NumGet { (box(it).slot + 1).toDouble() })
-        LuaReg.obj(A.A_ArmamentBox_iconColor, ObjGet { o -> LuaViews.cached(box(o), A.A_ArmamentBox_iconColor) { GlColorValue(255f, 255f, 255f, 1f) } })
-        LuaReg.bool(A.A_ArmamentBox_droneVariation, { box(it); false })
-        LuaReg.bool(A.A_ArmamentBox_bIoned, { box(it).ship.weapons?.isIonised == true })
+        held(A.A_ArmamentBox_nameOffset, { if (it.drone) 26 else 34 }, 3) { w, dx, dy -> w.nameDx = dx; w.nameDy = dy }
+        fun barX(b: ArmamentBoxView) = if (b.drone) 0 else 8
+        LuaReg.num(A.A_ArmamentBox_xOffset, NumGet { val b = box(it); (barX(b) + b.writes.barDx).toDouble() },
+            NumSet { o, v -> val b = box(o); boxWritten = true; b.writes.barDx = v.toInt() - barX(b); droneBoxWrite(b) })
+        LuaReg.num(A.A_ArmamentBox_nameWidth, NumGet { box(it).writes.nameWidth.toDouble() },
+            NumSet { o, v -> val b = box(o); boxWritten = true; b.writes.nameWidth = v.toInt(); droneBoxWrite(b) })
+        LuaReg.num(A.A_ArmamentBox_hotKey, NumGet { val b = box(it); if (!b.drone) b.slot + 1.0 else if (b.droneInfo != null) b.slot + 5.0 else -1.0 })
+        LuaReg.obj(A.A_ArmamentBox_iconColor, ObjGet { o ->
+            val b = box(o)
+            val c = if (b.droneInfo != null) 150f else 255f
+            LuaViews.cached(b, A.A_ArmamentBox_iconColor + (if (c == 150f) 0 else 1 shl 24)) { GlColorValue(c, c, c, 1f) }
+        })
+        LuaReg.bool(A.A_ArmamentBox_droneVariation, { box(it).drone })
+        LuaReg.bool(A.A_ArmamentBox_bIoned, { val b = box(it); (if (b.drone) b.ship.drones?.isIonised else b.ship.weapons?.isIonised) == true })
         // Hover and selection live in the engine's own weapon bar (PlayerShipUI), not exposed here.
         // mouseHover: the weapon box under the mouse (ArmamentBox::MouseMove sets it every move); selected: the box
         // whose weapon is being aimed (WeaponControl's targeting selection).
-        LuaReg.bool(A.A_ArmamentBox_mouseHover, { o -> val b = box(o); b.ship.sys.shipUI.hsWeaponBoxHovered(b.slot) },
+        LuaReg.bool(A.A_ArmamentBox_mouseHover, { o -> val b = box(o); !b.drone && b.ship.sys.shipUI.hsWeaponBoxHovered(b.slot) },
             { _, _ -> HS.unsupported("lua", "attribute", "ArmamentBox.mouseHover write (the next mouse move sets it)") })
-        LuaReg.bool(A.A_ArmamentBox_selected, { o -> val b = box(o); b.ship.sys.shipUI.hsWeaponBoxSelected(b.slot) },
+        LuaReg.bool(A.A_ArmamentBox_selected, { o -> val b = box(o); !b.drone && b.ship.sys.shipUI.hsWeaponBoxSelected(b.slot) },
             { _, _ -> HS.unsupported("lua", "attribute", "ArmamentBox.selected write (the targeting selection is the UI's)") })
     }
 
     private const val BOX_KEY = 1 shl 20
+    private const val DRONE_BOX_KEY = (1 shl 20) + (1 shl 16)
+
+    /** A write to a drone box's place or sizes stays readable; the engine's drone bar does not move with it. */
+    private fun droneBoxWrite(b: ArmamentBoxView) {
+        if (b.drone) HS.unsupported("lua", "attribute", "drone ArmamentBox place and size writes (the drone bar does not move)")
+    }
 
     private fun beamWeapon() {
         LuaReg.obj(A.A_BeamWeapon_contactAnimations, ObjGet { o ->
@@ -523,8 +565,13 @@ object LuaAdaptersArmament {
         // lastTargets: ProjectileFactory::Fire reverses the aim points and copies them into targets and lastTargets; both
         // are empty again once the weapon is untargeted (its shot, ClearAiming, power loss: oracle hs-gaps aim rows).
         LuaReg.obj(A.A_ProjectileFactory_lastTargets, ObjGet { o ->
-            val aim = w(o).hsLastAim as? SelectedTarget
-            ListView(A.T_vector_Pointf, A.T_Pointf, (if (aim == null) emptyList() else aimPoints(aim).asReversed()).toMutableList())
+            val points = when (val aim = w(o).hsLastAim) {
+                is SelectedTarget -> aimPoints(aim).asReversed()
+                // The enemy AI's volley (ShipAI.aimWeapons): one point per aimed room, already in lastTargets order.
+                is List<*> -> aim.map { r -> (r as xyz.znix.xftl.layout.Room).pixelCentre.let { PointfValue(it.x.toFloat(), it.y.toFloat()) } }
+                else -> emptyList()
+            }
+            ListView(A.T_vector_Pointf, A.T_Pointf, points.toMutableList())
         })
         LuaReg.num(A.A_ProjectileFactory_targetId, NumGet { HsWeapons.shipId(targetShip(w(it))).toDouble() })
         LuaReg.obj(A.A_ProjectileFactory_currentShipTarget, ObjGet { o -> currentShip(w(o))?.let(::targetable) })
@@ -720,11 +767,29 @@ object LuaAdaptersArmament {
         // SetBonusPower(amount, permanentPower): the bonus power until the next frame's crew count replaces it (HS
         // ShipManager::OnLoop), applied at once (WeaponSystem 636630 clamps it to the system's maximum). The Lua
         // permanentPower argument is not read: script bonus bars are never permanent here (MainSystem.hsLuaBonusPower).
+        fun applyBonus(ship: xyz.znix.xftl.Ship, s: xyz.znix.xftl.systems.MainSystem, before: Int, lowered: Boolean) {
+            ship.updateAvailablePower()
+            // A script lowering the bonus gives the reactor bars it displaced back (full shields, SetBonusPower 2 then 0
+            // in one call: still 2 reactor bars, weapons unchanged; oracle ps-m1-ev sys|rb). The bonus that the next
+            // ShipManager::OnLoop resets leaves them off (oracle wp4-power-calls bonus-later), as before.
+            if (lowered) {
+                var guard = before + 2
+                while (s.powerSelected < before && guard-- > 0) {
+                    val p = s.powerSelected
+                    s.increasePower()
+                    ship.updateAvailablePower()
+                    if (s.powerSelected == p) break
+                }
+            }
+        }
         fun bonusPower(o: Any?, amount: Int) {
             val s = o as? xyz.znix.xftl.systems.MainSystem ?: throw LuaError("expected a ShipSystem")
             val ship = LuaAdapters.inGame()?.let { g -> listOfNotNull(g.player, g.enemy).firstOrNull { it.systems.contains(s) } } ?: return
+            val before = s.powerSelected
+            val lowered = s !is Weapons && amount < s.forcedPower
             s.hsLuaBonusPower = maxOf(0, if (s is Weapons) amount.coerceAtMost(s.energyLevels) else amount)
-            ship.updateAvailablePower()
+            xyz.znix.xftl.hs.systems.HsSystemsLua.luaBonusCall = s
+            try { applyBonus(ship, s, before, lowered) } finally { xyz.znix.xftl.hs.systems.HsSystemsLua.luaBonusCall = null }
         }
         // ForceBatteryPower(power) (WeaponSystem 635630 also sets iStartingBatteryPower): the battery field only.
         fun batteryPower(o: Any?, power: Int) {

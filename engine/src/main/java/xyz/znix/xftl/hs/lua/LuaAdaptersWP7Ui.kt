@@ -366,6 +366,10 @@ object LuaAdaptersWP7Ui {
             "CommandGui.jumpComplete", "CommandGui.mapId", "CommandGui.secretSector"),
             ro = setOf("CommandGui.shipStatus", "CommandGui.sysControl", "CommandGui.ftlButton", "CommandGui.choiceBox", "CommandGui.outOfFuel",
                 "CommandGui.dangerLocation", "CommandGui.jumpComplete", "CommandGui.mapId", "CommandGui.secretSector", "CommandGui.pauseTextLoc", "CommandGui.shipPosition"))
+        // choiceBox: the member ChoiceBox every CreateChoiceBox fills (the box POST_CREATE_CHOICEBOX passes); its
+        // mainText, choices and the rest are the box's (MV's custom-gatling-name writes gui.choiceBox.mainText)
+        val cbx = attr("CommandGui.choiceBox"); val cbxg = LuaReg.objGet[cbx]!!
+        LuaReg.objGet[cbx] = ObjGet { o -> if (o === LuaGui) xyz.znix.xftl.hs.events.HsEventsLua.commandGuiBox else cbxg.get(o) }
         // outOfFuel: the player has no fuel to jump with
         val oof = attr("CommandGui.outOfFuel"); val oofg = LuaReg.numGet[oof]!!
         LuaReg.numGet[oof] = NumGet { o ->

@@ -468,13 +468,7 @@ object StatCrewLua {
         })
         // CrewMember::Kill(noClone): health to 0 (the death runs in the crew loop); noClone keeps the clone bay away
         LuaReg.method(A.M_CrewMember_Kill, LuaMethod {
-            val c = arg.obj(1) as AbstractCrew
-            if (arg.bool(2)) HsCrew.ex(c).noClone = true
-            // Native Kill (1.6.14 0x47ba00) sets bDead at once: no dying animation, the clone queue takes it next frame.
-            c.health = 0f
-            c.hsKilled = true
-            // Kill's EmptySlot: the slot is free at once (oracle sweep-crew4 slot|before)
-            c.room.ship.updateCrewReservedSlots()
+            HsCrew.luaKill(arg.obj(1) as AbstractCrew, arg.bool(2))
             0
         })
         LuaReg.method(A.M_ShipManager_AddCrewMemberFromString, LuaMethod {

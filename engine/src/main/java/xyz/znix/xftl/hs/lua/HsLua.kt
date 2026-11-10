@@ -9,8 +9,8 @@ import xyz.znix.xftl.rendering.Graphics
 
 /**
  * The Hyperspace Lua runtime as the engine sees it (LuaScriptInit + LuaLibScript in HS). Started from
- * BrowserEngine.start only when the mod session lists scripts and web/hs-lua.mjs has loaded the wasm; until then
- * nothing in this package is initialised. Engine hooks go through [LuaEvents], each guarded by `HS.luaActive`.
+ * BrowserEngine.start whenever Hyperspace is active, with or without mod scripts, as HS creates its Lua state at
+ * start-up (Global.cpp:138); vanilla never starts it, and until then nothing in this package is initialised. Engine hooks go through [LuaEvents], each guarded by `HS.luaActive`.
  */
 object HsLua {
     /** Registered callbacks per InternalEvents / RenderEvents id: hooks skip all work when false. */
@@ -31,10 +31,10 @@ object HsLua {
     private val engineErrors = LinkedHashMap<String, Int>()
     @JvmField var loadedScripts = 0
 
-    /** BrowserEngine.start: run the session's scripts (hyperspace.xml <scripts> order) and the on_load callbacks. */
+    /** BrowserEngine.start: run the session's scripts (hyperspace.xml <scripts> order, none on plain Hyperspace) and the on_load callbacks. */
     @JvmStatic
     fun startForSession(game: MainGame, graphics: Graphics) {
-        if (HS.scripts.isEmpty()) return
+        if (!HS.active && HS.scripts.isEmpty()) return
         if (!LuaJs.available()) {
             HS.unsupported("lua", "runtime", "web/vendor/hs-lua.wasm was not loaded")
             return
@@ -62,7 +62,31 @@ object HsLua {
         hasInt.fill(false); hasRen.fill(false); hasGameEvents = false; hasInit = false
         LuaAdapters.install()
         LuaJs.reinit()
+        syncTicks = 0; exitSent = false
         HS.luaActive = true
+    }
+
+    private var syncTicks = 0
+    private var exitSent = false
+
+    /**
+     * Once per engine step: the private folder of mod scripts goes to storage every two seconds or so (and at the end,
+     * [shutdown]); a script's os.exit ends the session (the original closes FTL) with a message naming the mod.
+     */
+    @JvmStatic
+    fun tick() {
+        if (!exitSent && LuaJs.exitRequested()) {
+            exitSent = true
+            LuaJs.vfsSync()
+            LuaJs.hostExit(LuaJs.exitSource(), 0)
+        }
+        if (++syncTicks >= 120) { syncTicks = 0; LuaJs.vfsSync() }
+    }
+
+    /** The engine stops: what the scripts wrote is kept. */
+    @JvmStatic
+    fun shutdown() {
+        if (HS.luaActive && LuaJs.available()) LuaJs.vfsSync()
     }
 
     /** Lua is switched off (diagnostics); hooks stop firing. */

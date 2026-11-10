@@ -51,7 +51,7 @@ object HsSpaceStatus {
         else -> "danger_pds"
     }
 
-    /** SpaceStatus::MouseMove rewrite: the tooltip name of [hazard]. */
+    /** SpaceStatus::MouseMove rewrite: the tooltip name of [hazard]; [inFleet] is space->dangerZone (the fleet behind the scene). */
     private fun tip(hazard: Int, target: Int, inFleet: Boolean): String = when (hazard) {
         ASTEROIDS -> "asteroids"
         SUN -> "sun"

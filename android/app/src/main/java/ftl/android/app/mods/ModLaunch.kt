@@ -31,6 +31,9 @@ class ModLaunch private constructor(
     val session: ModSession,
     val warnings: List<String>,
     private val zips: List<Zip>,
+    /** The mods in load order and, per script of the session, the index of the last one with that file. */
+    val mods: List<ModLibrary.Mod>,
+    val scriptOwners: Map<String, Int>,
 ) : AutoCloseable {
     override fun close() = zips.forEach { runCatching { it.close() } }
 
@@ -122,7 +125,9 @@ class ModLaunch private constructor(
                 val hs = mods.firstOrNull { (it.title ?: it.file.name).equals("hyperspace", ignoreCase = true) || it.file.name.equals("hyperspace", ignoreCase = true) }
                 val session = ModSession(setup.key, mods.map { ModSession.Mod(it.file.name, it.file.version.ifEmpty { null }, it.sha256, it.file.size) },
                     hyperspace, if (hyperspace) hs?.file?.version?.ifEmpty { null } else null, if (hyperspace) hyperspaceScripts(hsXml) else emptyList())
-                return ModLaunch(gameData.files(overlay, removed, modAudio), session, warnings, zips)
+                val owners = HashMap<String, Int>()
+                for (path in session.scripts) for (i in mods.indices.reversed()) if (zips[i].get(path) != null) { owners[path] = i; break }
+                return ModLaunch(gameData.files(overlay, removed, modAudio), session, warnings, zips, mods, owners)
             } catch (e: Exception) {
                 zips.forEach { runCatching { it.close() } }
                 throw e

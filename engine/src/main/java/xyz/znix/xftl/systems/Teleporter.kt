@@ -76,6 +76,8 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             onCooldown = false
         }
 
+        disarmUnderSuperShield()
+
         if (xyz.znix.xftl.hs.HS.active) {
             hsLoop(dt)
             hsUpdateCommand()
@@ -133,7 +135,7 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
      * Reconstructive Teleport. Nothing while the previous party is still leaving. Returns how many went.
      */
     private fun vanillaRecall(target: Room): Int {
-        if (partyBusy()) return 0
+        if (partyBusy() || eitherJumping(target)) return 0
         val ourCrew = target.crew.filterIsInstance<LivingCrew>()
             .filter { it.mode == AbstractCrew.SlotType.INTRUDER && vanillaCanTeleport(it) }.take(4)
         // Don't waste a cooldown if we're not teleporting anyone
@@ -150,6 +152,7 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     /** Sends the crew standing on the pads to [target], returning how many went. */
     private fun sendCrew(target: Room): Int {
+        if (eitherJumping(target)) return 0
         // Crew are only teleported if they're assigned a slot on the teleporter.
         val ourCrew = room!!.crew.filter {
             it.mode == AbstractCrew.SlotType.CREW && it is LivingCrew && room!!.isCrewAssigned(it)
@@ -173,6 +176,24 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
      * over (CompleteShip::OnLoop 0x409ee0); InitiateTeleport (0x409ae0) starts nothing while either is set.
      */
     private val party = ArrayList<AbstractCrew>()
+
+    /**
+     * TeleportSystem::OnLoop (1.6.14 0x648640): an armed teleporter (iArmed, send or bring back) is disarmed while the
+     * target has a super shield (bSuperShields, written from the target's shields) and the ship has no Zoltan Shield
+     * Bypass. The player's arming is the teleport cursor.
+     */
+    private fun disarmUnderSuperShield() {
+        if (!ship.isPlayerShip || ship.sys.shipUI?.teleportMode == null) return
+        val target = ship.sys.getEnemyOf(ship) ?: return
+        if (target.superShield > 0 && !ship.hasAugment(AugmentBlueprint.ZOLTAN_BYPASS)) ship.sys.clickEvent = null
+    }
+
+    /**
+     * CompleteShip::InitiateTeleport (1.6.14 0x409ae0; Hyperspace's TeleporterBugFixes rewrite keeps it) does nothing
+     * while either ship is jumping (ShipManager::bJumping, set by JumpLeave), sending or bringing back; the player's
+     * command was already taken (CombatControl::GetTeleportationCommand 0x57f370 disarms it), so it is lost.
+     */
+    private fun eitherJumping(target: Room): Boolean = ship.browserJumping || target.ship.browserJumping
 
     private fun partyBusy(): Boolean {
         party.removeAll { !it.isTeleportLeaving }
@@ -704,7 +725,7 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
      * for each). Returns how many went.
      */
     private fun hsInitiate(target: Room, send: Boolean, allRooms: Boolean): Int {
-        if (partyBusy()) return 0
+        if (partyBusy() || eitherJumping(target)) return 0
         val party = ArrayList<LivingCrew>()
         if (send) {
             var free = 0

@@ -63,7 +63,7 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
  }
  async function exitTutorial() {await back(page);await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).window==='PauseWindow');const r=(await snapshot()).windowRect;await click(r.x+r.width/2,r.y+81);await state('MainMenuState');}
  async function next() {const s=await snapshot();assert.ok(s.tutorialContinue);const r=s.tutorialUI.continue;await click(r[0]+r[2]/2,r[1]+r[3]/2);await page.waitForFunction(step=>{const s=JSON.parse(window.ftlEngine.debugSnapshot());return !s.tutorial||s.tutorialStep!==step;},s.tutorialStep);}
- async function pause(value) {if((await snapshot()).playerPaused!==value){await press('Space');await page.waitForFunction(value=>JSON.parse(window.ftlEngine.debugSnapshot()).playerPaused===value,value);}}
+ async function pause(value) {if((await snapshot()).playerPaused!==value){await page.waitForFunction(()=>!JSON.parse(window.ftlEngine.debugSnapshot()).playerJumping);await press('Space');await page.waitForFunction(value=>JSON.parse(window.ftlEngine.debugSnapshot()).playerPaused===value,value);}}
  async function dismiss() {for(let i=0;i<8&&(await snapshot()).window==='DialogueWindow';i++){await press('1');await page.waitForTimeout(100);}assert.notEqual((await snapshot()).window,'DialogueWindow');}
  async function target(slot) {await press(String(slot+1));const room=(await snapshot()).tutorialUI.enemyRooms.find(r=>r.system==='shields');assert.ok(room);await click(room.x,room.y);await page.waitForFunction(slot=>!!JSON.parse(window.ftlEngine.debugSnapshot()).weapons[slot].target,slot);}
  try {
@@ -104,7 +104,9 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
      case 'DAMAGE_SYSTEM_2':{const crew=s.tutorialUI.crew[0];await click(crew.x,crew.y);break;}
      case 'DAMAGE_SYSTEM_3':{const room=s.tutorialUI.rooms.find(r=>r.system==='engines');await click(room.x,room.y,'right');break;}
      case 'DAMAGE_SYSTEM_4':break;
-     case 'FIRE_PC_1':{const door=s.tutorialUI.doors.find(d=>d.airlock&&(d.left===9||d.right===9));await click(door.x,door.y);break;}
+     // The crew selected at DAMAGE_SYSTEM_2 still is: as in the original (CrewControl selects no door then), a click on
+     // empty space drops it first, so the airlock click opens the door.
+     case 'FIRE_PC_1':{const door=s.tutorialUI.doors.find(d=>d.airlock&&(d.left===9||d.right===9));await click(700,600);await click(door.x,door.y);break;}
      case 'FIRE_END':break;
      case 'DAMAGE_SYSTEM_6':{
       for(const door of s.tutorialUI.doors.filter(d=>d.airlock&&d.open))await click(door.x,door.y);
@@ -112,7 +114,10 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
      }
      case 'DAMAGE_SYSTEM_7':await wait(()=>JSON.parse(window.ftlEngine.debugSnapshot()).tutorialUI.ftlReady);await click(565,50);break;
      case 'STAR_MAP_1':{
-      await wait(()=>{const s=JSON.parse(window.ftlEngine.debugSnapshot());return s.window==='JumpWindow'&&s.windowRect.x>0;});s=await snapshot();
+      await wait(()=>{const s=JSON.parse(window.ftlEngine.debugSnapshot());return s.window==='JumpWindow'&&s.windowRect.x>0;});
+      // The tutorial's map closes only by a jump: Escape and CANCEL leave it open (CommandGui::KeyDown, StarMap::MouseClick).
+      await back(page);await click(1000,638);await page.waitForTimeout(300);s=await snapshot();
+      assert.equal(s.window,'JumpWindow','Escape or CANCEL closed the tutorial map');assert.equal(s.tutorialStep,'STAR_MAP_1');
       const panel=s.tutorialUI.panel;
       // The map hit area extends 12px around a beacon. Its centre can be
       // covered while an edge is still clickable; use only observed geometry.

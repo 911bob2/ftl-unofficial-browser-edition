@@ -82,6 +82,17 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
     var ownerShip: Ship? = if (mode == SlotType.CREW) room.ship else null
     private val browserStrandedAugments = HashMap<String, Float>()
 
+    /**
+     * CompleteShip::OnLoop's arriving party (1.6.14 0x409ee0) only sets a teleported crew member's currentShipId; whose
+     * side it is on is CrewMember::iShipId, and every ship but the player's is ship 1. So a boarder of the enemy side
+     * (an event's boarders, or ones stranded by a ship that left) that another enemy ship brings home is that ship's
+     * crew there, not an intruder (oracle ps-fu2-rc).
+     */
+    override fun onBoardedShip(ship: Ship) {
+        if (ship !== game.player && ownerShip !== game.player)
+            ownerShip = ship
+    }
+
     override val standingShipHostile: Boolean
         get() {
             // A mind-controlled crewmember has its allegiance flipped (see
@@ -271,7 +282,7 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
     }
 
     override fun drawImage(x0: Float, y0: Float, x1: Float, y1: Float, baseFrame: Image, alpha: Float) {
-        info.drawImage(x0, y0, x1, y1, baseFrame, alpha, true)
+        info.drawImage(x0, y0, x1, y1, baseFrame, alpha, true, spriteTint)
     }
 
     /**
@@ -565,7 +576,8 @@ class LivingCrewInfo(
         x1: Float, y1: Float,
         baseFrame: Image,
         alpha: Float,
-        skipColours: Boolean
+        skipColours: Boolean,
+        tint: Colour = Colour.white
     ) {
         val texX0 = baseFrame.textureOffsetX
         val texY0 = baseFrame.textureOffsetY
@@ -590,7 +602,7 @@ class LivingCrewInfo(
         val fullBaseImage = game.getImg(baseImagePath)
 
         // Draw the base image, without any tinting
-        fullBaseImage.draw(x0, y0, x1, y1, texX0.f, texY0.f, texX1.f, texY1.f, alpha, Colour.white)
+        fullBaseImage.draw(x0, y0, x1, y1, texX0.f, texY0.f, texX1.f, texY1.f, alpha, tint)
 
         if (skipColours)
             return
@@ -603,7 +615,9 @@ class LivingCrewInfo(
             val chosen = hsLayerColours?.takeIf { it.size == race.colourFilters.size }?.get(index)
             val filter = colours[(chosen ?: effectiveColour) % colours.size]
 
-            layer.draw(x0, y0, x1, y1, texX0.f, texY0.f, texX1.f, texY1.f, alpha, filter)
+            // CrewAnimation::OnRender: each layer's colour times the body's tint
+            val layerColour = if (tint === Colour.white) filter else Colour(filter.r * tint.r, filter.g * tint.g, filter.b * tint.b, filter.a * tint.a)
+            layer.draw(x0, y0, x1, y1, texX0.f, texY0.f, texX1.f, texY1.f, alpha, layerColour)
         }
     }
 

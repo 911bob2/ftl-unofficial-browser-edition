@@ -165,12 +165,18 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     /**
      * Hyperspace hackingIonFix (Balance.cpp ShipSystem::IonDamage hook): ion of 1-3 on this system while it is hacking
-     * first locks it for 4 - ion units, so the ion that follows adds up to four (the pulse lock is replaced).
+     * first locks it for 4 - ion units, so the ion that follows adds up to four (the pulse lock is replaced). The hook
+     * tests HackingSystem::bHacking (+0x1c0), which is the drone being out: HackingSystem::OnLoop (1.6.14 0x62dc80) sets
+     * it at the launch and StopHacking (0x62db00) or the drone's loss clears it (GetHacking 0x62d940 reads it for the
+     * box's pulse button); a pulse is the lock -1 (PulseActive 0x62d820). So the drone out, with or without a pulse
+     * (also one an earlier ion hit holds), or a script's write of the flag.
      */
     override fun dealDamage(damage: Int, ionDamage: Int) {
-        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.config?.hackingIonFix == true && ionDamage in 1..3 && active) {
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.HS.config?.hackingIonFix == true && ionDamage in 1..3 &&
+            (droneLaunched || hsHacking)) {
             lockUnits(4 - ionDamage)
-            permanentLockOverridden = true
+            // LockSystem replaces a pulse's lock -1 (the ion that follows would too: [AbstractSystem.dealDamage]).
+            if (holdsPermanentLock) permanentLockOverridden = true
         }
         super.dealDamage(damage, ionDamage)
     }

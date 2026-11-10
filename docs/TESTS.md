@@ -348,6 +348,24 @@ nebula. The native sides: `tools/native-capture/sessions/ps-b1-van.json` (1.6.14
 system boxes) and `tools/hs-oracle/sessions/ps-b1.json` (HS and MV: probe `hs_oracle/ps-b1.lua` logs each piece's
 target and the sensors' power cap in the nebula).
 
+`gameplay-parity`'s `GameplayParityPsW5Checks` (parity sweep W5, vanilla, F2 and F3): the pulsar's first goal from a known
+global-stream draw and its later goals in whole milliseconds; no flare fires and no pulse ions on a ship whose
+`browserJumping` is set (both do at rest); the scene draw log (`AbstractEnvironment.browserDrawLog`) of an asteroid field
+(backdrop, planet, layers), a sun (backdrop, sun), a pulsar (dull stars, pulsar), a sun with stacked asteroids, and a
+nebula with stacked asteroids and sun (clouds and asteroid layer only); and a cleared beacon's statuses (an event's limits
+gone, a nebula location keeping the sensors cap of 0). The native side: `tools/native-capture/sessions/ps-w5-van.json`
+(1.6.14: w5-rev, a nebula beacon left and revisited, the sensors capped again; w5-rev2, TEST_EVENT2's limits; both load
+their event through the console, whose copy of the event is never cleared, so the limits return there).
+
+`gameplay-parity`'s `GameplayParityPsFu1Checks` (parity sweep follow-up FU1, vanilla, F2 and F3) holds the rule of a crew
+member at a capped system: engines capped at their level stay manned and boosted, one bar lower the engineer stands idle
+at the console with no evasion bonus, no crew slot on the box and no "unmanned" line; sensors capped at their level stand
+idle with the ion bar, capped one above stay manned; a crew member sent to another tile of capped engines, or of the
+start's unpowered weapons, walks back to the console and stands idle (and mans the engines once the cap ends); in NEBULA_REBEL the crew member at the sensors stays idle at the console. The native side:
+`tools/native-capture/sessions/ps-fu1-van.json` (1.6.14: typing frames at the sensors and none in a nebula or under
+TEST_EVENT2's caps, the ion bars of capped sensors and doors, engines capped below their level losing 5 % evasion and the
+crew slot, a crew member walking to the capped sensors console).
+
 `gameplay-parity`'s `GameplayParityPsC3Checks` holds the hit rules of ShipManager::DamageArea and DamageSystem (parity
 sweep C3, vanilla and mods): a certain breach (breachChance 10) under a Rock Plating proc breaches, and in vanilla also
 ends the proc (hull damage, its number), under Hyperspace keeps it (RESIST); a 9-in-10 breach under a proc is stopped with
@@ -368,6 +386,51 @@ the other ship still there, in flight and landed (undeployed with no rebuild tim
 BOARDER_RECOVERY, which Multiverse ships carry); the crew drone light colours. The native frame pair session
 `tools/native-capture/sessions/ps-c4-drones.json` (`c4v-d`: a repair and an anti-personnel drone on the Kestrel, paused
 and running, on and off) runs with `sweep/vanilla/run.sh` against `tools/ui-capture.sh`.
+
+`gameplay-parity`'s `GameplayParityPsU3Checks` (parity sweep U3, vanilla and mods): 1.6.14's stale hull number (a Rock
+Plating proc on a hit without hull damage shows ShipManager::iLastDamage again; Hyperspace shows nothing; the player's
+value lasts one frame) and the upgrade levels box's tiles (InfoBox::OnRender: two whole details_base_B in the ship window,
+one in the hangar), and SwitchPlanet's planet size (the texture's, not the image list's w and h). The native strip sessions `tools/native-capture/sessions/ps-u3-van.json` (generator
+`.build/ps-u3/gen/gen_v.py`; u3v-a combat save running, our weapons and the enemy blown up; b five races, idle, walking,
+boarders; c Crystal and Lanius, four weapon families on autofire against a Mantis fighter; d drones, bomb, cloak on and
+off; e enemy shots on full shields; f a combat and a boarding drone; j a jump) run with `sweep/vanilla/run.sh` against
+`tools/ui-capture.sh`; the capture's X server has caps lock on, so the generator types each console command with its case
+swapped (`CREW engi` reaches the game as written). `tools/hs-oracle/sessions/ps-u3-hs.json` `ps-u3-img` (Multiverse,
+probe `hs_oracle/ps-u3.lua`, fixture event PSU3_IMG with one-image lists) compares an event's `<img>` with its twin.
+
+`hs-statcrew` (F3) ends with `BrowserPsC6Checks` (parity sweep C6, Multiverse): an ability's `<event>` goes to the
+Hyperspace event queue when the power activates (unique_tully's TULLY_CALL_AIRSTRIKE, unseeded, no label); a power's
+room damage on its own ship without shipFriendlyFire takes (damage + persDamage) x 15 from each crew member of the
+room (100 to 55 for damage 1, persDamage 2); a jump adds chargesPerJump as a float (an uncharged power goes from
+2147483646 to -1073741826). The oracle sessions `tools/hs-oracle/sessions/ps-c6.json` (generator `gen-ps-c6.py`, probe
+`hs_oracle/ps-c6.lua`, F3; the hyperspace.xml append redefines a few Multiverse races no script names, one power or
+boost kind each) run scenario sets on game time and write crew, power and ship rows at time marks: `ps-c6-pw` (power
+effect kinds), `ps-c6-sb` (boost types, conditions, stacking, augment boosts), `ps-c6-en` (powers aboard the enemy, the
+AI's use, mind control resistance, every ship and crew target), `ps-c6-js`/`ps-c6-js2` (jump and save) and `ps-c6-ui`
+(crew box frames, paused). Twin map `.build/hs/sweep/fixtures/ps-c6/map.json`; `.build/hs/sweep/jobs/ps-c6.sh` replays
+pw, sb and en against the recorded oracle.
+
+`gameplay-parity`'s `GameplayParityPsU4Checks` (parity sweep U4, vanilla and mods): PlaySoundMix's absolute volume
+(explosion1 at 0.25), a loop sliding out over 500 ms of real time, a sound, loop and track the files lack (silent; the
+playlist stalls on the missing track), an empty playlist fading to silence, the battle flag set with no track playing,
+door sounds as the animation starts (and none for a door turned back halfway), and under Hyperspace a crew power's
+effect, power and finish sounds in the original's order. `web/self-tests.mjs`' audio clock (and `tests/audio.mjs`) keeps a
+missing sound or music file's source AL_INITIAL. Sound trace pairs: `BrowserEngine.soundTrace` logs what our engine plays,
+`tools/native-capture/sessions/ps-u4-sound.json` runs the same sessions in `FTLGame-sound.exe` (`sweep/vanilla/run.sh`,
+`EXE=sound`) and `tools/ui-capture.sh`, and `tools/native-capture/sound-pair.py <native.bin> <ui-capture log> --session ID
+--sync KIND:NAME` pairs them (`--hs 1` reads the Hyperspace oracle's ring of `tools/hs-oracle/make-sound-exe.py`, session
+`tools/hs-oracle/sessions/ps-u4-hs.json`). `.build/hs/sweep/jobs/ps-u4.sh` replays the recorded traces.
+
+`gameplay-parity`'s `GameplayParityPsFu4Checks` (parity sweep FU4, vanilla and mods): a selected crew member's green
+sprite tint (an unselected one none), the console's LOAD dropping the crew selection and a jump keeping it, augments
+listed by name, a Lua AddAugmentation with the augment slots full returning false and moving no augment out (with Lua;
+oracle ps-m3-a sys|autofed), the crew-slot icon lifting a box's tooltip column by 16 or 24, a popup queued before the option goes
+off still shown, the armament tooltips naming weapon<n> / drone<n> by the box's own number (the fifth weapon box
+"None"), and the system boxes and jump button getting no mouse (a click on the engines does nothing) while a target is
+being picked. `tools/native-capture/sessions/ps-fu4-van.json` (1.6.14 frame and sound pairs: crew selection, a weapon
+armed over the HUD, damaged and capped bar glows, selling a charging missile weapon, upgrade undo, a drone slot to the
+hold, hover beeps, the main menu) and `tools/hs-oracle/sessions/ps-fu4-hs.json` (ps-fu4-w5: five weapon boxes and two
+drone boxes, their numbers and tooltips) hold the native sides.
 
 `interaction`'s probe starts with `GameplayParityPsU2Checks` (parity sweep U2, vanilla and mods): every hotkey of the
 original's Settings::ResetHotkeys with its default key, a key taken from another hotkey leaving it unbound, the
@@ -403,6 +466,90 @@ session `tools/hs-oracle/sessions/ps-w4.json` (`ps-w4-ai`, F3, probe `hs_oracle/
 `PSW4_*` in the tracer's append files) records the enemy's power after ion and damage, the rooms its shots aim at over
 about 150 game seconds, and the escape (jump flag, the player's aims and shots, the ship gone), for `sweep/twin/run.sh`
 with the map `{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-w4.lua", "prefix": "PH:"}`.
+
+`gameplay-parity`'s `GameplayParityPsC2Checks` holds the rules of parity sweep C2: player crew aboard an enemy that is
+destroyed die (the clone bay brings them back), aboard one that escapes or when the location is cleared (a jump away
+from it, the console's `LOAD`) they are lost for good, each with the lost_crew flag (WorldManager::OnLoop and
+ClearLocation), while an enemy boarder aboard the player's ship stays after a `LOAD`; a mind-controlled crew member that
+dies is dropped at once and the system locks without the end sound (MindSystem::OnLoop); Hyperspace's hackingIonFix
+works while the hacking drone is out (bHacking); and a send while the enemy jumps away does nothing and is not kept
+(CompleteShip::InitiateTeleport). The oracle sessions `tools/hs-oracle/sessions/ps-c2.json` (F3, probe
+`hs_oracle/ps-c2.lua`, the `PSW4_*` ship and events) record mind-controlled crew on either ship (`ps-c2-mc`), a hacking
+pulse on each player system (`ps-c2-hk`) and boarders when the enemy is destroyed, escapes or is replaced by `LOAD`
+(`ps-c2-bd`, `-be`, `-bl`), for `sweep/twin/run.sh` with the map `{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-c2.lua",
+"prefix": "PH:"}`.
+
+`gameplay-parity`'s `GameplayParityPsFu2Checks` holds the crew rules of parity sweep follow-up FU2: no crew-slot icon
+above a system while boarders stand in its room (ShipSystem::BlockedBoosted's bOccupied); an enemy-side boarder that an
+enemy ship brings home becomes that ship's crew (CrewMember::iShipId); under Hyperspace a dying crew member stays
+functional (CrewMember::Functional is !bDead) through its death hold; a Slug lights the rooms that share a wall with its
+own, door or not. The oracle sessions `tools/hs-oracle/sessions/ps-fu2.json` (F3, probe `hs_oracle/ps-fu2.lua`, the
+`WP5T_*` and `PSW4_*` ships) follow every crew member's room and goal on the game clock: `ps-fu2-brd` and `-bd1-1/2`,
+`-bd2-1/2` (the enemy's boarding with no, sabotage and invasion boarding AI; `-bn1`, `-bn2`, `-bnw` from the first
+running frame), `ps-fu2-fb` (a crew member added to a ship that does not board), `ps-fu2-mc` (the response to its own
+mind-controlled crew member, then the release), `ps-fu2-rc` (an event boarder recalled by an enemy ship), `ps-fu2-zf` (a
+Zoltan's bonus power through its death hold), `ps-fu2-pl` (eight crew added to a full piloting room) and `ps-fu2-sl`
+(Slug vision with the sensors broken), for `sweep/twin/run.sh` with the map `{"lua":
+"tools/hs-oracle/tracer/data/hs_oracle/ps-fu2.lua", "prefix": "PH:"}`.
+
+`gameplay-parity`'s `GameplayParityPsFu3Checks` holds the combat rules of parity sweep follow-up FU3: the HUD weapon
+tooltip's crew damage (WeaponBlueprint::GetDescription: only a positive value, in health points, x15); a combat or
+boarding drone equipped while a ship is at the beacon does not launch until the next ship (vanilla; under Hyperspace the
+combat drone launches and the boarding drone waits); Hyperspace's enemy aim with more shots than rooms (a fresh pick per
+point past the room count); a custom augment's laser crystal shard aims at a room centre. The oracle sessions
+`tools/hs-oracle/sessions/ps-fu3.json` (F3, probe `hs_oracle/ps-fu3.lua`, the `PSFU3_*` ships and events and `PSW4_*`)
+record the weapon outcomes per family against fixed targets (`ps-fu3-out0` unshielded, `-out2` with shields and
+evasion, `-heavy` 80 Heavy Laser volleys), the enemy's volleys under a forced recharge (`-vol`, `-volq` per frame),
+drones equipped in a fight (`-pdrone`, `-pdrone2`), the enemy's boarding drone through the fight's end (`-edrone`) and
+its pod in flight (`-pod`), crystal shards (`-shbomb`, `-shlaser`) and erosion (`-erosion*`), for `sweep/twin/run.sh`
+with the map `{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-fu3.lua", "prefix": "PH:"}`; `sweep/jobs/ps-fu3.sh`
+compares out0 and out2 with `ps-fu3-cmp.py`. `tools/native-capture/sessions/ps-fu3-van.json` (1.6.14) holds `fv-drone`
+(drones equipped in a fight) and `fv-tip` (the weapon tooltip).
+
+`gameplay-parity`'s `GameplayParityPsFu5Checks` holds the world rules of parity sweep follow-up FU5: a location left with
+its hostile ship keeps its hazard (LocationEvent::ClearEvent's branch on the event's saved ship: asteroids stay, a storm
+stays a storm without the nebula's sensors cap; also once the ship was destroyed on a return, on every later clear and
+after a reload), without one only a nebula is left; the event's flags go either way; a new event at the beacon has no
+saved ship; the asteroid field's front layer is drawn over the player's ship while the jump zoom runs, and only then;
+under Hyperspace a ship naming a missing weapon gets a Basic Laser (vanilla: none); under Hyperspace an event's crew
+loss with none of the own crew aboard takes nobody (rewards.crew 0); the enemy's boarding drone aboard the player's
+ship explodes where it stands when the fight ends with its ship still there. The oracle sessions
+`tools/hs-oracle/sessions/ps-fu5.json` (F3, probe `hs_oracle/ps-fu5.lua`, the `PSFU5_*` ships and events) record a ship
+naming a missing weapon, drone and augment (`ps-fu5-miss`), an event's weaponOverride naming a missing weapon (`-ovr`),
+an event's crew loss with no own crew aboard (`-nocrew`) and with one left (`-last`); `ps-fu5-b.json` (seed 505, jumps to
+the beacon at 560,421 and back) a location left with its ship in asteroids (`-keep`), in a storm (`-storm`) and after
+the ship was destroyed (`-clear`), the enemy's surrender accepted (`-surr`), the enemy's boarding drone at the fight's end
+in frames 0.15 s apart (`-edrone`, probe `ps-fu3.lua`; `-edrone2` unpaused after the box) and the game over after
+the last crew died in an event (`-last2`). Their twins run with `sweep/twin/run.sh` and the map `{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-fu5.lua",
+"prefix": "PH:", "rules": [...]}` (`.build/hs/sweep/fixtures/ps-fu5/map.json`: 360 frames for `jump_arrive`, and key 1
+in the PSFU5_SURR and PSFU5_LOSE boxes, as the twin's plain pick closes a box without choosing) and `rows.py ...
+--multi box,loc`.
+
+`gameplay-parity`'s `GameplayParityPsFu6Checks` holds the crew and combat rules of parity sweep follow-up FU6: the enemy
+AI's volley keeps its aim as `ProjectileFactory.lastTargets` (one point per shot, cleared when the weapon loses power);
+CREW_STUCK brings home a boarder in its death hold (CountCrew counts crew until bDead) and it dies at home; a
+mind-controlled crew member makes no combat task on its own ship until it fights. The oracle sessions
+`tools/hs-oracle/sessions/ps-fu6.json` (F3, probe `hs_oracle/ps-fu6.lua`, written by `gen-ps-fu6.py`; ps-m1's start and
+hs_options) record M1's scripted fight on a game clock (`ps-fu6-fight`: the console steps' game time, every shot, shield
+hit, hit, the enemy's power, the escape and the jump), the response to the enemy's mind-controlled pilot with the
+station's manned flags (`-mc`), a human_medic through its death hold (`-heal`), CREW_STUCK with a boarder dying
+(`-stuck`) and AddSystem(13) with dualMedical on and off (`-dmed`, `-dmed0`), for `sweep/twin/run.sh` with the map
+`{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-fu6.lua", "prefix": "PH:", "console": {"pre": 0, "post": 37,
+"pick": 30}}`. The map's `console` key (twin.py, FU6) gives each console step 0.6 s and each pick 0.5 s of game time, as
+the oracle's driver takes (its console pauses the game while it types); `sweep/fixtures/ps-m1/map.json` uses it, so
+`hs-ps-m1` compares M1's fight, escape and jump rows.
+
+`gameplay-parity`'s `GameplayParityPsFu7Checks` holds the rule of parity sweep follow-up FU7: the enemy's boarding
+request counts its crew until bDead (ShipManager::CountCrew 0x49c180 from ShipAI::OnLoop 0x625c50), so a crew member in
+its death hold still counts and one a script killed (Lua Kill) no longer does. The oracle sessions
+`tools/hs-oracle/sessions/ps-fu7.json` (F3, probe `hs_oracle/ps-fu7.lua` after ps-fu3's or ps-c6's, written by
+`gen-ps-fu7.py`) record the fires a laser lights on ps-fu3's fixed target, per hit and per burning cell (`ps-fu7-fire`:
+180 Burst Laser II hits and 60 DamageArea hits with fireChance 10), and C6's en set, its mind control scenario then its
+targets one, and the targets one alone with every crew member of both ships and the enemy teleporter on the game clock
+(`-en`, `-mt`, `-t`). Their twins run with a map whose `lua` is the two probes joined (ps-fu3.lua + ps-fu7.lua; ps-c6.lua
++ ps-fu7.lua with ps-c6's rules). The `ps-fu3` job also runs `ps-fu7-fire` against its recorded oracle run (fixture
+`sweep/fixtures/ps-fu3/oracle/ps-fu7-fire`), and `ps-fu3-cmp.py` compares fire counts (burning cells, one or two per
+fire roll) with twice the Poisson spread.
 
 `gameplay-parity`'s `GameplayParityPsW1Checks` holds the fleet rules of parity sweep W1 (UpdateDangerZone, RenderLabels):
 a jump takes the beacons inside the zone in list order, with the fleet events that overtaking them one by one in that
@@ -497,7 +644,10 @@ right below it (CustomCrewManifest::OnInit; oracle session `overcap.json` `oc-hs
 pager's two arrows and its other page, every box on the 1024 x 768 HUD block and clear of the window and Accept. Both: a
 box and a dismiss button for every crew member, none under the over-capacity box, the touch layout's dismiss
 confirmation on the screen, and the extra one dismissed with its button and Yes. Touch without Hyperspace: a crew box
-dragged onto another keeps the order (no reorder on the crew screen; Hyperspace's swaps). On the emulator:
+dragged onto another keeps the order (no reorder on the crew screen; Hyperspace's swaps). Touch without Hyperspace: the iPad's
+DISMISSAL DropBox (`dismissBox`, at the iPad's (600, 500) of the crew window) on the screen and clear of the boxes (none
+under Hyperspace, user FU1-C1); on the emulator a
+crew box carried onto it lights it (`dismissHot`) and, lifted there, opens the dismiss confirmation. On the emulator:
 `tools/android-touch/overcap.mjs` ([ANDROID.md](ANDROID.md#testing)); round 21's runs and frames: `.build/hs/reports/overcap.md`.
 
 ## Window places
@@ -572,6 +722,18 @@ place and a quick slide still select or paint as before), and `tools/android-tou
 finger slid from empty space onto a crew box, and adb's keys with the system keyboard staying down. `TouchRouterTest` (`:app:testDebugUnitTest`) is the
 quick check of finger routing, at the engine's call only.
 
+## Mod scripts' libraries (sweep M1b)
+
+`node tests/hs-lua/libs.mjs` runs the probe `tools/hs-oracle/tracer/data/hs_oracle/ps-m1b.lua` in the runtime and compares
+each of its rows with the original's (oracle session `ps-m1b-libs`, `tests/hs-lua/libs-native.txt`); a row that differs on
+purpose is listed in the test with the sandbox's value and its reason. Then the sandbox: no path out of the folder,
+no shell or environment, the 50 MiB cap, the instruction cap with a script's hooks (cleared, replaced, a loop inside a
+hook, coroutines), the debug library's limits, os.exit and the folder kept per account. `node tests/hs-lua/lua-scan.mjs`
+(unit suite) and Android's `LuaScanTest` run the launcher's scan on `tests/hs-lua/lua-scan-cases.json`.
+`tests/mods-scripts.mjs` (menus suite; screenshots in `MODSCRIPTS_OUT`) plays a test mod in Chromium and Firefox:
+the question, Don't run, Run, the script's file in IndexedDB, os.exit's message, the Mods panel's folder, Ask again,
+Clear mod files and the disabled setting. Android on the emulator: [ANDROID.md](ANDROID.md#testing).
+
 ## Packaged integration runner
 
 The app image includes Node and Playwright's Chromium, Chrome, Edge and Firefox.
@@ -642,6 +804,55 @@ texts, the end of the box text) and the ship after one event per operation (reso
 augments, boarders, the `<system>` reward and its warnings). The oracle's start chain gives LASER_BURST_1, which the twin
 (started at the beacon) lacks: the `st` rows differ in that one weapon and nothing else.
 
+Hangar, ship start and progression (sweep S1): the `unlocks` mode ends with `GameplayUnlockPsS1Checks` (vanilla, F2,
+F3). It runs an event's `<unlockShip>` through the event box as `tools/native-capture/sessions/ps-s1-unlock.json` and
+`ps-s1-unlock2.json` recorded it in 1.6.14: a new ship adds its unlock line, "Ship Unlocked!" and the quest
+achievement; the same event again adds nothing; a ship unlocked another way (the console's SHIP) gets no line and no
+ship popup, only its quest; a harder difficulty earns the quest again with its popup, an easier one nothing; with the
+achievement popup option off vanilla still shows the ship popup (Hyperspace does not). Scrap Hoarder at 599/600 scrap
+and on the Kestrel follows `ps-s1-ach.json`. In vanilla it then starts all 28 layouts and compares each with the
+original's start (`ps-s1-starts.json`: the continue.sav written as the opening box opens, read by the save reader):
+reactor, hull, resources, systems' levels and reactor power, each crew member's race, room and slot, weapons, drones,
+augments. On F2/F3 it wins a run with an event's `<win>`: the ship's victory and the event's victory type, no
+ACH_WIN_* and no flagship type (HS CustomEvents.cpp), and a new game resets the type. The Hangar & AE diagnostic checks that the ship list's type tabs do not hover under its tutorial
+(ShipSelect::MouseMove) and which Stealth C rooms its Slug lights without sensors (native hangar frame). `tests/ui-presentation.mjs` checks that the Start box covers Crystal A's hull, as in the
+original's hangar (ShipBuilder::OnRender draws it after the ship), the Kestrel A medbay image at 0.75 alpha and Rename
+lit while a name is typed (`ps-s1-hstates.json` frames). `tests/hs-hangar.mjs` on F3 writes the seed box's frames (`seed-*.png`, the canvas at
+1280x720) for `tools/hs-oracle/sessions/ps-s1-seed.json`.
+
+Lua runtime (sweep M1): `tools/hs-oracle/sessions/ps-m1.json` with the probe `tracer/data/hs_oracle/ps-m1.lua`.
+`ps-m1-ev` (F3) installs a callback on every InternalEvent and RenderEvent and writes, per phase (idle, mouse and
+keys, returns, fight, escape, after), which fired with what argument types and in which order, then what returns do
+(dodge, augments, equipment, danger, level text, bonus power, stats, crew power, a pre-empted key), the registration
+and SWIG errors scripts meet, the Lua libraries and globals, the weapon and drone boxes (MV Kestrel, `PSU1_D5`,
+GOD), a fight's `lastTargets` and `DamageTarget`, a Lua clone bay, and the enemy after its escape. `ps-m1-f2` (F2)
+checks that plain Hyperspace starts its Lua. The twin is `sweep/twin/run.sh tools/hs-oracle/sessions/ps-m1.json
+ps-m1-ev sweep/fixtures/ps-m1/map.json`; `sweep/jobs/ps-m1-cmp.py` compares the rows by key with the allow list
+`sweep/fixtures/ps-m1/allow.txt`. `tests/console.mjs` checks `LUA` on F2 without mod scripts.
+
+Multiverse end to end (sweep M3): `tools/hs-oracle/sessions/ps-m3.json` with the probe `tracer/data/hs_oracle/ps-m3.lua`
+(test ships `PSM3_TARGET`, `PSM3_TEMPORAL` and events `PSM3_FIGHT`, `PSM3_TFIGHT` in the tracer's appends) puts each
+Multiverse script into a state that triggers it and reads what the script changed, at fixed game times. `ps-m3-a`:
+the load-time tables (mods.multiverse's names, what tag-data-read parses, armor, beam and environment tables), the
+variables MV keeps, the map's links (dead-end-eliminator), bonus-power and auto-manning augments, armor and chaotic
+coal on a hull hit, Sentry missiles' power limit (sys-limit), the hacking, repair, pride, conservative, stealth,
+system-target and advanced-sensors weapons in a fight, artillery targeting. `ps-m3-t3`: the enemy's temporal AI on a
+burning room. `ps-m3-tc`: the player's temporal box on the Rhyme cruiser (its speed-up button and a room). `ps-m3-b`:
+out-of-fight healing, atmosphere breaches, the tagged weapons' tooltip text, the toggle hotkey and `gui.choiceBox`, a
+surrender clearing shots, the HER sector and fight. `ps-m3-r`: the Rhyme cruiser's hull animation and map icon.
+`ps-m3-e`: blue giant, gravastar and light nebula. `ps-m3-x`: astrometrics, the pro-hull beam, the pride beam's first
+frames. `ps-m3-g`: a name typed into the gatling-name box (custom-gatling-name writes `gui.choiceBox.mainText`).
+`ps-m3-s`: a surrender loaded after a volley (MV's destroy_all_projectiles, read from an on_game_event callback).
+`ps-m3-x2` and `ps-m3-y` are diagnostic (the pro-hull beam's frames; weapon power on AddWeapon and ForceIncreasePower,
+Projectile:Kill) and not in the job. The
+runner job `hs-ps-m3` (`sweep/jobs/ps-m3.sh`) runs every twin against the recorded oracle traces in
+`sweep/fixtures/ps-m3/oracle`; one by hand is `sweep/twin/run.sh tools/hs-oracle/sessions/ps-m3.json <id>
+sweep/fixtures/ps-m3/map.json`. `sweep/jobs/ps-m3-cmp.py` pairs the rows by name and order, with
+`sweep/fixtures/ps-m3/allow.txt` (each allowed difference with its reason; `rel` compares spans of a harness-delayed
+timeline). The full-run policy (oracle `autoplay` and `BrowserHsFullRunDiagnostics`) also skips Multiverse's toggle
+menu and Sylvan hailing himself, two choices that lead back to the same box; the oracle's `HS_ORACLE.fixdrive()` also
+resumes a game a stray console line paused.
+
 ## Developer verification
 
 Node unit entry points call the same functions used by the web page. Existing CLI
@@ -666,8 +877,13 @@ actual pointer/keyboard input and the normal animation-frame clock. Crew repair,
 venting, FTL charge/jump, enemy volleys, weapons, rewards, cargo dragging and a
 paid upgrade run without engine probes, console grants, fabricated observations,
 invulnerability or accelerated time steps. Each browser also runs the entry, Exit, fullscreen, reload and Continue cases.
-This remains automated browser
-acceptance; it does not establish human play or complete native presentation.
+At STAR_MAP_1 it also checks that Escape and CANCEL leave the map open
+(the original's rule, [TUTORIAL.md](TUTORIAL.md#original-captures-parity-sweep-u5-2026-11-08)), and at FIRE_PC_1 that the
+selected crew is dropped before the airlock click. This remains automated browser
+acceptance; it does not establish human play. `BrowserTutorialAdapterDiagnostics` (web-diag) checks the same map,
+door and ship-window Escape rules with fixtures, and that dying in the tutorial shows gameover_tutorial without touching
+the ordinary run or profile. The desktop frames against the original are a manual sweep step:
+`tools/native-capture/sessions/ps-u5-tutorial.json` on both drivers, then `.build/hs/sweep/frames.py diff`.
 
 `TUTORIAL_UI_BROWSERS=Chrome,Edge,Firefox` selects browsers.
 `TUTORIAL_UI_FULL_BROWSERS=Chrome,Edge,Firefox` selects full traversals; an empty value runs

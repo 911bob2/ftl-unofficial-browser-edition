@@ -72,6 +72,18 @@ class BrowserRunProgress(private val game: InGameState) {
         game.mainGame?.profile?.recordShipVictory(game.player.type.name, game.difficulty)
     }
 
+    /**
+     * A victory without the flagship (Hyperspace's win crew power): AchievementTracker::SetVictoryAchievement alone,
+     * which awards only the ship's victory (1.6.9 0x430040: SetAchievement(<ship> + "_VICTORY")) and runs HS's unlock
+     * hook; ACH_WIN_EASY/NORMAL stay with the flagship (oracle ps-c6-win: no Federation Victory popup on a profile
+     * without achievements).
+     */
+    fun shipVictoryOnly() {
+        if (victoryAwarded) return
+        victoryAwarded = true
+        game.mainGame?.profile?.recordShipVictory(game.player.type.name, game.difficulty)
+    }
+
     /** The console's victory opens the credits without defeating anything: only the victory screen's unlocks. */
     fun skipVictoryAward() {
         victoryAwarded = true
@@ -82,7 +94,11 @@ class BrowserRunProgress(private val game: InGameState) {
         finished = true
         outcome = result
         if (result == GameOverWindow.Outcome.WIN) {
-            awardVictory()
+            // The flagship awarded its win achievements as it broke up (flagshipDefeated). Every other victory is
+            // Hyperspace's: a <finalBoss> after the defeat that follows it (CustomEvents.cpp's WorldManager::OnLoop
+            // hook, 6974) and an event's <win> (5643) call AchievementTracker::SetVictoryAchievement alone, with no
+            // ACH_WIN_* (HS sets CommandGui::alreadyWon itself, so the original's flagship victory never runs).
+            shipVictoryOnly()
             game.mainGame?.profile?.recordVictoryScreen(game.player.type.name, game.difficulty)
         }
         game.mainGame?.profile?.recordBrowserRun(snapshot())

@@ -39,6 +39,9 @@ public interface AndroidHost {
     /** Hyperspace Lua log lines: kind 0 debug, 1 info, 2 warning, 3 error. */
     default void luaLog(int kind, String text) {}
 
+    /** A mod script called os.exit (the original closes FTL): source is the script's chunk name. Called on the game thread. */
+    default void luaExit(String source) {}
+
     AndroidHost NONE = new AndroidHost() {};
 
     static AndroidHost get() { return Holder.host; }

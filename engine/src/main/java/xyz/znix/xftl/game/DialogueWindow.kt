@@ -144,7 +144,6 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
 
     private val augmentStringWidth = font.getWidth(game.translator["augment"])
 
-    private val shipUnlockSound = game.sounds.getSample("unlock")
 
     /**
      * The currently-shown event. This is null if there's only [syntheticEvents]
@@ -270,6 +269,7 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         try {
             // LuaLibScript.cpp: script.on_game_event callbacks before CreateLocation / UpdateLocation.
             xyz.znix.xftl.hs.events.HsEventsLua.gameEvent(created, false)
+            flow.clearCrewLossWithoutCrew(game, created)
             if (arrival) {
                 flow.beforeCreateLocation(created)
                 loadEvent(event)
@@ -352,20 +352,15 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             extraText += (if (xyz.znix.xftl.hs.HS.active) " \n\n" else "\n\n") + game.translator[messageId]
         }
 
-        // When ships are first unlocked, they add on an extra line.
-        // We also need to play the unlock sound now, so we might as well also
-        // update the user's profile while we're here.
+        // WorldManager 1.6.14 0x61b080: a ship this unlocks adds its unlock line (none when the ship was unlocked
+        // already, native capture ps-s1-unlock u-zq); its popup plays the unlock sound (AchievementTracker::OnLoop).
         val unlockShip = event.event.unlockShip
         if (unlockShip != null) {
             val family = game.content.shipFamilies.families.firstOrNull { it.unlockId == unlockShip }
             checkNotNull(family) { "No ship family with unlock ID: '$unlockShip'" }
-            val oldStatus = game.mainGame.profile.getShipUnlock(family)
-            game.mainGame.profile.unlockShip(family, game.difficulty, fromEvent = true)
-
-            if (oldStatus == null) {
-                shipUnlockSound.play()
-                extraText += "\n\n" + game.translator["unlock_ship_$unlockShip"]
-            }
+            // Hyperspace's rewrite (CustomStore.cpp:2187) puts a space before the break, as for the quest line.
+            if (game.mainGame.profile.unlockShip(family, game.difficulty, fromEvent = true))
+                extraText += (if (xyz.znix.xftl.hs.HS.active) " \n\n" else "\n\n") + game.translator["unlock_ship_$unlockShip"]
         }
 
         // Hyperspace Lua: CreateChoiceBox's PRE_CREATE_CHOICEBOX (CustomAugments.cpp), before the original's part.
@@ -1400,9 +1395,21 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             return syntheticEvents.isNotEmpty() || options.getOrNull(idx)?.let { isConditionsSatisfied(it) } == true
         }
 
+    // The pointer was valid over a choice last frame (MouseControl +0x1f).
+    private var choicePointerValid = false
+
     override fun updateUI(x: Int, y: Int) {
         super.updateUI(x, y)
+        updateChoiceHover(x, y)
+        // MouseControl::OnRender (0x4e6240) plays hoverBeep when the pointer turns valid; ChoiceBox::MouseMove
+        // (0x4f6ab0) makes it valid over any choice but an unavailable one.
+        val valid = hoveredOption?.let { idx -> syntheticEvents.isNotEmpty() || options.getOrNull(idx)?.let { isConditionsSatisfied(it) } == true } == true
+        if (valid && !choicePointerValid && !TouchMode.enabled)
+            game.sounds.getSampleOrWarn("hoverBeep")?.play()
+        choicePointerValid = valid
+    }
 
+    private fun updateChoiceHover(x: Int, y: Int) {
         // The bounding boxes are in window coordinates; convert so they
         // still match when the window is drawn scaled (identity when
         // renderScale is 1). super.updateUI converts for the buttons

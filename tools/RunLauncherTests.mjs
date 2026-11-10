@@ -4,7 +4,7 @@ import {join} from 'node:path';
 const suites=process.argv[2]?.split(',')??[];
 // Optional third argument: run only these scripts of the chosen suites, e.g. `menus local-mode`.
 const only=process.argv[3]?.split(',');
-const scripts={unit:['audio','frame-pacer','diagnostic-export','resource-cache','dat','mods-merge','mods-mega','saves-client'],security:['server-security','security','accounts','account-recovery','onboarding','mods-security','saves-v2'],menus:['session-ui','local-mode','menus','tutorial-ui','launcher','diagnostics-ui','diagnostics-assets-ui','resource-cache-ui','mods-ui','mods-browser','mods-play','mods-move','saves-browser','saves-softlock'],diagnostics:['diagnostics'],storage:['debug-storage'],production:['production'],engine:['baseline']};
+const scripts={unit:['audio','frame-pacer','diagnostic-export','resource-cache','dat','mods-merge','mods-mega','saves-client','hs-lua/lua-scan'],security:['server-security','security','accounts','account-recovery','onboarding','mods-security','saves-v2'],menus:['session-ui','local-mode','menus','tutorial-ui','launcher','diagnostics-ui','diagnostics-assets-ui','resource-cache-ui','mods-ui','mods-browser','mods-play','mods-move','mods-scripts','saves-browser','saves-softlock'],diagnostics:['diagnostics'],storage:['debug-storage'],production:['production'],engine:['baseline']};
 if(!suites.length||suites.some(s=>!Object.hasOwn(scripts,s)))throw Error('Invalid test suite');
 const root=process.cwd(),children=new Set();
 // Every non-production fixture offers the test mod catalogue (tests/fixtures/mods/catalogue.mjs): our F1 archives stand in
@@ -63,7 +63,7 @@ try {
  for(const suite of suites) {
   console.log('BEGIN '+suite);const started=Date.now();let failed=false;
   for(const script of scripts[suite].filter(name=>!only||only.includes(name))){
-   const testFixture=['session-ui','accounts','onboarding','local-mode','menus','tutorial-ui','launcher','diagnostics-ui','diagnostics-assets-ui','resource-cache-ui','mods-ui','mods-browser','mods-play','mods-move','saves-browser','saves-softlock','diagnostics','baseline'].includes(script)?await fixture(8084,'.build/fixture-'+script):null;
+   const testFixture=['session-ui','accounts','onboarding','local-mode','menus','tutorial-ui','launcher','diagnostics-ui','diagnostics-assets-ui','resource-cache-ui','mods-ui','mods-browser','mods-play','mods-move','mods-scripts','saves-browser','saves-softlock','diagnostics','baseline'].includes(script)?await fixture(8084,'.build/fixture-'+script):null;
    try{if(await command(script,{ACCOUNT_TEST_ORIGIN:'http://localhost:8084',PRODUCTION_TEST_TARGET:'http://127.0.0.1:8086',PRODUCTION_FIXTURE_DIR:productionData?.data??'',PRODUCTION_RESULTS_DIR:join(root,'.build'),DEBUG_FIXTURE_DIR:testFixture?.data??'',LAUNCHER_TEST_JOBS:'0',RUNNER_FIREFOX_WINDOWED:screen?'1':'0',...(screen?{DISPLAY:screen,PULSE_SERVER:pulse}:{})}))failed=true;}
    finally{if(testFixture)await stop(testFixture.child);}
   }

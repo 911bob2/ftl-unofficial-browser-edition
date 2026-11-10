@@ -24,7 +24,8 @@ public final class BrowserEngine {
         if(game!=null)game.shutdown();
         container.input.removeAllListeners();container.input.reset();
         BrowserFiles.enableAE=ae;BrowserFiles.hydrate(run,profile);BrowserFiles.hydrateSettings();xyz.znix.xftl.hs.HS.init();graphics=new Graphics();graphics.markCurrentImageTransformSource();ShaderProgramme.getSHADER_SCREEN_SIZE().set(1280,720);game=new MainGame(new MainGame.CommandLineArgs());game.init(container);
-        if(!xyz.znix.xftl.hs.HS.scripts.isEmpty())xyz.znix.xftl.hs.lua.HsLua.startForSession(game,graphics);
+        // Hyperspace starts its Lua state at start-up (Global.cpp:138, new LuaScriptInit()), scripts or not: the console's LUA works on plain Hyperspace too
+        if(xyz.znix.xftl.hs.HS.active||!xyz.znix.xftl.hs.HS.scripts.isEmpty())xyz.znix.xftl.hs.lua.HsLua.startForSession(game,graphics);
     }
     /** CFPS::OnLoop (0x5ba020) caps a frame at half a speed unit, 1/32 s: a slower frame slows the game down. */
     static final float MAX_STEP = 1f / 32f;
@@ -49,7 +50,7 @@ public final class BrowserEngine {
     @JSExport public static String hsProfile(boolean reset){return xyz.znix.xftl.hs.lua.HsLua.profileJson(reset);}
     /** Diagnostics mode hs-lua: Lua runtime against real objects (bench, in-situ frames, script API semantics). */
     @JSExport public static String hsLuaProbe(int frames){return xyz.znix.xftl.hs.lua.LuaProbe.INSTANCE.run(game,container,graphics,frames);}
-    // Hyperspace Lua bridge: imports of web/vendor/hs-lua.wasm (see web/hs-lua.mjs). Reached only with mod scripts.
+    // Hyperspace Lua bridge: imports of web/vendor/hs-lua.wasm (see web/hs-lua.mjs). Reached only with Hyperspace.
     @JSExport public static void hsLuaLog(int kind,String text){xyz.znix.xftl.hs.lua.HsLua.log(kind,text);}
     @JSExport public static int hsLuaRand32(){return xyz.znix.xftl.hs.lua.LuaRng.rand32();}
     @JSExport public static void hsLuaSrand32(int seed){xyz.znix.xftl.hs.lua.LuaRng.srand32(seed);}
@@ -89,6 +90,7 @@ public final class BrowserEngine {
     @JSExport public static String nativeImportProbe(String run,String profile,String prefix){return BrowserNativeImportDiagnostics.INSTANCE.run(game,run,profile,prefix);}
     @JSExport public static String parityDescribeSave(String base64){return BrowserParity.INSTANCE.describeSave(game.parseVanillaSaveForParity(java.util.Base64.getDecoder().decode(base64)));}
     @JSExport public static boolean parityShowEvent(String name,String needle){return game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state && BrowserParity.INSTANCE.showEvent(state,name,needle);}
+    @JSExport public static String soundTrace(boolean start){if(start)xyz.znix.xftl.game.SoundTrace.start();return xyz.znix.xftl.game.SoundTrace.json();}
     @JSExport public static void focusChanged(boolean focused){if(game!=null)game.setBrowserFocus(focused);}
     @JSExport public static String optionsProbe(){return BrowserOptionsDiagnostics.INSTANCE.run(game,container,graphics);}
     @JSExport public static String gameplayParityProbe(){return BrowserGameplayParityDiagnostics.INSTANCE.run(game,container,graphics);}
@@ -98,7 +100,7 @@ public final class BrowserEngine {
     @JSExport public static String parityGeneration(String json){return BrowserParityGeneration.INSTANCE.run(game,container,json);}
     @JSExport public static String optionsFixture(String kind){return BrowserOptionsDiagnostics.INSTANCE.fixture(game,container,graphics,kind);}
     @JSExport public static void resetInput(){if(game!=null&&game.getCurrentState() instanceof xyz.znix.xftl.game.InGameState state)state.getShipUI().cancelDrag();container.input.reset();}
-    @JSExport public static void shutdown(){if(game!=null){game.shutdown();game=null;}container.input.removeAllListeners();container.input.reset();}
+    @JSExport public static void shutdown(){if(xyz.znix.xftl.hs.HS.luaActive)xyz.znix.xftl.hs.lua.HsLua.shutdown();if(game!=null){game.shutdown();game=null;}container.input.removeAllListeners();container.input.reset();}
     @JSExport public static boolean inFlight(){return game.isInFlight();}
     @JSExport public static void save(){
         if(game.isTutorialRunning()){

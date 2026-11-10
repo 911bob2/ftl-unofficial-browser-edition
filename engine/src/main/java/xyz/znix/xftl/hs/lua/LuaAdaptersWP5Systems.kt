@@ -187,18 +187,22 @@ object LuaAdaptersWP5Systems {
     private fun activeManned(s: AbstractSystem): Int =
         st(s).frame[A.A_ShipSystem_iActiveManned]?.toInt() ?: LuaReg.numGet[A.A_ShipSystem_iActiveManned]!!.get(s).toInt()
 
-    /** ShipSystem::BlockedBoosted(countLimit) (1.6.9 0x6155f0). */
+    /**
+     * ShipSystem::BlockedBoosted(countLimit) (1.6.9 0x6155f0, 1.6.14 0x63b8a0): iTempPowerCap is the cap as the status
+     * wrote it (SetPowerCap keeps it unclamped, [AbstractSystem.scriptedPowerCap]), iTempPowerLoss the event loss plus
+     * Hyperspace's applied loss ([AbstractSystem.totalPowerLoss]), as the crew rule (AbstractSystem.statusBlocksBoost).
+     */
     private fun blockedBoosted(s: AbstractSystem, countLimit: Boolean): Boolean {
         val state = st(s)
         if (countLimit) {
             val lb = if (state.bBoostable && state.bLevelBoostable) 1 else 0
-            val cap = s.scriptedPowerLimit ?: HsPower.CAP_NONE
+            val cap = s.scriptedPowerCap ?: HsPower.CAP_NONE
             if (cap < lb + s.energyLevels) return true
         }
         val lock = lockCount(s)
         val onFire = s.room?.fires?.any { it != null } == true
         if (!occupied(s) && !onFire && lock != -1 && lock < 1 && hackEffect(s) < 2 && s.damagedEnergyLevels == 0 &&
-            HsSystemsLua.effectivePower(s) > 0 && (hackEffect(s) < 1 || !underAttack(s)) && s.scriptedPowerLoss < 1)
+            HsSystemsLua.effectivePower(s) > 0 && (hackEffect(s) < 1 || !underAttack(s)) && s.totalPowerLoss < 1)
             return false
         return true
     }

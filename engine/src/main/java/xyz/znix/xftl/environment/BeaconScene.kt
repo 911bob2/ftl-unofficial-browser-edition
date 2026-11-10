@@ -117,7 +117,7 @@ class BeaconScene {
         }
 
         /** SwitchPlanet: "NONE" clears the planet with no draw; otherwise pick until it differs, then x, y and the turn. */
-        private fun pickPlanet(game: InGameState, map: xyz.znix.xftl.sector.GameMap, scene: BeaconScene, list: ImageList) {
+        internal fun pickPlanet(game: InGameState, map: xyz.znix.xftl.sector.GameMap, scene: BeaconScene, list: ImageList) {
             if (list === ImageList.NONE || list.name == "NONE") {
                 map.spacePlanet = null
                 return
@@ -129,9 +129,12 @@ class BeaconScene {
                 map.spacePlanet = null
                 return
             }
+            // SwitchPlanet (1.6.14 0x418280, 1.6.9 0x416860) takes the picked path's texture: the planet is drawn at the
+            // texture's size and placed in 1280 - w by 720 - h; the list's w and h are not read (HS oracle ps-u3-img: a
+            // planet listed at 230 x 230 from a 460 px file shows at 460, currentPlanet.w 460)
             val img = planet.getImg(game)
-            val w = planet.width ?: img.width
-            val h = planet.height ?: img.height
+            val w = img.width
+            val h = img.height
             scene.planet = planet.path
             scene.planetW = w
             scene.planetH = h
@@ -243,8 +246,8 @@ class BeaconScene {
             scene.pdsPlanet = planet?.path ?: ""
             if (planet != null) {
                 val img = planet.getImg(game)
-                scene.pdsW = planet.width ?: img.width
-                scene.pdsH = planet.height ?: img.height
+                scene.pdsW = img.width
+                scene.pdsH = img.height
                 scene.pdsTurned = NativeRandom.next31() % 2 == 1
             }
         }

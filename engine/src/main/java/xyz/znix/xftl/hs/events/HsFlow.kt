@@ -351,6 +351,18 @@ object HsFlow {
     /** g_noASBPlanet: the event UpdateLocation is showing keeps its planet when it starts an ASB. */
     @JvmField var noAsbPlanet = false
 
+    /**
+     * CustomEvents.cpp's CreateLocation and UpdateLocation hooks (priority 100, before the original): an event that
+     * takes crew while the player's ship holds none of its own crew (CountCrew(false): alive, not intruders, not
+     * drones; the rest are aboard the enemy) takes none ([CreatedEvent.hsCrewLossCleared]).
+     */
+    @JvmStatic
+    fun clearCrewLossWithoutCrew(game: InGameState, event: CreatedEvent) {
+        val player = game.player ?: return
+        if (event.template.removedCrew.isNotEmpty() && xyz.znix.xftl.crew.CrewStuck.countCrew(player, false) == 0)
+            event.hsCrewLossCleared = true
+    }
+
     /** UpdateLocation (before the original). */
     fun beforeUpdateLocation(game: InGameState, event: CreatedEvent) {
         if (customFor(game, event)?.noASBPlanet == true) noAsbPlanet = true
@@ -401,9 +413,9 @@ object HsFlow {
         }
     }
 
+    // SoundControl::StartPlaylist with the names as given: a name sounds.xml lacks plays silence (0x5d0210).
     private fun startPlaylist(game: InGameState, names: List<String>) {
-        val tracks = names.mapNotNull { game.sounds.getTrackOrNull(it) }
-        if (tracks.isNotEmpty()) game.sounds.switchMusicList(tracks)
+        game.sounds.switchMusicList(names.map { game.sounds.getTrack(it) })
     }
 
     /** CustomCreateLocation: the HS actions an event takes when it is shown. */
@@ -422,7 +434,7 @@ object HsFlow {
         xyz.znix.xftl.hs.render.HsEventButtons.apply(custom.clearEventButtons, custom.eventButtons)
         if (custom.recallBoarders) HsEventEffects.recallBoarders(game, custom.recallBoardersShip, custom.recallBoardersForce)
         if (custom.playSound.isNotEmpty()) HsEvents.playSound(game, custom.playSound)
-        // SoundControl::StartPlaylist: the sector's tracks again, or the one named track (an unknown name plays none).
+        // SoundControl::StartPlaylist: the sector's tracks again, or the one named track (an unknown name: silence).
         if (custom.resetMusic) startPlaylist(game, game.currentBeacon.sector.info.type.soundtracks)
         if (custom.playMusic.isNotEmpty()) startPlaylist(game, listOf(custom.playMusic))
         if (custom.removeStore) {

@@ -20,6 +20,25 @@ import xyz.znix.xftl.weapons.AbstractWeaponBlueprint
 private val HS_UNINSTALLED_BORDER = xyz.znix.xftl.rendering.Colour(182, 79, 77)
 private val HS_UNINSTALLED_FLOOR = xyz.znix.xftl.rendering.Colour(161, 159, 154)
 
+/** The systems whose console is lit in the hangar (ConsoleGlow.level with the start's power and no crew skill). */
+private val HANGAR_GLOW = setOf("shields", "engines", "pilot", "sensors")
+
+/** The glow image placed and turned as Room.drawConsoleGlow does. */
+private fun drawGlow(g: Graphics, img: xyz.znix.xftl.rendering.Image, glow: xyz.znix.xftl.systems.ConsoleGlow.Glow, x: Int, y: Int) {
+    var gx = (x + glow.x).toFloat(); var gy = (y + glow.y).toFloat()
+    val angle = when (glow.dir) { "RIGHT" -> 90f; "LEFT" -> 270f; "UP" -> 180f; else -> 0f }
+    if (angle == 90f || angle == 270f) {
+        val shift = (img.width - img.height) / 2f
+        gx -= shift; gy += shift
+    }
+    val ix = gx.toInt(); val iy = gy.toInt()
+    if (angle == 0f) { img.draw(ix, iy, 0.75f); return }
+    g.pushTransform()
+    g.rotate(ix + img.width / 2f, iy + img.height / 2f, angle)
+    img.draw(ix, iy, 0.75f)
+    g.popTransform()
+}
+
 /**
  * A ship that can be rendered in the hangar.
  *
@@ -74,8 +93,10 @@ class EditableShip(
 
         // Draw the doors, in their door system level's colour as in game.
         val doorImage = state.getImg("img/effects/door_sheet.png")
+        // No doors system at the start is level 0, drawn as a broken door (Door.level and its filter in game; native
+        // Rock B hangar frame, whose doors system is not installed).
         val doorLevel = rooms.firstNotNullOfOrNull { it.system?.takeIf { s -> s.type == "doors" } }
-            ?.startingPower?.coerceAtLeast(1) ?: 1
+            ?.startingPower ?: 0
         if (renderAll) {
             for (door in doors) {
                 door.draw(g, doorImage, doorLevel)
@@ -138,7 +159,42 @@ class EditableShip(
         val system = room.system
         if (visible && system != null && (!drawSystems || system.startingPower>0)) {
             val img = system.interiorImage?.let { state.getImg(it) }
-            img?.draw(x, y)
+            // The hangar preview is the game's own ship render (ShipBuilder::OnRender calls ShipManager's), which
+            // draws room images at 0.75 alpha, as Room.renderSystemStuff does in game.
+            if (drawSystems) img?.draw(x, y, 0.75f) else img?.draw(x, y)
+            // ShipSystem::OnRenderFloor's console light, as Room.drawConsoleGlow draws it in game: the boostable
+            // systems with power at the start (weapons start with none, doors are level boostable) show level 1, the
+            // hangar's crew having no skill.
+            val path = system.interiorImage
+            if (drawSystems && path != null && system.type in HANGAR_GLOW) {
+                xyz.znix.xftl.systems.ConsoleGlow.of(state.datafile, path)?.let { glow ->
+                    state.getImgOrNull("img/ship/interior/" + glow.name + "1.png")?.let { drawGlow(g, it, glow, x, y) }
+                }
+            }
+            // The systems' own floor drawings, as their drawRoomFloor in game: the clone bay's tub on its slot and the
+            // teleporter's pads, lit when it has power (native Mantis C hangar frame).
+            // Without a blueprint slot the tub stands on slot 1 (slot 0 in a one-tile room), AbstractSystem's default.
+            val tub = system.computerPoint ?: (if (room.w * room.h > 1) 1 else 0).let { ConstPoint(it % room.w, it / room.w) }
+            if (drawSystems && system.type == "clonebay") tub.let { p ->
+                val px = x + p.x * ROOM_SIZE; val py = y + p.y * ROOM_SIZE
+                state.getImgOrNull("img/ship/interior/clone_bottom.png")?.draw(px, py)
+                state.getImgOrNull("img/ship/interior/clone_top.png")?.draw(px, py)
+            }
+            if (drawSystems && system.type == "teleporter") {
+                state.getImgOrNull("img/ship/interior/" + (if (system.startingPower > 0) "teleporter_selected" else "teleporter_off") + ".png")?.let { pad ->
+                    for (cx in 0 until room.w) for (cy in 0 until room.h)
+                        pad.drawAlignedCentred(x + cx * ROOM_SIZE + ROOM_SIZE / 2, y + cy * ROOM_SIZE + ROOM_SIZE / 2)
+                }
+            }
+            // The walls go over the room image (Ship::OnRenderWalls after the floors, as Room.render does in game):
+            // an image wider than its room (the Kestrel's engines) does not cover the wall.
+            if (drawSystems) {
+                g.colour = Constants.ROOM_BORDER_COLOUR
+                g.fillRect(x.f, y.f, room.pixelWidth.f, 2f)
+                g.fillRect(x.f, (y + room.pixelHeight - 2).f, room.pixelWidth.f, 2f)
+                g.fillRect(x.f, y.f, 2f, room.pixelHeight.f)
+                g.fillRect((x + room.pixelWidth - 2).f, y.f, 2f, room.pixelHeight.f)
+            }
         }
 
         // Draw the system icon.
@@ -467,7 +523,7 @@ class EditableDoor(
 
             doorsImage.drawSection(
                 -ROOM_SIZE / 2, -ROOM_SIZE / 2, ROOM_SIZE, ROOM_SIZE,
-                sheetX, sheetY
+                sheetX, sheetY, colour = if (level == 0) Constants.DOOR_BROKEN_FILTER else null
             )
 
             g.popTransform()

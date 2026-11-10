@@ -95,6 +95,7 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
 
     internal fun trace(kind: String, name: String) {
         traceSink?.invoke(kind, name)
+        SoundTrace.record(kind, name)
     }
 
     // The SFX/music volumes, as set in the UI
@@ -169,15 +170,19 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
         }
     }
 
+    /**
+     * A sound by its sounds.xml name. A name the files lack plays nothing, as SoundControl::PlaySoundMix
+     * (0x5d5160) logs "Sound name not found" and returns, so a mod without a sound the game asks for goes on silently.
+     */
     override fun getSample(name: String): FTLSound {
-        val spec = samples[name] ?: error("No sound sample listed in sounds.xml for '$name'")
+        val spec = samples[name] ?: return MissingSound(name, this).also { warnMissing("sound", name) }
         return get(spec)
     }
 
     override fun getSampleOrWarn(name: String): FTLSound? {
         val spec = samples[name]
         if (spec == null) {
-            println("No sound sample listed in sounds.xml for '$name'")
+            warnMissing("sound", name)
             return null
         }
         return get(spec)
@@ -186,20 +191,28 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
     /**
      * Create a new handle that can trigger this sound loop.
      *
-     * This doesn't actually produce any audio unless [LoopHandle.continueLoopAnyShip] is called.
+     * This doesn't actually produce any audio unless [LoopHandle.continueLoopAnyShip] is called. A loop the
+     * files lack plays nothing (UpdateSoundLoop starts it through PlaySoundMix, which finds no such sound).
      */
     override fun getLoop(name: String): LoopHandle {
-        val spec = loops[name] ?: error("No sound loop listed in sounds.xml for '$name'")
+        val spec = loops[name] ?: return LoopHandle(SoundSpec.missing(name), this).also { warnMissing("loop", name) }
         return LoopHandle(spec, this)
     }
 
     /**
      * Gets the description of a music track by its ID.
      *
-     * This doesn't create any resources, but it can be passed to [switchToMusic].
+     * This doesn't create any resources, but it can be passed to [switchToMusic]. A name the files lack gives a
+     * track that plays silence (the playlist's "Bad track name", 0x5d0210).
      */
     override fun getTrack(name: String): MusicSpec {
-        return musicTracks[name] ?: error("No music track listed in sounds.xml for '$name'")
+        return musicTracks[name] ?: MusicSpec.missing(name).also { warnMissing("music track", name) }
+    }
+
+    private val warned = HashSet<String>()
+
+    private fun warnMissing(kind: String, name: String) {
+        if (warned.add("$kind $name")) println("[WARN] No $kind listed in sounds.xml for '$name'")
     }
 
     override fun getLoopOrNull(name: String): LoopHandle? = loops[name]?.let { LoopHandle(it, this) }
@@ -211,21 +224,53 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
         playingLoops.add(loop)
     }
 
+    /**
+     * Loops sliding out: UpdateSoundLoop (0x5d5800) with a count of 0 slides the loop's channel to silence over
+     * 500 ms and lets it end there (BASS_ChannelSlideAttribute volume -1), in real time, paused or not.
+     */
+    private val fadingLoops = ArrayList<FadingLoop>()
+
+    private class FadingLoop(val sound: SoundInstance, val volume: Float, val start: Long)
+
+    private fun fadeOutLoop(sound: SoundInstance) {
+        sound.isPaused = false
+        fadingLoops += FadingLoop(sound, sound.volume, System.currentTimeMillis())
+    }
+
+    /** Loops still sliding out, for the parity checks. */
+    val diagnosticFadingLoops: Int get() = fadingLoops.size
+
+    /** A one-shot's channel volume before the sound volume setting, for the parity checks. */
+    fun diagnosticChannelVolume(sound: SoundInstance): Float? = (sound as? RealSoundInstance)?.channelVolume
+
+    private fun updateFadingLoops() {
+        if (fadingLoops.isEmpty()) return
+        val now = System.currentTimeMillis()
+        fadingLoops.removeAll { fading ->
+            val left = 1f - (now - fading.start) / LOOP_FADE_OUT_MS
+            if (left <= 0f) fading.sound.stop() else fading.sound.volume = fading.volume * left
+            left <= 0f
+        }
+    }
+
     fun updateLoopedSounds(gamePaused: Boolean) {
+        updateFadingLoops()
+
         // This is a bit of a horrible hack, but we have to handle the out-of-fuel
         // distress beacon sound specially since it's a loop that plays while
-        // the game is paused.
+        // the game is paused (ParseSoundFile marks every loop but "distress" to pause with the game).
         if (playingFuelDistressSound) {
             if (fuelDistressSound == null) {
-                val sound = get(loops["distress"] ?: error("Missing distress sound loop!"))
-                fuelDistressSound = sound.internalPlayRawLoop()
+                val spec = loops["distress"]
                 trace("loop+", "distress")
+                if (spec != null) fuelDistressSound = get(spec).internalPlayRawLoop()
+                else warnMissing("loop", "distress")
             }
 
             // Must be set to true again every frame
             playingFuelDistressSound = false
         } else if (fuelDistressSound != null) {
-            fuelDistressSound?.stop()
+            fuelDistressSound?.let { fadeOutLoop(it) }
             fuelDistressSound = null
             trace("loop-", "distress")
         }
@@ -245,19 +290,15 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
 
         // Update the currently playing loops based on those counts.
         // Note this effectively clears the loop counts.
-
-        // Removing one sound per update is fine - note we still stop
-        // them playing in a single update.
-        var toRemove: SoundSpec? = null
+        val toRemove = ArrayList<SoundSpec>()
 
         for ((spec, sound) in loopSounds.entries) {
             val count = loopCounts.remove(spec) ?: 0
 
-            // TODO fade down the loops when they stop, like FTL does
             if (count == 0) {
                 trace("loop-", spec.name)
-                sound.stop()
-                toRemove = spec
+                fadeOutLoop(sound)
+                toRemove += spec
                 continue
             }
 
@@ -273,8 +314,10 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
         if (loopCounts.isNotEmpty()) {
             for ((spec, count) in loopCounts.entries) {
                 trace("loop+", spec.name)
+                if (spec.missing) continue
                 val sound = get(spec).internalPlayRawLoop()
-                sound.volume = 1f * count / spec.maxCount
+                // UpdateSoundLoop clamps the count to the loop's count before dividing by it.
+                sound.volume = (1f * count / spec.maxCount).coerceIn(0f..1f)
                 loopSounds[spec] = sound
             }
             loopCounts.clear()
@@ -283,9 +326,7 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
         // Remove stopped sounds so they can be GCed.
         // We can't do this in the loop above since that'd mean modifying
         // the map while it's being iterated over.
-        if (toRemove != null) {
-            loopSounds.remove(toRemove)
-        }
+        for (spec in toRemove) loopSounds.remove(spec)
     }
 
     fun updateMusic(dt: Float) {
@@ -310,6 +351,11 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
             switchToMusic(trackList.first(), usingCombatMusic, 0f, 0f)
             return
         }
+
+        // A track the files lack leaves the playlist silent where it is: the next-track function (0x5d0210) pauses
+        // the music mixer, logs "Bad track name" and returns before it moves the playlist on.
+        if (currentMusic?.missing == true)
+            return
 
         // If the main player has stopped, move onto the next track in
         // this sector's playlist.
@@ -339,11 +385,20 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
     override fun switchMusicList(tracks: List<MusicSpec>) {
         // SoundControl::StartPlaylist (0x5d0e90): the same list changes nothing,
         // and a list that starts with the track now playing keeps it playing.
-        if (tracks.isEmpty() || tracks == trackList)
+        if (tracks == trackList)
             return
         trace("playlist", tracks.joinToString(",") { it.name })
 
         val wasEmpty = trackList.isEmpty()
+        // An empty list slides the music out and leaves silence (the next-track function finds no track).
+        if (tracks.isEmpty()) {
+            for (player in musicPlayers)
+                player.fadeVolume(0f, PLAYLIST_FADE_OUT)
+            trackList.clear()
+            currentMusic = null
+            playlistDelay = null
+            return
+        }
         val playing = currentMusic
         trackList.clear()
         trackList.addAll(tracks)
@@ -366,6 +421,7 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
     }
 
     override fun stopPlaylist(fadeOut: Float) {
+        trace("stop", fadeOut.toString())
         for (player in musicPlayers)
             player.fadeVolume(0f, fadeOut)
         trackList.clear()
@@ -377,6 +433,15 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
     private var playlistDelay: Float? = null
 
     private fun switchMusicInternal(track: MusicSpec, combat: Boolean, fadeOut: Float, fadeIn: Float) {
+        if (track.missing) {
+            trace("track", "${track.name} missing")
+            for (player in musicPlayers) {
+                player.fadeVolume(0f, 0f)
+                player.stop()
+            }
+            return
+        }
+
         // Move the current player to the 2nd slot, so we fade away from it.
         val previous = musicPlayers[0]
         musicPlayers[0] = musicPlayers[1]
@@ -406,16 +471,14 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
     fun setCombatMusic(combat: Boolean) {
         if (combat == usingCombatMusic)
             return
+        trace("combat", if (combat) "on" else "off")
 
-        // Between two playlists the flag still changes, so the next track
-        // starts as its combat or explore version (0x5d0210).
-        val track = currentMusic
-        if (track == null) {
-            if (playlistDelay != null)
-                usingCombatMusic = combat
-            return
-        }
+        // The flag changes with or without a track playing (0x5d1140 and 0x5d1520 set it before they look for
+        // one), so the next track starts as its combat or explore version (0x5d0210).
         usingCombatMusic = combat
+        val track = currentMusic
+        if (track == null || track.missing)
+            return
 
         switchMusicInternal(track, combat, 2f, 2f)
 
@@ -505,6 +568,12 @@ interface FTLSound {
      * Play a non-looping sound.
      */
     fun play(): SoundInstance
+
+    /**
+     * SoundControl::PlaySoundMix with a volume above 0 (0x5d5160): the channel plays at that volume itself
+     * (BASS_ChannelSetAttribute), in place of the sound's own sounds.xml volume / 10. 0 or less plays it as [play].
+     */
+    fun playAt(volume: Float): SoundInstance
 }
 
 private class RealFTLSound(
@@ -516,6 +585,13 @@ private class RealFTLSound(
         require(!spec.loop)
         manager.trace("play", spec.name)
         return RealSoundInstance(spec, buffer.value, manager)
+    }
+
+    override fun playAt(volume: Float): SoundInstance {
+        if (volume <= 0f) return play()
+        require(!spec.loop)
+        manager.trace("play", spec.name)
+        return RealSoundInstance(spec, buffer.value, manager, volume)
     }
 
     /**
@@ -545,10 +621,28 @@ interface SoundInstance {
     fun stop()
 }
 
+/** A sound name the files lack: PlaySoundMix finds nothing and plays nothing. */
+private class MissingSound(private val name: String, private val manager: RealSoundManager) : FTLSound {
+    override fun play(): SoundInstance {
+        manager.trace("play", name)
+        return SilentInstance()
+    }
+
+    override fun playAt(volume: Float): SoundInstance = play()
+}
+
+private class SilentInstance : SoundInstance {
+    override var isPaused = false
+    override var volume = 1f
+    override fun stop() {}
+}
+
 private class RealSoundInstance(
     private val spec: SoundSpec,
     buffer: Int,
-    private val manager: RealSoundManager
+    private val manager: RealSoundManager,
+    /** The channel's own volume: the sounds.xml volume / 10, or the volume a [FTLSound.playAt] gave. */
+    private val baseGain: Float = spec.volume / 10f,
 ) : SoundInstance {
     // This is only used by the single instance for a loop that the
     // sound manager owns and controls.
@@ -642,8 +736,10 @@ private class RealSoundInstance(
     }
 
     private fun calculateGain(): Float {
-        return volume * manager.soundEffectVolume * (spec.volume / 10f)
+        return volume * manager.soundEffectVolume * baseGain
     }
+
+    val channelVolume: Float get() = volume * baseGain
 
     /**
      * Stop playing this sound.
@@ -704,7 +800,7 @@ class LoopHandle(val spec: SoundSpec, private val manager: RealSoundManager) {
      * should only be heard from the player's ship.
      */
     fun continueLoopAnyShip() {
-        manager.registerPlayingLoop(this)
+        if (!spec.missing) manager.registerPlayingLoop(this)
     }
 
     /**
@@ -717,12 +813,44 @@ class LoopHandle(val spec: SoundSpec, private val manager: RealSoundManager) {
     }
 }
 
+/**
+ * Every sound manager's trace with wall-clock times, for the sound trace pairs against the original's sound
+ * trace (`tools/native-capture/sound-pair.py`; BrowserEngine.soundTrace starts and reads it). Off by default.
+ */
+object SoundTrace {
+    private var rows: StringBuilder? = null
+
+    @JvmStatic
+    fun start() {
+        rows = StringBuilder()
+    }
+
+    @JvmStatic
+    fun record(kind: String, name: String) {
+        val b = rows ?: return
+        if (b.length > 4_000_000) return
+        if (b.isNotEmpty()) b.append(',')
+        b.append('[').append(System.currentTimeMillis()).append(",\"").append(kind).append("\",\"")
+        for (c in name) if (c == '"' || c == '\\') b.append('\\').append(c) else if (c >= ' ') b.append(c)
+        b.append("\"]")
+    }
+
+    /** The rows as a JSON array of [ms, kind, name], or "[]" when the trace is off. */
+    @JvmStatic
+    fun json(): String = "[" + (rows ?: "") + "]"
+}
+
 private const val PLAYLIST_FADE_OUT = 0.75f
+private const val LOOP_FADE_OUT_MS = 500f
 private const val PLAYLIST_GAP = 2f
 
 class SoundSpec(elem: Element) {
     val name: String = elem.name
     val path: String = elem.textTrim
+
+    /** A name sounds.xml lacks ([missing]): plays nothing. */
+    var missing: Boolean = false
+        private set
 
     val volume: Int = elem.getAttributeValue("volume")!!.toInt()
     val loop: Boolean = elem.getAttributeValue("loop")?.toBoolean() ?: false
@@ -737,13 +865,30 @@ class SoundSpec(elem: Element) {
      * So with fire set with a maxCount of 5, one fire would only play at 20% volume.
      */
     val maxCount: Int = elem.getAttributeValue("count")?.toInt() ?: 1
+
+    companion object {
+        fun missing(name: String): SoundSpec =
+            SoundSpec(Element(name).setAttribute("volume", "0").setAttribute("loop", "true")).also { it.missing = true }
+    }
 }
 
-class MusicSpec(elem: Element) {
-    val name: String = elem.getChildTextTrim("name")
+class MusicSpec private constructor(val name: String, val explore: String, val combat: String, val missing: Boolean) {
+    constructor(elem: Element) : this(
+        elem.getChildTextTrim("name"),
+        "audio/music/" + elem.getChildTextTrim("explore"),
+        elem.getChildTextTrim("combat")?.let { "audio/music/$it" } ?: ("audio/music/" + elem.getChildTextTrim("explore")),
+        false,
+    )
 
-    val explore: String = "audio/music/" + elem.getChildTextTrim("explore")
-    val combat: String = elem.getChildTextTrim("combat")?.let { "audio/music/$it" } ?: explore
+    // StartPlaylist compares playlists by their track names.
+    override fun equals(other: Any?): Boolean = other is MusicSpec && other.name == name && other.explore == explore
+
+    override fun hashCode(): Int = name.hashCode()
+
+    companion object {
+        /** A track name sounds.xml lacks: the playlist goes silent when it comes to it ("Bad track name"). */
+        fun missing(name: String): MusicSpec = MusicSpec(name, "", "", true)
+    }
 }
 
 private class VorbisInputStream(df: Datafile, file: FTLFile) : VorbisFile.SeekableInputStream() {

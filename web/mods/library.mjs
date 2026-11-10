@@ -12,6 +12,8 @@ import {formatProgress, progressBar} from '../progress.mjs';
 import {readEnabled, writeEnabled} from '../mods-enabled.mjs';
 import {confirmAction} from '../dialogs.mjs';
 import {isHyperspace, markerOf} from './hs-needed.mjs';
+import {readConsent, setConsent} from './lua-consent.mjs';
+import {usesText} from './lua-scan.mjs';
 
 const MiB = n => (n / 1048576).toFixed(1) + ' MiB';
 function el(tag, props = {}, ...children) {
@@ -92,6 +94,7 @@ export function mountModLibrary({root, account, role = 'user', local = false, me
   const input = el('input', {type: 'file', accept: '.ftl,.zip,application/zip', multiple: true, ariaLabel: 'Choose mod archives'});
   const drop = el('label', {className: 'file-drop'}, el('span', {className: 'file-drop-icon', ariaHidden: 'true'}, '↥'), el('strong', {}, 'Add mods (.ftl or .zip)'), el('span', {className: 'muted'}, 'or drop archives here'), input);
   const setLabel = el('p', {className: 'muted text-sm', id: 'mods-set'});
+  const luaBox = el('div', {className: 'mod-lua', id: 'mods-lua'});
   const credits = el('details', {className: 'mod-credits-box', hidden: true});
   const catalogueBox = el('div', {className: 'mod-catalogue', id: 'mods-catalogue'}), presetsBox = el('div', {className: 'mod-presets', id: 'mods-presets'});
   const sourceBox = el('div', {className: 'mod-source', id: 'mods-source'});
@@ -100,7 +103,8 @@ export function mountModLibrary({root, account, role = 'user', local = false, me
   root.replaceChildren(
     el('h3', {className: 'mod-heading'}, 'Presets'), presetsBox,
     el('h3', {className: 'mod-heading'}, 'Mod files'), sourceBox, catalogueBox, credits,
-    el('h3', {className: 'mod-heading'}, 'Your mods'), drop, status, list, hints, setLabel);
+    el('h3', {className: 'mod-heading'}, 'Your mods'), drop, status, list, hints, setLabel,
+    el('h3', {className: 'mod-heading'}, 'Mod scripts'), luaBox);
 
   // A redraw (a refresh on focus, the catalogue arriving, a download's next phase) waits until the pointer is up: replacing
   // a button between its press and release would lose the click.
@@ -209,6 +213,32 @@ export function mountModLibrary({root, account, role = 'user', local = false, me
         el('span', {className: 'actions'}, b));
     }));
   }
+  // Mod scripts (sweep M1b): the private folder their io and os write to (this browser, this account), the mods allowed
+  // to run scripts that use io, os, debug or package, and the sandbox setting the browser cannot offer.
+  async function renderLua() {
+    const {luaFilesUsage, clearLuaFiles} = await import('../lua-files.mjs');
+    const used = await luaFilesUsage(account);
+    const clear = el('button', {className: 'btn btn-sm', type: 'button', id: 'mods-lua-clear', disabled: used === 0}, 'Clear mod files');
+    clear.onclick = async () => {
+      if (!await confirmAction({id: 'mods-lua-clear-dialog', title: 'Clear mod files?', yes: 'Clear', danger: true, text: 'Delete the files mod scripts wrote in this browser for this account? Mods that keep settings or progress in files start over.'})) return;
+      try { await clearLuaFiles(account); } catch (e) { message(e.message); }
+      renderLua();
+    };
+    const allowed = Object.entries(readConsent(account));
+    const rows = allowed.map(([sha, entry]) => {
+      const name = items.find(i => i.sha256 === sha) ?? archives.get(sha);
+      const again = el('button', {className: 'btn btn-ghost btn-sm', type: 'button', ariaLabel: 'Ask again for ' + (name?.title ?? name?.name ?? sha.slice(0, 12))}, 'Ask again');
+      again.onclick = () => { setConsent(account, sha, null); renderLua(); };
+      return el('li', {className: 'mod-row', dataset: {luaConsent: sha}}, el('span', {className: 'mod-name'}, el('strong', {}, name?.title ?? name?.name ?? sha.slice(0, 12)),
+        el('span', {className: 'muted text-sm'}, ' · allowed to run scripts that use ' + usesText(entry.uses ?? []))), el('span', {className: 'actions'}, again));
+    });
+    luaBox.replaceChildren(
+      el('p', {className: 'text-sm', id: 'mods-lua-files'}, `Files mod scripts wrote in this browser: ${used ? MiB(used) : 'none'} (at most 50 MiB, not synced). `, clear),
+      rows.length ? el('ul', {className: 'mod-list', id: 'mods-lua-allowed'}, ...rows) : el('p', {className: 'muted text-sm', id: 'mods-lua-allowed'}, 'No mod has been allowed to run scripts that use files or system commands. The game asks before it starts one.'),
+      el('label', {className: 'flex items-center gap-2 text-sm', title: 'A web page cannot give scripts your files or programs.'},
+        el('input', {type: 'checkbox', className: 'checkbox checkbox-sm', id: 'mods-lua-unsandboxed', disabled: true}), 'Disable Lua sandboxing (dangerous)'),
+      el('p', {className: 'muted text-sm'}, 'Not available in the browser: a web page cannot give scripts your files or programs, so mod scripts always run in their private folder here. The Android app has this setting.'));
+  }
   let renderSeq = 0;
   async function render() {
     if (held()) return;
@@ -237,6 +267,7 @@ export function mountModLibrary({root, account, role = 'user', local = false, me
     if (!busy) status.textContent = items.length ? `${enabled.length} of ${items.length} enabled` : 'No mods yet.';
     const id = enabled.length ? 'Id ' + (await modSetHash(enabled.map(i => i.sha256))).slice(0, 12) : '';
     if (seq === renderSeq) setLabel.textContent = id; // an older draw finishing late does not put back its old set
+    if (seq === renderSeq) renderLua().catch(() => {});
   }
   // The files are shared by the accounts of this browser; each account has its own list. Remove takes the archive off
   // this account's list (its bytes go only when no other account lists it); Delete removes the file for everyone here,

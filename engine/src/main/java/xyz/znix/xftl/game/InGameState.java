@@ -1130,6 +1130,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
                 Beacon target = jumpOutTarget;
                 jumpOutTarget = null;
                 setCurrentBeacon(target);
+                jumpArrival = true;
 
                 // Auto-save on arrival (after the beacon change has fully
                 // resolved), so a force-close can only cost the player the
@@ -1140,10 +1141,17 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
 
         if (enemyJumpOut > 0) {
             enemyJumpOut = Math.max(0f, enemyJumpOut - delta / JUMP_OUT_TIME);
-            if (enemyJumpOut == 0) {
+            // A ship destroyed during its jump-out is gone already (its destroyed event shown): nothing escapes.
+            if (enemyJumpOut == 0 && enemy == null) enemyJumpEvent = null;
+            if (enemyJumpOut == 0 && enemy != null) {
                 IEvent jumpEvent = enemyJumpEvent;
                 enemyJumpEvent = null;
                 Ship gone = enemy;
+                // ShipAI::Escaped: the boarders aboard are lost with the ship (KillEveryone(true), no clone).
+                xyz.znix.xftl.systems.BoardersLost.shipGone(this, gone, true);
+                commandGuiClearLocation();
+                // Hyperspace Lua: ships.enemy keeps the escaped ship until the location changes (not looped)
+                if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdapters.enemyEscaped(this, gone);
                 setEnemy(null);
                 currentBeacon.setShip(null);
                 // WorldManager::OnLoop (0x61c7c1): a ship that got away counts as defeated, like a destroyed one.
@@ -1160,6 +1168,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         if (playerFlyIn > 0) {
             playerFlyIn = Math.max(0f, playerFlyIn - delta / ARRIVAL_TIME);
         }
+        if (playerFlyIn <= 0) jumpArrival = false;
 
         // The arrival's own box is already open (hidden, a focus window pausing the game) and shows when the fly-in is
         // over, whether or not the player paused meanwhile (the tutorial's COMBAT_0 asks for a pause right then).
@@ -1384,7 +1393,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     private void dispatchHotkey(Hotkey key, Input in) {
         // CommandGui::SpaceBar (0x52ce50): nothing while the ship jumps; with a focus window open (menu_pause) only the
         // event box (event_pause) sets the pause, so the game stays paused once the box closes; otherwise a toggle.
-        if (key.getId().equals(VanillaHotkeys.PAUSE) && !isPlayerJumpingOut()) {
+        if (key.getId().equals(VanillaHotkeys.PAUSE) && !isShipJumping()) {
             if (!shipUI.isWindowOpen()) paused = !paused;
             else if (shipUI.getDiagnosticPauseWindow() == null && shipUI.getTutorialDialogueOpen()) paused = true;
         }
@@ -1417,9 +1426,11 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     /**
      * CommandGui::KeyDown (0x534820) gives the key to the event box, the pause menu or Game Over first, then returns while
      * the player's ship jumps (ShipManager bJumping): no hotkey, no Escape, no window while the jump animation plays.
+     * bJumping is set by ShipManager::JumpLeave and cleared only by ShipManager::OnRender (1.6.14 0x4a3c00, 1.6.9
+     * 0x49abc0) once the reversed jump animation, the arrival, is done: so the fly-in holds the keys too.
      */
     public boolean keysHeldByJump() {
-        return player != null && isPlayerJumpingOut() && shipUI.getDiagnosticPauseWindow() == null &&
+        return player != null && isShipJumping() && shipUI.getDiagnosticPauseWindow() == null &&
                 !shipUI.isGameOverOpen() && shipUI.getDiagnosticDialogue() == null;
     }
 
@@ -1443,6 +1454,8 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         // CommandGui::RenderStatic (0x535070): the planet and the fleet (not the backdrop) shrink by 0.05 zoom.
         jumpSceneScale = playerJumpOut > 0 || playerFlyIn > 0
                 ? 1f - JUMP_PLANET_SHRINK * browserJumpZoom(browserPlayerTrackerTime()) : 1f;
+        jumpAsteroidScale = playerJumpOut > 0 || playerFlyIn > 0
+                ? 1f - JUMP_ASTEROID_SHRINK * browserJumpZoom(browserPlayerTrackerTime()) : 1f;
         // The touch layout's canvas is not 1280x720: the scene covers it.
         boolean coverCanvas = TouchMode.enabled;
         if (coverCanvas) {
@@ -1489,10 +1502,19 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         int luaPlayer = xyz.znix.xftl.hs.HS.luaActive ? xyz.znix.xftl.hs.render.HsRenderEvents.pre(xyz.znix.xftl.hs.lua.LuaApi.RE_LAYER_PLAYER) : 0;
         if (luaPlayer >= 0 && (touchHud == null || !touchHud.getPlayerOnTop())) renderPlayerShip(g);
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.render.HsRenderEvents.post(xyz.znix.xftl.hs.lua.LuaApi.RE_LAYER_PLAYER, luaPlayer);
-        // Hyperspace LAYER_FRONT render event and front-layer background objects: SpaceManager::OnRenderAsteroids(1)
-        // after the player ship while the jump zoom is above zero
-        if (xyz.znix.xftl.hs.HS.active && (playerJumpOut > 0 || playerFlyIn > 0) && browserJumpZoom(browserPlayerTrackerTime()) > 0f)
-            xyz.znix.xftl.hs.render.HsRenderEvents.layerFront(this, g);
+        // SpaceManager::OnRenderAsteroids(1) after the player ship while the jump zoom is above zero: the asteroid
+        // field's front layer over the ship (Hyperspace: in its LAYER_FRONT render event, with the front-layer
+        // background objects)
+        if ((playerJumpOut > 0 || playerFlyIn > 0) && browserJumpZoom(browserPlayerTrackerTime()) > 0f) {
+            if (xyz.znix.xftl.hs.HS.active) {
+                xyz.znix.xftl.hs.render.HsRenderEvents.layerFront(this, container, g);
+            } else if (!ftl.browser.BrowserDebug.parityNoBackground) {
+                g.pushTransform();
+                applyJumpAsteroids(g);
+                currentBeacon.getEnvironment(this).renderFrontStack(container, g);
+                g.popTransform();
+            }
+        }
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsBackgroundObjects.renderTooltip(g);
 
         // CommandGui::RenderStatic (0x00535070) moves the HUD, not the ships, by the screen shake.
@@ -1500,9 +1522,11 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         g.pushTransform();
         g.translate(shakeX, shakeY);
 
-        if (touchHud == null) shipUI.render(container, g);
-        else touchHud.renderTopButtons(g);
+        if (touchHud != null) touchHud.renderTopButtons(g);
 
+        // CommandGui::RenderStatic (1.6.9 0x520a70, 1.6.14 0x535070) draws CombatControl::OnRenderCombat, which holds
+        // the enemy's target window, before the crew, the systems, the weapons and ShipStatus: what a Hyperspace script
+        // draws in the SHIP_STATUS event lies over the target window (oracle ps-u5-mvt, Multiverse's tutorial boxes).
         if (enemy != null) {
             // If the enemy ship is neutral but we still have crew inside,
             // allow the user to control and recover them.
@@ -1513,6 +1537,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             hostileShipUI.render(container, g, hoveredRoom, enemyInteriorVisible, enemyIsHostile);
         }
 
+        if (touchHud == null) shipUI.render(container, g);
         if (touchHud != null) {
             if (luaPlayer >= 0 && touchHud.getPlayerOnTop()) renderPlayerShip(g);
             shipUI.render(container, g);
@@ -1724,6 +1749,9 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
      * NOT be called elsewhere from the main code.
      */
     public void updateGameState(float dt) {
+        // CommandGui::OnLoop (1.6.14 0x536770) takes the player's ShipManager::GetLastDamage (0x49c8a0: read, then 0)
+        // once a frame after the world's loop, so a hull number left there lasts only the frame of its hit
+        player.nativeLastDamage = 0;
         if (!isInDanger()) player.browserSetSafe();
         // WorldManager::OnLoop hook (StatBoost.cpp): the stat boosts are gathered before the world updates.
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.stat.StatBoostManager.onLoop(this);
@@ -1781,6 +1809,9 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             if (enemy.isGone()) browserEnemyGoneSeen = true;
             if (browserGoneNow) {
                 browserEnemyGoneSeen = false;
+                // WorldManager::OnLoop (0x61b930): ShipAI::Destroyed, then the boarders aboard die (KillEveryone(false)).
+                xyz.znix.xftl.systems.BoardersLost.shipGone(this, enemy, false);
+                commandGuiClearLocation();
                 if (enemyIsHostile) {
                     browserAchievements.hullDefeat();
                     browserProgress.defeatShip();
@@ -1847,6 +1878,8 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     // fades in, then it smoothly scales up to full size. playerFlyIn goes
     // from 1 (just arrived) to 0 (done).
     private float playerFlyIn = 0f;
+    /** The fly-in running is the arrival of a jump (see [isShipJumping]). */
+    private boolean jumpArrival = false;
     private boolean arrivalEventsPending = false;
     /** The pending arrival's box was opened at the location switch (not the run's first box, not a loaded save's). */
     private boolean arrivalBoxHidden = false;
@@ -1884,6 +1917,12 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     private static final float JUMP_PLANET_SHRINK = 0.05f;
 
     /**
+     * CommandGui::RenderStatic (1.6.14 0x535070): SpaceManager::OnRenderAsteroids, the field's three layers and the
+     * front pass over the ship, is drawn at 1 - 0.3 zoom (exe data 0x87d5b4) about the hull centre.
+     */
+    private static final float JUMP_ASTEROID_SHRINK = 0.3f;
+
+    /**
      * The zoom CommandGui::RenderStatic (0x535070) derives from the player's jump tracker (progress p = time / 2 s):
      * 4 p over the first quarter, then 1, so the ship has shrunk after half a second and stays small until
      * the last half second of the arrival, when it grows back.
@@ -1903,6 +1942,18 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
 
     /** The scale of the planet and fleet while the player's ship jumps (1 otherwise), about the hull centre. */
     public float getJumpSceneScale() { return jumpSceneScale; }
+
+    /** The scale of the asteroid field's layers while the player's ship jumps (1 otherwise), about the hull centre. */
+    private float jumpAsteroidScale = 1f;
+
+    /** Scales what the caller draws next by the jump's asteroid scale about the hull centre; the caller pushes the matrix. */
+    public void applyJumpAsteroids(Graphics g) {
+        if (jumpAsteroidScale == 1f) return;
+        float centreX = getJumpZoomCentreX(), centreY = getJumpZoomCentreY();
+        g.translate(centreX, centreY);
+        g.scale(jumpAsteroidScale, jumpAsteroidScale);
+        g.translate(-centreX, -centreY);
+    }
 
     /** Scales what the caller draws next by the jump's planet scale about the hull centre; the caller pushes the matrix. */
     public void applyJumpScene(Graphics g) {
@@ -2269,10 +2320,10 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     /**
      * Resolve a sector's soundtrack names into their MusicSpecs.
      */
+    // StartPlaylist takes the sector's track names as they are: a name sounds.xml lacks plays silence when its turn comes.
     private List<MusicSpec> getSectorTracks(SectorType type) {
         return type.getSoundtracks().stream()
-                .map(name -> getSounds().getTrackOrNull(name))
-                .filter(java.util.Objects::nonNull)
+                .map(name -> getSounds().getTrack(name))
                 .collect(java.util.stream.Collectors.toList());
     }
 
@@ -2371,6 +2422,12 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         if (player != null && previous != enemy) browserAchievements.enemyChanged();
         if (previous != null && previous != enemy && previous.getHacking() != null) previous.getHacking().browserEnemyChanged();
         if (player != null && player.getHacking() != null) player.getHacking().browserEnemyChanged();
+
+        // ShipManager::SetTarget (CombatControl::AddEnemyShip / Clear): the drones aim at the new ship, or none.
+        if (previous != enemy) {
+            if (player != null && player.getDrones() != null) player.getDrones().browserTargetShipChanged();
+            if (enemy != null && enemy.getDrones() != null) enemy.getDrones().browserTargetShipChanged();
+        }
 
         // player=null when we're starting a new game, in which case enemy=null too.
         if (player != null) {
@@ -2489,6 +2546,12 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     public void browserEndHostility() { setEnemyIsHostile(false); }
 
     public boolean isInDanger() {
+        // WorldManager::HostileEnvironment (1.6.9 0x5ee1f0) asks SpaceManager::DangerousEnvironment first, so Hyperspace's
+        // DANGEROUS_ENVIRONMENT chain runs every frame, a hostile ship or not (oracle ps-m1-ev ev|escape)
+        if (xyz.znix.xftl.hs.HS.luaActive
+                && xyz.znix.xftl.hs.lua.LuaAdaptersWP1.dangerousEnvironment(currentBeacon.isEnvironmentDangerous()))
+            return true;
+
         if (enemy != null && enemyIsHostile)
             return true;
 
@@ -2499,10 +2562,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         if (xyz.znix.xftl.crew.NativeHostilityKt.containsMindControlledEnemy(player))
             return true;
 
-        // Hyperspace DANGEROUS_ENVIRONMENT chain on SpaceManager::DangerousEnvironment
-        if (xyz.znix.xftl.hs.HS.luaActive)
-            return xyz.znix.xftl.hs.lua.LuaAdaptersWP1.dangerousEnvironment(currentBeacon.isEnvironmentDangerous());
-        return currentBeacon.isEnvironmentDangerous();
+        return !xyz.znix.xftl.hs.HS.luaActive && currentBeacon.isEnvironmentDangerous();
     }
 
     /**
@@ -3424,9 +3484,14 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     }
 
     /**
-     * ShipManager bJumping as CommandGui::KeyDown and SpaceBar read it: set by ShipManager::JumpLeave, so the jump-out.
-     * Whether the original also holds keys during the arrival (our fly-in) was not established; the fly-in does not.
+     * ShipManager bJumping: set by JumpLeave, cleared by ShipManager::OnRender once the arrival after that jump is done.
+     * The fly-in of a new or loaded run is not a jump's arrival (no evidence that the original holds keys there).
      */
+    public boolean isShipJumping() {
+        return playerJumpOut > 0 || (jumpArrival && playerFlyIn > 0);
+    }
+
+    /** The jump-out alone (ShipManager::JumpLeave until the arrival starts). */
     public boolean isPlayerJumpingOut() {
         return playerJumpOut > 0;
     }
@@ -4153,13 +4218,26 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         return old;
     }
 
+    /**
+     * CommandGui::ClearLocation (1.6.14 0x532940): its crew-control step (0x503110, also on a restart) empties the selected
+     * and hovered crew lists. It runs from WorldManager::OnLoop once the enemy is destroyed or has escaped, and from
+     * WorldManager::ClearLocation (0x614d00) when that does its work: the console's LOAD drops the selection (native
+     * capture ps-fu4-van fu4-sel s-load-open), a jump does not (s-jumped).
+     */
+    public void commandGuiClearLocation() {
+        if (shipUI != null) shipUI.clearCrewSelection();
+    }
+
     /** The location part of WorldManager::ClearLocation (0x614d00): the scene is kept, the hazard and the event go. */
     public void clearLocation() {
         if (currentBeacon == null) return;
+        // WorldManager::ClearLocation (0x614d00): the player's boarders on a ship still here are lost (KillEveryone(true)).
+        if (enemy != null) xyz.znix.xftl.systems.BoardersLost.clearLocation(this, enemy);
         currentBeacon.captureSpace(gameMap);
         currentBeacon.clearEnvironment();
-        if (currentBeacon.getShip() == null) {
-            currentBeacon.clearEvent(false, true);
-        }
+        // A hostile ship still here is saved into the event (ShipEvent::actualBlueprint), which ClearEvent's +0x1d0
+        // branch reads: the location keeps its hazard, now and on every later clear.
+        if (currentBeacon.getShip() != null) currentBeacon.shipSaved = true;
+        currentBeacon.clearEvent(false, true);
     }
 }

@@ -384,24 +384,32 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
         return true
     }
 
-    fun render(g: Graphics, alpha: Float) {
+    /**
+     * Move the open/close animation on by [dt] seconds. The player's doors sound as their animation starts, like the
+     * native Door's doorAnim (soundForward "doorOpen" and soundReverse "doorClose", set only on ship 0):
+     * Animation::Start plays soundForward when it starts from fully closed and the reverse start plays soundReverse
+     * from fully open, so a door turned back halfway makes no sound. A door clicked while the game is paused sounds at
+     * once: CrewControl::OnTouch calls Door::Open / Door::Close, which start the animation, with no pause check.
+     */
+    internal fun stepAnimation(dt: Float) {
         val animationDir = when {
             open || crewOpenDemand -> 1
             else -> -1
         }
         val prevState = stateAnimation
-        stateAnimation = (stateAnimation + animationDir * ship.sys.renderingDeltaTime / ANIMATION_TIME).coerceIn(0f..1f)
+        stateAnimation = (stateAnimation + animationDir * dt / ANIMATION_TIME).coerceIn(0f..1f)
 
-        // Play the door open/close sounds (issue #18) as the door finishes
-        // its animation. Only the player's ship is audible - you shouldn't
-        // hear the doors on the enemy ship.
-        if (ship.isPlayerShip && !ship.sys.isPaused() && prevState != stateAnimation) {
-            if (stateAnimation == 1f) {
+        if (ship.isPlayerShip && prevState != stateAnimation) {
+            if (prevState == 0f) {
                 ship.sys.sounds.getSampleOrWarn("doorOpen")?.play()
-            } else if (stateAnimation == 0f) {
+            } else if (prevState == 1f) {
                 ship.sys.sounds.getSampleOrWarn("doorClose")?.play()
             }
         }
+    }
+
+    fun render(g: Graphics, alpha: Float) {
+        stepAnimation(ship.sys.renderingDeltaTime)
 
         val doorSheet = ship.sys.getImg("img/effects/door_sheet.png")
         val highlight = ship.sys.getImg("img/effects/door_highlight.png")

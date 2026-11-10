@@ -13,7 +13,7 @@ open class XmlBase(@JvmField var name: String, @JvmField var value: String) { @J
 
 class XmlAttribute(name: String, value: String) : XmlBase(name, value)
 
-open class XmlNode(@JvmField val type: Int, name: String, value: String) : XmlBase(name, value) {
+open class XmlNode(@JvmField var type: Int, name: String, value: String) : XmlBase(name, value) {
     @JvmField val children = ArrayList<XmlNode>()
     @JvmField val attributes = ArrayList<XmlAttribute>()
 }
@@ -266,6 +266,21 @@ object LuaXml {
         LuaReg.method(A.M_xml_base_name_size, LuaMethod { ret.num(bytes((arg.obj(1) as XmlBase).name)) })
         LuaReg.method(A.M_xml_base_value_size, LuaMethod { ret.num(bytes((arg.obj(1) as XmlBase).value)) })
         LuaReg.method(A.M_xml_base_parent, LuaMethod { pushAs((arg.obj(1) as XmlBase).parent, A.T_xml_node) })
+        // xml_base::name(const Ch *) / name(const Ch *, size_t) and value(...), xml_node::type(node_type): rapidxml 1.13
+        // sets the text (the whole string, or its first `size` bytes) and the node type in place
+        fun cut(s: String, size: Int): String { val b = s.toByteArray(Charsets.UTF_8); return String(b, 0, size.coerceIn(0, b.size), Charsets.UTF_8) }
+        LuaReg.method(A.M_xml_base_name__SWIG_2, LuaMethod { (arg.obj(1) as XmlBase).name = arg.str(2) ?: ""; 0 })
+        LuaReg.method(A.M_xml_base_name__SWIG_1, LuaMethod { (arg.obj(1) as XmlBase).name = cut(arg.str(2) ?: "", arg.int(3)); 0 })
+        LuaReg.method(A.M_xml_base_value__SWIG_2, LuaMethod { (arg.obj(1) as XmlBase).value = arg.str(2) ?: ""; 0 })
+        LuaReg.method(A.M_xml_base_value__SWIG_1, LuaMethod { (arg.obj(1) as XmlBase).value = cut(arg.str(2) ?: "", arg.int(3)); 0 })
+        LuaReg.method(A.M_xml_node_type__SWIG_1, LuaMethod { (arg.obj(1) as XmlNode).type = arg.int(2); 0 })
+        // RapidXML's parse flags (rapidxml.hpp 1.13 `const int parse_*`), module variables as SWIG wraps them
+        for ((a, v) in listOf(A.A_module_parse_no_data_nodes to 0x1, A.A_module_parse_no_element_values to 0x2,
+            A.A_module_parse_no_string_terminators to 0x4, A.A_module_parse_no_entity_translation to 0x8, A.A_module_parse_no_utf8 to 0x10,
+            A.A_module_parse_declaration_node to 0x20, A.A_module_parse_comment_nodes to 0x40, A.A_module_parse_doctype_node to 0x80,
+            A.A_module_parse_pi_nodes to 0x100, A.A_module_parse_validate_closing_tags to 0x200, A.A_module_parse_trim_whitespace to 0x400,
+            A.A_module_parse_normalize_whitespace to 0x800, A.A_module_parse_default to 0, A.A_module_parse_non_destructive to 0xC,
+            A.A_module_parse_fastest to 0xD, A.A_module_parse_full to 0x3E0)) LuaReg.num(a, NumGet { v.toDouble() })
         // xml_node
         LuaReg.method(A.M_xml_node_document, LuaMethod { pushAs(docOf(arg.obj(1) as XmlBase), A.T___xml_document) })
         LuaReg.method(A.M_xml_node_type__SWIG_0, LuaMethod { ret.num((arg.obj(1) as XmlNode).type) })

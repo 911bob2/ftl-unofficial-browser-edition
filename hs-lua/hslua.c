@@ -15,19 +15,21 @@
  *    results onto this Lua stack through the hs_* exports below.
  *  - script.on_* registration and dispatch follow LuaLibScript.cpp (stable priority sort, Chain values, argument
  *    rewriting); each callback runs under an instruction cap and is profiled per callback.
- * No filesystem, io/package/debug/coroutine libraries and only os.clock, os.time and os.difftime of os (see open_os);
- * math.random draws from the engine.
+ * io, os, debug and package/require come from hslibs.c (a private file system, no shell); debug.sethook here chains a
+ * script's hook with the instruction cap. math.random draws from the engine.
  */
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <limits.h>
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
-#include "lstate.h"   /* read-only use of L->hookcount for instruction counts */
+#include "lstate.h"   /* L->hookcount and basehookcount for instruction counts */
 #include "hs_api.h"
+#include "hslibs.h"
 
 #define EXPORT(n) __attribute__((export_name(#n)))
 #define IMPORT(n) __attribute__((import_module("env"), import_name(#n)))
@@ -84,7 +86,7 @@ static int ns_self_ok(lua_State *L, const char *a, const char *b) {   /* arg 1 h
 
 /* ---------------------------------------------------------------- userdata and types */
 typedef struct { int32_t h; int32_t t; int32_t tid; } HsUd;
-enum { REG_CACHE = 1, REG_MT, REG_FLAT, REG_FLATSET, REG_TABLES, REG_GETITEM, REG_SETITEM, REG_CACHE2, REG_PLAIN, REG_SENTINEL, REG_LAST };
+enum { REG_CACHE = 1, REG_MT, REG_FLAT, REG_FLATSET, REG_TABLES, REG_GETITEM, REG_SETITEM, REG_CACHE2, REG_PLAIN, REG_SENTINEL, REG_HOOKS, REG_HOOKFN, REG_LAST };
 static int regRef[REG_LAST];
 #define PUSHREG(L, i) lua_rawgeti(L, LUA_REGISTRYINDEX, regRef[i])
 static int ntypes;
@@ -98,18 +100,11 @@ static int isa(int have, int want) {
   for (; hs_bases[off]; off++) if (isa(hs_bases[off], want)) return 1;
   return 0;
 }
+/* Ours by size: the only other full userdata scripts can reach are io's files (luaL_Stream, 8 or 16 bytes), and no
+   script can make one (no newproxy). A metatable is no proof here: io's is a plain table scripts can write to. */
 static HsUd *toud(lua_State *L, int i) {
-  i = lua_absindex(L, i);
-  HsUd *u = (HsUd *)lua_touserdata(L, i);
-  if (!u || lua_type(L, i) != LUA_TUSERDATA) return 0;
-  /* only our userdata carry one of our metatables; a plain check of the size is not possible, so check the mt */
-  if (!lua_getmetatable(L, i)) {
-    /* a non-class pointer (SWIG gives it no metatable): ours when REG_PLAIN (weak keys) lists it */
-    PUSHREG(L, REG_PLAIN); lua_pushvalue(L, i); int plain = lua_rawget(L, -2) == LUA_TBOOLEAN; lua_pop(L, 2);
-    return plain ? u : 0;
-  }
-  lua_pushliteral(L, ".hs"); int ok = lua_rawget(L, -2) == LUA_TBOOLEAN; lua_pop(L, 2);
-  return ok ? u : 0;
+  if (lua_type(L, i) != LUA_TUSERDATA || lua_rawlen(L, i) != sizeof(HsUd)) return 0;
+  return (HsUd *)lua_touserdata(L, i);
 }
 static const char *swig_typename(lua_State *L, int i) {   /* SWIG_Lua_typename */
   if (lua_isuserdata(L, i)) { HsUd *u = toud(L, i); if (u) return TYPE_STR(u->t); return "userdata (unknown type)"; }
@@ -162,7 +157,7 @@ static void push_obj(lua_State *L, int h, int t) {
   if (h == 0 || t <= 0) { lua_pushnil(L); return; }
   int s = h & HS_SLOT_MASK, second = 0;
   PUSHREG(L, REG_CACHE);
-  if (lua_rawgeti(L, -1, s) == LUA_TUSERDATA) {
+  if (lua_rawgeti(L, -1, s) == LUA_TUSERDATA && lua_rawlen(L, -1) == sizeof(HsUd)) {
     HsUd *c = (HsUd *)lua_touserdata(L, -1);
     if (c->h == h && c->t == t) { lua_remove(L, -2); return; }
     if (c->h == h) {
@@ -186,7 +181,7 @@ static void push_obj(lua_State *L, int h, int t) {
   else {   /* no class metatable, as SWIG_Lua_NewPointerObj for a type without clientdata: swig_type still names it */
     lua_pop(L, 1); PUSHREG(L, REG_PLAIN); lua_pushvalue(L, -2); lua_pushboolean(L, 1); lua_rawset(L, -3); lua_pop(L, 1);
     /* Such a userdata has no metatable, so no finalizer of its own: a hidden user value with one releases the handle
-       when the pointer is collected (scripts cannot reach user values: there is no debug library). */
+       when the pointer is collected (debug.getuservalue reaches it: a script that calls its __gc only ends the handle early). */
     HsUd *g = (HsUd *)lua_newuserdata(L, sizeof(HsUd)); g->h = h; g->t = 0; g->tid = 0;
     PUSHREG(L, REG_SENTINEL); lua_setmetatable(L, -2);
     lua_setuservalue(L, -2);
@@ -199,7 +194,7 @@ static void push_packed(lua_State *L, double packed) {
   uint64_t v = (uint64_t)packed; push_obj(L, (int)(uint32_t)(v & 0xffffffffu), (int)(v >> 32));
 }
 static int ud_gc(lua_State *L) {
-  HsUd *u = (HsUd *)lua_touserdata(L, 1);
+  HsUd *u = toud(L, 1);   /* scripts reach __gc through getmetatable and may pass any value */
   if (u && u->h) { int h = u->h; u->h = 0; ud_unretain(h); }
   return 0;
 }
@@ -363,13 +358,13 @@ EXPORT(hs_drop_table) void hs_drop_table(int tid) { PUSHREG(L0, REG_TABLES); lua
 /* __index: flattened lookup. FLAT[t] maps name -> integer attribute id (getter), function (method), or true ("table") */
 static int ud_index(lua_State *L) {
 #if !defined(__wasm__)
-  if (lua_type(L, 1) != LUA_TUSERDATA) return bad_self(L);   /* every full userdata scripts can reach is an HsUd */
+  if (!toud(L, 1)) return bad_self(L);
 #endif
   HsUd *u = (HsUd *)lua_touserdata(L, 1);
   lua_pushvalue(L, 2);
   if (lua_rawget(L, lua_upvalueindex(1)) != LUA_TNIL) {
     if (lua_isinteger(L, -1)) { int a = (int)lua_tointeger(L, -1); lua_pop(L, 1); return get_attr(L, u->h, a); }
-    if (lua_isboolean(L, -1)) { lua_pop(L, 1); return table_get(L, u); }
+    if (lua_isboolean(L, -1)) { lua_pop(L, 1); if (!toud(L, 1)) return 0; return table_get(L, u); }
     return 1;                                                /* method closure */
   }
   lua_pop(L, 1);
@@ -381,7 +376,7 @@ static int ud_index(lua_State *L) {
 }
 static int ud_newindex(lua_State *L) {
 #if !defined(__wasm__)
-  if (lua_type(L, 1) != LUA_TUSERDATA) return bad_self(L);
+  if (!toud(L, 1)) return bad_self(L);
 #endif
   HsUd *u = (HsUd *)lua_touserdata(L, 1);
   lua_pushvalue(L, 2);
@@ -397,7 +392,7 @@ static int ud_newindex(lua_State *L) {
 }
 static int ud_tostring(lua_State *L) {
 #if !defined(__wasm__)
-  if (lua_type(L, 1) != LUA_TUSERDATA) return bad_self(L);
+  if (!toud(L, 1)) return bad_self(L);
 #endif
   HsUd *u = (HsUd *)lua_touserdata(L, 1);
   lua_pushfstring(L, "<userdata of type '%s' at %p>", TYPE_STR(u->t), (void *)(uintptr_t)(u ? (uint32_t)u->h : 0));
@@ -405,7 +400,8 @@ static int ud_tostring(lua_State *L) {
 }
 static int ud_eq(lua_State *L) {   /* SWIG_Lua_class_equal: same object, type ignored */
   if (!lua_isuserdata(L, 1) || !lua_isuserdata(L, 2)) return 0;
-  HsUd *a = (HsUd *)lua_touserdata(L, 1), *b = (HsUd *)lua_touserdata(L, 2);
+  HsUd *a = toud(L, 1), *b = toud(L, 2);
+  if (!a || !b) { lua_pushboolean(L, 0); return 1; }
   lua_pushboolean(L, a->h == b->h); return 1;
 }
 static int l_swig_type(lua_State *L) { lua_pushstring(L, swig_typename(L, 1)); return 1; }
@@ -621,26 +617,6 @@ static int math_randomseed(lua_State *L) {
   (void)js_rand32();
   return 0;
 }
-/* os. The Windows build of Hyperspace 1.23.2 links Lua's full library set (its lua/linit.c is not among the compiled
- * sources; oracle session bt-mv-tutorial2: os, io, debug, coroutine and package all exist), and Multiverse's tutorial.lua
- * pulses its red outlines with os.clock(). Neither the page nor the app has a process or files for the rest of os, io
- * and package, so os holds clock (seconds since the runtime first started, as MSVC's clock() counts from process start),
- * time (now; a date table is refused) and difftime. */
-static double clockBase = -1;
-static int os_clock(lua_State *L) { lua_pushnumber(L, (lua_Number)((js_now() - clockBase) / 1000.0)); return 1; }
-static int os_time(lua_State *L) {
-  if (!lua_isnoneornil(L, 1)) return luaL_error(L, "os.time with a date table is not available");
-  lua_pushinteger(L, (lua_Integer)(js_epoch() / 1000.0));
-  return 1;
-}
-static int os_difftime(lua_State *L) { lua_pushnumber(L, luaL_checknumber(L, 1) - luaL_optnumber(L, 2, 0)); return 1; }
-static int open_os(lua_State *L) {
-  static const luaL_Reg fns[] = {{"clock", os_clock}, {"time", os_time}, {"difftime", os_difftime}, {0, 0}};
-  if (clockBase < 0) clockBase = js_now();
-  luaL_newlib(L, fns);
-  return 1;
-}
-
 static void remove_dangerous(lua_State *L) {
   static const char *const names[] = {"collectgarbage", "dofile", "load", "loadfile", "newproxy", "rawequal", "rawget", "rawset", 0};
   for (int i = 0; names[i]; i++) { lua_pushnil(L); lua_setglobal(L, names[i]); }
@@ -765,10 +741,50 @@ static int capInstr = 50000000, capLoad = 500000000;
 static int profiling = 1;
 static int curCb = -1;
 static const char *capWhat = "";
-static void count_hook(lua_State *L, lua_Debug *ar) {
-  (void)ar;
-  /* From here on every instruction raises it again, until the guard ends: a pcall in the script cannot swallow the cap. */
-  lua_sethook(L, count_hook, LUA_MASKCOUNT, 1);
+
+/* ---- hooks. One C hook (hs_hook) serves every thread: the instruction cap, through the count event, and a script's
+ * debug.sethook, which is chained, never replacing the cap. Per thread: what the cap has left (capLeft), the script's
+ * events (modMask), its count and what is left of it; the count event comes at whichever runs out first. The main
+ * thread's record is mainRec; a coroutine's is a userdata in REG_HOOKS (weak keys), made on its first hook event (a
+ * coroutine starts with the hook of the thread that made it, as in Lua). The script's hook functions are in REG_HOOKFN
+ * (thread -> function, weak keys), as ldblib's HOOKKEY table. */
+typedef struct { int capLeft, hasCap, modMask, modCount, modLeft; } HookRec;
+static HookRec mainRec;
+int hsHooksOff;                 /* hslua-lvm.c: this instruction runs where Lua has hooks off (inside a hook, a __gc) */
+static int exitReq, exitCode; static char exitSrc[512];
+static void hs_hook(lua_State *L, lua_Debug *ar);
+static HookRec *hook_rec(lua_State *L, int create) {
+  if (L == L0) return &mainRec;
+  PUSHREG(L, REG_HOOKS); lua_pushthread(L);
+  HookRec *r = 0;
+  if (lua_rawget(L, -2) == LUA_TUSERDATA && lua_rawlen(L, -1) == sizeof(HookRec)) r = (HookRec *)lua_touserdata(L, -1);
+  lua_pop(L, 1);
+  if (!r && create) {
+    r = (HookRec *)lua_newuserdata(L, sizeof(HookRec));
+    /* what the cap had left where the coroutine was made, as its count (Lua copies the hook to a new thread) */
+    r->capLeft = L->basehookcount > 0 ? L->basehookcount : capInstr; r->hasCap = 1; r->modMask = 0; r->modCount = 0; r->modLeft = 0;
+    lua_pushthread(L); lua_pushvalue(L, -2); lua_rawset(L, -4); lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+  return r;
+}
+static void rearm(lua_State *T, HookRec *r) {
+  int period = INT_MAX;
+  if (r->hasCap) period = r->capLeft > 0 ? r->capLeft : 1;
+  if (r->modCount > 0) { int m = r->modLeft > 0 ? r->modLeft : 1; if (m < period) period = m; }
+  if (exitReq) period = 1;   /* os.exit: every instruction stops the script */
+  int mask = r->modMask;
+  if (period != INT_MAX) mask |= LUA_MASKCOUNT; else period = 0;
+  lua_sethook(T, mask ? hs_hook : NULL, mask, period);
+}
+static void settle(lua_State *T, HookRec *r) {   /* counts the instructions since the last count event */
+  if (!(T->hookmask & LUA_MASKCOUNT)) return;
+  int done = T->basehookcount - T->hookcount;
+  if (r->hasCap) r->capLeft -= done;
+  if (r->modCount > 0) r->modLeft -= done;
+  T->hookcount = T->basehookcount;
+}
+static void cap_error(lua_State *L) {
   if (curCb >= 0) {
     const Cb *c = &cbs[curCb];
     luaL_error(L, "instruction limit (%d) exceeded in %s, callback %s %s", capInstr, srcs[c->src],
@@ -776,30 +792,61 @@ static void count_hook(lua_State *L, lua_Debug *ar) {
                c->kind == 0 ? evName[c->ev] : c->kind == 1 ? renName[c->ev] : "");
   } else luaL_error(L, "instruction limit (%d) exceeded while running %s", capLoad, capWhat);
 }
-typedef struct { int prevCb; int prevBase; int prevCount; double t0; int cap; } Guard;
+static void call_mod_hook(lua_State *L, lua_Debug *ar) {   /* ldblib's hookf */
+  static const char *const names[] = {"call", "return", "line", "count", "tail call"};
+  PUSHREG(L, REG_HOOKFN); lua_pushthread(L);
+  if (lua_rawget(L, -2) != LUA_TFUNCTION) { lua_pop(L, 2); return; }
+  lua_remove(L, -2);
+  lua_pushstring(L, names[ar->event]);
+  if (ar->currentline >= 0) lua_pushinteger(L, ar->currentline); else lua_pushnil(L);   /* set for line events only */
+  lua_call(L, 2, 0);
+}
+static void hs_hook(lua_State *L, lua_Debug *ar) {
+  HookRec *r = hook_rec(L, 1);
+  if (ar->event == LUA_HOOKCOUNT) {
+    int done = L->basehookcount, due = 0;
+    if (r->hasCap) r->capLeft -= done;
+    if (r->modCount > 0) { r->modLeft -= done; if (r->modLeft <= 0) { r->modLeft = r->modCount; due = !hsHooksOff; } }
+    rearm(L, r);
+    /* From here on every instruction raises it again, until the guard ends: a pcall in the script cannot swallow it. */
+    if (exitReq) luaL_error(L, "os.exit: the game is closing");
+    if (r->hasCap && r->capLeft <= 0) cap_error(L);
+    if (due) call_mod_hook(L, ar);
+    return;
+  }
+  /* a line event inside a hook or a finalizer (only hslua-lvm.c's forced traceexec gets there) is Lua's to drop */
+  if (ar->event == LUA_HOOKLINE && hsHooksOff) return;
+  if (!r->modMask) { rearm(L, r); return; }   /* a coroutine's inherited mask */
+  call_mod_hook(L, ar);
+}
+typedef struct { int prevCb; int prevCapLeft; int prevHasCap; double t0; int cap; } Guard;
 static int guardDepth;
 /* Outside a guard only finalizers run Lua code: they share one cap until the next guard ends. */
 static void idle_hook(lua_State *L) {
   capWhat = "a finalizer";
-  lua_sethook(L, count_hook, LUA_MASKCOUNT, capInstr);
+  mainRec.hasCap = 1; mainRec.capLeft = capInstr;
+  rearm(L, &mainRec);
 }
 static void guard_enter(lua_State *L, Guard *g, int cb, int cap) {
   guardDepth++;
-  g->prevCb = curCb; g->prevBase = L->basehookcount; g->prevCount = L->hookcount;
+  settle(L, &mainRec);
+  g->prevCb = curCb; g->prevCapLeft = mainRec.capLeft; g->prevHasCap = mainRec.hasCap;
   curCb = cb; g->cap = cap;
-  lua_sethook(L, count_hook, LUA_MASKCOUNT, cap);
+  mainRec.capLeft = cap; mainRec.hasCap = 1;
+  rearm(L, &mainRec);
   g->t0 = profiling ? js_now() : 0;
 }
 static void guard_leave(lua_State *L, Guard *g, int failed) {
+  settle(L, &mainRec);
   if (curCb >= 0) {
     Cb *c = &cbs[curCb];
-    int used = g->cap - L->hookcount; if (used < 0) used = g->cap;
+    int used = g->cap - mainRec.capLeft; if (used < 0 || used > g->cap) used = g->cap;
     c->calls++; c->instr += used; if (used > c->maxInstr) c->maxInstr = used; if (failed) c->errors++;
     if (profiling) c->ms += js_now() - g->t0;
   }
   curCb = g->prevCb;
   if (--guardDepth == 0) idle_hook(L);
-  else { lua_sethook(L, count_hook, LUA_MASKCOUNT, g->prevBase); L->hookcount = g->prevCount; }
+  else { mainRec.capLeft = g->prevCapLeft; mainRec.hasCap = g->prevHasCap; rearm(L, &mainRec); }
 }
 static int pcall_cb(lua_State *L, int cb, int nArg, int nRet) {
   Guard g; guard_enter(L, &g, cb, capInstr);
@@ -808,12 +855,84 @@ static int pcall_cb(lua_State *L, int cb, int nArg, int nRet) {
   return r;
 }
 
+/* debug.sethook and debug.gethook (ldblib.c's, chained with the cap) */
+static lua_State *hook_thread(lua_State *L, int *arg) {
+  if (lua_isthread(L, 1)) { *arg = 1; return lua_tothread(L, 1); }
+  *arg = 0; return L;
+}
+static int db_sethook_hs(lua_State *L) {
+  int arg, mask = 0, count = 0;
+  lua_State *L1 = hook_thread(L, &arg);
+  if (lua_isnoneornil(L, arg + 1)) lua_settop(L, arg + 1);
+  else {
+    const char *smask = luaL_checkstring(L, arg + 2);
+    luaL_checktype(L, arg + 1, LUA_TFUNCTION);
+    count = (int)luaL_optinteger(L, arg + 3, 0);
+    if (strchr(smask, 'c')) mask |= LUA_MASKCALL;
+    if (strchr(smask, 'r')) mask |= LUA_MASKRET;
+    if (strchr(smask, 'l')) mask |= LUA_MASKLINE;
+    if (count <= 0) count = 0;
+  }
+  PUSHREG(L, REG_HOOKFN); lua_pushthread(L1); lua_xmove(L1, L, 1); lua_pushvalue(L, arg + 1); lua_rawset(L, -3); lua_pop(L, 1);
+  HookRec *r = hook_rec(L1, 1);
+  settle(L1, r);
+  r->modMask = mask; r->modCount = count; r->modLeft = count;
+  rearm(L1, r);
+  return 0;
+}
+static int db_gethook_hs(lua_State *L) {
+  int arg;
+  lua_State *L1 = hook_thread(L, &arg);
+  HookRec *r = hook_rec(L1, 0);
+  int mask = r ? r->modMask : 0, count = r ? r->modCount : 0;
+  char buff[5]; int i = 0;
+  if (mask || count) { PUSHREG(L, REG_HOOKFN); lua_pushthread(L1); lua_xmove(L1, L, 1); lua_rawget(L, -2); lua_remove(L, -2); }
+  else lua_pushnil(L);   /* no hook of the script's (the cap's hook is the runtime's own) */
+  if (mask & LUA_MASKCALL) buff[i++] = 'c';
+  if (mask & LUA_MASKRET) buff[i++] = 'r';
+  if (mask & LUA_MASKLINE) buff[i++] = 'l';
+  buff[i] = 0;
+  lua_pushstring(L, buff);
+  lua_pushinteger(L, count);
+  return 3;
+}
+void hs_open_debug_hooks(lua_State *L) {
+  lua_getglobal(L, "debug");
+  lua_pushcfunction(L, db_sethook_hs); lua_setfield(L, -2, "sethook");
+  lua_pushcfunction(L, db_gethook_hs); lua_setfield(L, -2, "gethook");
+  lua_pop(L, 1);
+}
+
+/* os.exit: the original closes FTL. Here the script stops (every instruction raises until its callback ends), no
+ * further callback runs, and the engine ends the game session with a message naming the mod (hs_exit_*). */
+int hs_os_exit(lua_State *L) {
+  int status;
+  if (lua_isboolean(L, 1)) status = lua_toboolean(L, 1) ? EXIT_SUCCESS : EXIT_FAILURE;
+  else status = (int)luaL_optinteger(L, 1, EXIT_SUCCESS);
+  if (!exitReq) {
+    const char *src = hs_caller_source(L);
+    snprintf(exitSrc, sizeof exitSrc, "%s", src ? src : "");
+    exitReq = 1; exitCode = status;
+    rearm(L, hook_rec(L, 1));
+    if (L != L0) rearm(L0, &mainRec);
+  }
+  return luaL_error(L, "os.exit: the game is closing");
+}
+EXPORT(hs_exit_state) int hs_exit_state(void) { return exitReq; }
+EXPORT(hs_exit_code) int hs_exit_code(void) { return exitCode; }
+EXPORT(hs_exit_source) int hs_exit_source(void) {   /* the chunk name of the script that called os.exit, into sbuf */
+  int n = (int)strlen(exitSrc);
+  if (!hs_sbuf_grow(n + 1)) return 0;
+  memcpy(sbuf, exitSrc, (size_t)n);
+  return n;
+}
+
 /* LuaLibScript::call_on_internal_event_callbacks: args on the stack top; returns nRet if a callback returned non-nil */
 EXPORT(hs_fire) int hs_fire(int id, int nArg, int nRet) {
   lua_State *L = L0;
   if (id <= 0 || id >= NINT) return 0;
   CbList *l = &intList[id];
-  for (int i = 0; i < l->n; i++) {
+  for (int i = 0; i < l->n && !exitReq; i++) {
     int cb = l->ix[i];
     lua_rawgeti(L, LUA_REGISTRYINDEX, cbs[cb].ref);
     for (int k = 0; k < nArg; k++) lua_pushvalue(L, -1 - nArg);
@@ -833,7 +952,7 @@ EXPORT(hs_fire_chain) int hs_fire_chain(int id, int nArg, int nRet) {
   lua_State *L = L0;
   if (id <= 0 || id >= NINT) return 0;
   CbList *l = &intList[id];
-  for (int i = 0; i < l->n; i++) {
+  for (int i = 0; i < l->n && !exitReq; i++) {
     int cb = l->ix[i];
     lua_rawgeti(L, LUA_REGISTRYINDEX, cbs[cb].ref);
     for (int k = 0; k < nArg; k++) lua_pushvalue(L, -1 - nArg);
@@ -857,7 +976,7 @@ EXPORT(hs_render_pre) int hs_render_pre(int id, int nArg) {
   if (id <= 0 || id >= NREN) return 0;
   CbList *l = &renList[id];
   int idx;
-  for (idx = 0; idx < l->n; idx++) {
+  for (idx = 0; idx < l->n && !exitReq; idx++) {
     int cb = l->ix[idx];
     lua_rawgeti(L, LUA_REGISTRYINDEX, cbs[cb].ref);
     for (int k = 0; k < nArg; k++) lua_pushvalue(L, -1 - nArg);
@@ -875,7 +994,7 @@ EXPORT(hs_render_post) void hs_render_post(int id, int idx, int nArg) {
   lua_State *L = L0;
   if (id <= 0 || id >= NREN) return;
   CbList *l = &renList[id];
-  for (--idx; idx >= 0; --idx) {
+  for (--idx; idx >= 0 && !exitReq; --idx) {
     int cb = l->ix[idx];
     lua_rawgeti(L, LUA_REGISTRYINDEX, cbs[cb].ref2);
     for (int k = 0; k < nArg; k++) lua_pushvalue(L, -1 - nArg);
@@ -896,7 +1015,7 @@ EXPORT(hs_has) int hs_has(int kind, int id) {
 static void run_list(CbList *l, int nArg, int argBool, const char *what) {
   lua_State *L = L0;
   logf_(0, "Fetching %u %s callbacks\n", (unsigned)l->n, what);
-  for (int i = 0; i < l->n; i++) {
+  for (int i = 0; i < l->n && !exitReq; i++) {
     int cb = l->ix[i];
     lua_rawgeti(L, LUA_REGISTRYINDEX, cbs[cb].ref);
     if (nArg) lua_pushboolean(L, argBool);
@@ -915,7 +1034,7 @@ EXPORT(hs_game_event) void hs_game_event(int len, int isLoading) {
   CbList *l = gev_list(name, isLoading, 0);
   logf_(0, "Fetching %u on_game_event callbacks for %s\n", (unsigned)(l ? l->n : 0), name);
   if (!l) return;
-  for (int i = 0; ; i++) {
+  for (int i = 0; !exitReq; i++) {
     l = gev_list(name, isLoading, 0);   /* a callback registering a new event name moves gevs */
     if (i >= l->n) break;
     int cb = l->ix[i];
@@ -933,6 +1052,7 @@ static int errlen;
 EXPORT(hs_errlen) int hs_errlen(void) { return errlen; }
 EXPORT(hs_run) int hs_run(int nameLen, int codeLen, int console) {
   lua_State *L = L0;
+  if (exitReq) { errlen = 0; return 1; }   /* os.exit ran: nothing more loads */
   char *name = malloc(nameLen + 2); memcpy(name, sbuf, nameLen); name[nameLen] = 0;
   char *code = malloc(codeLen + 1); memcpy(code, sbuf + nameLen, codeLen); code[codeLen] = 0;
   int top = lua_gettop(L);
@@ -1087,7 +1207,8 @@ static void load_event_names(void) {
 /* drop the previous state and every registration (engine restart, diagnostics) */
 static void reset_all(void) {
   /* lua_close runs every finalizer; the engine has reset its handles already, so they release nothing */
-  if (L0) { closing = 1; curCb = -1; guardDepth = 0; idle_hook(L0); lua_close(L0); L0 = 0; closing = 0; }
+  if (L0) { closing = 1; curCb = -1; guardDepth = 0; exitReq = 0; idle_hook(L0); lua_close(L0); L0 = 0; closing = 0; }
+  memset(&mainRec, 0, sizeof mainRec); exitReq = 0; exitCode = 0; exitSrc[0] = 0;
   free(udCount); udCount = 0; udCountCap = 0;
   for (int i = 0; i < NINT; i++) { free(intList[i].ix); memset(&intList[i], 0, sizeof(CbList)); }
   for (int i = 0; i < NREN; i++) { free(renList[i].ix); memset(&renList[i], 0, sizeof(CbList)); }
@@ -1107,9 +1228,11 @@ EXPORT(hs_init) int hs_init(void) {
   L0 = L;
   idle_hook(L);
   lua_atpanic(L, at_panic);
-  luaL_openlibs(L);                                   /* hs-lua/linit.c */
-  luaL_requiref(L, "os", open_os, 1); lua_pop(L, 1);
   for (int i = 1; i < REG_LAST; i++) { lua_newtable(L); regRef[i] = luaL_ref(L, LUA_REGISTRYINDEX); }
+  PUSHREG(L, REG_HOOKS); lua_newtable(L); lua_pushliteral(L, "k"); lua_setfield(L, -2, "__mode"); lua_setmetatable(L, -2); lua_pop(L, 1);
+  PUSHREG(L, REG_HOOKFN); lua_newtable(L); lua_pushliteral(L, "k"); lua_setfield(L, -2, "__mode"); lua_setmetatable(L, -2); lua_pop(L, 1);
+  luaL_openlibs(L);                                   /* hs-lua/linit.c */
+  hs_open_libs(L);                                    /* hslibs.c: io, os, package, debug */
   PUSHREG(L, REG_CACHE); lua_newtable(L); lua_pushliteral(L, "v"); lua_setfield(L, -2, "__mode"); lua_setmetatable(L, -2); lua_pop(L, 1);
   PUSHREG(L, REG_CACHE2); lua_newtable(L); lua_pushliteral(L, "v"); lua_setfield(L, -2, "__mode"); lua_setmetatable(L, -2); lua_pop(L, 1);
   PUSHREG(L, REG_SENTINEL); lua_pushcfunction(L, ud_gc); lua_setfield(L, -2, "__gc"); lua_pop(L, 1);

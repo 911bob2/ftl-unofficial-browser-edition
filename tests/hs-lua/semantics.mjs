@@ -76,5 +76,18 @@ script.on_game_event('gev', false, function() gev[#gev + 1] = 'a'
 script.on_game_event('gev', false, function() gev[#gev + 1] = 'b' end)`), null);
 rt.gameEvent('gev', false);
 assert.equal(rt.run('gev-check.lua', "if table.concat(gev, ',') ~= 'a,b,late' then error(table.concat(gev, ','), 0) end"), null, 'every callback of the event runs');
+// The libraries of HS 1.23.2's Lua (oracle ps-m1-ev lib rows): Lua 5.3 without LUA_COMPAT_5_2 (no bit32, no math.pow),
+// coroutine there; io, os, debug and package as HS 1.23.2 has them, on the private file system (sweep M1b; tests/hs-lua/libs.mjs).
+assert.equal(rt.run('libs.lua', `local got = table.concat({type(bit32), type(math.pow), type(math.ldexp), type(math.cosh), type(math.log10),
+  type(coroutine), type(coroutine.wrap), type(utf8), type(string.pack), type(table.unpack), type(unpack), type(load), type(collectgarbage),
+  type(rawget), type(rawlen), type(io), type(debug), type(package), type(require), type(os.clock), type(os.time), type(os.date)}, ',')
+local want = 'nil,nil,nil,nil,nil,table,function,table,function,function,nil,nil,nil,nil,function,table,table,table,function,function,function,function'
+if got ~= want then error(got, 0) end
+local co = coroutine.wrap(function(a) local b = coroutine.yield(a + 1); return b * 2 end)
+if co(1) ~= 2 or co(5) ~= 10 then error('coroutine', 0) end`), null, 'libraries as HS 1.23.2');
+// a coroutine's runaway loop still stops at the cap of the code that resumes it
+e.hs_set_caps(0, 1000000);
+assert.match(String(rt.run('co-loop.lua', 'local co = coroutine.wrap(function() while true do end end) co()')), /instruction limit/, 'a coroutine stops at the cap');
+e.hs_set_caps(0, 500000000);
 assert.deepEqual(failures, []);
-console.log('PASS hs-lua semantics (Node): priority order, HALT/PREEMPT, rewriting, plain results, errors, registration checks, render pre/post, instruction cap, on_load');
+console.log('PASS hs-lua semantics (Node): priority order, HALT/PREEMPT, rewriting, plain results, errors, registration checks, render pre/post, instruction cap, on_load, libraries');

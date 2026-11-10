@@ -50,6 +50,18 @@ public final class LuaJs {
     public static native void setCaps(int perCallback, int perScript);
     @JSBody(params = "on", script = "ftlHsLua.e.hs_set_profiling(on?1:0);")
     public static native void setProfiling(boolean on);
+    /** Writes what the scripts changed in their private folder to this browser's storage (web/lua-files.mjs). */
+    @JSBody(script = "if(window.ftlHsLua&&ftlHsLua.syncFiles)ftlHsLua.syncFiles();")
+    public static native void vfsSync();
+    /** A script called os.exit (the session ends). */
+    @JSBody(script = "return !!window.ftlHsLua&&ftlHsLua.e.hs_exit_state()!==0;")
+    public static native boolean exitRequested();
+    /** The chunk name of the script that called os.exit. */
+    @JSBody(script = "var s=ftlHsLua.exitState();return s?s.source:'';")
+    public static native String exitSource();
+    /** os.exit: the page ends the game session with a message naming the mod (web/app.mjs window.ftlLuaExit). */
+    @JSBody(params = {"source", "code"}, script = "if(window.ftlLuaExit)window.ftlLuaExit(source,code);")
+    public static native void hostExit(String source, int code);
     @JSBody(params = "msg", script = "ftlHsLua.setError(msg);")
     public static native void setError(String message);
     /** Getter failures: the runtime raises this as a Lua error right after the getter returns. */

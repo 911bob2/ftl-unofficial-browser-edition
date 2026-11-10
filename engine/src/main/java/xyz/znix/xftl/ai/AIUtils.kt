@@ -38,12 +38,22 @@ object AIUtils {
     fun crewAiRuns(ship: Ship): Boolean = ship.isPlayerShip || ship.sys.getEnemyOf(ship) != null
 
     /**
-     * ShipSystem +0x45: a crewmember is manning the system. ShipManager::OnLoop (0x4aa670) resets it every frame to
-     * the automated flag (ShipManager +0x4d9) and CrewMember 0x47b190 sets it while manning.
+     * ShipSystem +0x45 (bManned). ShipManager::OnLoop resets it every frame to the automated flag (ShipManager +0x4d9);
+     * then its crew loop (1.6.14 0x4aa670) calls CrewMember::SetCurrentSystem (0x47b190) for every crew member that is
+     * not an intruder with each system of the room it stands in, and that sets bManned as soon as CanMan holds (not an
+     * intruder, not stunned, not dying; Hyperspace's CAN_MAN), before it asks whether the crew member is at the
+     * console. So any such crew member in the room counts, walking through or standing elsewhere in it (oracle
+     * ps-fu2-fb: the engines crew member, called off the teleporter the moment its target leaves, makes for the empty
+     * oxygen station, not its own engines it is still standing in).
      */
     fun isManned(system: AbstractSystem): Boolean {
-        val ship = system.room?.ship ?: return system.manningCrew != null
-        return ship.isAutoScout || ship.isAutomated || system.manningCrew != null
+        val room = system.room ?: return system.manningCrew != null
+        val ship = room.ship
+        if (ship.isAutoScout || ship.isAutomated) return true
+        return room.crew.any {
+            it.mode == AbstractCrew.SlotType.CREW && it.canManSystem && it.stunTime <= 0f &&
+                it.currentAction != AbstractCrew.Action.DYING && it.health > 0f
+        }
     }
 
     @Suppress("RedundantIf")

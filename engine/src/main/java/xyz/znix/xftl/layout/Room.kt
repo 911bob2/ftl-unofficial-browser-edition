@@ -70,7 +70,9 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
      * True if the player can see the contents of the room.
      */
     var playerHasVision: Boolean = false
-        private set
+        // Hyperspace Lua writes Room.bBlackedOut / Ship::SetRoomBlackout here; the next update sets it again, as the
+        // native ShipManager::OnLoop does every frame.
+        internal set
 
     /**
      * Is the oxygen level so low the crew will suffocate?
@@ -180,15 +182,16 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         }
 
         // Slug telepathy works defensively too: a Slug based on this (player)
-        // ship reveals its room and the rooms connected to it by a door, as
-        // though they had sensors - so intruders can be found even with no
-        // sensors installed, unpowered, hacked or nebula-blocked.
+        // ship reveals its room and the rooms that share a wall with it, door
+        // or not, as though they had sensors - so intruders can be found even
+        // with no sensors installed, unpowered, hacked or nebula-blocked.
+        // Oracle ps-fu2-sl (the MV Kestrel, sensors broken, a slug in each of 17 rooms): every lit room shares a wall
+        // with the slug's; 11 of them have no door to it (the native 1.6.14 hangar shows the same, ps-s1 S1-8).
         if (ship.isPlayerShip) {
             if (crew.any { it.isTelepathic && (it as? xyz.znix.xftl.crew.LivingCrew)?.ownerShip === ship }) {
                 playerHasVision = true
             } else {
-                for (door in doors) {
-                    val neighbour = door.other(this) ?: continue
+                for (neighbour in wallNeighbours) {
                     if (neighbour.crew.any { it.isTelepathic && (it as? xyz.znix.xftl.crew.LivingCrew)?.ownerShip === ship }) {
                         playerHasVision = true
                         break
@@ -215,6 +218,10 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         if (hacking != null && hacking.room!!.ship.isPlayerShip && hacking.isPoweredUp) {
             playerHasVision = true
         }
+
+        // Hyperspace ShipManager::tempVision (written by Lua): ShipManager::CheckVision (1.6.9 0x491620, from OnLoop)
+        // lights each flagged room (Ship::SetRoomBlackout(i, false)) and clears every flag.
+        if (dt > 0f && xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.lua.HsShipLuaState.of(ship).tempVision.remove(id)) playerHasVision = true
 
         // Ships loose 1.2% oxygen per second, but gain whatever the oxygen
         // system is providing.
@@ -1203,5 +1210,14 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
      */
     fun connectedTo(room: Room): Boolean {
         return doors.any { it.other(this) == room }
+    }
+
+    /** The rooms whose edge runs along part of this room's (side by side or stacked, a shared corner is not enough). */
+    val wallNeighbours: List<Room> by lazy {
+        ship.rooms.filter { r ->
+            r !== this && (
+                (r.x + r.width == x || x + width == r.x) && r.y < y + height && y < r.y + r.height ||
+                    (r.y + r.height == y || y + height == r.y) && r.x < x + width && x < r.x + r.width)
+        }
     }
 }

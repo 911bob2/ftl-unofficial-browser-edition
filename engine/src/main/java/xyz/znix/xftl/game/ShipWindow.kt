@@ -196,7 +196,62 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         if (dx * dx + dy * dy > TOUCH_DRAG_DIST * TOUCH_DRAG_DIST) {
             hsDragging = candidate
             touchCrewCandidate = null
+            touchDragFrom = ConstPoint(x, y)
         }
+    }
+
+    // Touch layout without Hyperspace: the crew screen's DISMISSAL DropBox, as the iPad game's crew screen has it next to the crew grid. A
+    // crew box picked up (past the 9 px above) follows the finger whole; lifted while the box's point (50, 46) is over
+    // the DropBox, it opens the same confirm_dismiss as the box's Dismiss button. The Dismiss buttons stay.
+    private var touchDismissBox: ShipEquipmentPanel.SellDropBox? = null
+    private var touchDragFrom: ConstPoint = ConstPoint.ZERO
+    private val touchCrewButtons = HashMap<LivingCrew, List<Button>>()
+    private var touchDrawingDrag = false
+
+    /** Without Hyperspace the whole crew box follows the finger (the iPad's); Hyperspace's manifest drags the portrait. */
+    private val touchDragsBox: Boolean get() = TouchMode.enabled && hsDef == null
+
+    /** Where the dragged crew is tested against the DropBox: its box's (50, 46) moved with the finger, else the finger. */
+    private fun touchDragPoint(): ConstPoint? {
+        val dragged = hsDragging ?: return null
+        val box = touchCrewButtons[dragged]?.firstOrNull()
+        if (!touchDragsBox || box == null) return ConstPoint(mouseX, mouseY)
+        return ConstPoint(box.pos.x + 50 + mouseX - touchDragFrom.x, box.pos.y + 46 + mouseY - touchDragFrom.y)
+    }
+
+    /** The dragged crew member is over the DISMISSAL box. */
+    private val touchDismissHot: Boolean
+        get() {
+            if (!TouchMode.enabled || tab != Tab.CREW || dismissConfirm != null) return false
+            val p = touchDragPoint() ?: return false
+            return touchDismissBox?.contains(p.x, p.y) == true
+        }
+
+    /** The crew boxes of [crew] drawn in place; hidden there while the whole box follows the finger. */
+    private fun touchHidesDragged(crew: LivingCrew) = touchDragsBox && hsDragging === crew && !touchDrawingDrag
+
+    /** The dragged crew box at the finger, over everything else. */
+    private fun touchDrawDraggedBox(g: Graphics) {
+        val dragged = hsDragging ?: return
+        val parts = touchCrewButtons[dragged] ?: return
+        g.pushTransform()
+        g.translate((mouseX - touchDragFrom.x).f, (mouseY - touchDragFrom.y).f)
+        touchDrawingDrag = true
+        try { for (b in parts) b.draw(g) } finally { touchDrawingDrag = false }
+        g.popTransform()
+    }
+
+    /** The DISMISSAL box's place in this window's frame: the iPad's (600, 500), shifted as [crewDropBoxPos] is. */
+    private val touchDismissBoxPos = ConstPoint(600, 500 + GLOW_WIDTH)
+
+    /** Without Hyperspace only (user, FU1-C1): the iPad game has no Hyperspace crew screen to copy it from. */
+    private fun addTouchDismissBox() {
+        if (!TouchMode.enabled || !updatingButtons || xyz.znix.xftl.hs.HS.active) return
+        val box = ShipEquipmentPanel.SellDropBox.create(
+            game, ShipEquipmentPanel.SellDropBox.Type.DISMISS_CREW, touchDismissBoxPos, { null }, { null }, { touchDismissHot }
+        )
+        touchDismissBox = box
+        buttons += box
     }
 
     private fun touchReleaseCrew() {
@@ -301,10 +356,20 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         updateButtons()
     }
 
+    /** The buttons hovered before [updateButtons] rebuilt them, by class and place ([Button.carryHover]). */
+    private var hoverCarry: Set<String> = emptySet()
+
+    private fun hoverKey(b: Button) = b.javaClass.name + "@" + b.basePos
+
     private fun updateButtons() {
+        // An upgrade rebuilds the buttons under a still mouse; the original's upgrade boxes stay and do not beep again
+        // (sound trace pair u4-store: no hoverBeep after upgradeSystem).
+        hoverCarry = buttons.filter { it.hovered }.mapTo(HashSet()) { hoverKey(it) }
         buttons.clear()
         dismissHighlightButtons.clear()
         diagnosticCrewBoxes.clear()
+        touchCrewButtons.clear()
+        touchDismissBox = null
 
         buttons += closeButton
 
@@ -388,6 +453,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             // Update any newly-created button positions
             positionUpdated()
             updatingButtons = false
+            for (b in buttons) if (hoverKey(b) in hoverCarry) b.carryHover()
+            hoverCarry = emptySet()
         }
 
         // When we're dismissing crew we grey out everything else, this
@@ -403,7 +470,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
         if (touchGet != null) {
             if (touchUpgradesShown && touchSelectedBox() != null) touchGet.drawBelow(g, infoPanel) else touchGet.hide()
-            hsDragging?.let { it.drawPortrait(mouseX - 34, mouseY - 34, false, 2f) }
+            if (touchDragsBox) touchDrawDraggedBox(g)
+            else hsDragging?.let { it.drawPortrait(mouseX - 34, mouseY - 34, false, 2f) }
         }
 
         equipmentPanel.drawDrag(g)
@@ -979,7 +1047,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     val diagnosticOverCapacity: String get() {
         fun r(x: Int, y: Int, w: Int, h: Int) = "{\"x\":$x,\"y\":$y,\"w\":$w,\"h\":$h}"
         fun rb(b: Button) = r(b.pos.x - position.x, b.pos.y - position.y, b.size.x, b.size.y)
-        val drop = buttons.firstOrNull { it is ShipEquipmentPanel.SellDropBox }
+        val drop = buttons.firstOrNull { it is ShipEquipmentPanel.SellDropBox && it.boxType != ShipEquipmentPanel.SellDropBox.Type.DISMISS_CREW }
+        val dismissBox = touchDismissBox?.takeIf { tab == Tab.CREW && it in buttons }
         val crew = if (tab != Tab.CREW) "" else diagnosticCrewBoxes.joinToString(",") { b ->
             "{\"id\":${b.id},\"over\":${b.over},\"crew\":${ftl.browser.BrowserDebug.quote(b.crew?.info?.name)}," +
                 "\"x\":${b.pos.x},\"y\":${b.pos.y},\"w\":100,\"h\":86" +
@@ -987,9 +1056,11 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         }
         val yes = dismissConfirm?.yesCentre
         val screen = if (TouchMode.enabled) r(-50, -85, 1024, 768) else r(-position.x, -position.y, 1280, 720)
-        val others = "{\"name\":\"window\",\"rect\":${r(-GLOW_WIDTH, -GLOW_WIDTH, 601, 478)}},{\"name\":\"accept\",\"rect\":${rb(closeButton)}}"
+        val others = "{\"name\":\"window\",\"rect\":${r(-GLOW_WIDTH, -GLOW_WIDTH, 601, 478)}},{\"name\":\"accept\",\"rect\":${rb(closeButton)}}" +
+            (if (dismissBox != null) ",{\"name\":\"dismissBox\",\"rect\":${rb(dismissBox)}}" else "")
         return "{\"tab\":\"$tab\",\"touch\":${TouchMode.enabled},\"origin\":{\"x\":${position.x},\"y\":${position.y}},\"screen\":$screen," +
             "\"drop\":${if (tab == Tab.CREW && drop != null) rb(drop) else "null"},\"crew\":[$crew]," +
+            "\"dismissBox\":${if (dismissBox != null) rb(dismissBox) else "null"},\"dismissHot\":$touchDismissHot," +
             "\"confirmYes\":${if (yes == null) "null" else r(yes.x - position.x - 5, yes.y - position.y - 5, 10, 10)}," +
             "\"confirm\":${dismissConfirm?.let { r(it.position.x - position.x, it.position.y - position.y, it.size.x, it.size.y) } ?: "null"}," +
             "\"others\":[$others]," + equipmentPanel.diagnosticOverCapacity(position) + "}"
@@ -1153,6 +1224,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         }
         val crew = ship.sys.playerCrew
         if (TouchMode.enabled) hsCrewBoxes.clear()
+        // The iPad's crew screen draws its DISMISSAL DropBox before the crew boxes.
+        addTouchDismissBox()
 
         // CrewManifest::OnRender (0x004eaf80): font 10 at (25,55) from the native origin.
         noteFont.print(position.x + 18f, position.y + 55f, game.translator["rename_note"], Colour.white)
@@ -1228,10 +1301,12 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             var nameHover = false
 
             override fun draw(g: Graphics) {
-                val box = if (hovered) boxHover else boxNormal
+                if (touchHidesDragged(crew)) return
+                val lit = hovered && !touchDrawingDrag
+                val box = if (lit) boxHover else boxNormal
                 box.draw(pos)
 
-                val dismissBox = if (hovered) dismissButtonBoxHover else dismissButtonBox
+                val dismissBox = if (lit) dismissButtonBoxHover else dismissButtonBox
                 dismissBox.draw(pos.x.f, pos.y + 62f)
 
                 if (renamingCrew == crew) {
@@ -1264,7 +1339,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                         g.colour = Colour.yellow
                         g.fillRect(cursorX, boxY + 8, 2, 13)
                     }
-                } else if (hsDragging !== crew) {
+                } else if (hsDragging !== crew || touchDrawingDrag) {
                     // Draw the name
                     // CrewEquipBox::RenderLabels (0x00542470): font 6 centred at (50,49).
                     val name = crew.info.shortName
@@ -1279,7 +1354,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
                 // EquipmentBox::OnRender (0x00540150) renders the crew icon at 2x from
                 // (50,27); its 35px frame starts 17 source pixels up and left.
-                if (hsDragging !== crew) crew.drawPortrait(pos.x + 16, pos.y - 7, false, 2f)
+                if (hsDragging !== crew || touchDrawingDrag) crew.drawPortrait(pos.x + 16, pos.y - 7, false, 2f)
 
                 // Draw the information about this crewmember while hovering over them
                 if (hovered && hsDragging == null) {
@@ -1319,6 +1394,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         ) {
             // The box being dismissed keeps its button highlighted under the popup.
             override fun draw(g: Graphics) {
+                if (touchHidesDragged(crew)) return
                 if (crewToDismiss != crew) {
                     super.draw(g)
                     return
@@ -1332,6 +1408,7 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
         buttons += mainButton
         buttons += dismissButton
+        if (TouchMode.enabled) touchCrewButtons[crew] = listOf(mainButton, dismissButton)
 
         // Don't grey out the buttons corresponding to crew we're about to dismiss
         if (crewToDismiss == crew) {
@@ -1402,6 +1479,13 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         super.mouseReleased(button, x, y)
         if (TouchMode.enabled && button == Input.MOUSE_LEFT_BUTTON) touchReleaseCrew()
 
+        // Lifted over the DISMISSAL box: the dismiss confirmation, as the Dismiss button opens it.
+        if (hsDragging != null && touchDismissHot) {
+            val crew = hsDragging!!
+            hsDragging = null
+            confirmDismiss(crew)
+            return
+        }
         if (hsDragging != null) hsCrewDrop(x, y)
 
         if (tab == Tab.EQUIPMENT) {

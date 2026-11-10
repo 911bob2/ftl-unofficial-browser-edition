@@ -76,12 +76,15 @@ object HsRenderEvents {
             for (phase in 1..3) {
                 val ev = when (phase) { 1 -> A.RE_LAYER_BACKGROUND; 2 -> A.RE_LAYER_FOREGROUND; else -> A.RE_LAYER_ASTEROIDS }
                 env.hsPhase = phase
+                // RenderStatic draws OnRenderAsteroids(3) at the jump's asteroid scale, its hooks included
+                if (phase == 3) { g.pushTransform(); env.game.applyJumpAsteroids(g) }
                 val i = pre(ev)
                 if (i >= 0) env.renderStack(gc, g)
                 // SpaceManager's OnRenderBackground / OnRenderForeground / OnRenderAsteroids(3) hooks
                 // (CustomBackgroundObject.cpp), after the original's part
                 HsBackgroundObjects.renderSpace(env.game, g, phase, env.pauseShade(env.game))
                 post(ev, i)
+                if (phase == 3) g.popTransform()
             }
         } finally {
             env.hsPhase = 0
@@ -90,15 +93,19 @@ object HsRenderEvents {
 
     /**
      * CommandGui::RenderStatic's last space pass, SpaceManager::OnRenderAsteroids(1) after the player ship while the
-     * jump zoom is above zero, under the same scale about the hull centre: LAYER_FRONT, and the front layer's
+     * jump zoom is above zero, under the asteroid pass's scale about the hull centre (1 - 0.3 zoom, 1.6.14 0x535070):
+     * LAYER_FRONT with the field's front layer, and the front layer's
      * background objects (CustomBackgroundObject.cpp, the OnRenderAsteroids hook with layers != 3).
      */
     @JvmStatic
-    fun layerFront(game: xyz.znix.xftl.game.InGameState, g: xyz.znix.xftl.rendering.Graphics) {
+    fun layerFront(game: xyz.znix.xftl.game.InGameState, gc: xyz.znix.xftl.sys.GameContainer, g: xyz.znix.xftl.rendering.Graphics) {
         g.pushTransform()
-        game.applyJumpScene(g)
+        game.applyJumpAsteroids(g)
         val i = pre(A.RE_LAYER_FRONT)
-        HsBackgroundObjects.renderSpace(game, g, 4, game.currentBeacon.getEnvironment(game).pauseShade(game))
+        val env = game.currentBeacon.getEnvironment(game)
+        // the original's part: the asteroid field's front layer
+        if (i >= 0 && !ftl.browser.BrowserDebug.parityNoBackground) env.renderFrontStack(gc, g)
+        HsBackgroundObjects.renderSpace(game, g, 4, env.pauseShade(game))
         post(A.RE_LAYER_FRONT, i)
         g.popTransform()
     }

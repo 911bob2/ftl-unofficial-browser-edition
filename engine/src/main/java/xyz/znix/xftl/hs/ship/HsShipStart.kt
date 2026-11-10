@@ -82,6 +82,16 @@ object HsShipStart {
         return race
     }
 
+    /**
+     * Hyperspace's ProjectileFactory constructor hook (CustomWeapons.cpp): a weapon made from the inert default
+     * blueprint (type -1: GetWeaponBlueprint found no such name) is a Basic Laser (LASER_BURST_1) instead. Every weapon
+     * a ship gets goes through it: its starting weapons and an event's weaponOverride picks alike. Null outside
+     * Hyperspace (the original keeps the empty weapon; no vanilla data names a missing weapon).
+     */
+    @JvmStatic
+    fun missingWeapon(manager: BlueprintManager): AbstractWeaponBlueprint? =
+        if (xyz.znix.xftl.hs.HS.active) manager.getOrNull("LASER_BURST_1") as? AbstractWeaponBlueprint else null
+
     /** Ship.loadDefaultContents in modded sessions: install [preset] (or resolve now) into the ship's systems. */
     @JvmStatic
     fun loadEquipment(ship: Ship, preset: Equipment?) {
@@ -90,7 +100,8 @@ object HsShipStart {
         if (ship.weapons != null) {
             for ((index, name) in eq.weapons.withIndex()) {
                 if (index >= ship.hardpoints.size) break
-                val weapon = (if (name == null) null else manager.getOrNull(name)) ?: manager.getOrNull("")
+                val weapon = (if (name == null) null else manager.getOrNull(name) as? AbstractWeaponBlueprint)
+                    ?: missingWeapon(manager) ?: manager.getOrNull("")
                 if (weapon !is AbstractWeaponBlueprint) continue
                 ship.hardpoints[index].weapon = weapon.buildInstance(ship)
             }

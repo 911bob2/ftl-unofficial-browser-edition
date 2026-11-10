@@ -246,8 +246,15 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         // of the thruster sprite
         // Hyperspace BoarderPodDrone constructor (CustomDrones.cpp): a custom drone's pod is its race's `_fly` image.
         val hsRace = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.weapons.HsDrones.customRace(type.name) else null
-        val portrait = ((if (hsRace != null) game.animations.getOrNull("${hsRace}_fly") else null)
-            ?: game.animations.crewStrip("${pawnCodename}_portrait")).spriteAt(game, 0)
+        private val portraitSpec = (if (hsRace != null) game.animations.getOrNull("${hsRace}_fly") else null)
+            ?: game.animations.crewStrip("${pawnCodename}_portrait")
+        val portrait = portraitSpec.spriteAt(game, 0)
+
+        // The pod's lights: the same frame of the sheet's `_layer1` image in the owner's drone light colour, as the
+        // crew drone's (BoarderPodDrone's colorSheet; HS oracle ps-fu3-pod: the enemy's pod in flight has red lights).
+        private val lights = portraitSpec.sheet.sheetPath.takeIf { it.endsWith("_base.png") }
+            ?.let { game.getImgIfExists(it.removeSuffix("_base.png") + "_layer1.png") }
+            ?.let { portraitSpec.sheet.getSprite(it, portraitSpec.x, portraitSpec.y) }
 
         val thruster = game.getImg("img/ship/drones/boarder_engine.png")
 
@@ -379,6 +386,7 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
             g.rotate(0f, 0f, angleOffset.f)
 
             portrait.draw(offset)
+            lights?.draw(offset, if (ownerShip.isPlayerShip) AbstractIndoorsDrone.DRONE_LIGHT_PLAYER else AbstractIndoorsDrone.DRONE_LIGHT_ENEMY)
             thruster.draw(offset)
         }
 

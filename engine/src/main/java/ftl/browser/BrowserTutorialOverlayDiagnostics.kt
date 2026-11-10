@@ -83,8 +83,10 @@ object BrowserTutorialOverlayDiagnostics {
                 val step = controller.step
                 BrowserEngine.diagnosticProgress("tutorial overlay ${index + 1}/33 ${step.id}")
                 if (step.id == "INVENTORY_1") window(VanillaHotkeys.SHIP_INVENTORY)
-                if (step.id == "COMBAT_5") { state.cancelMenu(); window(VanillaHotkeys.SHIP_UPGRADES) }
-                if (step.id == "UPGRADES_2") state.cancelMenu()
+                // Escape over the tutorial's ship window opens the menu as well (CommandGui::KeyDown): close both.
+                fun escape() { state.cancelMenu(); if (state.shipUI.diagnosticPauseWindow != null) state.cancelMenu() }
+                if (step.id == "COMBAT_5") { escape(); window(VanillaHotkeys.SHIP_UPGRADES) }
+                if (step.id == "UPGRADES_2") escape()
                 val before = BrowserXml.write(state.saveGameState())
                 val beforeRng = BrowserRandom.snapshot()
                 repeat(3) { BrowserDebugState.snapshot(main) }

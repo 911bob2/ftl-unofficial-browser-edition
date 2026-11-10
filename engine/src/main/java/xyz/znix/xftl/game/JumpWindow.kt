@@ -996,7 +996,18 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
 
         super.updateUI(x, y)
         if (game.eventManager.hs != null) xyz.znix.xftl.hs.sector.HsStarMap.mouseMoveGrid(game, x, y, false)
+        updateBeaconHover(x, y)
+        // The star map (1.6.14 0x5f57f5) makes the pointer valid while a beacon it can jump to is under the mouse
+        // (potentialLoc, +0x54), and MouseControl::OnRender (0x4e6240) plays hoverBeep when the pointer turns valid.
+        val valid = !TouchMode.enabled && hsPotentialLoc != null
+        if (valid && !beaconPointerValid) game.sounds.getSampleOrWarn("hoverBeep")?.play()
+        beaconPointerValid = valid
+    }
 
+    // The pointer was valid over a beacon last frame (MouseControl +0x1f).
+    private var beaconPointerValid = false
+
+    private fun updateBeaconHover(x: Int, y: Int) {
         if (TouchMode.enabled) {
             if (outOfFuel) {
                 hovered = null
@@ -1227,6 +1238,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         // StarMap::Close (0x005ea780) does nothing while waiting.
         if (isWaiting)
             return
+        // CommandGui::KeyDown (1.6.9 0x5201f0): Escape closes the open beacon map only while the tutorial does not run.
+        if (game.mainGame?.isTutorialRunning == true)
+            return
         cancelClicked()
     }
 
@@ -1368,6 +1382,11 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     }
 
     private fun cancelClicked() {
+        // StarMap::MouseClick (1.6.9 0x5ca380): CANCEL does nothing on a map generated for the tutorial
+        // (bTutorialGenerated); the tutorial's map closes only by jumping (native capture ps-u5 u5-full, STAR_MAP_1).
+        // The iPad game does the same: its CANCEL takes no pointer while the map is the tutorial's, so touch keeps it too.
+        if (game.mainGame?.isTutorialRunning == true)
+            return
         jump(null)
     }
 

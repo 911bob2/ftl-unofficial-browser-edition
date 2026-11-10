@@ -554,6 +554,8 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
 
         for (hp in ship.hardpoints) {
             val weapon = hp.weapon ?: continue
+            // ProjectileFactory::Update (HS CustomWeapons.cpp): an unpowered weapon's lastTargets are cleared.
+            if (!weapon.isPowered) weapon.hsLastAim = null
             val ready = weapon.totalReadyCharges
             if (!weapon.isPowered || !weapon.hasEnoughMissiles || ready < 1 || weapon.isFiring)
                 continue
@@ -584,6 +586,10 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
                     // point first (SetTargets 0x40d9a0 reverses the list), so hand the points out back to front.
                     val handOut = handOutAimPoints(aimed, max(1, ready) * shots, perPoint).iterator()
                     weapon.fire { handOut.next() }
+                    // ProjectileFactory::Fire copies the aim, reversed, into lastTargets; CombatAI never calls
+                    // ClearAiming, so they stay after the volley (HS oracle ps-m1 `lt`: 1 and 3 points after the
+                    // Basic Laser's and the Burst Laser II's volleys).
+                    weapon.hsLastAim = aimed.asReversed().toList()
                 }
 
                 is BeamBlueprint.BeamInstance -> {
@@ -620,17 +626,8 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
      * Pick the rooms a weapon aims at. Every point comes from ChooseSystem (or a random room); a point that is
      * already taken replaces the earlier one, so a weapon never aims twice at the same room.
      */
-    private fun chooseAimPoints(target: Ship, count: Int): List<Room> {
-        val needed = min(count, target.rooms.size)
-        val points = ArrayList<Room>()
-        var attempts = 0
-        while (points.size < needed && attempts++ < MAX_AIM_ATTEMPTS) {
-            val room = BrowserEnemyTargeting.pickRoom(ship, target, rand)
-            points.remove(room)
-            points.add(room)
-        }
-        return points
-    }
+    private fun chooseAimPoints(target: Ship, count: Int): List<Room> =
+        aimPoints(count, target.rooms.size, xyz.znix.xftl.hs.HS.active) { BrowserEnemyTargeting.pickRoom(ship, target, rand) }
 
     /**
      * The hacking half of CombatAI::OnLoop (0x62c510): while no probe is out, send one (if there's a drone part to
@@ -686,6 +683,26 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
     }
 
     companion object {
+        /**
+         * [count] aim points drawn with [pick] on a ship of [rooms] rooms, a repeat replacing the earlier point. In
+         * vanilla only as many as there are rooms (the native loop would never end past that; no weapon reaches it).
+         * Hyperspace's CombatAI::UpdateWeapons rewrite (CustomWeapons.cpp, priority 9999) removes repeats only while
+         * the list is shorter than the room count, so past every room each further pick is added as it comes.
+         */
+        internal fun <T> aimPoints(count: Int, rooms: Int, hs: Boolean, pick: () -> T): List<T> {
+            val points = ArrayList<T>()
+            var attempts = 0
+            while (points.size < min(count, rooms) && attempts++ < MAX_AIM_ATTEMPTS) {
+                val room = pick()
+                points.remove(room)
+                points.add(room)
+            }
+            if (hs && points.size == rooms) {
+                while (points.size < count) points.add(pick())
+            }
+            return points
+        }
+
         /**
          * The order a weapon is given its [total] targets in: the weapon fires the last one first, so the aim points
          * go out back to front, each repeated for [perPoint] shots (SetTargets 0x40d9a0 reverses the aim list).

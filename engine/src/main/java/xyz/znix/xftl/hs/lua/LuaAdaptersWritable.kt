@@ -201,7 +201,11 @@ object LuaAdaptersWritable {
         LuaReg.numSet[A.A_CrewMember_iShipId] = NumSet { o, v ->
             val x = c(o) as? LivingCrew ?: throw LuaError("expected a living crew member")
             val g = LuaAdapters.inGame() ?: return@NumSet
-            x.ownerShip = if (v.toInt() == 0) g.player else g.enemy
+            // Natively any number is stored; a crew member of a ship that is not there (3, or 1 with no enemy) hangs
+            // the original at the next fight (oracle ps-m1 run 3, err|break-crew-immutable). Here it is refused.
+            val owner = when (v.toInt()) { 0 -> g.player; 1 -> g.enemy; else -> null }
+                ?: return@NumSet xyz.znix.xftl.hs.HS.unsupported("lua", "attribute", "CrewMember.iShipId write of ${v.toInt()} (no such ship)")
+            x.ownerShip = owner
         }
         // currentShipId: CountCrew stops counting the member at once, the next frame's loop takes it off the ship's list (oracle hw-cs2).
         LuaReg.numSet[A.A_CrewMember_currentShipId] = NumSet { o, v ->
@@ -241,9 +245,13 @@ object LuaAdaptersWritable {
                 else -> null
             }
         }
-        // The frame's movement pass sets intruder from the mind control flag too (oracle ph-ci3).
+        // The frame's movement pass sets intruder from the mind control flag too: away from its own ship XOR mind
+        // controlled (oracle ph-ci3: a controlled crew member at home reads 1; ps-c2-mc: a controlled boarder reads 0).
         LuaReg.numGet[A.A_CrewMember_intruder]?.let { before ->
-            LuaReg.numGet[A.A_CrewMember_intruder] = NumGet { o -> if ((c(o) as? LivingCrew)?.hsMindControlled == true) 1.0 else before.get(o) }
+            LuaReg.numGet[A.A_CrewMember_intruder] = NumGet { o ->
+                val controlled = (c(o) as? LivingCrew)?.isMindControlled == true
+                if (controlled != (before.get(o) != 0.0)) 1.0 else 0.0
+            }
         }
         // iRepairId stays until the crew member starts or stops a repair.
         LuaReg.numSet[A.A_CrewMember_iRepairId] = NumSet { o, v -> LuaStored.put(o, A.A_CrewMember_iRepairId, v) }
@@ -282,10 +290,13 @@ object LuaAdaptersWritable {
         LuaReg.numSet[A.A_ProjectileFactory_numShots] = NumSet { o, v -> w(o).hsNumShots = v.toInt() }
         LuaReg.numGet[A.A_ProjectileFactory_numShots] = NumGet { w(it).hsNumShots.toDouble() }
         LuaReg.numSet[A.A_ProjectileFactory_powered] = NumSet { o, v -> w(o).hsWritePowered(v != 0.0) }
-        // cooldown.first is the charge; cooldown.second the goal, written by the next Update from the blueprint.
+        // cooldown.first is the charge; cooldown.second the goal, written by the next Update from the blueprint. Both are
+        // in the modified scale the getter shows (SetCooldownModifier scales the pair): the charge goes back through it.
         LuaReg.objSet[A.A_ProjectileFactory_cooldown] = ObjSet { o, v ->
             val p = v as? FloatPairView ?: return@ObjSet
-            w(o).hsWriteCharge(p.first)
+            val wi = w(o)
+            val mod = wi.hsCooldownMod.coerceAtLeast(1e-4f)
+            wi.hsWriteCharge(if (p.first >= wi.chargeTime * mod) wi.chargeTime else p.first / mod)
             val view = LuaReg.objGet[A.A_ProjectileFactory_cooldown]?.get(o)
             if (view != null) LuaStored.frame(view, A.A_pair_float_float_second, p.second.toDouble())
         }

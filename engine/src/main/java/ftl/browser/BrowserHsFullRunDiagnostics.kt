@@ -37,7 +37,9 @@ object BrowserHsFullRunDiagnostics {
 
     /** Names that only differ by a trailing counter ('X destroyed  21547') count as one event. */
     private fun normEvent(e: String): String = e.trimEnd { it.isDigit() || it == ' ' }
-    private val MENU_PREFIXES = listOf("Do something onboard", "Perform a task", "Do some last minute")
+    // Also MV's menus that lead back to the same box (special ships: the toggle menu's "Nevermind", Sylvan hailing himself).
+    private val MENU_PREFIXES = listOf("Do something onboard", "Perform a task", "Do some last minute", "Change your toggle",
+        "(Sylvan) Use Sylvan to hail Sylvan")
 
     /** The oracle's `policy`: first enabled (type != 1) choice that does not open a ship menu, else the first enabled. */
     private fun policy(choices: List<Pair<String, Int>>): Int {
