@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The browser itself refuses any network request and any eval from this page. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<title></title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #15171c; --bg-raised: #20242c; --bg-sunken: #0f1115; --border: #2d323c;
+  --text: #e4e7ec; --text-dim: #8b94a3; --danger: #f2646f;
+  --accent-dim: color-mix(in srgb, var(--accent) 25%, var(--bg-raised));
+  --gap: 10px;
+  accent-color: var(--accent);
+  font: 14px/1.4 system-ui, "Segoe UI", sans-serif;
+}
+:root.compact { --gap: 6px; font-size: 13px; }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; }
+footer { padding: 8px 14px; font-size: .85em; color: var(--text-dim); }
+h1 { margin: 0 6px 0 0; font-size: 1.05em; }
+button, input, select, textarea { font: inherit; color: var(--text); padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-sunken); }
+button { background: var(--bg-raised); cursor: pointer; }
+button:hover { background: var(--accent-dim); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.primary, .primary:hover { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.dim { color: var(--text-dim); }
+.danger { color: var(--danger); }
+#filter { width: 240px; }
+#status { margin-left: auto; }
+
+main { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); grid-auto-flow: column; grid-auto-columns: minmax(160px, 1fr); gap: 10px; padding: 0 14px; overflow-x: auto; }
+section { display: flex; flex-direction: column; gap: var(--gap); min-height: 0; padding: var(--gap); border-radius: 10px; background: var(--bg-sunken); }
+h2 { display: flex; align-items: baseline; gap: 8px; margin: 2px 4px 0; font-size: .85em; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+h2 small { font-weight: 400; }
+h2 button { margin: -3px 0 -3px auto; padding: 0 8px; font-weight: 400; letter-spacing: 0; }
+section > input { border-color: transparent; background: none; }
+section > input:hover, section > input:focus { border-color: var(--border); background: var(--bg); }
+.list { flex: 1; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.card { flex: none; padding: var(--gap); border: 1px solid var(--border); border-radius: 6px; background: var(--bg-raised); cursor: grab; overflow-wrap: anywhere; }
+.card:hover { border-color: var(--text-dim); }
+.card.waiting { box-shadow: inset 3px 0 var(--accent); }
+.card.drag { opacity: .35; }
+.ref { display: inline-block; margin-right: 8px; font: .9em ui-monospace, Consolas, monospace; color: var(--text-dim); }
+.meta { display: flex; flex-wrap: wrap; gap: 0 12px; margin-top: 4px; font-size: .85em; color: var(--text-dim); }
+.meta:empty, small:empty { display: none; }
+.late { color: var(--danger); }
+.soon { color: var(--accent); }
+
+dialog { width: min(460px, 92vw); padding: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-raised); color: var(--text); }
+dialog::backdrop { background: #000a; }
+form { display: grid; gap: 10px; padding: 16px; }
+label { display: grid; grid-template-columns: 84px 1fr; align-items: center; gap: 8px; color: var(--text-dim); }
+.check { display: flex; color: var(--text); }
+label:has(textarea) { align-items: start; }
+textarea { resize: vertical; }
+.row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+#delete { margin-right: auto; }
+#found { margin: 0; white-space: pre-line; }
+.bad #found { color: var(--danger); }
+.bad .ok { display: none; }
+#swatches { justify-content: flex-start; }
+#swatches button { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; }
+#swatches .on { box-shadow: 0 0 0 2px var(--bg-raised), 0 0 0 4px var(--text); }
+#accent { width: 44px; height: 28px; padding: 0 2px; }
+</style>
+<script>
+"use strict";
+// The app name lives only here. It drives the page title, the storage key, the "app"
+// field of every export and the export filename.
+// Renaming starts an empty board. To carry tasks over: export, rename, change "app"
+// in the exported file to the new name, import.
+const APP = { name: "kanban-app", schema: 1 };
+const KEY = APP.name + ".data";
+const ACCENTS = ["#4ea1ff", "#2cc5b5", "#5fd068", "#f2c14e", "#f58a4b", "#e667af", "#9aa4b2"];
+// Column ids "waiting" and "done" carry behaviour; column titles are free text.
+const ITEM = { id: "", column: "", ref: "", title: "", notes: "", waitingOn: "", due: "", createdAt: "", updatedAt: "", doneAt: "" };
+
+const $ = id => document.getElementById(id);
+const now = () => new Date().toISOString();
+const p2 = n => String(n).padStart(2, "0");
+const hex = bytes => Array.from(crypto.getRandomValues(new Uint8Array(bytes)), b => p2(b.toString(16))).join("");
+const ymd = d => isNaN(d) ? "?" : d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate());
+const hm = d => p2(d.getHours()) + ":" + p2(d.getMinutes());
+const when = iso => { const d = new Date(iso), day = ymd(d); return day === "?" ? day : day === ymd(new Date()) ? hm(d) : day + " " + hm(d); };
+
+function el(tag, props, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...kids.flat().filter(Boolean));
+  return e;
+}
+
+const fresh = () => ({
+  schema: APP.schema, app: APP.name, exportedAt: "", changedAt: "",
+  settings: { accent: ACCENTS[0], density: "normal" },
+  columns: [["backlog", "Backlog"], ["today", "Today"], ["doing", "In progress"], ["waiting", "Waiting"], ["done", "Done"]].map(([id, title]) => ({ id, title })),
+  items: [],
+  deleted: {}   // id -> deletion time, so a merge can carry deletions between machines
+});
+
+// Text -> validated board. Throws a readable Error; never touches the current state.
+// Used for imports and for what comes back out of localStorage. Unknown fields are kept.
+function parse(text) {
+  const bad = why => { throw new Error(why); };
+  let d;
+  try { d = JSON.parse(text); } catch (e) { bad("Not valid JSON: " + e.message); }
+  if (!d || d.app !== APP.name) bad("Not a " + APP.name + " file.");
+  if (d.schema !== APP.schema) bad("Schema " + d.schema + " is not supported, expected " + APP.schema + ".");
+  if (!Array.isArray(d.columns) || !d.columns.length) bad("columns: expected a non-empty list.");
+  if (!Array.isArray(d.items)) bad("items: expected a list.");
+  const cols = new Set(), ids = new Set();
+  d.columns.forEach((c, i) => {
+    if (!c || typeof c.id !== "string" || typeof c.title !== "string" || cols.has(c.id)) bad("columns[" + i + "]: needs a unique id and a title.");
+    cols.add(c.id);
+  });
+  const items = d.items.map((it, i) => {
+    if (!it || typeof it.id !== "string" || !it.id || ids.has(it.id)) bad("items[" + i + "]: needs a unique id.");
+    ids.add(it.id);
+    it = { ...ITEM, ...it };
+    for (const k in ITEM) it[k] = String(it[k] ?? "");
+    if (!cols.has(it.column)) it.column = d.columns[0].id;
+    return it;
+  });
+  return { schema: d.schema, app: d.app, exportedAt: "", changedAt: "", ...d, settings: { ...d.settings }, items, deleted: { ...d.deleted } };
+}
+
+let state, locked = false, trouble = "", timer = 0, drag = null, editing = null, incoming = null, lastStamp = "";
+try {
+  const raw = localStorage.getItem(KEY);
+  state = raw ? parse(raw) : fresh();
+} catch (e) {
+  state = fresh();
+  locked = true;   // leave whatever is stored alone until a successful import
+  trouble = "Stored data unreadable, nothing will be saved. " + e.message;
+}
+document.title = APP.name;
+theme();   // runs in <head>, so the stored accent is in place before first paint
+
+function save() {
+  clearTimeout(timer);
+  timer = 0;
+  if (!locked) try { localStorage.setItem(KEY, JSON.stringify(state)); trouble = ""; } catch (e) { trouble = "Save failed: " + e.message; }
+  status();
+}
+function changed() {
+  state.changedAt = now();
+  if (!timer) timer = setTimeout(save, 300);   // one write per burst of changes
+  render();
+}
+addEventListener("pagehide", () => timer && save());
+addEventListener("visibilitychange", () => timer && save());
+// Another tab or another copy of this file wrote the board: show theirs instead of overwriting it.
+addEventListener("storage", e => { if (e.key === KEY) { clearTimeout(timer); timer = 0; location.reload(); } });
+
+function lum(color) {   // WCAG relative luminance of "#rrggbb"
+  const [r, g, b] = [1, 3, 5].map(i => { const c = parseInt(color.slice(i, i + 2), 16) / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function theme() {
+  const s = state.settings, root = document.documentElement;
+  const accent = /^#[0-9a-f]{6}$/i.test(s.accent) ? s.accent.toLowerCase() : ACCENTS[0];
+  root.style.setProperty("--accent", accent);
+  root.style.setProperty("--on-accent", lum(accent) > 0.179 ? "#000" : "#fff");
+  root.classList.toggle("compact", s.density === "compact");
+  if (!document.body) return;
+  const bg = getComputedStyle(root).getPropertyValue("--bg").trim();
+  $("accent").value = accent;
+  for (const b of $("swatches").children) b.classList.toggle("on", b.title === accent);
+  $("contrast").textContent = (lum(accent) + 0.05) / (lum(bg) + 0.05) < 3 ? "Low contrast against the background." : "";
+  $("compact").checked = s.density === "compact";
+}
+function setLook(key, value) {
+  state.settings[key] = value;
+  theme();
+  changed();
+}
+
+function status() {
+  const dirty = state.changedAt > state.exportedAt, at = state.exportedAt && when(state.exportedAt);
+  $("status").textContent = trouble || (dirty ? (at ? "Changed since export " + at : "Not exported yet") : at ? "Exported " + at : "");
+  $("status").className = trouble ? "danger" : "dim";
+  $("export").className = dirty ? "primary" : "";
+}
+
+function render() {
+  const q = $("filter").value.trim().toLowerCase(), today = ymd(new Date());
+  $("board").replaceChildren(...state.columns.map((col, n) => {
+    const all = state.items.filter(it => it.column === col.id);
+    const shown = q ? all.filter(it => [it.ref, it.title, it.notes, it.waitingOn].join("\n").toLowerCase().includes(q)) : all;
+    const add = el("input", { placeholder: "Add task", ariaLabel: "Add task to " + col.title });
+    add.onkeydown = e => {
+      const text = add.value.trim();
+      if (e.key !== "Enter" || !text) return;
+      const [, ref, title] = /^([A-Z]{2,10}-?\d{3,})\b[\s:,-]*(.*)$/.exec(text) || [0, "", text];   // leading ticket number becomes the ref
+      state.items.unshift({ ...ITEM, id: "it_" + hex(6), column: col.id, ref, title, createdAt: now(), updatedAt: now(), doneAt: col.id === "done" ? now() : "" });
+      changed();
+      $("board").children[n].querySelector("input").focus();
+    };
+    const rename = () => {
+      const title = (prompt("Column title", col.title) || "").trim();
+      if (title && title !== col.title) { Object.assign(col, { title, updatedAt: now() }); changed(); }
+    };
+    const list = el("div", { className: "list" }, shown.map(it => card(it, today)));
+    const sec = el("section", {},
+      el("h2", {},
+        el("span", { title: "Double-click to rename", ondblclick: rename }, col.title),
+        el("small", {}, q ? shown.length + "/" + all.length : String(all.length)),
+        col.id === "done" && shown.length && el("button", { onclick: () => confirm("Delete " + shown.length + " done tasks?") && remove(shown) }, "Clear")),
+      add, list);
+    sec.ondragover = e => {
+      if (!drag) return;
+      e.preventDefault();
+      const next = [...list.children].find(c => c !== drag && e.clientY < c.getBoundingClientRect().top + c.offsetHeight / 2) || null;
+      if (drag.parentNode !== list || drag.nextSibling !== next) list.insertBefore(drag, next);
+    };
+    sec.ondrop = e => {
+      if (!drag) return;
+      e.preventDefault();
+      const it = drag.item, before = drag.nextSibling && drag.nextSibling.item;
+      drag = null;
+      move(it, col.id, before);
+    };
+    return sec;
+  }));
+  status();
+}
+
+function card(it, today) {
+  const done = it.column === "done";
+  const c = el("div", {
+    className: "card" + (it.waitingOn || it.column === "waiting" ? " waiting" : ""), item: it, title: it.notes,
+    role: "button", tabIndex: 0, draggable: true,
+    onclick: () => edit(it),
+    onkeydown: e => { if (e.key === "Enter") { e.preventDefault(); edit(it); } },
+    ondragstart: e => {
+      drag = c;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("application/x-task", it.id);   // not text, so it cannot be dropped into an input
+      setTimeout(() => c.classList.add("drag"));
+    },
+    ondragend: () => { if (drag) { drag = null; render(); } }
+  },
+    it.ref && el("span", { className: "ref" }, it.ref),
+    it.title || (it.ref ? "" : "(untitled)"),
+    el("div", { className: "meta" },
+      it.waitingOn && el("span", {}, "waiting on " + it.waitingOn),
+      it.due && !done && el("span", { className: it.due < today ? "late" : it.due === today ? "soon" : "" }, "due " + it.due),
+      done && it.doneAt && el("span", {}, "done " + ymd(new Date(it.doneAt))),
+      it.notes && el("span", {}, "notes")));
+  return c;
+}
+
+// Put the item in a column, above the item `before` (none = bottom of the column).
+function move(it, column, before) {
+  const i = state.items.indexOf(it);
+  if (it.column === column && state.items.slice(i + 1).find(x => x.column === column) === (before || undefined)) return render();
+  state.items.splice(i, 1);
+  const j = state.items.indexOf(before);
+  state.items.splice(j < 0 ? state.items.length : j, 0, it);
+  if (it.column !== column) Object.assign(it, { column, doneAt: column === "done" ? now() : "", updatedAt: now() });
+  changed();
+}
+function remove(list) {
+  for (const it of list) state.deleted[it.id] = now();
+  state.items = state.items.filter(it => !list.includes(it));
+  changed();
+}
+function edit(it) {
+  const fields = $("editor").firstElementChild.elements;
+  editing = it;
+  fields.column.replaceChildren(...state.columns.map(c => el("option", { value: c.id }, c.title)));
+  for (const f of fields) if (f.name) f.value = it[f.name];
+  $("created").textContent = it.createdAt && "Created " + ymd(new Date(it.createdAt));
+  $("editor").showModal();
+}
+
+function exportFile() {
+  const d = new Date(), stamp = ymd(d) + "_" + [d.getHours(), d.getMinutes(), d.getSeconds()].map(p2).join("-");
+  state.exportedAt = d.toISOString();   // same Date as the filename
+  save();
+  const a = el("a", {
+    download: APP.name + "-" + stamp + (stamp === lastStamp ? "-" + hex(2) : "") + ".json",
+    href: URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }))
+  });
+  lastStamp = stamp;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+// Union by item id. The newer updatedAt wins; on a tie a differing file copy wins, so a
+// hand-edited file is picked up. A deletion beats any copy of the item that is not newer.
+function merge(mine, file) {
+  const deleted = { ...file.deleted };
+  for (const id in mine.deleted) if (!(deleted[id] > mine.deleted[id])) deleted[id] = mine.deleted[id];
+  const gone = it => deleted[it.id] >= it.updatedAt;
+  const items = [...mine.items], at = new Map(items.map((it, i) => [it.id, i]));
+  let added = 0, updated = 0;
+  for (const it of file.items) {
+    const i = at.get(it.id), old = items[i];
+    if (!old) { if (!gone(it)) { items.push(it); added++; } }
+    else if (it.updatedAt > old.updatedAt || (it.updatedAt === old.updatedAt && JSON.stringify(it) !== JSON.stringify(old))) { items[i] = it; updated++; }
+  }
+  const kept = items.filter(it => !gone(it)), theirs = new Map(file.columns.map(c => [c.id, c]));
+  for (const it of kept) delete deleted[it.id];
+  const columns = mine.columns.map(c => {   // the later rename wins; columns only the file has go last
+    const t = theirs.get(c.id);
+    theirs.delete(c.id);
+    return t && (t.updatedAt || "") > (c.updatedAt || "") ? t : c;
+  }).concat(...theirs.values());
+  return { added, updated, removed: items.length - kept.length, board: { ...file, ...mine, columns, items: kept, deleted } };
+}
+async function pick(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  let text = file.name + "\n";
+  try {
+    incoming = parse(await file.text());
+    const m = merge(state, incoming);
+    text += "Exported " + when(incoming.exportedAt) + ", " + incoming.items.length + " tasks.\n\n" +
+      "Merge: " + m.added + " new, " + m.updated + " updated, " + m.removed + " deleted.\n" +
+      "Replace: discards the " + state.items.length + " tasks on this board.";
+  } catch (err) {
+    incoming = null;
+    text += err.message;
+  }
+  e.target.value = "";
+  $("found").textContent = text;
+  $("withLook").checked = !state.items.length;
+  $("importer").classList.toggle("bad", !incoming);
+  $("importer").returnValue = "";
+  $("importer").showModal();
+}
+function commit() {
+  const how = $("importer").returnValue, file = incoming;
+  incoming = null;
+  if (!file || (how !== "merge" && how !== "replace")) return;
+  const next = how === "merge" ? merge(state, file).board : { ...file };
+  next.settings = $("withLook").checked ? file.settings : state.settings;
+  const body = d => JSON.stringify({ ...d, exportedAt: 0, changedAt: 0 });
+  if (body(next) === body(file)) Object.assign(next, { exportedAt: file.exportedAt, changedAt: file.changedAt });
+  else next.changedAt = now();
+  state = next;
+  locked = false;
+  theme();
+  save();
+  render();
+}
+
+addEventListener("DOMContentLoaded", () => {
+  $("name").textContent = APP.name;
+  $("swatches").prepend(...ACCENTS.map(c => {
+    const b = el("button", { type: "button", title: c, onclick: () => setLook("accent", c) });
+    b.style.background = c;
+    return b;
+  }));
+  $("accent").oninput = e => setLook("accent", e.target.value);
+  $("compact").onchange = e => setLook("density", e.target.checked ? "compact" : "normal");
+  $("look").onclick = () => $("looks").showModal();
+  $("filter").oninput = render;
+  $("export").onclick = exportFile;
+  $("import").onclick = () => $("file").click();
+  $("file").onchange = pick;
+  $("importer").onclose = commit;
+  $("editor").oninput = e => {
+    const { name, value } = e.target;
+    if (name === "column") return move(editing, value, state.items.find(it => it.column === value));
+    editing[name] = value;
+    editing.updatedAt = now();
+    changed();
+  };
+  $("editor").onclose = () => { const c = [...document.querySelectorAll(".card")].find(c => c.item === editing); if (c) c.focus(); };
+  $("delete").onclick = () => { if (confirm("Delete this task?")) { remove([editing]); $("editor").close(); } };
+  theme();
+  render();
+});
+</script>
+</head>
+<body>
+<header>
+  <h1 id="name"></h1>
+  <input id="filter" type="search" placeholder="Filter" aria-label="Filter">
+  <span id="status"></span>
+  <button id="export">Export</button>
+  <button id="import">Import</button>
+  <button id="look">Appearance</button>
+  <input id="file" type="file" accept=".json" hidden>
+</header>
+<main id="board"></main>
+<footer>Tasks are stored in this browser, not in this file: export to back them up or move them. Every copy of this file in the same browser profile shows the same board.</footer>
+
+<dialog id="editor" closedby="any">
+  <form method="dialog">
+    <label>Title <input name="title"></label>
+    <label>Ref <input name="ref"></label>
+    <label>Column <select name="column"></select></label>
+    <label>Waiting on <input name="waitingOn"></label>
+    <label>Due <input name="due" type="date"></label>
+    <label>Notes <textarea name="notes" rows="6"></textarea></label>
+    <div class="row"><button id="delete" type="button" class="danger">Delete</button><small id="created" class="dim"></small><button>Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="importer" closedby="any">
+  <form method="dialog">
+    <p id="found"></p>
+    <label class="check ok"><input id="withLook" type="checkbox"> Also import appearance</label>
+    <div class="row"><button class="ok primary" value="merge" autofocus>Merge</button><button class="ok danger" value="replace">Replace</button><button>Cancel</button></div>
+  </form>
+</dialog>
+
+<dialog id="looks" closedby="any">
+  <form method="dialog">
+    <div id="swatches" class="row"><input id="accent" type="color" aria-label="Custom accent"></div>
+    <small id="contrast" class="dim"></small>
+    <label class="check"><input id="compact" type="checkbox"> Compact</label>
+    <div class="row"><button>Close</button></div>
+  </form>
+</dialog>
+</body>
+</html>
