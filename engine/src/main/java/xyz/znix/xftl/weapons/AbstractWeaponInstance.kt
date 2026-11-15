@@ -326,14 +326,25 @@ abstract class AbstractWeaponInstance(type: AbstractWeaponBlueprint, val ship: S
     /**
      * Hyperspace WeaponAnimation::fDelayChargeTime (+0x250): the part of the charge before the launcher starts to
      * move. WeaponAnimation::SetChargedLevel (0x4608b0) shows frame (int)(max(0, (charge - delay) / (1 - delay)) *
-     * iChargedFrame) below a full charge. Natively 0 unless a script writes it.
+     * iChargedFrame) below a full charge. The weapon animation's `<delayChargeAnim>` (0.98 on the bomb launchers,
+     * in vanilla and Hyperspace alike), or what a script writes.
      */
-    @JvmField var hsDelayChargeTime: Float = 0f
+    @JvmField var hsDelayChargeTime: Float = animation.delayChargeAnim
+
+    /** WeaponAnimation::fChargeLevel (+0xd0): the charge past [hsDelayChargeTime], what the charge frames show. */
+    val chargeAnimLevel: Float
+        get() {
+            val delay = hsDelayChargeTime
+            return if (delay == 0f) chargeProgress else ((chargeProgress - delay) / (1f - delay)).coerceAtLeast(0f)
+        }
+
+    /** The launcher frame SetChargedLevel shows while not firing. */
+    val chargeAnimFrame: Int
+        get() = if (chargeProgress < 1f) (animation.chargedFrame * chargeAnimLevel).toInt() else animation.chargedFrame
 
     open fun render(g: Graphics) {
-        val delay = hsDelayChargeTime
-        val level = if (delay == 0f) chargeProgress else ((chargeProgress - delay) / (1f - delay)).coerceAtLeast(0f)
-        val frame = if (chargeProgress < 1f) (animation.chargedFrame * level).toInt() else animation.chargedFrame
+        val level = chargeAnimLevel
+        val frame = chargeAnimFrame
         val launcher = animation.spriteAt(ship.sys, frame)
         launcher.draw(0f, 0f)
 
@@ -345,7 +356,9 @@ abstract class AbstractWeaponInstance(type: AbstractWeaponBlueprint, val ship: S
         val glowPath = animation.chargeImage ?: return
         val glow = ship.sys.getImg(glowPath)
 
-        val filter = Colour(1f, 1f, 1f, chargeProgress)
+        // WeaponAnimation::OnRender (1.6.14 0x461690): the charge image's alpha is the delayed level (+0xd0), so a
+        // bomb launcher's glow stays dark until its launcher starts to move.
+        val filter = Colour(1f, 1f, 1f, level)
         glow.draw(0f, 0f, filter)
     }
 

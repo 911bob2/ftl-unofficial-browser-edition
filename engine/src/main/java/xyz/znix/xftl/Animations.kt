@@ -141,6 +141,10 @@ class Animations {
         // and then resolve it at the end.
         val boostAnim = xml.getChildTextTrim("boost")
 
+        // AnimationControl::ImportAnimations (1.6.9 0x589de0) reads <delayChargeAnim> (atof) for the weapon's
+        // WeaponAnimation::fDelayChargeTime (+0x250); the bomb launchers' 0.98 holds frame 0 until 98% charge.
+        val delayChargeAnim = xml.getChildText("delayChargeAnim")?.let { xyz.znix.xftl.weapons.NativeNumbers.atof(it) } ?: 0f
+
         return WeaponAnimationSpec(
             anim.sheet,
             anim.x,
@@ -152,7 +156,8 @@ class Animations {
             firePoint,
             chargeImage,
             chargeOffset,
-            boostAnim
+            boostAnim,
+            delayChargeAnim
         )
     }
 
@@ -202,7 +207,10 @@ class Animations {
          */
         val chargeOffset: Int,
 
-        private val boostAnimName: String?
+        private val boostAnimName: String?,
+
+        /** `<delayChargeAnim>`: the part of the charge before the launcher starts to move (WeaponAnimation +0x250). */
+        val delayChargeAnim: Float = 0f
     ) {
         /**
          * For charge weapons and weapons that improve over time, this has the

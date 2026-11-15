@@ -246,7 +246,8 @@ object VanillaSaveWriter {
         val shields = ship.systems.firstOrNull { it is Shields } as Shields?
         w.int(shields?.activeShields ?: 0)
         w.int(ship.superShield)
-        w.int(ship.maxSuperShield)
+        // super.second: 0 until the ship had a super shield (oracle ps-b2-ss a0), else Shields::OnLoop never fills it
+        w.int(if (ship.hsSuperShieldSet > 0) ship.maxSuperShield else 0)
         w.int(((shields?.rechargeTimer ?: 0f) * VanillaSaveFormat.TICKS_PER_SECOND).toInt())
         w.bool(false); w.int(0) // shield drop anim
         w.bool(false); w.int(0) // shield raise anim

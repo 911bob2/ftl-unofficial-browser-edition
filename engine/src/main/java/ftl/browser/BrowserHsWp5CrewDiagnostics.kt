@@ -27,7 +27,8 @@ object BrowserHsWp5CrewDiagnostics {
             val fixture = BrowserXml.parse(xml).rootElement
             // `seed`: the run seed the oracle typed into the hangar's seed box (a seeded run: the same sector map)
             fixture.getAttributeValue("seed")?.let { xyz.znix.xftl.hs.sector.HsSeeds.requestedSeed = it.trim().toLong() }
-            main.startDiagnosticGame(fixture.getAttributeValue("ship") ?: "PLAYER_SHIP_MVKESTREL", Difficulty.NORMAL)
+            // `difficulty`: the hangar's difficulty button the oracle session clicked (EASY / NORMAL / HARD)
+            main.startDiagnosticGame(fixture.getAttributeValue("ship") ?: "PLAYER_SHIP_MVKESTREL", fixture.getAttributeValue("difficulty")?.let { Difficulty.valueOf(it) } ?: Difficulty.NORMAL)
             main.update(container, 0f)
             (main.currentState as InGameState).shipUI.diagnosticCloseWindow()
             val prefix = fixture.getAttributeValue("prefix") ?: "WP5C:"

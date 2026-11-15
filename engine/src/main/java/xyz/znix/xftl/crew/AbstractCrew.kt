@@ -71,6 +71,13 @@ abstract class AbstractCrew(
     /** CrewAnimation picks "ghost_death" for ghosts, else "<race>_death_right". */
     protected open val deathAnimationName: String get() = "${animationRace}_death_right"
 
+    /**
+     * CrewAnimation::CustomDeath (vtable +0x30): the death animation is a sheet of its own (the Zoltan's green explosion),
+     * drawn alone and centred on the crew member instead of as a frame of the race's strips. Hyperspace:
+     * `<hasCustomDeathAnimation>` of the race (CrewVTable.cpp _HS_CustomDeath).
+     */
+    open val customDeath: Boolean get() = false
+
     var icon: FTLAnimation
     open val backImg: Image? = initialRoom.ship.sys.getImgIfExists("img/people/${codename}_color.png")
     var portraitAnim: AnimationSpec
@@ -1252,8 +1259,22 @@ abstract class AbstractCrew(
 
         val sprite = computeSpriteDraw()
 
-        if (hsRenderPart != 2) drawBackground(sprite.frame, sprite.x0, sprite.y0, sprite.x1, sprite.y1, sprite.opacity)
+        // CrewAnimation::OnRender (1.6.14 0x477f20): the colour strip (the selection outline) is skipped while the death
+        // animation runs (status 3), for every race.
+        val dying = currentAction == Action.DYING
+        if (hsRenderPart != 2 && !dying) drawBackground(sprite.frame, sprite.x0, sprite.y0, sprite.x1, sprite.y1, sprite.opacity)
         if (hsRenderPart == 1) return
+
+        // ... and a CustomDeath race draws only its death animation, untinted, placed at 17 - size / 2 from where a
+        // 35 px frame would sit, so its centre is the crew member's.
+        if (dying && customDeath) {
+            val f = sprite.frame
+            val x = sprite.x0 + customDeathOffset(f.width)
+            val y = sprite.y0 + customDeathOffset(f.height)
+            f.draw(x, y, x + f.width, y + f.height, 0f, 0f, f.width.f, f.height.f, sprite.opacity, Colour.white)
+            spriteTint = Colour.white
+            return
+        }
 
         // Hyperspace (CrewAnimation::OnRender): an active temporary power may hide the body and draws strips over it
         val strips = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.HsCrewRender.strips(this) else null
@@ -2739,6 +2760,9 @@ abstract class AbstractCrew(
     companion object {
         /** CrewAnimation::OnRender's body colour for selection state 1: 0.5 (1.6.14 DAT_00879120), 1, 0.5. */
         @JvmField val SELECTED_SPRITE_TINT = Colour(0.5f, 1f, 0.5f, 1f)
+
+        /** CrewAnimation::OnRender's CustomDeath placement: Point(17 - (int)size / 2) from the 35 px frame's corner. */
+        @JvmStatic fun customDeathOffset(size: Int): Int = 17 - size / 2
 
         /**
          * When one of the player's crew is damaged across this many HP

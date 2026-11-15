@@ -133,6 +133,8 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // so anyway just in case to avoid getting in a situation where
         // we haven't fired all of our shots.
         if (!isFiring && targets.isEmpty()) {
+            // A volley still queued from a frame the weapon system could not take it (hsPreparedShotAllowed)
+            if (hsFireShot && hsQueue.isNotEmpty() && hsPreparedShotAllowed) hsDrain()
             return
         }
 
@@ -145,7 +147,7 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
         // The fire frame set WeaponAnimation::bFireShot last frame; ShipManager drains the factory (GetProjectile until
         // it returns nothing: one shot, a burst's pieces or a simultaneousFire volley) on the frame after it, as the
         // HS oracle shows (wp4-queue: first shot one frame after the browser's fire frame, every family).
-        if (hsFireShot) hsDrain()
+        if (hsFireShot && hsPreparedShotAllowed) hsDrain()
 
         // Hyperspace ProjectileFactory::Update: the volley is built, the launcher's WeaponAnimation::Update runs (not
         // firing yet) and only then StartFire, so the fire animation first advances on the next frame.
@@ -180,8 +182,14 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
 
         if (firingAnimationTimer >= shotFireTime) {
             if (targets.isEmpty()) {
-                if (hsFireShot) hsDrain()
-                stopFiring()
+                if (hsFireShot && hsPreparedShotAllowed) hsDrain()
+                if (hsFireShot && hsQueue.isNotEmpty()) {
+                    // the animation ends; the queued volley waits for the weapon system (still powered, not deleted)
+                    val held = ArrayList(hsQueue)
+                    stopFiring()
+                    hsQueue += held
+                    hsFireShot = true
+                } else stopFiring()
             } else {
                 shotsFired++
                 // WeaponAnimation::Update (0x4609e0) runs one continuous tracker over the charge segments: the next
@@ -304,6 +312,19 @@ abstract class AbstractProjectileWeaponInstance(type: AbstractWeaponBlueprint, s
     }
 
     /** ShipManager's loop over the factory: every projectile GetProjectile hands out enters its owner's space. */
+    /**
+     * WeaponSystem::GetPreparedProjectile (1.6.14 0x636a10, 1.6.9 0x610980) asks the factories for a shot only while the
+     * weapon system is Functioning (vtable +0x2c, 0x63a960 / 0x6153d0: powered, which a system holding only weapons of
+     * power 0 is not). HS oracle ps-b3-arm: PSB3_W_LASER (no `<power>`) charges and fires with the system at 0 bars,
+     * but its shot leaves only once the system gets a bar; an enemy's never leaves.
+     */
+    private val hsPreparedShotAllowed: Boolean
+        get() {
+            val weapons = ship.weapons ?: return true
+            if (ship.hardpoints.none { it.weapon === this }) return true
+            return weapons.powerSupplied > 0
+        }
+
     private fun hsDrain() {
         while (true) {
             val projectile = hsGetProjectile() ?: break

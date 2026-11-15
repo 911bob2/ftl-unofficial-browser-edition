@@ -454,13 +454,13 @@ object LuaAdaptersArmament {
                 }
             }
             // WeaponAnimation::SetChargeLevel keeps the frame on the charge, whichever animation is in the member.
-            if (!weapon.isFiring) an.values[A.A_Animation_currentFrame] = (if (weapon.chargeProgress < 1f)
-                (anim.chargedFrame * weapon.chargeProgress).toInt() else anim.chargedFrame).toDouble()
+            if (!weapon.isFiring) an.values[A.A_Animation_currentFrame] = weapon.chargeAnimFrame.toDouble()
             an
         })
         LuaReg.bool(A.A_WeaponAnimation_bFireShot, { (visual(it) as? AbstractProjectileWeaponInstance)?.hsFireShotPending == true }, { _, _ -> HS.unsupported("lua", "attribute", "$owner.bFireShot write") })
         LuaReg.bool(A.A_WeaponAnimation_bFiring, { visual(it).isFiring })
-        LuaReg.num(A.A_WeaponAnimation_fChargeLevel, NumGet { visual(it).chargeProgress.toDouble() })
+        // SetChargedLevel (0x4608b0): fChargeLevel is the level past fDelayChargeTime, fActualChargeLevel the charge.
+        LuaReg.num(A.A_WeaponAnimation_fChargeLevel, NumGet { visual(it).chargeAnimLevel.toDouble() })
         LuaReg.num(A.A_WeaponAnimation_fActualChargeLevel, NumGet { visual(it).chargeProgress.toDouble() })
         LuaReg.num(A.A_WeaponAnimation_iChargedFrame, NumGet { visual(it).animation.chargedFrame.toDouble() })
         LuaReg.num(A.A_WeaponAnimation_iFireFrame, NumGet { visual(it).animation.fireFrame.toDouble() })

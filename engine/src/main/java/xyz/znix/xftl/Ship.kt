@@ -454,8 +454,9 @@ class Ship(
     internal fun nativeSetSuperShield(value: Int) { superShieldValue = value }
 
     /**
-     * Hyperspace Lua: whether Shields::shields.power.super.second is set (FTL keeps 0 until Shields::AddSuperShield or
-     * PowerSuperShields gives a super shield, 0x631790 / 0x631810, and DrainSuperShield clears it on a jump).
+     * Whether Shields::shields.power.super.second is set (then it is [maxSuperShield]): 0 until Shields::OnLoop with
+     * ENERGY_SHIELD, AddSuperShield or PowerSuperShields gives a super shield (0x6342b0, 0x631790, 0x631810); only
+     * ShipAI's DrainSuperShield (0x631770) clears it, Shields::Jump (0x6340e0) leaves it. Saved.
      */
     @JvmField var hsSuperShieldSet = 0
 
@@ -1995,6 +1996,10 @@ class Ship(
         updateExterior(dt)
 
         if (isDead) {
+            // ShipManager::OnLoop (1.6.9 0x4a05b0) calls every system's ShipDestroyed each frame the hull is below 1:
+            // the weapons and drones go off, keeping the system's bars.
+            weapons?.powerManager?.shipDestroyed()
+            drones?.powerManager?.shipDestroyed()
             // Hyperspace: TemporalSystem::_HS_ShipDestroyed ends a running dilation.
             if (xyz.znix.xftl.hs.HS.active) (systems.firstOrNull { it is xyz.znix.xftl.hs.systems.Temporal } as xyz.znix.xftl.hs.systems.Temporal?)?.shipDestroyed()
             updateDestruction(dt)
@@ -2664,9 +2669,8 @@ class Ship(
         ftlChargeProgress = 0f
 
         // Jumping clears the super shield (if the augment is
-        // present, it'll add it back in afterwards).
+        // present, it'll add it back in afterwards). Shields::Jump (0x6340e0) keeps super.second.
         superShield = 0
-        hsSuperShieldSet = 0
 
         // Remove all incoming and outgoing projectiles
         projectiles.clear()
@@ -2781,7 +2785,6 @@ class Ship(
         resetWeaponsForJump()
         augmentValues.keys.filterIsInstance<xyz.znix.xftl.augments.AugPreigniter>().forEach { it.onJump(this) }
         superShield = 0
-        hsSuperShieldSet = 0
         augmentValues.keys.filterIsInstance<xyz.znix.xftl.augments.AugZoltanShield>().forEach { it.onJump(this) }
         for (system in systems) {
             if (system is xyz.znix.xftl.systems.Artillery || system is xyz.znix.xftl.systems.Hacking)
@@ -3576,6 +3579,8 @@ class Ship(
         crewAI.breachOrderForSave()?.let { SaveUtil.addTag(elem, "aiBreachOrder", it) }
         SaveUtil.addTagInt(elem, "maxSuperShield", maxSuperShield, 5)
         SaveUtil.addTagInt(elem, "superShield", superShield, 0)
+        // super.second is in the original's save too (VanillaSaveParser: superShieldMax)
+        SaveUtil.addTagInt(elem, "superShieldSet", hsSuperShieldSet, -1)
         SaveUtil.addTagBoolIfTrue(elem, "automated", isAutomated)
 
         SaveUtil.addAttrRef(elem, "bossManager", refs, boss)
@@ -3784,6 +3789,8 @@ class Ship(
 
         // This must be set after maxSuperShield to avoid it being wrongly clamped
         superShield = SaveUtil.getOptionalTagInt(rootElem, "superShield") ?: 0
+        // A save from before the tag: an ENERGY_SHIELD ship had super.second set (resolved by the first shields loop).
+        hsSuperShieldSet = SaveUtil.getOptionalTagInt(rootElem, "superShieldSet") ?: if (superShield > 0) 1 else -1
 
         SaveUtil.getAttrRef(rootElem, "bossManager", refs, BossManager::class.java) { boss = it }
 

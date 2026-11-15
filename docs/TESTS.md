@@ -551,6 +551,73 @@ targets one, and the targets one alone with every crew member of both ships and 
 `sweep/fixtures/ps-fu3/oracle/ps-fu7-fire`), and `ps-fu3-cmp.py` compares fire counts (burning cells, one or two per
 fire roll) with twice the Poisson spread.
 
+`gameplay-parity`'s `GameplayParityPsB2Checks` holds user bug B2: a beam takes max(1, damage) off a super shield when its
+swipe passes 0.33 and, for a length over 20, 0.8 (BeamWeapon::OnUpdate 0x438880, CollisionCheck's DamageShield with a
+new selfId, 0x438c30), in both directions and from a beam drone (Mini Beam and Fire Beam 2 points per beam, a drone's
+beam as its blueprint gives). The oracle sessions `tools/hs-oracle/sessions/ps-b2.json` (F3, probe `hs_oracle/ps-b2.lua`,
+the `PSB2_*` ships and events, written by `gen-ps-b2.py`) record every zap on a super shield kept at 5: the player's
+beams (1, 2, 3 and 0 damage, a pinpoint) and beam drone at an enemy's (`ps-b2-p`), the enemy's beams (`-ew`) and beam
+drone (`-ed`) at the player's. Their twins run with the map `{"lua": "tools/hs-oracle/tracer/data/hs_oracle/ps-b2.lua",
+"prefix": "PH:"}`; `sweep/jobs/ps-b2.sh` compares them with `ps-b2-cmp.py` against the recorded oracle runs
+(`sweep/fixtures/ps-b2/oracle`). `tools/native-capture/sessions/ps-b2-van.json` (1.6.14, written by
+`gen-ps-b2-van.py`) holds frames of the super shield bar: the player's beam drone at a Zoltan ship (`bv-drone`) and
+the player given a Zoltan shield by AUG against LONG_ELITE_MED's Halberd and PLAYER_SHIP_CIRCLE_3's beam drone (`bv-tw`,
+`bv-td`). B2b adds to the check when a Zoltan shield fills (ENERGY_SHIELD gained in a fight fills it once; emptied,
+removed and added again or reloaded it stays empty; the original's save keeps 0|0 without the augment and an imported
+3 of 5) and an enemy built from a player blueprint (PLAYER_SHIP_STEALTH,
+PLAYER_SHIP_CIRCLE's beam drone) staying on the enemy side, and the sessions `ps-b2-ss` (super.first/second frame by
+frame after events, Lua, console AUG and MV's shield augments) and `ps-b2-side1..3` (enemies from player blueprints) to
+the job. In the twin the `ev` step picks the event's choice with key 1 (map rule), as the oracle's pick does.
+
+`gameplay-parity`'s `GameplayParityPsB3Checks` holds B3 (found on the way of B2): the blueprint defaults of a tag left
+out, as ProcessWeaponBlueprint (1.6.14 0x607df0) and the other parsers keep the constructors' values (a weapon's power
+and cooldown 0, WeaponBlueprint::shots 0 and 2 for every beam, length -1; a drone's level 1 and `<level>` 2 as
+targetType 4 in file order; an augment's, a system's and a crew's cost 0 and the rest 0 or false), and a weapon of
+power 0 on the player's ship: powered with no bar, charged with the weapon system at 0 bars and, under Hyperspace, its
+volley held until the system has a bar (WeaponSystem::GetPreparedProjectile 0x636a10). The oracle sessions
+`tools/hs-oracle/sessions/ps-b3.json` (F3, probe `hs_oracle/ps-b3.lua`, the `PSB3_*` blueprints and events, written by
+`gen-ps-b3.py`): `ps-b3-gen-e/-n/-h` build enemies with the console's `LOAD` (and one event with an auto_blueprint)
+on Easy, Normal and Hard with the stream reseeded in GENERATOR_CREATE_SHIP and record the reactor, every system's
+power, maximum and limit at GENERATOR_CREATE_SHIP_POST and 3 s later, and the armament; `ps-b3-arm` the blueprint
+fields and the weapon without `<power>` on both ships; `ps-b3-zol` an enemy with Zoltan crew in powered rooms;
+`ps-b3-flag` the flagship's stages (hr-flag's route) and each stage's wreck; B3b: `ps-b3-zw`/`-zx` ZOLTAN_BOMBER's Zoltans
+(only the first Zoltan of a race hyperspace.xml leaves out is an EnergyAlien), `ps-b3-zy` and `ps-b3-zz` (MU_ZOLTAN_SCOUT)
+a Zoltan walking in and out, dying, mind-controlled, boarding either way, under ion and with the reactor cut, and
+`ps-b3-wk` an ordinary enemy's wreck (AUTO_ASSAULT, MU_UNION_OUTRIDER). The twins
+take the session's difficulty from the probe's `difficulty` attribute (BrowserHsWp5CrewDiagnostics);
+`sweep/jobs/ps-b3.sh` compares them with `ps-b3-cmp.py` against the recorded runs (`sweep/fixtures/ps-b3/oracle`);
+the comparer counts as known a subsystem's power at GENERATOR_CREATE_SHIP_POST (the original still has the template's,
+equal a frame later); a wreck is compared as what each kill did (a system's bars kept or dropped, the reactor's change,
+the weapons and drones off, a drone that was out staying out). `GameplayParityPsB3Checks` also holds B3b's
+`zoltanRegistry` (the first such Zoltan an EnergyAlien, the next a plain crew member without a bonus bar), `wreck`
+(AUTO_ASSAULT's weapons and drones off with their bars kept) and `flagshipWreck` (the artillery at 0, the rest kept).
+`tools/native-capture/sessions/ps-b3-van.json` (1.6.14, `gen-ps-b3-van.py`) holds frames of DRONE_LASER, a weapon
+without `<power>`, given by the console (`b3v-arm`).
+
+`gameplay-parity`'s `GameplayParityPsB4Checks` holds the B4 player reports (vanilla, F2, F3): a bomb launcher's
+`<delayChargeAnim>` keeps its launcher closed until 98% of the charge (SetChargedLevel; a laser moves through its whole
+charge); a dying Zoltan draws its own explosion alone, centred on its cell (pixels against the frame at 17 - 32), with no
+colour strip; the lock ring starts 5 degrees past the top, and the touch HUD's system box draws it (two touch renders
+that differ only in the lock timer); the touch cooldown bar shows whole segments of the iPad mask; the backup battery's
+unused bars sit at the bottom of the reactor column in their (230, 110, 30) outline (on the rendered HUD); the beacon map
+draws its nebula clouds before the lines and beacons; a fleet beacon holding the flagship has no ASB, after a reload too.
+Android: `TouchLockCooldownTest` (the cooldown rows and ring segments). The native sides:
+`tools/hs-oracle/sessions/ps-b4.json` (F2 without the tracer, which F2 cannot load (DEFAULT_TIMER); Caps Lock is
+pressed first, the Lua is inline and prints `PB4` lines: `ps-b4-hud` frames of a bomb charging and firing, ion locks,
+the cloak and battery bars and the reactor; `ps-b4-die` a Zoltan and a human dying on both ships; `ps-b4-flag` the last
+stand's flagship moved onto a fleet beacon, the scene's environment and bPDS) and
+`tools/native-capture/sessions/ps-b4-van.json` (1.6.14 twins: `b4v-hud`, `b4v-die`, `b4v-map-*`; the 1.6.14 console
+has no SYS or kill command, so those twins show the bomb launcher and the map).
+
+B4b (the same checks): a dying vanilla Zoltan in Multiverse runs its whole death (Multiverse's instant heal out of
+combat calls DirectModifyHealth(9999), which does nothing at 0 health); the battery's reactor bars flash white for 2 s
+after it starts (`batteryFlash`); the flagship arriving during the last stand's out-of-fuel wait ends the ASB
+(`flagshipArrivesOnWait`), and a fleet beacon the flagship left has its ASB again (`flagshipNoAsb`, after reloads); a
+sector without recorded clouds draws its puffs before the lines; the map markers take StarMap::Open's two angles and
+turn 18 degrees a second (`mapMarkers`). Native sides: `tools/hs-oracle/sessions/ps-b4b.json` (`ps-b4b-zdie` F3 with the
+tracer: Zoltans killed out of combat, healed while dying, a clone bay; `ps-b4b-flash` F2: frames after the battery
+starts; `ps-b4b-flagleave` F2: the flagship's beacon, away, the flagship moved on, back).
+
 `gameplay-parity`'s `GameplayParityPsW1Checks` holds the fleet rules of parity sweep W1 (UpdateDangerZone, RenderLabels):
 a jump takes the beacons inside the zone in list order, with the fleet events that overtaking them one by one in that
 order gives, and holds the centre at 60 (a wait does not); a warning mark stays when the next move's reach shrinks and

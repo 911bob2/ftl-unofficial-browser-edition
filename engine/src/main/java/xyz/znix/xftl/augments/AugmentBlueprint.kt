@@ -2,6 +2,7 @@ package xyz.znix.xftl.augments
 
 import org.jdom2.Element
 import xyz.znix.xftl.Blueprint
+import xyz.znix.xftl.weapons.nativeInt
 import xyz.znix.xftl.Ship
 import xyz.znix.xftl.crew.LivingCrew
 import xyz.znix.xftl.crew.MedbayHealing
@@ -16,9 +17,11 @@ import xyz.znix.xftl.layout.BreachInstance
  * to show likely pain points for modding.
  */
 open class AugmentBlueprint(elem: Element) : Blueprint(elem) {
-    private val xmlCost: Int = elem.getChildTextTrim("cost").toInt()
+    // ProcessAugmentBlueprint (1.6.14 0x602430, 1.6.9 0x5de560): without the tag the cost stays Description's 0 (its
+    // constructor, 1.6.9 0x7239e0) and stacking false.
+    private val xmlCost: Int = elem.nativeInt("cost") ?: 0
     override val cost: Int get() = hsCost ?: xmlCost
-    val stackable: Boolean = elem.getChildTextTrim("stackable")!!.toBoolean()
+    val stackable: Boolean = elem.getChildTextTrim("stackable")?.toBoolean() ?: false
     val value: Float = elem.getChildTextTrim("value")?.toFloat() ?: 1f
 
     /** AugmentBlueprint::value as FTL parses it: 0 without a `<value>` (HS augment values and Lua read this one). */

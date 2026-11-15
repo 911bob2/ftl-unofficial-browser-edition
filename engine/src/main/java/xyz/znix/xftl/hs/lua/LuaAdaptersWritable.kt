@@ -316,7 +316,7 @@ object LuaAdaptersWritable {
     // ---------------------------------------------------------------- WeaponBlueprint
     private fun blueprints() {
         fun b(o: Any?) = o as? AbstractWeaponBlueprint ?: throw LuaError("expected WeaponBlueprint")
-        LuaReg.numSet[A.A_WeaponBlueprint_shots] = NumSet { o, v -> b(o).shots = v.toInt() }
+        LuaReg.numSet[A.A_WeaponBlueprint_shots] = NumSet { o, v -> b(o).shots = v.toInt(); b(o).nativeShots = v.toInt() }
         LuaReg.numSet[A.A_WeaponBlueprint_missiles] = NumSet { o, v -> b(o).missilesUsed = v.toInt() }
         LuaReg.numSet[A.A_WeaponBlueprint_power] = NumSet { o, v -> b(o).power = v.toInt() }
         LuaReg.numSet[A.A_WeaponBlueprint_speed] = NumSet { o, v -> b(o).speed = v.toInt() }

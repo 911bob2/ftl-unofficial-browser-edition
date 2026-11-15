@@ -761,7 +761,11 @@ abstract class AbstractProjectile(targetShip: Ship?, val hsNativeProjectile: Boo
         }
     }
 
-    companion object { private var nextWorldOrder = 0 }
+    companion object {
+        private var nextWorldOrder = 0
+        /** A new id from the creation-order counter (the vanilla stand-in for Globals::GetNextSpaceId). */
+        internal fun freshWorldOrder(): Int = nextWorldOrder++
+    }
 }
 
 abstract class AbstractWeaponProjectile(val type: AbstractWeaponBlueprint, target: Room) :

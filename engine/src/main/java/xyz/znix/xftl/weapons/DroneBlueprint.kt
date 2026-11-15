@@ -35,23 +35,34 @@ class DroneBlueprint(xml: Element) : Blueprint(xml) {
     /** DroneBlueprint::typeName: the `<type>` text. */
     val typeName: String = xml.getChildTextTrim("type") ?: ""
 
-    /** DroneBlueprint::level (`<level>`, 1 when absent). */
-    val level: Int = xml.nativeInt("level") ?: 1
+    /**
+     * DroneBlueprint::level: always the constructor's 1 (1.6.9 0x72bf30). ProcessDroneBlueprint (1.6.9 0x5de790) reads
+     * `<level>` only to set targetType 4 for a 2; it never stores it.
+     */
+    val level: Int = 1
 
     private val xmlTargets: List<String> = xml.getChildren("target").map { it.textTrim }
 
     /**
-     * DroneBlueprint::targetType from `<target>`: LASERS 4, DRONES 3, otherwise 1 (wp4-drone-body oracle, HS 1.6.9 +
-     * MV). Hyperspace's ProcessDroneBlueprint hook (CustomDrones.cpp) then goes through every `<target>`: ASTEROIDS 2,
+     * ProcessDroneBlueprint (1.6.9 0x5de790) on the children in file order, from the constructor's 1: `<level>` 2 gives 4,
+     * `<target>` LASERS 4, MISSILES 1, DRONES 3 (any other text keeps it), so the last of them wins.
+     */
+    private val nativeTargetType: Int = xml.children.fold(1) { t, child ->
+        when (child.name) {
+            "level" -> if (NativeNumbers.atoi(child.text) == 2) 4 else t
+            "target" -> when (child.text) { "LASERS" -> 4; "MISSILES" -> 1; "DRONES" -> 3; else -> t }
+            else -> t
+        }
+    }
+
+    /**
+     * DroneBlueprint::targetType: [nativeTargetType] (wp4-drone-body oracle, HS 1.6.9 + MV; ps-b3 for `<level>`).
+     * Hyperspace's ProcessDroneBlueprint hook (CustomDrones.cpp) then goes through every `<target>`: ASTEROIDS 2,
      * SOLID 5, ALL 6.
      */
     val targetType: Int
         get() {
-            var t = when (defenceTarget) {
-                "LASERS" -> 4
-                "DRONES" -> 3
-                else -> 1
-            }
+            var t = nativeTargetType
             if (xyz.znix.xftl.hs.HS.active) for (text in xmlTargets) when (text) {
                 "ASTEROIDS" -> t = 2
                 "SOLID" -> t = 5

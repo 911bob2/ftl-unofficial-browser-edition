@@ -194,14 +194,18 @@ object HsSuperShield {
     fun hasShieldObject(ship: Ship): Boolean = ship.shields != null ||
         ship.systemSlots.any { it.system.name == "shields" } || (HS.active && HS.cfg().shieldWithoutSystem)
 
-    /** Shields::OnLoop: the maximum follows the augments; a ship that had no super shield gets it full at once. */
+    /**
+     * Shields::OnLoop (CustomSuperShield.cpp): super.second = max(custom, min(super.second, 5)), and a ship whose
+     * super.second was 0 before the original loop ([noSuper]) gets super.first = custom.
+     */
     @JvmStatic
-    fun onLoop(ship: Ship) {
+    fun onLoop(ship: Ship, noSuper: Boolean) {
         val custom = value(ship)
         if (custom <= 0) return
-        val noSuper = seen[ship] != true && ship.superShield <= 0 && ship.maxSuperShield <= 5
-        ship.maxSuperShield = maxOf(custom, minOf(ship.maxSuperShield, 5))
-        if (noSuper) ship.superShield = custom
+        val second = if (ship.hsSuperShieldSet != 0) ship.maxSuperShield else 0
+        ship.maxSuperShield = maxOf(custom, minOf(second, 5))
+        ship.hsSuperShieldSet = 1
+        if (noSuper) ship.nativeSetSuperShield(custom)
         seen[ship] = true
     }
 

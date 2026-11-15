@@ -651,34 +651,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
             game.getImg("img/icons/locking/s_${imgType}_${levels}_base.png").draw(iconX, iconY)
 
             // Draw the ring around the outside.
-            val timerImg = game.getImg("img/icons/locking/s_${imgType}_timer.png")
-
-            // Figure out the angle around this image we need to cut it at
-            val numSegments = 12 // The ring is split up into 12 segments
-            val progress = (ionTimer / TIME_PER_ION).rem(1f) // How full the ring is, 0-1
-            var segments = ceil(numSegments * progress).toInt() // There's always at least 1 segment visible
-
-            // If the timer is an exact multiple of five seconds,
-            // progress will be zero and thus no segments will be
-            // displayed. Fix that, as it should be showing all the
-            // segments.
-            if (segments == 0)
-                segments = numSegments
-
-            // Find the angle of the end point, where 0 is up and +ve is CW
-            val angle = TWO_PI * segments / numSegments
-
-            // Convert that into 0 is right and +ve is CCW
-            val upAngle = TWO_PI / 4
-            val endAngle = TWO_PI + upAngle // End pointing straight up
-            val startAngle = endAngle - angle
-
-            g.drawImagePieSlice(
-                timerImg,
-                iconX.f, iconY.f,
-                startAngle, endAngle,
-                Colour.white
-            )
+            drawLockRing(g, game.getImg("img/icons/locking/s_${imgType}_timer.png"), iconX.f, iconY.f, ionTimer)
         }
 
         val barX = x + 5
@@ -1041,6 +1014,30 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
          */
         const val TIME_PER_ION = 5f
         private const val ROOM_ICON_BLINK_TIME = 0.75f
+
+        /** The 30-degree segments of a lock's ring still shown at [ionTimer] (12 at the start of each 5 s, at least 1). */
+        @JvmStatic
+        fun lockRingSegments(ionTimer: Float): Int {
+            val progress = (ionTimer / TIME_PER_ION).rem(1f) // How full the ring is, 0-1
+            val segments = ceil(12 * progress).toInt()
+            // An exact multiple of five seconds shows the whole ring.
+            return if (segments == 0) 12 else segments
+        }
+
+        /**
+         * The ring around a locked system's number. SystemBox::OnRender (1.6.14 0x4d8eb0) stencils the lock's timer
+         * image with CSurface::GL_CreatePiePartialPrimitive from -85 to n * 30 - 85 degrees (screen angles, so from 5
+         * degrees past the top, clockwise), n = 12 - 12 * the lock timer's fraction + 1, centred on the icon. The
+         * touch layout's system box draws it the same way with the iPad's picture.
+         */
+        @JvmStatic
+        fun drawLockRing(g: Graphics, timerImg: xyz.znix.xftl.rendering.Image, x: Float, y: Float, ionTimer: Float) {
+            val segments = lockRingSegments(ionTimer)
+            // In the pie's angles, 0 is right and positive is counter-clockwise: the ring ends at 85 degrees.
+            val endAngle = TWO_PI + Math.toRadians(85.0).toFloat()
+            val startAngle = endAngle - TWO_PI * segments / 12
+            g.drawImagePieSlice(timerImg, x, y, startAngle, endAngle, Colour.white)
+        }
     }
 }
 

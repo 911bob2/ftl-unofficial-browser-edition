@@ -60,7 +60,8 @@ class WeaponPowerManager(
      * The native system's reactor bars minus the ones its powered items account for here. Natively the bar count
      * (powerState.first) and the powered flags are separate: a weapon powered from [hsBatteryPool] holds no bar
      * (negative), and [hsRemoveBatteryPower] can take a weapon's bars from the battery, leaving its reactor bars
-     * with the system (positive). Zero unless a script used the battery calls. Not saved.
+     * with the system (positive); a destroyed ship's items go off with their bars kept ([shipDestroyed]). Zero unless
+     * a script used the battery calls or the ship is destroyed. Not saved.
      */
     var hsBarOffset: Int = 0
         private set
@@ -303,6 +304,23 @@ class WeaponPowerManager(
                 setItemPower(slot, true)
         }
         return left
+    }
+
+    /**
+     * WeaponSystem::ShipDestroyed (1.6.9 0x60f670: every ProjectileFactory::SetPowered(false)) and
+     * DroneSystem::ShipDestroyed (0x611590: every drone's powered flag cleared, a deployed one stays out), which
+     * ShipManager::OnLoop (0x4a05b0) calls every frame the hull is below 1: each item goes off but the system keeps
+     * its bars (powerState.first), so the enemy window still shows them (HS oracle ps-b3-wk and ps-b3-flag: the
+     * weapons' and drones' bars kept, every weapon and drone unpowered).
+     */
+    fun shipDestroyed() {
+        for (slot in 0 until items.count) {
+            if (!items.isItemPowered(slot))
+                continue
+            hsBarOffset += items.getItemPowerDraw(slot) - forcedPower[slot]
+            repowerQueue[slot] = false
+            items.setItemPowered(slot, false)
+        }
     }
 
     /**

@@ -30,6 +30,9 @@ class HsCrewMember(blueprint: CrewBlueprint, animations: Animations, room: Room,
     /** CustomCrewManager::GetDefinition(species) (inserting, like HS). */
     val def: CrewDefinition get() = CustomCrewManager.definition(codename)
 
+    /** CrewAnimation::_HS_CustomDeath (CrewVTable.cpp): the race definition's hasCustomDeathAnimation. */
+    override val customDeath: Boolean get() = def.hasCustomDeathAnimation
+
     /** CrewMember::health.second, which HS keeps up to date itself (CalculateMaxHealth, SetHealthBoost). */
     private var hsHealthMax = 0f
     private var hsReady = false

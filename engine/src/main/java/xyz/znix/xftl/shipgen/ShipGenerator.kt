@@ -87,6 +87,8 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             levelClamped = level.coerceAtLeast(0)
         }
 
+        // WorldManager::CreateShip (1.6.14 0x6149c0): the enemy side's ship is iShipId 1 whatever its blueprint.
+        shipBlueprint = shipBlueprint.asEnemy()
         val ship = preempted ?: Ship(shipBlueprint, sys, null, spec, null)
         if (preempted == null) {
             ship.generationSeed = if (reseed) seed else null
@@ -113,10 +115,13 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             }
 
             // ShipManager::AddSystem (0x4a8370) never starts a system below one bar, and caps it at the system's maximum.
+            // Hyperspace's AddSystem hook then upgrades it to getTrueSystemStartPower (HsSystemInstall.trueStartPower).
             for (slot in ship.systemSlots) {
                 val system = slot.room.system ?: continue
                 if (!slot.isInstalled) continue
                 system.energyLevels = system.energyLevels.coerceAtLeast(1).coerceAtMost(slot.system.maxPower)
+                if (xyz.znix.xftl.hs.HS.active)
+                    system.energyLevels = max(system.energyLevels, xyz.znix.xftl.hs.systems.HsSystemInstall.trueStartPower(slot))
             }
             // CreateSystems (0x4a96f0) builds them in the blueprint's order, each powered as it is made.
             for (system in ship.mainSystems.sortedBy { xyz.znix.xftl.ai.systemOrderKey(it) })
@@ -368,6 +373,10 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             slot.room.setSystem(slot)
             val system = slot.room.system ?: return null
             system.energyLevels = max(1, slot.spec.startingPower).coerceAtMost(slot.system.maxPower)
+            // Hyperspace's AddSystem hook: up to getTrueSystemStartPower without the reactor (the generator pays the level
+            // it reads afterwards, ShipGenerator::UpgradeSystem 1.6.9 0x5f92b0: piVar2[0x15]).
+            if (xyz.znix.xftl.hs.HS.active)
+                system.energyLevels = max(system.energyLevels, xyz.znix.xftl.hs.systems.HsSystemInstall.trueStartPower(slot))
             ship.browserPowerAtCreation(system)
             ShipConstructionDraws.addSystem(ship, slot)
             return system

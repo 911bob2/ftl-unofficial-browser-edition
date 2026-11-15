@@ -2257,6 +2257,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     fun updateAlways(dt: Float) {
         // Always called, whether or not the player is paused.
         // This is therefore only to be used for UI stuff.
+        xyz.znix.xftl.systems.BatteryEnergySource.advanceFlash(dt)
         if (touch != null && (!touchButtonsReady || touchCrewMaxPage != hsCrewMaxPage())) {
             touchButtonsReady = true
             updateButtons()
@@ -3001,7 +3002,9 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
         ship.backupBattery?.let { totalPower += it.contributedPower }
         val hsCap = if (xyz.znix.xftl.hs.HS.active) hsReactorDisplayLevel(totalPower) else Int.MAX_VALUE
         var nextPowerIdx = 0
-        for (type in EnergySource.GLOBAL_TYPES) {
+        // SystemControl::RenderPowerBar (1.6.9 0x4bb6a0; Hyperspace's RenderReactorBar.cpp rewrite keeps it): the
+        // backup battery's unused bars come first, at the bottom, then the reactor's unused ones.
+        for (type in EnergySource.REACTOR_COLUMN_ORDER) {
             val available = ship.powerAvailableTypes[type] ?: 0
 
             for (i in 0 until available) {
@@ -3968,6 +3971,7 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
     /** Diagnostics only (render probes): drop the open window without its effects. */
     fun diagnosticCloseWindow() { currentWindow = null }
+    internal val diagnosticJumpWindow: JumpWindow? get() = currentWindow as? JumpWindow
 
     /** Hyperspace Lua CrewControl::selectedCrew / potentialSelectedCrew (the live lists). */
     val luaSelectedCrew: MutableList<AbstractCrew> get() = selectedCrew
@@ -4538,10 +4542,12 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
             updateButtons() // A store may now be available
         }
 
-        // StarMap::Open (0x5ea3a0) picks two background angles (random32() % 360, kept in StarMap +0x8c and
-        // +0x90) every time the map opens: they come from the global stream, between the draws of events.
-        ftl.browser.NativeRandom.nextInt(360)
-        ftl.browser.NativeRandom.nextInt(360)
+        // StarMap::Open (0x5ea3a0) picks the angles of the player's and the flagship's map markers (random32() % 360,
+        // kept in StarMap +0x8c and +0x90) every time the map opens: they come from the global stream, between the
+        // draws of events.
+        val shipAngle = ftl.browser.NativeRandom.nextInt(360)
+        val bossAngle = ftl.browser.NativeRandom.nextInt(360)
+        (currentWindow as? JumpWindow)?.setMarkerAngles(shipAngle, bossAngle)
     }
 
     fun openSectorMap() {

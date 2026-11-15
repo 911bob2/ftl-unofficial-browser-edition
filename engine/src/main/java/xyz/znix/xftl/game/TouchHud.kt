@@ -1400,6 +1400,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
             val levels = minOf(9, Math.ceil((system.ionTimer / AbstractSystem.TIME_PER_ION).toDouble()).toInt()).coerceAtLeast(1)
             val type = if (system is MainSystem) "ring" else "octa"
             img("ipad/icons/locking/s_${type}_${levels}_base.png").draw(cx.f, iconY)
+            // The iPad's box draws the lock's timer ring over the number as the desktop's does, from its own picture.
+            AbstractSystem.drawLockRing(g, img("ipad/icons/locking/s_${type}_timer.png"), cx.f, iconY, system.ionTimer)
         } else {
             val large = game.getImgIfExists("img/ipad/icons/s_${system.codename}_large.png")
             if (raised) {
@@ -1432,13 +1434,11 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val x = box.x + 43f + shift
         val y = BOX_Y + 15f - frame.height
         frame.draw(x, y)
-        val total = 20 * n + 10
-        val visible = (total - 4 * (cooldownFraction(box) * 5 * n).toInt()).coerceIn(0, total)
-        val filled = total - visible
-        if (filled > 0) {
-            val v0 = mask.height - filled - 5f
-            mask.draw(x, y + v0, x + mask.width, y + v0 + filled, 0f, v0, mask.width.f, v0 + filled, 1f, iconColour(box.system))
-        }
+        // The iPad's cooldown box: five segments a level, the mask drawn from row 20n + 10 - 4k to its bottom (k the
+        // whole segments of the fraction), both pictures sharing the box's bottom edge, so each segment shows whole.
+        val top = touchCooldownMaskTop(n, cooldownFraction(box), mask.height)
+        if (top in 0 until mask.height)
+            mask.draw(x, y + top, x + mask.width, y + mask.height, 0f, top.f, mask.width.f, mask.height.f, 1f, iconColour(box.system))
     }
 
     private fun drawPanel(g: Graphics, box: Box) {
@@ -1828,9 +1828,14 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val available = ship.powerAvailable
         val shown = minOf(total, 30)
         ui.touchDrawNoPower(g, 729 - 9 * (shown - 1))
+        // The column's content is SystemControl::RenderPowerBar's (1.6.9 0x4bb6a0), as the desktop's: the battery's
+        // unused bars at the bottom in their own look, then the reactor's unused ones.
+        val battery = ship.powerAvailableTypes[xyz.znix.xftl.systems.BatteryEnergySource] ?: 0
         for (i in 0 until shown) {
             val y = 729f - i * 9
-            if (i < available) {
+            if (i < battery) {
+                xyz.znix.xftl.systems.BatteryEnergySource.drawReactorPowerBar(g, 16, y.toInt(), 28, 7)
+            } else if (i < available) {
                 g.colour = Constants.SYS_ENERGY_ACTIVE
                 g.fillRect(16f, y, 28f, 7f)
             } else {
@@ -2323,3 +2328,12 @@ fun hullBarColour(health: Int, maxHealth: Int): Colour {
     }
     return if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsHullNumbers.playerBarColour(health, maxHealth, vanilla) else vanilla
 }
+
+/**
+ * The first row of the cooldown mask the touch system box shows, for a box of [level] (1-4) whose timer stands at
+ * [fraction], or -1 for none. The iPad box splits each level into five segments of four rows; it shows the mask from row
+ * 20 * level + 10 - 4k down to the picture's bottom, k being the whole segments of the fraction (rounded down), so a
+ * segment is shown whole or not at all.
+ */
+fun touchCooldownMaskTop(level: Int, fraction: Float, maskHeight: Int): Int =
+    if (fraction <= 0f) -1 else (20 * level + 10 - 4 * (fraction * 5 * level).toInt()).coerceIn(0, maskHeight)

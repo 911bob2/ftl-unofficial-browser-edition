@@ -261,6 +261,11 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
         // member's ship id), before a field of this subclass would be set.
         val drone: AbstractIndoorsDrone get() = this@AbstractIndoorsDrone
 
+        // A crew drone dies as its own explosion sheet (<race>_death_right on explosion1_strip10): CustomDeath, as
+        // Hyperspace's definitions of the vanilla drone races keep it (hyperspace.xml repair, battle, boarder_ion).
+        override val customDeath: Boolean
+            get() = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.CustomCrewManager.definition(codename).hasCustomDeathAnimation else true
+
         var powerUpDuration: Float = 0f
         var runningLastUpdate: Boolean = false
         private var hsPowerUpIcon: Any? = null

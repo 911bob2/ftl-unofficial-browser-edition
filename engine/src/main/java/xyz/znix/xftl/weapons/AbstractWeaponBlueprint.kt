@@ -32,6 +32,12 @@ abstract class AbstractWeaponBlueprint(xml: Element) : Blueprint(xml) {
     open val explosion: String? = xml.getChildTextTrim("explosion")
     /** Numbers below that Hyperspace scripts write are vars (hyperspace.i leaves them writable); weapons copy shots and power when built. */
     var shots = xml.nativeInt("shots") ?: 1
+    /**
+     * WeaponBlueprint::shots as the original keeps it (Lua `shots`): ProcessWeaponBlueprint (1.6.14 0x607df0, 1.6.9
+     * 0x5e41d0) leaves the constructor's 0 without `<shots>` and sets every BEAM to 2 after the loop (HS oracle ps-b3).
+     * [shots] stays the engine's volley count.
+     */
+    @JvmField var nativeShots: Int = if (xml.getChildTextTrim("type") == "BEAM") 2 else xml.nativeInt("shots") ?: 0
     val damage = xml.nativeInt("damage") ?: 0
     val sysDamage = xml.nativeInt("sysDamage") ?: 0
     val ionDamage = xml.nativeInt("ion") ?: 0
@@ -71,13 +77,14 @@ abstract class AbstractWeaponBlueprint(xml: Element) : Blueprint(xml) {
     // Hyperspace tag, a flat reduction to the evasion used in calculations with that gun (can be negative)
     val accuracyModifier: Int = hs?.damage?.accuracyMod ?: 0
 
-    // Power, charge time and cost are null for drone blueprints.
-    // Use some semi-sane defaults to avoid having to check everywhere.
-    var power = xml.nativeInt("power") ?: 1
+    // WeaponBlueprint::power: ProcessWeaponBlueprint (1.6.14 0x607df0, 1.6.9 0x5e41d0) keeps the constructor's 0
+    // (0x763dd0 / 0x72de30, +0x114) without `<power>`, as on drone, artillery and barrage weapons (HS oracle ps-b3).
+    var power = xml.nativeInt("power") ?: 0
     /** WeaponBlueprint::damage once a script has touched it: every hit built from this blueprint reads it. */
     @JvmField var hsLuaDamage: Damage? = null
     /** WeaponBlueprint::cooldown; var: Hyperspace scripts write it (Lua `blueprint.cooldown`). */
-    var chargeTime: Float = xml.nativeFloat("cooldown") ?: 5f
+    // The constructor's 0 without `<cooldown>` (1.6.14 0x763dd0 +0x110; HS oracle ps-b3: MV's drone and barrage weapons).
+    var chargeTime: Float = xml.nativeFloat("cooldown") ?: 0f
     private val xmlCost: Int = xml.nativeInt("cost") ?: 0
     override val cost: Int get() = hsCost ?: xmlCost
 

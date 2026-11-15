@@ -101,11 +101,21 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
                 drones.setDronePower(slot, false)
             }
         }
+        // CombatAI::DeactiveWeapons (1.6.9 0x605f40) then takes every artillery system's power with
+        // ForceDecreasePower(1) until it fails (HS oracle ps-b3-flag: each stage's wreck drops its artillery to 0 bars,
+        // the reactor free by 3 bars each). The weapons and drones of a destroyed ship are already off (shipDestroyed)
+        // and keep their bars.
+        for (art in ship.artillery) {
+            var guard = art.powerSelected
+            while (art.powerSelected > 0 && guard-- > 0) art.forceDecreasePower()
+        }
         ship.hacking?.stopHacking()
 
         // FUN_0049cb30 -> Shields::DrainSuperShield (0x631770): a ship that isn't fighting loses its super shield.
-        if (ship.shields != null)
+        if (ship.shields != null) {
             ship.superShield = 0
+            ship.hsSuperShieldSet = 0
+        }
 
         ship.mindControl?.stopMindControl()
 

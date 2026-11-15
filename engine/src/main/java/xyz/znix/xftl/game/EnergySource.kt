@@ -82,6 +82,14 @@ interface EnergySource {
          * as the reactor and backup battery.
          */
         val GLOBAL_TYPES = TYPES.filter { !it.isPerSystem }
+
+        /**
+         * The reactor column's order, bottom first: SystemControl::RenderPowerBar (1.6.9 0x4bb6a0) draws the backup
+         * battery's unused bars (batteryPower.second - .first) below the reactor's unused ones.
+         */
+        val REACTOR_COLUMN_ORDER: List<EnergySource> by lazy {
+            listOf<EnergySource>(BatteryEnergySource) + GLOBAL_TYPES.filter { it !== BatteryEnergySource }
+        }
     }
 }
 

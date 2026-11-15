@@ -523,7 +523,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             setEnemy(null);
             return;
         }
-        Ship base = new Ship(blueprintManager.getShip(vs.getBlueprint()), this, null, spec, null);
+        Ship base = new Ship(blueprintManager.getShip(vs.getBlueprint()).asEnemy(), this, null, spec, null);
         base.loadDefaultContents();
         // Generated enemies carry CreateShip's level-scaled hull.
         int level = currentBeacon.getSector().getSectorNumber() + difficulty.getSectorOffset();
@@ -774,6 +774,15 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             xml.addContent(augElem);
         }
 
+        // Shields::shields.power.super as saved: first, and second (0 until the ship had a super shield, oracle
+        // ps-b2-ss a0); Shields::OnLoop (1.6.14 0x6342b0) fills it only while second is 0.
+        xml.removeChildren("superShield");
+        xml.removeChildren("maxSuperShield");
+        xml.removeChildren("superShieldSet");
+        if (vs.getSuperShieldMax() > 0) xyz.znix.xftl.savegame.SaveUtil.INSTANCE.addTagInt(xml, "maxSuperShield", vs.getSuperShieldMax());
+        xyz.znix.xftl.savegame.SaveUtil.INSTANCE.addTagInt(xml, "superShield", Math.max(0, vs.getSuperShield()));
+        xyz.znix.xftl.savegame.SaveUtil.INSTANCE.addTagInt(xml, "superShieldSet", vs.getSuperShieldMax() > 0 ? 1 : 0);
+
         // Cargo
         xml.removeChildren("cargoBlueprint");
         for (int index = 0; target == player && index < data.getCargo().size() && index < 4; index++) {
@@ -783,7 +792,14 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             xml.addContent(cargoElem);
         }
 
-        return deserialiseSingleShip(xml, new RefLoader(), null);
+        // The imported player's ship is the player's, a nearby ship the enemy's, whatever their blueprints.
+        boolean loadingPlayer = hsLoadingPlayer;
+        hsLoadingPlayer = ownCrewIsPlayer;
+        try {
+            return deserialiseSingleShip(xml, new RefLoader(), null);
+        } finally {
+            hsLoadingPlayer = loadingPlayer;
+        }
     }
 
     private static String vanillaSlotForXftlName(String xftlName) {
@@ -2282,6 +2298,10 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
 
     public boolean browserSpawnBossHere() {
         if (currentBeacon.getSector().getBosses().stream().noneMatch(boss -> boss.getBeacon() == currentBeacon)) return false;
+        // The out-of-fuel wait arrives at the same location again: CheckForNewLocation (1.6.9 0x5f4fa0) runs
+        // CreateLocation (0x5f2be0), which takes BossShip::GetEvent's event (no environment) for a location with the
+        // boss flag, so the fleet's ASB the player waited in is not up in the flagship fight.
+        currentBeacon.clearEnvironment();
         trySpawnBoss();
         return true;
     }
@@ -2870,6 +2890,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
 
         ShipBlueprint blueprint = blueprintManager.getShip(shipId);
         if (hsLoadingPlayer) blueprint = playerBlueprint(blueprint);
+        else blueprint = blueprint.asEnemy(); // an enemy is iShipId 1 whatever its blueprint (WorldManager::CreateShip)
 
         // And use that to build and deserialise the ship
         // Note we pass in null as the boss - that'll be updated if this turns out to be a boss.

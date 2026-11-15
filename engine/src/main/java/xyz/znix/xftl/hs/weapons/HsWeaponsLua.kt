@@ -282,9 +282,9 @@ object HsWeaponsLua {
                 is BombBlueprint -> "BOMB"; is FlakBlueprint -> "BURST"; else -> "" }
         })
         LuaReg.num(A.A_WeaponBlueprint_speed, NumGet { (b(it).speed ?: 0).toDouble() })
-        LuaReg.num(A.A_WeaponBlueprint_length, NumGet { ((it as? BeamBlueprint)?.length ?: 0).toDouble() })
+        LuaReg.num(A.A_WeaponBlueprint_length, NumGet { ((it as? BeamBlueprint)?.nativeLength ?: -1).toDouble() })
         LuaReg.num(A.A_WeaponBlueprint_chargeLevels, NumGet { (b(it).chargeLevels ?: 0).toDouble() })
-        LuaReg.num(A.A_WeaponBlueprint_shots, NumGet { b(it).shots.toDouble() })
+        LuaReg.num(A.A_WeaponBlueprint_shots, NumGet { b(it).nativeShots.toDouble() })
         LuaReg.num(A.A_WeaponBlueprint_missiles, NumGet { b(it).missilesUsed.toDouble() })
         LuaReg.num(A.A_WeaponBlueprint_cooldown, NumGet { b(it).chargeTime.toDouble() })
         LuaReg.num(A.A_WeaponBlueprint_radius, NumGet { ((it as? FlakBlueprint)?.radius ?: 0).toDouble() })

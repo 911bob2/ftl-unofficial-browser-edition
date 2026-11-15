@@ -90,6 +90,7 @@ class BackupBattery(blueprint: SystemBlueprint) : SubSystem(blueprint) {
 
         timeRemaining = DURATION
         ship.sys.sounds.getSampleOrWarn("batteryStart")?.play()
+        BatteryEnergySource.startFlash()
     }
 
     override fun makeExtraButtons(powerPos: IPoint): List<Button> {
@@ -178,14 +179,46 @@ object BatteryEnergySource : EnergySource {
             return
         }
 
-        drawReactorPowerBar(g, x, y, width, height)
+        drawBar(g, x, y, width, height, Constants.SYS_ENERGY_BATTERY_OUTLINE)
     }
 
-    override fun drawReactorPowerBar(g: Graphics, x: Int, y: Int, width: Int, height: Int) {
-        g.colour = Constants.SYS_ENERGY_BATTERY_OUTLINE
+    /**
+     * SystemControl::RenderPowerBar (1.6.9 0x4bb6a0): an unused battery bar is GetPowerBars' "tiny" piece (inset 2 px:
+     * 24 x 3 of a 28 x 7 bar, 0x4b9ca0) in the power green, and the "empty" outline in (230, 110, 30) (0x3f66e6e7,
+     * 0x3edcdcdd, 0x3df0f0f1; Hyperspace's borderColour).
+     */
+    override fun drawReactorPowerBar(g: Graphics, x: Int, y: Int, width: Int, height: Int) =
+        drawBar(g, x, y, width, height, REACTOR_OUTLINE, if (flashWhite) xyz.znix.xftl.rendering.Colour.white else Constants.SYS_ENERGY_ACTIVE)
+
+    private fun drawBar(g: Graphics, x: Int, y: Int, width: Int, height: Int, outline: xyz.znix.xftl.rendering.Colour,
+                        fill: xyz.znix.xftl.rendering.Colour = Constants.SYS_ENERGY_ACTIVE) {
+        g.colour = outline
         g.drawRect(x, y, width - 1, height - 1)
 
-        g.colour = Constants.SYS_ENERGY_ACTIVE
+        g.colour = fill
         g.fillRect(x + 2, y + 2, width - 4, height - 4)
     }
+
+    /**
+     * SystemControl's flashBatteryPower (2 s, once) and flashTracker (0.66 s, looping), started together by event 11,
+     * which turning a battery on posts (1.6.14 0x62e410, with the batteryStart sound); while the first runs, the
+     * battery's reactor bars are white in the second half of each 0.66 s (RenderPowerBar; SystemControl constructor
+     * 1.6.9 0x4b85b0). The trackers run on frame time, paused or not. Seconds since the start, or -1.
+     */
+    @JvmField var flashTime = -1f
+
+    fun startFlash() { flashTime = 0f }
+
+    fun advanceFlash(dt: Float) {
+        if (flashTime < 0f) return
+        flashTime += dt
+        if (flashTime >= FLASH_DURATION) flashTime = -1f
+    }
+
+    val flashWhite: Boolean get() = flashTime >= 0f && flashTime % FLASH_CYCLE / FLASH_CYCLE > 0.5f
+
+    const val FLASH_DURATION = 2f
+    const val FLASH_CYCLE = 0.66f
+
+    @JvmField val REACTOR_OUTLINE = xyz.znix.xftl.rendering.Colour(230, 110, 30)
 }

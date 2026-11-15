@@ -417,8 +417,8 @@ object VanillaSaveParser {
 
         // Shields info (always present)
         ship.shieldsActive = r.int()
-        r.int() // energy shield layers
-        ship.superShieldMax = r.int()
+        ship.superShield = r.int() // Shields::shields.power.super.first
+        ship.superShieldMax = r.int() // super.second: 0 until the ship had a super shield
         ship.shieldsRechargeTicks = r.int()
         r.bool(); r.int() // drop anim
         r.bool(); r.int() // raise anim

@@ -170,7 +170,10 @@ class BeamProjectile(val game: InGameState, target: Ship?, end: FPoint, length: 
                 motion.piercedShield = false
                 blocked = damage.hullDamage
                 if (motion.damageSuperShield) {
+                    // DamageShield (1.6.14 0x438c30, 1.6.9 0x436040) gets a new selfId from Globals::GetNextSpaceId,
+                    // so the flash of this beam's own frame hit (CollisionReal 0x6336f0) does not take the zap.
                     val zap = damage.copy(); zap.hullDamage = maxOf(1, zap.hullDamage)
+                    zap.hsSelfId = if (hsExt != null) HsWeapons.nextSpaceId() else AbstractProjectile.freshWorldOrder()
                     ShieldCollisionRules.real(receiver, response.point, zap, true)
                 }
             }

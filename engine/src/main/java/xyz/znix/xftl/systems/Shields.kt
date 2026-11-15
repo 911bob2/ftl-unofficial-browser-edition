@@ -99,10 +99,21 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         downTracker.update(dt); upTracker.update(dt); superUpTracker.update(dt)
         if (xyz.znix.xftl.hs.HS.luaActive) xyz.znix.xftl.hs.lua.LuaAdaptersWritesPictures.shieldsOut(this)
 
+        // Shields::OnLoop (1.6.14 0x6342b0, 1.6.9 0x60e310): with ENERGY_SHIELD, a ship whose super.second is 0 gets
+        // super.first 5, and super.second is 5; so an augment gained anywhere (store, event, console, Lua) fills the
+        // shield once, and an emptied one stays empty until Shields::Jump. HS reads super.second before it.
+        // A save from before super.second was saved: an ENERGY_SHIELD ship had it.
+        if (ship.hsSuperShieldSet < 0) ship.hsSuperShieldSet = if (ship.hasAugment(AugmentBlueprint.ENERGY_SHIELD_NAME)) 1 else 0
+        val hsNoSuper = ship.hsSuperShieldSet == 0
+        if (ship.hasAugment(AugmentBlueprint.ENERGY_SHIELD_NAME)) {
+            if (ship.hsSuperShieldSet == 0) ship.nativeSetSuperShield(5)
+            ship.maxSuperShield = 5
+            ship.hsSuperShieldSet = 1
+        }
         if (ship.superShield < 0) ship.nativeSetSuperShield(0)
 
         // Hyperspace: Shields::OnLoop keeps an augment super shield's maximum (CustomSuperShield.cpp).
-        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSuperShield.onLoop(ship)
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSuperShield.onLoop(ship, hsNoSuper)
 
         if (isHackActive) {
             updateHacked(dt)

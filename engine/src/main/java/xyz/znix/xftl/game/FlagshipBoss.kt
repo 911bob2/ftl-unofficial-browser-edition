@@ -50,7 +50,8 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
     val browserBaseTurns: Int? get() = if (browserArrivedAtBase == 0) null else (4 - browserArrivedAtBase).coerceAtLeast(0)
     val browserFleetSelections: Int get() = if (browserMoves > 1 || runningAway) 2 else 1
 
-    private var mapIconRotation: Float = (0f..10f).random(VisualRandom)
+    /** The marker's angle on the beacon map (StarMap +0x90, which the map window owns and sets before each draw). */
+    internal var mapIconRotation: Float = 0f
     private val flagshipIcon = game.getImg("img/map/map_icon_boss.png")
     private val touchFlagshipIcon = if (TouchMode.enabled) game.getImgIfExists("img/ipad/map/map_icon_boss.png") else null
 
@@ -146,15 +147,13 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
     }
 
     override fun drawMapIcon(g: Graphics, centre: IPoint) {
-        val rotationSpeed = TWO_PI / 20f // Go around every 20 seconds
-        mapIconRotation += game.renderingDeltaTime * rotationSpeed
-
-        // These offsets are approximate.
+        // StarMap's constructor (1.6.9 0x5cc560) makes map_icon_boss.png a 64 x 64 primitive at (-10, -32), turned by
+        // +0x90 about the beacon (OnRender 0x5d9ab0).
         g.pushTransform()
-        g.rotate(centre.x.f, centre.y.f, -mapIconRotation)
+        g.rotate(centre.x.f, centre.y.f, mapIconRotation)
         val touchIcon = touchFlagshipIcon
         if (touchIcon != null) touchIcon.draw(centre.x - touchIcon.width / 2, centre.y - 10 - touchIcon.height)
-        else flagshipIcon.draw(centre.x - 8, centre.y - 32)
+        else flagshipIcon.draw(centre.x - 10, centre.y - 32)
         g.popTransform()
     }
 

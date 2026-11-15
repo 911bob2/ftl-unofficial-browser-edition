@@ -455,16 +455,11 @@ object StatCrewLua {
         LuaReg.num(A.A_CrewMember_fStunTime, NumGet { (it as AbstractCrew).stunTime.toDouble() },
             NumSet { o, v -> (o as AbstractCrew).stunTime = v.toFloat() })
         LuaReg.num(A.A_CrewMember_fMedbay, NumGet { HsCrew.medbayRate(it as AbstractCrew).toDouble() })
-        // CrewMember::DirectModifyHealth(float) -> bool (true when the crew member died of it)
+        // CrewMember::DirectModifyHealth(float) -> bool (true when the crew member died of it). A crew member at 0
+        // health (dying) is not healed (1.6.9 0x46eb20 returns at once): MV's instant heal out of combat must not
+        // bring a dying vanilla Zoltan back.
         LuaReg.method(A.M_CrewMember_DirectModifyHealth, LuaMethod {
-            val c = arg.obj(1) as AbstractCrew
-            val amount = arg.float(2)
-            val died = if (c is HsCrewMember) c.directModifyHealth(amount) else {
-                val before = c.health
-                c.health = (c.health + amount).coerceIn(0f, c.maxHealth)
-                before > 0f && c.health <= 0f
-            }
-            ret.bool(died)
+            ret.bool(HsCrew.directModifyHealth(arg.obj(1) as AbstractCrew, arg.float(2)))
         })
         // CrewMember::Kill(noClone): health to 0 (the death runs in the crew loop); noClone keeps the clone bay away
         LuaReg.method(A.M_CrewMember_Kill, LuaMethod {

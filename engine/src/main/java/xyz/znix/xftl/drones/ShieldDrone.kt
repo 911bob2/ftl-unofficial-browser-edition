@@ -93,8 +93,11 @@ class ShieldDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
         val before = targetShip.superShield
         // HS guards the native shieldSystem pointer before charging (ships may omit shields entirely).
         if (!xyz.znix.xftl.hs.HS.active || xyz.znix.xftl.hs.systems.HsSuperShield.hasShieldObject(targetShip)) {
-            if (!(xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.systems.HsSuperShield.addSuperShield(targetShip)))
+            if (!(xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.systems.HsSuperShield.addSuperShield(targetShip))) {
                 targetShip.superShield++
+                // Shields::AddSuperShield (1.6.14 0x631790): super.second becomes 5 when it was 0.
+                targetShip.hsSuperShieldSet = 1
+            }
             if (xyz.znix.xftl.hs.HS.active)
                 targetShip.superShield = (targetShip.superShield + layers - 1).coerceIn(0, targetShip.maxSuperShield)
         }

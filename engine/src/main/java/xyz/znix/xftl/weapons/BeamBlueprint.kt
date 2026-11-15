@@ -20,6 +20,8 @@ import kotlin.random.nextInt
 
 class BeamBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
     val length: Int = xml.nativeInt("length") ?: 0
+    /** WeaponBlueprint::length as loaded (Lua): the constructor's -1 without `<length>` (1.6.14 0x763dd0 +0x118). */
+    @JvmField val nativeLength: Int = xml.nativeInt("length") ?: -1
 
     // See the note on SPEED_MULTIPLIER.
     val speedPixelsPerSecond = (speed ?: DEFAULT_SPEED) * SPEED_MULTIPLIER

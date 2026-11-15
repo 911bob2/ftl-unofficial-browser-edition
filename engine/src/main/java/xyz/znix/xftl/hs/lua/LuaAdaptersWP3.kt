@@ -10,6 +10,7 @@ import xyz.znix.xftl.crew.AbstractCrew
 import xyz.znix.xftl.drones.AbstractIndoorsDrone
 import xyz.znix.xftl.crew.LivingCrew
 import xyz.znix.xftl.crew.Skill
+import xyz.znix.xftl.hs.crew.directModifyHealth
 import xyz.znix.xftl.crew.SkillLevel
 import xyz.znix.xftl.hs.crew.ActivatedPowerDefinition
 import xyz.znix.xftl.hs.crew.ActivatedPowerRequirements
@@ -140,7 +141,17 @@ object LuaAdaptersWP3 {
         LuaReg.method(A.M_CrewMember_CanBurn, LuaMethod { ret.bool(flag(c(arg.obj(1)), CrewStat.CAN_BURN)) })
         LuaReg.method(A.M_CrewMember_IsTelepathic, LuaMethod { ret.bool(flag(c(arg.obj(1)), CrewStat.IS_TELEPATHIC)) })
         LuaReg.method(A.M_CrewMember_IsAnaerobic, LuaMethod { ret.bool(flag(c(arg.obj(1)), CrewStat.IS_ANAEROBIC)) })
-        LuaReg.method(A.M_CrewMember_ProvidesPower, LuaMethod { ret.bool(CustomCrewManager.definition(c(arg.obj(1)).hsSpecies).providesPower) })
+        // CrewMember::ProvidesPower is virtual: Hyperspace's vtable (a race of hyperspace.xml, CrewVTable.cpp:262) reads the
+        // definition, EnergyAlien::ProvidesPower (1.6.9 0x723c90) returns true, the base (0x720da0) false. Only the first
+        // reads (and so inserts) a definition.
+        LuaReg.method(A.M_CrewMember_ProvidesPower, LuaMethod { val x = c(arg.obj(1))
+            ret.bool(when (x) {
+                is xyz.znix.xftl.hs.crew.HsCrewMember -> x.def.providesPower
+                is xyz.znix.xftl.crew.CrewZoltan -> true
+                // crew drones keep their own rule (CrewDrone::_HS_ProvidesPower, DroneVTable.cpp:465)
+                !is xyz.znix.xftl.crew.LivingCrew -> CustomCrewManager.definition(x.hsSpecies).providesPower
+                else -> false
+            }) })
         LuaReg.method(A.M_CrewMember_ProvidesVision, LuaMethod { ret.bool(c(arg.obj(1)).providesPlayerVision) })
         LuaReg.method(A.M_CrewMember_GetMaxHealth, LuaMethod { ret.num(c(arg.obj(1)).maxHealth.toInt()) })
         LuaReg.method(A.M_CrewMember_GetIntegerHealth, LuaMethod { ret.num(c(arg.obj(1)).health.toInt()) })
@@ -219,7 +230,7 @@ object LuaAdaptersWP3 {
         // ModifyHealth(amount): the health change of DirectModifyHealth without its result
         LuaReg.method(A.M_CrewMember_ModifyHealth, LuaMethod {
             val x = c(arg.obj(1)); val amount = arg.float(2)
-            if (x is xyz.znix.xftl.hs.crew.HsCrewMember) x.directModifyHealth(amount) else x.health = (x.health + amount).coerceIn(0f, x.maxHealth)
+            xyz.znix.xftl.hs.crew.HsCrew.directModifyHealth(x, amount)
             0
         })
         // MoveToRoom(roomId, slotId, forceMove): on the ship it stands on; -1 picks a slot; without force an order

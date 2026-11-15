@@ -439,10 +439,19 @@ class Beacon(
     val isEnvironmentDangerous: Boolean
         get() = actualEnvironment?.let { env -> env.layers.any { it.isDangerous } } ?: environmentType.isDangerous
 
+    /** Location::boss: the flagship waits here (a script may write it, Hyperspace Lua). */
+    val holdsFlagship: Boolean
+        get() = hsBoss ?: (hasSector && sector.bosses.any { it.beacon === this })
+
     fun getEnvironment(game: InGameState): AbstractEnvironment {
         actualEnvironment?.let { return it }
 
-        val env = environmentType.create(game, this)
+        // WorldManager::CreateLocation (1.6.9 0x5f2be0): a location holding the flagship takes BossShip::GetEvent's event
+        // (1.6.14 0x407580: BOSS_TEXT_<stage>, ship and rebel fleet set, no environment) instead of its own, and
+        // ModifyEnvironment reads that one: the fleet's ASB (or storm) of a beacon it holds is not up during the fight.
+        // Hyperspace's CreateLocation hook calls the original first and keeps it.
+        val type = if (holdsFlagship) EnvironmentType.NORMAL else environmentType
+        val env = type.create(game, this)
         actualEnvironment = env
         return env
     }

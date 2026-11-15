@@ -1,13 +1,16 @@
 package xyz.znix.xftl.crew
 
 import org.jdom2.Element
+import xyz.znix.xftl.Animations
 import xyz.znix.xftl.Blueprint
+import xyz.znix.xftl.weapons.nativeInt
 import xyz.znix.xftl.GameText
 import xyz.znix.xftl.layout.Room
 import xyz.znix.xftl.rendering.Colour
 
 class CrewBlueprint(elem: Element) : Blueprint(elem) {
-    private val xmlCost: Int = elem.getChildTextTrim("cost").toInt()
+    // Description's cost stays 0 without `<cost>` (Description constructor 1.6.9 0x7239e0; ProcessCrewBlueprint 0x5e9090).
+    private val xmlCost: Int = elem.nativeInt("cost") ?: 0
     override val cost: Int get() = hsCost ?: xmlCost
 
     /**
@@ -89,6 +92,18 @@ class CrewBlueprint(elem: Element) : Blueprint(elem) {
         if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.crew.CustomCrewManager.isRace(name))
             return xyz.znix.xftl.hs.crew.HsCrewMember(this, animations, room, mode)
 
+        val crew = spawnVanillaRace(animations, room, mode)
+        // Hyperspace: the factory's OnLoop right after the new crew member (CrewMemberFactory::OnLoop hook,
+        // CustomCrew.cpp:6454-6463) looks up every crew member's definition with CustomCrewManager::GetDefinition, which
+        // inserts a default definition for a race hyperspace.xml leaves out (`&blueprintNames[name]`). So only the first
+        // crew member of such a race (Multiverse: energy, anaerobic, ghost) is the vanilla class; every later one is a
+        // plain CrewMember with that default definition: 100 health, no power (HS oracle ps-b3-zw/zx: ZOLTAN_BOMBER's
+        // first Zoltan EnergyAlien, 70 health, ProvidesPower; the other two and every later Zoltan 100 health, none).
+        if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.crew.CustomCrewManager.definition(crew.hsSpecies)
+        return crew
+    }
+
+    private fun spawnVanillaRace(animations: Animations, room: Room, mode: AbstractCrew.SlotType): LivingCrew {
         return when (name) {
             "human" -> CrewHuman(this, animations, room, mode)
             "engi" -> CrewEngi(this, animations, room, mode)

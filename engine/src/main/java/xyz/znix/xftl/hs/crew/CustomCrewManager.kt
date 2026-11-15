@@ -62,6 +62,15 @@ object CustomCrewManager {
         CrewDefinition("").also { it.implicit = true }
     }
 
+    /** Diagnostics: drops a definition GetDefinition inserted (not one of hyperspace.xml), as at a game launch. */
+    @JvmStatic
+    internal fun forgetImplicit(name: String): Boolean {
+        val def = blueprintNames[name] ?: return false
+        if (!def.implicit) return false
+        blueprintNames.remove(name)
+        return true
+    }
+
     /** The definition without HS's insert-on-lookup (for UI/diagnostics). */
     @JvmStatic
     fun definitionOrNull(name: String?): CrewDefinition? = name?.let { blueprintNames[it] }

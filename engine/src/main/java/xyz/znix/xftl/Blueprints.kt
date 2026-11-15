@@ -413,8 +413,10 @@ open class Blueprint(elem: Element) : IBlueprint {
      */
     open val cost: Int? = null
 
-    fun translateTitle(game: InGameState): String = title?.let { game.translator[it] } ?: "MISSING TITLE: $name"
-    fun translateShort(game: InGameState): String = short?.let { game.translator[it] } ?: "MISSING SHORT: $name"
+    // Without `<title>` / `<short>` the Description constructor's empty texts stay (1.6.9 0x7239e0): a weapon box shows
+    // no name (1.6.14 capture ps-b3-van b3v-arm, DRONE_LASER given by the console).
+    fun translateTitle(game: InGameState): String = title?.let { game.translator[it] } ?: ""
+    fun translateShort(game: InGameState): String = short?.let { game.translator[it] } ?: ""
 
     override fun resolve(random: Random): Blueprint = this
     override fun list(): List<Blueprint> = listOf(this)
@@ -431,7 +433,8 @@ open class Blueprint(elem: Element) : IBlueprint {
  * This is for fuel/drones/missiles, and serves to make their descriptions available.
  */
 class ItemBlueprint(elem: Element) : Blueprint(elem) {
-    private val xmlCost: Int = elem.getChildTextTrim("cost")!!.toInt()
+    // Description's cost stays 0 without `<cost>` (Description constructor 1.6.9 0x7239e0).
+    private val xmlCost: Int = elem.nativeInt("cost") ?: 0
     override val cost: Int get() = hsCost ?: xmlCost
 }
 

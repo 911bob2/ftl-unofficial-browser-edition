@@ -64,6 +64,18 @@ object HsSystemInstall {
     }
 
     /** getTrueSystemMaxPower: the ship blueprint's `max`, else the system blueprint's maxPower, at least 1. */
+    /**
+     * getTrueSystemStartPower (CustomSystems.cpp:1175): the template's `power` when above zero, else the system
+     * blueprint's startPower, else 1. Hyperspace's AddSystem hook (CustomSystems.cpp:1211-1262) upgrades the new system
+     * (ShipManager::UpgradeSystem, the reactor untouched) until its level reaches it (HS oracle ps-b3-gen: AUTO_ASSAULT's
+     * `power="0"` weapons start at the weapons blueprint's 2).
+     */
+    @JvmStatic
+    fun trueStartPower(slot: SystemInstallConfiguration): Int {
+        if (slot.spec.startingPower > 0) return slot.spec.startingPower
+        return slot.system.startPower.takeIf { it > 0 } ?: 1
+    }
+
     private fun trueMax(slot: SystemInstallConfiguration): Int {
         val max = slot.spec.aiMaxPower
         if (max != null && max > 0) return max
@@ -91,8 +103,9 @@ object HsSystemInstall {
         // 100 right after the call).
         if (system is xyz.znix.xftl.systems.Oxygen) ship.hsFillOxygen()
         HsSystemBox.systemAdded(ship)
+        if (level <= 0) level = trueStartPower(slot)
         if (level > 0) {
-            // UpgradeSystem(systemId, 1) until GetSystemPowerMax reaches the carried level
+            // UpgradeSystem(systemId, 1) until GetSystemPowerMax reaches the carried level (or getTrueSystemStartPower)
             if (system.energyLevels < level) system.energyLevels = level
             system.powerLimitChanged()
         }

@@ -12,7 +12,13 @@ import java.util.*
 class ShipBlueprint @JvmOverloads constructor(
     private val elem: Element, private val df: Datafile,
     /** Hyperspace: the player's ship built from any blueprint (console SWITCH; the original decides by iShipId 0). */
-    private val hsForcePlayer: Boolean = false
+    private val hsForcePlayer: Boolean = false,
+    /**
+     * An enemy built from a player or hangar blueprint (console LOAD, an event's ship): WorldManager::CreateShip
+     * (1.6.14 0x6149c0, 1.6.9 0x5eee10) gives the CompleteShip iShipId 1 whatever the blueprint, and the rules that read
+     * it (ownership, AI, crew, drawing) follow the side, not the name.
+     */
+    private val forceEnemy: Boolean = false
 ) : Blueprint(elem) {
     /** The blueprint's XML (Hyperspace Lua ShipBlueprint members read the raw tags). */
     val sourceElement: Element get() = elem
@@ -27,8 +33,11 @@ class ShipBlueprint @JvmOverloads constructor(
 
     // Hyperspace: every hangar layout is a player ship (the original decides by iShipId 0; the engine by blueprint),
     // so MV's ELITE_SHIP_* layouts get the player's start power, shields and weapon list rules.
-    val isPlayerShip: Boolean = hsForcePlayer || name.startsWith("PLAYER_SHIP_") ||
-        (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsHangar.variantOf(name) != null)
+    val isPlayerShip: Boolean = !forceEnemy && (hsForcePlayer || name.startsWith("PLAYER_SHIP_") ||
+        (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.ship.HsHangar.variantOf(name) != null))
+
+    /** This blueprint for a ship on the enemy side: a copy that is no player ship when this one is. */
+    fun asEnemy(): ShipBlueprint = if (!isPlayerShip) this else ShipBlueprint(filesElement(), df, false, true)
 
     /**
      * The localisation key of this type of ship, shown on the right-hand
@@ -272,20 +281,25 @@ class ShipBlueprint @JvmOverloads constructor(
      * are rebuilt from the names; everything else a script may have written to this blueprint stays.
      */
     fun hsSetFiles(layout: String? = null, img: String? = null, cloak: String? = null, shield: String? = null, floor: String? = null) {
-        val e = elem.clone()
-        fun child(tag: String, v: String) { (e.getChild(tag) ?: Element(tag).also { e.addContent(it) }).setText(v) }
         layout?.let { hsFileLayout = it }; img?.let { hsFileImg = it }; cloak?.let { hsFileCloak = it }; shield?.let { hsFileShield = it }; floor?.let { hsFileFloor = it }
-        hsFileLayout?.let { e.setAttribute("layout", it) }
-        hsFileImg?.let { e.setAttribute("img", it) }
-        hsFileCloak?.let { child("cloakImage", it) }
-        hsFileShield?.let { child("shieldImage", it) }
-        hsFileFloor?.let { child("floorImage", it) }
-        val o = ShipBlueprint(e, df, hsForcePlayer)
+        val o = ShipBlueprint(filesElement(), df, hsForcePlayer, forceEnemy)
         this.layout = o.layout; this.img = o.img
         hullImage = o.hullImage; floorImage = o.floorImage; cloakImage = o.cloakImage; shieldImage = o.shieldImage
         hullOffset = o.hullOffset; floorOffset = o.floorOffset; cloakOffset = o.cloakOffset
         gibs = o.gibs; hardpoints = o.hardpoints; emptyHardpoint = o.emptyHardpoint; systems = o.systems; rooms = o.rooms; doors = o.doors
         shieldEllipse = o.shieldEllipse; roomOffset = o.roomOffset; layoutShift = o.layoutShift; hsThrusterDraws = o.hsThrusterDraws
+    }
+    /** The blueprint's XML with the file names a script wrote (hsSetFiles). */
+    private fun filesElement(): Element {
+        if (hsFileLayout == null && hsFileImg == null && hsFileCloak == null && hsFileShield == null && hsFileFloor == null) return elem
+        val e = elem.clone()
+        fun child(tag: String, v: String) { (e.getChild(tag) ?: Element(tag).also { e.addContent(it) }).setText(v) }
+        hsFileLayout?.let { e.setAttribute("layout", it) }
+        hsFileImg?.let { e.setAttribute("img", it) }
+        hsFileCloak?.let { child("cloakImage", it) }
+        hsFileShield?.let { child("shieldImage", it) }
+        hsFileFloor?.let { child("floorImage", it) }
+        return e
     }
     private var hsFileLayout: String? = null
     private var hsFileImg: String? = null

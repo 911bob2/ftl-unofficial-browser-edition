@@ -148,7 +148,24 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     var hovered: Beacon? = null
         set(v) { field = v; if (!isWaiting && !outOfFuel) xyz.znix.xftl.hs.sector.HsStarMap.hoverLoc = v } // StarMap::hoverLoc outlives the map
 
-    private var playerRotation: Float = (0f..10f).random(VisualRandom)
+    /**
+     * StarMap +0x8c / +0x90 (Hyperspace shipRotation[0] / [1]): the angles of the player's and the flagship's markers
+     * around their beacons, in degrees, clockwise from straight up. StarMap::Open (1.6.9 0x5c6520) picks both with
+     * random32() % 360 every time the map opens ([PlayerShipUI] draws them); OnRender (0x5d9ab0) takes 1.125 per
+     * speed-factor unit off each frame (18 a second, a turn in 20 s, anticlockwise) and wraps to 360 at 0.
+     */
+    internal var playerRotation: Float = 0f
+    internal var bossRotation: Float = 0f
+
+    fun setMarkerAngles(player: Int, boss: Int) {
+        playerRotation = player.toFloat()
+        bossRotation = boss.toFloat()
+    }
+
+    private fun turnMarker(angle: Float): Float {
+        val next = angle - game.renderingDeltaTime * 16f * 1.125f
+        return if (next <= 0f) 360f else next
+    }
 
     // Touch layout: a finger picks the beacon nearest to it on every press and move. [hovered] then keeps the picked
     // beacon (its target box, tooltip and line); the target is set only when the ship can go there, and only the Jump
@@ -230,6 +247,11 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     /**
      * Draw the insides of the window. This must be done with a stencil.
      */
+    /** Diagnostics: when set, the map's layers in the order [drawMapContent] draws them (clouds, hover-lines, lines, beacons). */
+    internal var browserLayers: MutableList<String>? = null
+    /** Diagnostics: the markers drawn this frame with their angles ("ship:<deg>", "boss:<deg>"). */
+    internal var browserMarkers: MutableList<String>? = null
+
     private fun drawMapContent(g: Graphics) {
         // Draw the background image, offset 4px to account for the line wall of the window.
         // Hyperspace: a script may replace StarMap::mapsBottom[worldLevel % 3]
@@ -245,6 +267,28 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
             drawLastStandDangerZone(g)
         }
 
+        // The sector's nebula clouds, recorded when the map was generated. StarMap::OnRender (1.6.9 0x5d9ab0, after the
+        // tinted mapsBottom) draws them before any connection, so the lines and beacons stay on top of the clouds.
+        for (cloud in sector.nebulaClouds) {
+            game.getImg(cloud.image).draw(mapBase.x + cloud.x, mapBase.y + cloud.y)
+        }
+        browserLayers?.add("clouds")
+        // A sector with no recorded clouds (a save from before they were recorded, an imported native save) gets one
+        // puff per nebula beacon instead, in the same place in the order: under the lines.
+        if (sector.nebulaClouds.isEmpty()) {
+            for (beacon in sector.beacons) {
+                if (!beacon.isMapNebula) continue
+                val centre = mapBase + beacon.pos
+                val puff = nebulaPuffs[(beacon.pos.x * 31 + beacon.pos.y * 17).mod(nebulaPuffs.size)]
+                puff.draw(centre.x - puff.width / 2f, centre.y - puff.height / 2f)
+                browserLayers?.add("puffs")
+            }
+        }
+
+        // Make a local immutable copy to avoid nullability errors
+        val hovered = hovered
+        val showHoverLines = hovered != null && hovered != game.currentBeacon && (game.mainGame?.profile?.showBeaconPaths != false)
+
         // Hyperspace showAllConnections (CustomMap.cpp StarMap::DrawConnection, 1.23.2): the first connection drawn
         // is preceded by every other one in white, but those of the current and the hovered beacon.
         if (game.eventManager.hs != null && xyz.znix.xftl.hs.sector.HsStarMap.showAllConnections()) {
@@ -256,8 +300,16 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
             }
         }
 
+        // StarMap::OnRender draws the hovered beacon's connections (but those to the current one) before the current
+        // beacon's own, which then lie on top.
+        if (showHoverLines && !TouchMode.enabled) {
+            drawBeaconLinesTo(g, hovered!!, Constants.BEACON_LINE_HOVER) { it != game.currentBeacon }
+            browserLayers?.add("hover-lines")
+        }
+
         // Draw the connections to the adjacent beacons.
         drawBeaconLinesTo(g, game.currentBeacon, Constants.BEACON_LINE_PLAYER) { true }
+        browserLayers?.add("lines")
 
         // Draw the line showing where the flagship will next jump
         for (boss in sector.bosses) {
@@ -281,18 +333,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
             }
         }
 
-        // Make a local immutable copy to avoid nullability errors
-        val hovered = hovered
-
-        if (hovered != null && hovered != game.currentBeacon && (game.mainGame?.profile?.showBeaconPaths != false)) {
-            if (TouchMode.enabled) {
-                // The path from the ship to the picked beacon
-                drawBeaconLine(g, game.currentBeacon, hovered, Constants.BEACON_LINE_HOVER)
-            } else {
-                // Draw the lines between the hovered beacon and it's neighbours
-                drawBeaconLinesTo(g, hovered, Constants.BEACON_LINE_HOVER) { it != game.currentBeacon }
-            }
-        }
+        // The path from the ship to the picked beacon (touch), over the current beacon's lines
+        if (showHoverLines && TouchMode.enabled)
+            drawBeaconLine(g, game.currentBeacon, hovered!!, Constants.BEACON_LINE_HOVER)
 
         val nextFleetPos = Point(sector.dangerZoneCentre)
         val tutorial = game.mainGame?.isTutorialRunning == true
@@ -318,12 +361,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         // Whether or not the ship is equipped with long-range scanners
         val hasLRS = game.player.hasAugment(AugmentBlueprint.LONG_RANGE_SCANNERS)
 
-        // The sector's nebula clouds, recorded when the map was generated.
-        for (cloud in sector.nebulaClouds) {
-            game.getImg(cloud.image).draw(mapBase.x + cloud.x, mapBase.y + cloud.y)
-        }
-
         // Draw the beacons
+        browserLayers?.add("beacons")
         for (beacon in sector.beacons) {
             val centrePos = mapBase + beacon.pos
             val pos = centrePos + beaconOffset
@@ -333,22 +372,10 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
             val showBasicInfo = beacon.visited || sector.mapRevealed || isNeighbour
             val showAdvInfo = beacon.visited || sector.mapRevealed || (isNeighbour && hasLRS)
 
-            // Draw the nebula cloud puffs under nebulas (GitHub issue #74):
-            // vanilla envelopes each nebula beacon in one of these soft
-            // clouds so the sector's nebula areas stand out on the map —
-            // AND it keeps the little blue glow oval underneath (the user
-            // spotted the missing indicator against vanilla; the clouds
-            // alone read wrong). Blue first, cloud on top.
+            // A nebula beacon's little blue glow oval (the clouds are drawn before the lines, above).
             if (beacon.isMapNebula) {
                 g.colour = Constants.BEACON_NEBULA_CIRCLE
                 g.fillOval(centrePos.x - 9f, centrePos.y - 9f, 20f, 20f)
-                // Sectors from older saves have no recorded clouds.
-                if (sector.nebulaClouds.isEmpty()) {
-                    val puff = nebulaPuffs[(beacon.pos.x * 31 + beacon.pos.y * 17).mod(nebulaPuffs.size)]
-                    puff.draw(
-                        centrePos.x - puff.width / 2f, centrePos.y - puff.height / 2f
-                    )
-                }
             }
 
             // Hyperspace GET_BEACON_HAZARD (StarMap::OnRender): a beacon the callbacks name is drawn as a hazard beacon.
@@ -430,26 +457,23 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 drawTargetBox(g, pos)
             }
 
-            // Draw the player ship rotating around the beacon.
-            val rotationSpeed = TWO_PI / 20f // Go around every 20 seconds
+            // The player's ship circling its beacon (StarMap::OnRender 0x5d9ab0): it stands still while out of fuel.
             if (beacon == game.currentBeacon) {
                 val icon = when (fuelDistressFlashOn) {
                     true -> playerShipNoFuel
                     false -> playerShip
                 }
 
-                // The player's ship doesn't rotate when they're out of fuel
-                if (!outOfFuel) {
-                    playerRotation += game.renderingDeltaTime * rotationSpeed
-                }
+                if (!outOfFuel) playerRotation = turnMarker(playerRotation)
 
-                // These offsets are approximate
                 g.pushTransform()
-                g.rotate(centrePos.x.f, centrePos.y.f, -playerRotation)
-                // Hyperspace: StarMap::ship / shipNoFuel as a script set them (FTL's primitive sits at -10, -32)
+                g.rotate(centrePos.x.f, centrePos.y.f, playerRotation)
+                // Hyperspace: StarMap::ship / shipNoFuel as a script set them. The constructor (0x5cc560) makes the
+                // 64 x 64 primitive at (-10, -32) from the beacon.
                 if (!(xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.lua.LuaStarMap.drawIcon(fuelDistressFlashOn, centrePos.x.toFloat(), centrePos.y.toFloat())))
                     if (TouchMode.enabled && icon.height < 64) icon.draw(centrePos.x - icon.width / 2, centrePos.y - 10 - icon.height)
-                    else icon.draw(centrePos.x - 8, centrePos.y - 32)
+                    else icon.draw(centrePos.x - 10, centrePos.y - 32)
+                browserMarkers?.add("ship:" + playerRotation)
                 g.popTransform()
             }
 
@@ -458,7 +482,11 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 if (boss.beacon != beacon || boss.jumping)
                     continue
 
+                // StarMap +0x90 turns while the flagship rests at a beacon, as the player's marker does.
+                bossRotation = turnMarker(bossRotation)
+                (boss as? FlagshipBoss)?.mapIconRotation = bossRotation
                 boss.drawMapIcon(g, centrePos)
+                browserMarkers?.add("boss:" + bossRotation)
             }
         }
 
