@@ -63,7 +63,8 @@ class ConsoleReceiver : BroadcastReceiver() {
             return
         }
         if (cmd.startsWith("hapticset ")) {
-            // hapticset strength <OFF|LIGHT|MEDIUM|STRONG> | preset <touch|light|combat|full> | level <moment key> <strength>:
+            // hapticset strength <OFF|LIGHT|MEDIUM|STRONG> | preset <touch|light|combat|full> | level <moment key> <strength> |
+            // kind <moment key> <kind key|own>:
             // Settings > Haptics without the screen; a running game keeps what it started with.
             val a = cmd.substring(10).trim().split(' ')
             val now = ftl.android.app.game.Haptics.saved(context)
@@ -72,11 +73,13 @@ class ConsoleReceiver : BroadcastReceiver() {
             val next = when (a[0]) {
                 "strength" -> now.copy(master = strength(a[1]))
                 "preset" -> now.with(ftl.android.app.game.Haptics.Preset.entries.first { it.key == a[1] })
+                "kind" -> now.with(ftl.android.app.game.Haptics.Moment.entries.first { it.key == a[1] }, if (a[2] == "own") null else ftl.android.app.game.Haptics.Pattern.of(a[2])!!)
                 else -> now.with(ftl.android.app.game.Haptics.Moment.entries.first { it.key == a[1] }, strength(a[2]))
             }
             ftl.android.app.game.Haptics.save(context, next)
             Log.i(ftl.android.app.game.Haptics.TAG, "settings strength=${next.master} preset=${next.preset?.key ?: "custom"} on=" +
-                ftl.android.app.game.Haptics.Moment.entries.filter { next.level(it) != off }.joinToString(",") { it.key + ":" + next.level(it).name[0] })
+                ftl.android.app.game.Haptics.Moment.entries.filter { next.level(it) != off }.joinToString(",") { it.key + ":" + next.level(it).name[0] } +
+                " kinds=" + ftl.android.app.game.Haptics.Moment.entries.filter { next.changed(it) }.joinToString(",") { it.key + ":" + next.kind(it).key })
             return
         }
         if (cmd.startsWith("hapticdevice ")) {

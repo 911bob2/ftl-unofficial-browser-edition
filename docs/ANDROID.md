@@ -183,10 +183,19 @@ on iPad nor on Windows has haptics, so there is no native setting to follow.
 - **Strength**: Off, Light, Medium (the default) or Strong, the overall strength. Off turns everything off.
 - **What vibrates**, a preset: **Touch controls only** (the default, and what the app did before there were game moments),
   **Light** (the touch ticks and the moments that matter most, gently), **Combat** (everything in a fight, no touch ticks, no
-  travel), **Everything**. Any other set of strengths reads **Custom**.
-- **Advanced**: the overall strength, Reset to a preset, then every group with a strength (it sets all of the group's
-  moments; none lit when they differ) and, in the open group, every moment with its own: Off, Light, Medium, Strong.
-  Choosing a strength plays the moment at it; Try plays it again (one that is off plays as at Medium).
+  travel), **Everything**. A preset is a set of strengths with every moment's own kind of vibration; any other set of
+  strengths, or another kind for any moment, reads **Custom**.
+- **Advanced**: the overall strength, Reset to a preset (strengths and kinds), then every group with a strength (it sets
+  all of the group's moments; none lit when they differ) and, in the open group, every moment with two choices: its
+  **strength** (Off, Light, Medium, Strong) and its **kind** of vibration, the kind's name on a button that opens the list
+  of kinds. In the list a tap chooses a kind and plays it at the moment's strength, each kind has its own Try, and the
+  moment's own kind is marked "(its own)"; a kind that needs a finer motor says what it plays as on this device. A moment
+  that does not play its own kind has the button lit and **Reset** beside it. The open group's first line is **Kind for
+  all**: the same list, which sets every moment of the group as if each row were set, and "Each its own" to put them back
+  (a closed group says how many of its moments have a kind you picked). Choosing a strength or a kind plays the moment so;
+  the row's Try plays the chosen kind at the chosen strength (a moment that is off plays as at Medium). On a phone held
+  upright a moment is three lines (name; kind, Reset, Try; strength), on a wider screen one, and the list of kinds has two
+  or three columns there.
 
 **Moments** (`Haptics.Moment`, 57): Touch controls (System power: a tick for each power step a system box actually gains or
 loses, nothing when the game refuses the step; Magnifier: a tick when the magnifier comes up); Your ship (hull hit, shot
@@ -205,26 +214,44 @@ use): no random number, value or timing changes, and with `GameHaptics.on` false
 `GameHaptics`, a call, and an entry in `Haptics.Moment` (`HapticsTest` fails when the entry is missing). Save loading does not
 pass the hooks.
 
-**Patterns** (`Haptics.Pattern`): tick, rise (two clicks, the second firmer), double, knock, flutter, shake, hard knock, quick
-rise, long rise and fall. What reaches the vibrator is the overall strength's share (0.35, 0.65, 1) times the moment's own
+**Kinds of vibration** (`Haptics.Pattern`, 16; each has the name it is saved under, which never changes): Tick, Double
+click, Triple click, Soft tap, Rising double (two clicks, the second firmer), Knock, Double knock, Hard knock (rings off),
+Heartbeat (two beats, twice), Flutter, Short buzz (0.12 s), Long vibration (0.4 s), Low rumble, Quick rise, Fade-out, Slow
+rise and fall (0.64 s, the longest). Nine of them are the ones the moments had in 2.2.0 and are unchanged; every moment's
+own kind (`Moment.pattern`) is still one of those, so nothing plays differently until the player picks a kind. Four need
+amplitudes to be themselves and play as the nearest kind on a motor that is only on or off (`Pattern.finer`): Soft tap
+as Tick, Rising double as Double click, Quick rise and Fade-out as Short buzz; the other twelve have an on/off rhythm of
+their own there. A count goes only to a kind it means something to: power steps are ticks (a moment that is a tick of its
+own plays that many, any other kind picked for it plays once), hull points make every other kind a little firmer (and the
+knock longer), and a tick picked for a hull hit is one tick. What reaches the vibrator is the overall strength's share (0.35, 0.65, 1) times the moment's own
 (0.5, 0.75, 1): clicks are click primitives at that scale (Android 11 and later, where the vibrator has them), everything
 else an amplitude waveform (a tick: a 10 to 20 ms pulse; the touch ticks at the three overall strengths play exactly what
 they always did: scale 0.35, 0.65, 1, or 10, 15, 20 ms at amplitude 90, 170, 255). A vibrator without amplitudes plays each
-pattern's on/off rhythm, and the setting offers Off and On; without a vibrator it says "This device cannot vibrate". More
+kind's on/off rhythm, and the setting offers Off and On; without a vibrator it says "This device cannot vibrate". More
 hull points make the hull knock a little firmer and longer.
 
 **Together**: one moment at a time and never late (`Haptics.Gate`). While one plays, and for 60 ms after it, only a heavier
-one (the heavier pattern, then the stronger setting; what happens to your own ship counts two patterns heavier, to your
-crew one) takes over; anything else is dropped, not queued. So a volley is its
-knocks, not one buzz. Only a warning (two clicks) or an ending (the long rise and fall) waits, once and for at most half a
-second, for the hit that caused it to end: it would otherwise nearly always be dropped. A touch tick always plays and is not cut off. Game moments reach the vibrator from a thread of their
+one (the moment that matters more, then the stronger setting; what happens to your own ship counts two steps heavier, to
+your crew one) takes over; anything else is dropped, not queued. So a volley is its
+knocks, not one buzz. Only a warning (two clicks of its own) or an ending (the long rise and fall of its own) waits, once
+and for at most half a second, for the hit that caused it to end: it would otherwise nearly always be dropped. What ranks
+a moment is the moment (`Moment.weight`, from what it is: a click 1, a warning 2, a knock 3, a hard knock or a rise 4, an
+ending 5), never the kind picked for it, and which moments wait is fixed the same way. A longer kind picked for a moment
+is cut at once by a heavier moment (a hull hit does not wait behind a long vibration picked for "Laser fired"), holds
+lighter and equal ones off while it plays, and a warning behind it waits for it to end when that is within the half
+second; when the picked kind lasts longer, the warning takes its turn when the moment's own kind would have ended, and
+cuts the rest. With every moment's own kind all of this is what 2.2.0 did. A touch tick always plays and is not cut off. Game moments reach the vibrator from a thread of their
 own and are dropped if that took over 150 ms; none plays while the app is in the background. Several power steps at once
 (a flick) play that many ticks, 45 ms apart, at most 16. Touch ticks are touch feedback (`USAGE_TOUCH`), game moments media
 vibration (`USAGE_MEDIA`; before Android 13 the game usage), so Android's Touch feedback and Media vibration settings apply
 on top.
 
-**Stored** (preferences `haptics`): `strength`, `model` = 2, `level-<moment>` each. A file from before has only `strength`
-and `action-power` / `action-magnifier`: it reads as Touch controls only, less what was switched off.
+**Stored** (preferences `haptics`): `strength`, `model` = 2, `level-<moment>` each, and `kind-<moment>` = the kind's name
+only for a moment that does not play its own (the name is removed when the moment is put back). A file from before has
+only `strength` and `action-power` / `action-magnifier`: it reads as Touch controls only, less what was switched off. A
+2.2.0 file has no kinds and reads as it did, every moment its own kind; a kind that does not read (a later version's) is
+the moment's own. An older build given this build's file reads its strengths as they are and never asks for the kinds: it
+plays each moment's own kind, and since it only writes the names it knows, the kinds are still there after it saved.
 
 ### Magnifier
 
@@ -528,12 +555,17 @@ on yet.
   ```
   It prints PASS/FAIL per case and a total. In git bash, `export MSYS_NO_PATHCONV=1` first.
 - Haptics: `HapticsTest` (when the power tick fires; every engine moment in the catalogue once; an old settings file and the
-  default add no vibration; the settings round trip; the presets and Custom; what each pattern plays on each kind of
-  vibrator; Off sends nothing; a volley is its knocks and the heavier moment wins) and, on the emulator, logcat's
-  `FTL-Haptic` lines (debug builds log `play kind=<number> <moment> ... <plan>`, `skip ...: off`, `drop ...: a heavier one
-  is playing`; `adb shell dumpsys vibrator_manager` lists what the vibrator played). Debug console: `haptic <number>
+  default add no vibration; the settings round trip with kinds; the presets and Custom; the catalogue of kinds: each plays
+  on every vibrator, feels different from the others with amplitudes, and has its rhythm or its fallback on an on/off
+  motor; with every moment's own kind the vibrator gets what 2.2.0's code sent and moments mix as through 2.2.0's gate
+  (copies of both are in the test); a moment's picked kind at its strength; the count rule; the group shortcuts; a 2.2.0
+  file, and this build's file as 2.2.0 reads and rewrites it; Off sends nothing; a volley is its knocks, the heavier
+  moment wins, the picked kind does not rank a moment, a long kind holds nothing heavier back and does not swallow the
+  warning behind it) and, on the emulator, logcat's
+  `FTL-Haptic` lines (debug builds log `play kind=<number> <moment> ... feel=<kind> <plan>`, `sample ...` for Settings,
+  `skip ...: off`, `wait ...`, `drop ...: a heavier one is playing`; `adb shell dumpsys vibrator_manager` lists what the vibrator played). Debug console: `haptic <number>
   [amount]` reports a moment to the running game as the engine does, `hapticset strength <S>` / `preset
-  touch|light|combat|full` / `level <moment> <S>` set Settings > Haptics (from the next game started), `power` logs each
+  touch|light|combat|full` / `level <moment> <S>` / `kind <moment> <kind>|own` set Settings > Haptics (from the next game started), `power` logs each
   system's power and the free reactor power, `ion <system> <units>` ionises one, `hapticdevice
   PRIMITIVES|AMPLITUDE|ON_OFF|NONE|auto` pretends a weaker vibrator for the setting's texts.
 - Sound that recovers (report 106): `AudioMixerTest` (a freed sound keeps its id and plays again; music is freed before

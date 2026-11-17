@@ -20,9 +20,10 @@ import xyz.znix.xftl.game.TouchHaptics
  * this device's vibrator. The device's setting, in its own preferences file as Screen is; it never reaches a save.
  * Neither FTL on iPad nor on Windows has haptics, so there is no native setting to follow (docs/ANDROID.md).
  *
- * Every [Moment] has its own strength ([Settings.levels]); the overall strength ([Settings.master]) scales them all,
- * and Off there turns everything off. A [Preset] is a set of strengths; changing one moment makes it Custom. What a
- * moment feels like is its [Pattern], made the best way the vibrator allows ([Kind]). Touch ticks are touch feedback
+ * Every [Moment] has its own strength ([Settings.levels]) and its own kind of vibration ([Settings.kinds], a
+ * [Pattern]: its own until the player picks another); the overall strength ([Settings.master]) scales them all, and
+ * Off there turns everything off. A [Preset] is a set of strengths with every moment's own kind; changing one strength
+ * or kind makes it Custom. A pattern is made the best way the vibrator allows ([Kind]). Touch ticks are touch feedback
  * and game moments media vibration, so Android's own Touch feedback and Media vibration settings apply on top.
  */
 class Haptics private constructor(
@@ -37,17 +38,33 @@ class Haptics private constructor(
     /** What this vibrator can do, best first. */
     enum class Kind { PRIMITIVES, AMPLITUDE, ON_OFF, NONE }
 
-    /** What a moment feels like. The weight says which of two moments at once is felt: the heavier one. */
-    enum class Pattern(val weight: Int, val text: String) {
-        TICK(1, "a short click"),
-        RISE(1, "two clicks, the second firmer"),
-        DOUBLE(2, "two clicks"),
-        THUD(3, "a knock"),
-        BUZZ(3, "a quick flutter"),
-        RUMBLE(3, "a low shake"),
-        HEAVY(4, "a hard knock that rings off"),
-        SWELL(4, "a quick rise"),
-        LONG_SWELL(5, "a long rise and fall"),
+    /**
+     * The kinds of vibration a moment can have: the name it is saved under (never change one), the name in the list and
+     * what it feels like. [finer]: what it plays as on a motor that is only on or off, when it needs amplitudes to be
+     * itself (null: its own rhythm is still recognisable there).
+     */
+    enum class Pattern(val key: String, val title: String, val text: String, val finer: Pattern? = null) {
+        TICK("tick", "Tick", "a short click"),
+        DOUBLE("double", "Double click", "two clicks"),
+        TRIPLE("triple", "Triple click", "three clicks"),
+        SOFT("soft", "Soft tap", "a light, rounder touch", finer = TICK),
+        RISE("rise", "Rising double", "two clicks, the second firmer", finer = DOUBLE),
+        THUD("thud", "Knock", "a knock"),
+        DOUBLE_KNOCK("double-knock", "Double knock", "two knocks"),
+        HEAVY("heavy", "Hard knock", "a hard knock that rings off"),
+        HEARTBEAT("heartbeat", "Heartbeat", "two beats, twice"),
+        BUZZ("buzz", "Flutter", "a quick flutter"),
+        HUM("hum", "Short buzz", "a steady buzz of a tenth of a second"),
+        LONG("long", "Long vibration", "a steady vibration of nearly half a second"),
+        RUMBLE("rumble", "Low rumble", "a low shake"),
+        SWELL("swell", "Quick rise", "a quick rise that cuts off", finer = HUM),
+        FADE("fade", "Fade-out", "a knock that dies away", finer = HUM),
+        LONG_SWELL("long-swell", "Slow rise and fall", "a long rise and fall");
+
+        companion object {
+            private val byKey = entries.associateBy { it.key }
+            fun of(key: String?): Pattern? = byKey[key]
+        }
     }
 
     enum class Group(val title: String, val text: String) {
@@ -62,7 +79,8 @@ class Haptics private constructor(
 
     /**
      * Everything that can vibrate: the engine's number for it (TouchHaptics, GameHaptics), the name it is saved under
-     * (never change one), its group, title, pattern, and its strength in the Everything and Light presets.
+     * (never change one), its group, title, its own kind of vibration ([pattern]; the player may pick another), and its
+     * strength in the Everything and Light presets.
      */
     enum class Moment(val id: Int, val key: String, val group: Group, val title: String, val pattern: Pattern, val full: Strength, val light: Strength = Strength.OFF) {
         POWER(TouchHaptics.POWER, "power", Group.TOUCH, "System power", Pattern.TICK, Strength.STRONG, Strength.STRONG),
@@ -130,13 +148,32 @@ class Haptics private constructor(
         EVENT_DAMAGE(GameHaptics.EVENT_DAMAGE, "event-damage", Group.TRAVEL, "An event damages the ship", Pattern.THUD, Strength.MEDIUM, Strength.LIGHT),
         DEFENCE_FIRE(GameHaptics.DEFENCE_FIRE, "defence-fire", Group.TRAVEL, "Planetary defence fires", Pattern.HEAVY, Strength.MEDIUM);
 
+        /**
+         * How much the moment matters when two come together: by what it is (its own kind of vibration: a click 1, a
+         * warning 2, a knock 3, a hard knock or a rise 4, an ending 5), never by the kind the player picked for it.
+         */
+        val weight: Int get() = when (pattern) {
+            Pattern.TICK, Pattern.RISE -> 1
+            Pattern.DOUBLE -> 2
+            Pattern.THUD, Pattern.BUZZ, Pattern.RUMBLE -> 3
+            Pattern.HEAVY, Pattern.SWELL -> 4
+            Pattern.LONG_SWELL -> 5
+            else -> 3
+        }
+
+        /**
+         * Warnings (two clicks of their own) and endings (the long rise and fall) come right behind the hit that causes
+         * them, so they would nearly always find it playing: they wait for it instead of being dropped.
+         */
+        val patient: Boolean get() = pattern == Pattern.DOUBLE || pattern == Pattern.LONG_SWELL
+
         companion object {
             private val byId = entries.associateBy { it.id }
             fun of(id: Int): Moment? = byId[id]
         }
     }
 
-    /** A set of strengths, one per moment. */
+    /** A set of strengths, one per moment; each moment has its own kind of vibration in every preset. */
     enum class Preset(val key: String, val title: String, val text: String) {
         TOUCH("touch", "Touch controls only", "Ticks under your fingers and nothing else: what the app did before."),
         LIGHT("light", "Light", "The touch ticks, and the moments that matter most, gently: hull hits, lost systems, warnings, explosions, the jump."),
@@ -153,25 +190,55 @@ class Haptics private constructor(
         val levels: Map<Moment, Strength> get() = Moment.entries.associateWith { level(it) }
     }
 
-    /** What the player chose: the overall strength and each moment's own. */
-    data class Settings(val master: Strength, val levels: Map<Moment, Strength>) {
+    /**
+     * What the player chose: the overall strength, each moment's own strength, and for the moments that do not play
+     * their own kind of vibration the kind picked instead ([kinds] holds only those).
+     */
+    data class Settings(val master: Strength, val levels: Map<Moment, Strength>, val kinds: Map<Moment, Pattern> = emptyMap()) {
         fun level(m: Moment): Strength = levels[m] ?: Strength.OFF
 
-        /** The preset these strengths are, or null: Custom. */
-        val preset: Preset? get() = Preset.entries.firstOrNull { p -> Moment.entries.all { level(it) == p.level(it) } }
+        /** The kind of vibration the moment plays. */
+        fun kind(m: Moment): Pattern = kinds[m] ?: m.pattern
+
+        /** Whether the player picked another kind than the moment's own. */
+        fun changed(m: Moment): Boolean = kind(m) != m.pattern
+
+        /** The preset these strengths are, with every moment's own kind, or null: Custom. */
+        val preset: Preset? get() = if (Moment.entries.any { changed(it) }) null else Preset.entries.firstOrNull { p -> Moment.entries.all { level(it) == p.level(it) } }
 
         /** A group's strength when all its moments share one, else null: mixed. */
         fun level(g: Group): Strength? = Moment.entries.filter { it.group == g }.map { level(it) }.distinct().singleOrNull()
+
+        /** The kind every moment of the group was set to, when they share one that is not each one's own; else null. */
+        fun kind(g: Group): Pattern? = Moment.entries.filter { it.group == g }.let { ms -> if (ms.none { changed(it) }) null else ms.map { kind(it) }.distinct().singleOrNull() }
+
+        /** How many of the group's moments play another kind than their own. */
+        fun changed(g: Group): Int = Moment.entries.count { it.group == g && changed(it) }
 
         /** Whether anything of the game itself (not the touch controls) can vibrate: the engine reports moments only then. */
         val gameMoments: Boolean get() = master != Strength.OFF && Moment.entries.any { it.group != Group.TOUCH && level(it) != Strength.OFF }
 
         fun with(m: Moment, s: Strength) = copy(levels = levels + (m to s))
         fun with(g: Group, s: Strength) = copy(levels = levels + Moment.entries.filter { it.group == g }.associateWith { s })
-        fun with(p: Preset) = copy(levels = p.levels)
 
-        /** As the preferences file holds it. */
-        fun stored(): Map<String, String> = mapOf("strength" to master.name, MODEL to "2") + Moment.entries.associate { "level-${it.key}" to level(it).name }
+        /** Another kind for the moment; its own kind (or null) puts it back. */
+        fun with(m: Moment, k: Pattern?) = copy(kinds = if (k == null || k == m.pattern) kinds - m else kinds + (m to k))
+
+        /** The same kind for every moment of the group, as if each row were set; null puts each back to its own. */
+        fun with(g: Group, k: Pattern?) = Moment.entries.filter { it.group == g }.fold(this) { s, m -> s.with(m, k) }
+
+        /** A preset sets every strength and puts every kind back to the moment's own. */
+        fun with(p: Preset) = copy(levels = p.levels, kinds = emptyMap())
+
+        /**
+         * As the preferences file holds it: a kind only where the player picked another than the moment's own. A build
+         * from before the kinds reads the strengths as they are and passes over the kinds, so it plays each moment's own.
+         */
+        fun stored(): Map<String, String> = mapOf("strength" to master.name, MODEL to "2") + Moment.entries.associate { "level-${it.key}" to level(it).name } +
+            kinds.filter { (m, k) -> k != m.pattern }.map { (m, k) -> "kind-${m.key}" to k.key }
+
+        /** The names the file must no longer hold: the kinds of the moments that play their own. */
+        fun unstored(): List<String> = Moment.entries.filter { !changed(it) }.map { "kind-${it.key}" }
 
         companion object {
             private const val MODEL = "model"
@@ -181,6 +248,8 @@ class Haptics private constructor(
              * From what the preferences file holds. A file from before the moments had strengths has the overall strength
              * and a switch per touch action, each on until switched off: that is the Touch controls only preset, less
              * what was switched off, so an update adds no vibration. A moment a later version adds starts off the same way.
+             * A file from before the kinds (2.2.0) has none: every moment plays its own; so does a kind that does not
+             * read (one a later version added).
              */
             fun fromStored(all: Map<String, *>): Settings {
                 val master = (all["strength"] as? String)?.let { s -> Strength.entries.firstOrNull { it.name == s } } ?: DEFAULT.master
@@ -192,7 +261,7 @@ class Haptics private constructor(
                         old && m.group == Group.TOUCH && all["action-${m.key}"] == false -> Strength.OFF
                         else -> Preset.TOUCH.level(m)
                     }
-                })
+                }, Moment.entries.mapNotNull { m -> Pattern.of(all["kind-${m.key}"] as? String)?.takeIf { it != m.pattern }?.let { m to it } }.toMap())
             }
         }
     }
@@ -209,39 +278,84 @@ class Haptics private constructor(
     /**
      * One at a time: while a moment plays, and for a short gap after it, only a heavier one takes over; so a volley is
      * felt as its knocks, not as one long buzz. A moment that cannot play is dropped, never queued; only a warning or an
-     * ending (see [patient]) waits its turn, once, for at most [PATIENCE_MS].
+     * ending (see [Moment.patient]) waits its turn, once, for at most [PATIENCE_MS].
+     *
+     * What is heavier is the moment's own importance ([priority]), never the kind of vibration picked for it. A kind
+     * longer than the moment's own holds lighter moments off for as long as it plays, and a heavier one still cuts it at
+     * once. A warning or an ending behind it waits for it to end when that is within [PATIENCE_MS]; when the picked kind
+     * lasts longer than that, the warning takes its turn when the moment's own kind would have ended ([naturalMs]). So a
+     * long vibration picked for a hit neither delays a heavier hit nor swallows the warning behind it.
      */
     class Gate(private val gapMs: Long = GATE_GAP_MS) {
         private var busyUntil = 0L
+        private var yieldAt = 0L
         private var playing = 0
 
-        /** Whether a moment of [priority] lasting [durationMs] may start at [now]; if so it is the one playing. */
+        /**
+         * Whether a moment of [priority] lasting [durationMs] may start at [now]; if so it is the one playing.
+         * [naturalMs]: how long the moment's own kind lasts, when the picked one is longer.
+         */
         @Synchronized
-        fun admit(now: Long, durationMs: Long, priority: Int): Boolean {
+        fun admit(now: Long, durationMs: Long, priority: Int, naturalMs: Long = durationMs): Boolean {
             if (now < busyUntil && priority <= playing) return false
             busyUntil = now + durationMs + gapMs
+            yieldAt = now + minOf(durationMs, naturalMs) + gapMs
             playing = priority
             return true
         }
 
         /**
          * For a moment that may wait: 0 when it starts now (it is then the one playing), the ms after which to ask again
-         * when what plays ends within [patienceMs], or -1: dropped.
+         * ([admitWaited]) when what plays ends within [patienceMs] or, being a longer kind than its moment's own, gives
+         * way within that time; or -1: dropped.
          */
         @Synchronized
-        fun admitOrWait(now: Long, durationMs: Long, priority: Int, patienceMs: Long): Long = when {
-            admit(now, durationMs, priority) -> 0
+        fun admitOrWait(now: Long, durationMs: Long, priority: Int, patienceMs: Long, naturalMs: Long = durationMs): Long = when {
+            admit(now, durationMs, priority, naturalMs) -> 0L
             busyUntil - now <= patienceMs -> busyUntil - now
-            else -> -1
+            yieldAt - now <= 0 -> { take(now, durationMs, priority, naturalMs); 0L }
+            yieldAt - now <= patienceMs -> yieldAt - now
+            else -> -1L
         }
+
+        /** The turn of a moment that waited: it plays unless a heavier one began meanwhile. */
+        @Synchronized
+        fun admitWaited(now: Long, durationMs: Long, priority: Int, naturalMs: Long = durationMs): Boolean {
+            if (now < yieldAt && priority <= playing) return false
+            take(now, durationMs, priority, naturalMs)
+            return true
+        }
+
+        private fun take(now: Long, durationMs: Long, priority: Int, naturalMs: Long) {
+            busyUntil = now + durationMs + gapMs
+            yieldAt = now + minOf(durationMs, naturalMs) + gapMs
+            playing = priority
+        }
+
+        /** [admit] or [admitOrWait] for a game moment as [turn] describes it: 0 plays now, more waits that long, -1 is dropped. */
+        fun offer(now: Long, turn: Turn): Long = when {
+            turn.patient -> admitOrWait(now, turn.plan.durationMs, turn.priority, PATIENCE_MS, turn.naturalMs)
+            admit(now, turn.plan.durationMs, turn.priority, turn.naturalMs) -> 0L
+            else -> -1L
+        }
+
+        /** [admitWaited] for a moment that [offer] made wait. */
+        fun offerWaited(now: Long, turn: Turn): Boolean = admitWaited(now, turn.plan.durationMs, turn.priority, turn.naturalMs)
 
         /** A touch tick always plays, and no game moment cuts it off. */
         @Synchronized
         fun take(now: Long, durationMs: Long) {
             busyUntil = maxOf(busyUntil, now + durationMs)
+            yieldAt = busyUntil
             playing = Int.MAX_VALUE
         }
     }
+
+    /**
+     * A game moment about to play: what the vibrator gets ([plan]: the picked kind at the moment's strength), how long the
+     * moment's own kind would last, its rank among moments that come together and whether it waits for its turn.
+     */
+    data class Turn(val plan: Plan, val naturalMs: Long, val priority: Int, val patient: Boolean)
 
     val strength: Strength get() = settings.master
 
@@ -256,7 +370,7 @@ class Haptics private constructor(
     fun play(what: Int, count: Int) {
         val moment = Moment.of(what)
         val level = if (what == SAMPLE) Strength.STRONG else moment?.let { settings.level(it) } ?: Strength.OFF
-        val pattern = moment?.pattern ?: Pattern.TICK
+        val pattern = moment?.let { settings.kind(it) } ?: Pattern.TICK
         val touch = moment == null || moment.group == Group.TOUCH
         val plan = if (touch || foreground) planFor(what, count, settings, kind, amplitude) else null
         if (plan == null) {
@@ -266,12 +380,12 @@ class Haptics private constructor(
         val now = SystemClock.elapsedRealtime()
         if (touch) {
             gate.take(now, plan.durationMs)
-            if (BuildConfig.DEBUG) Log.i(TAG, "play kind=$what ${moment?.key ?: "sample"} count=$count strength=$strength level=$level $plan")
+            if (BuildConfig.DEBUG) Log.i(TAG, "play kind=$what ${moment?.key ?: "sample"} count=$count strength=$strength level=$level feel=${pattern.key} $plan")
             vibrate(plan, true)
             return
         }
-        val priority = priority(moment!!, level)
-        val wait = if (patient(pattern)) gate.admitOrWait(now, plan.durationMs, priority, PATIENCE_MS) else if (gate.admit(now, plan.durationMs, priority)) 0L else -1L
+        val turn = turn(moment, count, settings, kind, amplitude) ?: return
+        val wait = gate.offer(now, turn)
         if (wait < 0) {
             if (BuildConfig.DEBUG) Log.i(TAG, "drop kind=$what ${moment.key} count=$count: a heavier one is playing")
             return
@@ -280,23 +394,26 @@ class Haptics private constructor(
             // A warning or an ending right behind the hit that caused it: after the hit, if it is its turn then.
             if (BuildConfig.DEBUG) Log.i(TAG, "wait kind=$what ${moment.key} count=$count: $wait ms")
             worker.postDelayed({
-                if (foreground && gate.admit(SystemClock.elapsedRealtime(), plan.durationMs, priority)) {
-                    if (BuildConfig.DEBUG) Log.i(TAG, "play kind=$what ${moment.key} count=$count strength=$strength level=$level $plan (waited)")
+                if (foreground && gate.offerWaited(SystemClock.elapsedRealtime(), turn)) {
+                    if (BuildConfig.DEBUG) Log.i(TAG, "play kind=$what ${moment.key} count=$count strength=$strength level=$level feel=${pattern.key} $plan (waited)")
                     vibrate(plan, false)
                 } else if (BuildConfig.DEBUG) Log.i(TAG, "drop kind=$what ${moment.key} count=$count: a heavier one is playing (waited)")
             }, wait)
             return
         }
-        if (BuildConfig.DEBUG) Log.i(TAG, "play kind=$what ${moment.key} count=$count strength=$strength level=$level $plan")
+        if (BuildConfig.DEBUG) Log.i(TAG, "play kind=$what ${moment.key} count=$count strength=$strength level=$level feel=${pattern.key} $plan")
         worker.post { if (SystemClock.elapsedRealtime() - now <= STALE_MS) vibrate(plan, false) }
     }
 
-    /** Settings: what a moment feels like at [level], whatever is saved for it. */
-    fun sample(moment: Moment, level: Strength) {
-        val plan = plan(moment.pattern, settings.master, level, kind, amplitude, 1) ?: return
-        if (BuildConfig.DEBUG) Log.i(TAG, "sample ${moment.key} strength=$strength level=$level $plan")
-        vibrate(plan, moment.group == Group.TOUCH)
+    /** Settings: what [pattern] feels like at [level] (for [moment], or for a group's shortcut), whatever is saved. */
+    fun sample(moment: Moment?, pattern: Pattern, level: Strength) {
+        val plan = plan(pattern, settings.master, level, kind, amplitude, 1) ?: return
+        if (BuildConfig.DEBUG) Log.i(TAG, "sample ${moment?.key ?: "group"} strength=$strength level=$level feel=${pattern.key} $plan")
+        vibrate(plan, moment?.group == Group.TOUCH)
     }
+
+    /** What [pattern] plays as on this device when it cannot be itself here (a motor that is only on or off), else null. */
+    fun playsAs(pattern: Pattern): Pattern? = playsAs(pattern, kind, amplitude)
 
     private fun vibrate(plan: Plan, touch: Boolean) {
         val v = vibrator ?: return
@@ -337,17 +454,23 @@ class Haptics private constructor(
         private val worker by lazy { Handler(HandlerThread("ftl-haptics").apply { start() }.looper) }
 
         /**
-         * Warnings (two clicks) and endings (the long rise and fall) come right behind the hit that causes them, so they
-         * would nearly always find it playing: they wait for it instead of being dropped.
+         * Which of two moments at once is felt: the one that matters more ([Moment.weight]; what happens to your own ship
+         * counts two steps heavier, to your crew one: a hull hit is felt through your own flak), then the stronger
+         * setting. The kind of vibration picked for a moment does not count.
          */
-        fun patient(pattern: Pattern): Boolean = pattern == Pattern.DOUBLE || pattern == Pattern.LONG_SWELL
-
-        /** Which of two moments at once is felt: the heavier pattern, then the stronger setting. */
-        fun priority(pattern: Pattern, level: Strength): Int = pattern.weight * 10 + level.ordinal
-
-        /** What happens to your own ship counts two patterns heavier, and to your crew one: a hull hit is felt through your own flak. */
         fun priority(moment: Moment, level: Strength): Int =
-            priority(moment.pattern, level) + when (moment.group) { Group.SHIP -> 20; Group.CREW -> 10; else -> 0 }
+            moment.weight * 10 + level.ordinal + when (moment.group) { Group.SHIP -> 20; Group.CREW -> 10; else -> 0 }
+
+        /** What [pattern] plays as on a vibrator that is only on or off (or takes no amplitudes), when it cannot be itself there; else null. */
+        fun playsAs(pattern: Pattern, kind: Kind, amplitude: Boolean): Pattern? = pattern.finer?.takeIf { kind == Kind.ON_OFF || !amplitude }
+
+        /** [moment] as the [Gate] sees it with these [settings], or null when it plays nothing. */
+        fun turn(moment: Moment, count: Int, settings: Settings, kind: Kind, amplitude: Boolean): Turn? {
+            val plan = planFor(moment.id, count, settings, kind, amplitude) ?: return null
+            // How long the moment's own kind would last: a longer one picked for it does not make the others wait longer.
+            val natural = if (settings.changed(moment)) planFor(moment.id, count, settings.with(moment, null), kind, amplitude)?.durationMs ?: plan.durationMs else plan.durationMs
+            return Turn(plan, natural, priority(moment, settings.level(moment)), moment.patient)
+        }
 
         /** The share of the vibrator's full strength: the overall strength's (as the ticks always had it) times the moment's own. */
         fun intensity(master: Strength, level: Strength): Float {
@@ -375,10 +498,12 @@ class Haptics private constructor(
         fun plan(pattern: Pattern, master: Strength, level: Strength, kind: Kind, amplitude: Boolean, count: Int): Plan? {
             val base = intensity(master, level)
             if (base <= 0f || kind == Kind.NONE || count <= 0) return null
+            // On or off only: a kind that needs amplitudes to be itself plays as the nearest that does not.
+            playsAs(pattern, kind, amplitude)?.let { return plan(it, master, level, kind, amplitude, if (it == Pattern.TICK) 1 else count) }
             val more = if (pattern == Pattern.TICK) 0 else (count - 1).coerceIn(0, 5)
             val e = (base * (1f + 0.12f * more)).coerceIn(0.15f, 1f)
-            if (pattern == Pattern.TICK || pattern == Pattern.DOUBLE || pattern == Pattern.RISE) {
-                val n = if (pattern == Pattern.TICK) count.coerceAtMost(MAX_TICKS) else 2
+            if (pattern == Pattern.TICK || pattern == Pattern.DOUBLE || pattern == Pattern.TRIPLE || pattern == Pattern.RISE) {
+                val n = when (pattern) { Pattern.TICK -> count.coerceAtMost(MAX_TICKS); Pattern.TRIPLE -> 3; else -> 2 }
                 val gap = if (pattern == Pattern.TICK) GAP_MS else 90
                 return when {
                     // RISE's two strengths need amplitudes; a vibrator with clicks only plays it as two clicks.
@@ -397,21 +522,30 @@ class Haptics private constructor(
                 // On or off only: the pattern's rhythm, off and on in turn.
                 val onOff: List<Long> = when (pattern) {
                     Pattern.THUD -> listOf(0L, 30L + 5 * more)
+                    Pattern.DOUBLE_KNOCK -> listOf(0L, 40L, 110L, 40L)
                     Pattern.HEAVY -> listOf(0L, 70L)
+                    Pattern.HEARTBEAT -> listOf(0L, 30L, 70L, 45L, 260L, 30L, 70L, 45L)
                     Pattern.BUZZ -> listOf(0L) + List(11) { 12L }
+                    Pattern.HUM -> listOf(0L, 120L)
+                    Pattern.LONG -> listOf(0L, 400L)
                     Pattern.RUMBLE -> listOf(0L, 25L, 45L, 25L, 45L, 25L)
-                    Pattern.SWELL -> listOf(0L, 120L)
                     else -> listOf(0L, 60L, 40L, 250L)
                 }
                 return Plan(Kind.ON_OFF, timings = onOff)
             }
             // Steps of (ms, share of this moment's strength).
             val steps: List<Pair<Long, Float>> = when (pattern) {
+                Pattern.SOFT -> listOf(30L to 0.45f)
                 Pattern.THUD -> listOf(35L + 8 * more to 1f)
+                Pattern.DOUBLE_KNOCK -> listOf(35L to 1f, 110L to 0f, 35L to 1f)
                 Pattern.HEAVY -> listOf(60L to 1f, 40L to 0.5f, 30L to 0.25f)
+                Pattern.HEARTBEAT -> listOf(35L to 0.7f, 70L to 0f, 45L to 1f, 260L to 0f, 35L to 0.7f, 70L to 0f, 45L to 1f)
                 Pattern.BUZZ -> List(15) { 12L to if (it % 2 == 0) 0.7f else 0f }
+                Pattern.HUM -> listOf(120L to 0.8f)
+                Pattern.LONG -> listOf(400L to 0.85f)
                 Pattern.RUMBLE -> List(10) { 30L to if (it % 2 == 0) 0.6f else 0.3f }
                 Pattern.SWELL -> List(6) { 30L to 0.2f + 0.16f * it }
+                Pattern.FADE -> List(7) { 40L to floatArrayOf(1f, 0.8f, 0.62f, 0.46f, 0.32f, 0.2f, 0.1f)[it] }
                 else -> List(8) { 40L to 0.15f + 0.12f * it } + (120L to 1f) + List(4) { 50L to 0.7f - 0.17f * it }
             }
             return Plan(Kind.AMPLITUDE, timings = steps.map { it.first }, amplitudes = steps.map { (_, share) -> if (share <= 0f) 0 else amplitude(e * share) })
@@ -421,7 +555,12 @@ class Haptics private constructor(
         fun planFor(what: Int, count: Int, settings: Settings, kind: Kind, amplitude: Boolean): Plan? {
             val moment = Moment.of(what)
             val level = if (what == SAMPLE) Strength.STRONG else moment?.let { settings.level(it) } ?: Strength.OFF
-            return plan(moment?.pattern ?: Pattern.TICK, settings.master, level, kind, amplitude, count)
+            val pattern = moment?.let { settings.kind(it) } ?: Pattern.TICK
+            // The count is a number of ticks for a moment that is a tick of its own, and how much of it there was for the
+            // others (hull points): it goes to a picked kind of the same sort, and any other plays once.
+            val own = moment?.pattern ?: Pattern.TICK
+            val n = if ((own == Pattern.TICK) == (pattern == Pattern.TICK)) count else count.coerceAtMost(1)
+            return plan(pattern, settings.master, level, kind, amplitude, n)
         }
 
         /** The overall strengths the setting offers on a vibrator of [kind]: none, on or off, or each strength. */
@@ -472,7 +611,10 @@ class Haptics private constructor(
         fun saved(context: Context): Settings = Settings.fromStored(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).all)
 
         fun save(context: Context, settings: Settings) {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply { for ((k, v) in settings.stored()) putString(k, v) }.apply()
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply {
+                for ((k, v) in settings.stored()) putString(k, v)
+                for (k in settings.unstored()) remove(k)
+            }.apply()
         }
 
         /** This device's haptics with the saved settings, or with [settings] (a sample in Settings). */
