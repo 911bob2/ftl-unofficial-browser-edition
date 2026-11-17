@@ -12,7 +12,7 @@ permissions, game controls and save behavior are preserved.
 
 ## Isolated FTL preview
 
-In the `codex/ftl-website-ui` worktree, run `npm ci`, `npm run build:web`, then
+In the website worktree, run `npm ci`, `npm run build:web`, then
 `docker build -t ftl-browser-native:ftl-website-ui .` and
 `./tools/StartFtlPreview.ps1`. The preview is http://localhost:8086, container
 `ftl-website-preview`, with separate data under `.build/ftl-website/preview-data/`.

@@ -162,6 +162,15 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         bossRotation = boss.toFloat()
     }
 
+    /**
+     * Where the ship marker's art goes from its beacon, which it turns about: the 64 x 64 art at (-10, -32)
+     * (StarMap's constructor 0x5cc560), its ship in the middle, so beside the beacon with its nose along the circle.
+     * The touch layout's smaller art is that ship alone and goes where that ship is, as on the iPad: 9 px right of
+     * the beacon, centred on its height. (It stood above the beacon, nose pointing away from it.)
+     */
+    private fun markerOffset(icon: Image): ConstPoint =
+        if (TouchMode.enabled && icon.height < 64) ConstPoint(9, -(icon.height / 2)) else ConstPoint(-10, -32)
+
     private fun turnMarker(angle: Float): Float {
         val next = angle - game.renderingDeltaTime * 16f * 1.125f
         return if (next <= 0f) 360f else next
@@ -251,6 +260,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
     internal var browserLayers: MutableList<String>? = null
     /** Diagnostics: the markers drawn this frame with their angles ("ship:<deg>", "boss:<deg>"). */
     internal var browserMarkers: MutableList<String>? = null
+    /** Diagnostics: when set, the connections drawn this frame, in order ("<from index>-<to index>:<r>,<g>,<b>"). */
+    internal var browserLines: MutableList<String>? = null
 
     private fun drawMapContent(g: Graphics) {
         // Draw the background image, offset 4px to account for the line wall of the window.
@@ -301,8 +312,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         }
 
         // StarMap::OnRender draws the hovered beacon's connections (but those to the current one) before the current
-        // beacon's own, which then lie on top.
-        if (showHoverLines && !TouchMode.enabled) {
+        // beacon's own, which then lie on top. The beacon a finger picked is the hovered one, as on the iPad.
+        if (showHoverLines) {
             drawBeaconLinesTo(g, hovered!!, Constants.BEACON_LINE_HOVER) { it != game.currentBeacon }
             browserLayers?.add("hover-lines")
         }
@@ -332,10 +343,6 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 boss.drawJumpArc(g, a, b)
             }
         }
-
-        // The path from the ship to the picked beacon (touch), over the current beacon's lines
-        if (showHoverLines && TouchMode.enabled)
-            drawBeaconLine(g, game.currentBeacon, hovered!!, Constants.BEACON_LINE_HOVER)
 
         val nextFleetPos = Point(sector.dangerZoneCentre)
         val tutorial = game.mainGame?.isTutorialRunning == true
@@ -471,9 +478,9 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
                 // Hyperspace: StarMap::ship / shipNoFuel as a script set them. The constructor (0x5cc560) makes the
                 // 64 x 64 primitive at (-10, -32) from the beacon.
                 if (!(xyz.znix.xftl.hs.HS.luaActive && xyz.znix.xftl.hs.lua.LuaStarMap.drawIcon(fuelDistressFlashOn, centrePos.x.toFloat(), centrePos.y.toFloat())))
-                    if (TouchMode.enabled && icon.height < 64) icon.draw(centrePos.x - icon.width / 2, centrePos.y - 10 - icon.height)
-                    else icon.draw(centrePos.x - 10, centrePos.y - 32)
+                    icon.draw(centrePos.x + markerOffset(icon).x, centrePos.y + markerOffset(icon).y)
                 browserMarkers?.add("ship:" + playerRotation)
+                browserMarkers?.add("shipAt:${markerOffset(icon).x},${markerOffset(icon).y},${icon.width},${icon.height}")
                 g.popTransform()
             }
 
@@ -1291,6 +1298,7 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
      * they are drawn at full alpha ([fade] false).
      */
     private fun drawBeaconLine(g: Graphics, from: Beacon, to: Beacon, colour: Colour, fade: Boolean = true) {
+        browserLines?.add("${sector.beacons.indexOf(from)}-${sector.beacons.indexOf(to)}:${(colour.r * 255).toInt()},${(colour.g * 255).toInt()},${(colour.b * 255).toInt()}")
         g.pushTransform()
 
         val fromPos = from.pos + mapBase + beaconOffset

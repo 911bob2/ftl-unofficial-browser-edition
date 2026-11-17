@@ -35,12 +35,11 @@ ignored `.build/ui-fidelity-review/`; do not add assets/decompiler output to Git
 | Audio/animation feedback | Hover/confirm/cancel/error samples, power/autofire actions, music sources/envelopes, pulses/flashes and dialog/scene transitions | Earlier sample/source continuity checks; native timing/loudness/complete action matrix remains. |
 | Tutorial/credits/endgame | Instruction/pulse/Continue, credits, victory/defeat/game-over transitions | All 33 tutorial lessons pass in three browsers; detailed visual/timing acceptance remains. |
 
-## Review of Gemini's work
+## Review of the earlier button work
 
-Gemini branch `codex/native-button-fidelity` contains 26ccb06 (buttons) and 7494648
+The earlier button branch contains 26ccb06 (buttons) and 7494648
 (8099 deployment alias) after 6697b37. The saved follow-up plan addresses hangar
-headers/crew cards only; it has no all-UI implementation. No Git remote or PR is
-configured. Codex's review/corrections use `codex/ui-fidelity-review`.
+headers/crew cards only; it has no all-UI implementation.
 
 The private `scratch/find_ui_layout.py` scans every byte as an instruction start.
 This can decode the middle of genuine instructions and produce false matches;

@@ -1066,6 +1066,17 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             "\"others\":[$others]," + equipmentPanel.diagnosticOverCapacity(position) + "}"
     }
 
+    /** Tests: the equipment tab's item boxes, in the window's own (unscaled) coordinates. */
+    fun diagnosticItemBoxes(): List<ShipEquipmentPanel.DiagnosticItemBox> = equipmentPanel.diagnosticItemBoxes()
+
+    /** Tests: where on the screen the window's own point ([x], [y]) is drawn (the inverse of scaleWindowPoint). */
+    fun diagnosticScreenPoint(x: Int, y: Int): ConstPoint {
+        if (renderScale == 1f) return ConstPoint(x, y)
+        val cx = position.x + size.x / 2f
+        val cy = position.y + size.y / 2f
+        return ConstPoint(Math.round(cx + (x - cx) * renderScale), Math.round(cy + (y - cy) * renderScale))
+    }
+
     /** Tests: the touch pager of the equipment tab's over-capacity boxes turns. */
     fun diagnosticTurnOverPage() = equipmentPanel.touchTurnOverPage()
 

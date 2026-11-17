@@ -1,5 +1,11 @@
+import {gate,gateMisses,gatesChecked} from './lib/perf.mjs';
+import {hangMs} from './lib/hang.mjs';
 import assert from 'node:assert/strict';
 const skipPerformance=process.env.FTL_SKIP_PERFORMANCE==='1';
+// FTL_PERF_ONLY=1: the performance phase's gates-only mode: sign-in and launch, then only the Frame Limit section with
+// its two benchmark gates (the rest runs in the functional phase, where FTL_SKIP_PERFORMANCE=1 skips only the gates).
+const perfOnly=process.env.FTL_PERF_ONLY==='1';
+if(perfOnly&&skipPerformance)throw Error('FTL_PERF_ONLY=1 runs only the gates; it cannot be combined with FTL_SKIP_PERFORMANCE=1');
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {chromium,firefox} from 'playwright';
@@ -10,7 +16,7 @@ import {presentationUiChecks} from './ui-presentation.mjs';
 import {back,enterFullscreen,gameBarUiChecks,consoleToggleUiCheck,escapeExitUiChecks,hangarEscapeCheck,saveCloseUiChecks} from './gamebar-ui.mjs';
 const origin=process.env.MENU_ORIGIN??'http://localhost:8084',checks=[];
 assert.ok(['http://localhost:8083','http://localhost:8084'].includes(origin),'Use an isolated menu fixture');
-const readyDeadline=Date.now()+20000;
+const readyDeadline=Date.now()+hangMs(20000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)) {
  if(Date.now()>readyDeadline)throw Error('Isolated menu instance did not become ready');
  await new Promise(resolve=>setTimeout(resolve,250));
@@ -43,9 +49,54 @@ for(const [name,type,options,user] of [['Chromium',chromium,{channel:'chromium'}
   const limit=()=>page.evaluate(()=>window.ftlEngine.frameRateLimit());
   async function cycleFrameLimit(r){const before=await limit();await click(r.x+80,r.y+162);await page.waitForFunction(b=>window.ftlEngine.frameRateLimit()!==b,before);}
   async function frameLimitTo(r,value){for(let i=0;i<8&&await limit()!==value;i++)await cycleFrameLimit(r);assert.equal(await limit(),value);}
+  // From the main menu: Options' Frame Limit row, the capped and unlimited benchmark gates, and the setting's
+  // cloud/reload persistence; it ends on the reloaded main menu.
+  async function frameLimitChecks(){
+  const missedBefore=gateMisses();
+  await click(1180,527);await state('SettingsMenuState');
+  const videoRect=(await snapshot()).windowRect;
+  const fps=value=>page.waitForFunction(value=>window.ftlEngine.frameRateLimit()===value,value);
+  await frameLimitTo(videoRect,30);
+  await page.locator('#game').press('ArrowRight');await fps(60);
+  await page.locator('#game').press('ArrowLeft');await fps(30);
+  let capped,unlimited;
+  if(!skipPerformance){
+  const beforeTick=(await snapshot()).tick;
+  capped=await page.evaluate(()=>window.ftlEngine.benchmark(1000));
+  const simulationTicks=(await snapshot()).tick-beforeTick;
+  gate(name+': capped benchmark fps (30 FPS limit)',capped.fps,25,34,'fps',{},JSON.stringify(capped));
+  // the render cap must not throttle simulation updates: more than three ticks per drawn frame
+  gate(name+': simulation ticks minus 3 x capped frames',simulationTicks-capped.frames*3,0,Infinity,'ticks',{open:true},'Render cap throttled simulation updates');
+  }
+  for(const value of [60,90,120,240,360,0]){await cycleFrameLimit(videoRect);await fps(value);}
+  if(!skipPerformance){
+  unlimited=await page.evaluate(async()=>{
+   let browserFrames=0,id;const count=()=>{browserFrames++;id=requestAnimationFrame(count);};id=requestAnimationFrame(count);
+   try{return {...await window.ftlEngine.benchmark(1000,0),browserFrames};}finally{cancelAnimationFrame(id);}
+  });
+  // Display refresh and competing work bound actual FPS. Unlimited must draw
+  // each available animation frame, rather than promise a hardware throughput.
+  gate(name+': unlimited benchmark frames minus browser frames',Math.abs(unlimited.frames-unlimited.browserFrames),0,2,'frames',{},JSON.stringify({capped,unlimited}));
+  }else console.log('SKIP '+name+': measured FPS and simulation throughput (FTL_SKIP_PERFORMANCE=1)');
+  await cycleFrameLimit(videoRect);await fps(30);
+  await page.locator('#game').press('ArrowLeft');await fps(0);await page.locator('#game').press('ArrowLeft');await fps(360);
+  await page.screenshot({path:'.build/options-'+name.toLowerCase()+'.png'});
+  // Save: into this browser at once, then to the account; the next launch (after a reload) has the setting.
+  await page.locator('#save').click();await page.waitForFunction(()=>/^Saved · synced/.test(document.getElementById('save-status').textContent));
+  await page.reload();await page.locator('#launch').click();
+  await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});await fps(360);
+  await click(1180,527);await state('SettingsMenuState');
+  const restoredRect=(await snapshot()).windowRect;
+  await cycleFrameLimit(restoredRect);await fps(0);
+  await page.locator('#save').click();await page.waitForFunction(()=>/^Saved · synced/.test(document.getElementById('save-status').textContent));
+  await page.reload();await page.locator('#launch').click();
+  await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});await fps(0);
+  if(gateMisses()===missedBefore)pass(`Frame Limit cycles 30/60/90/120/240/360/Unlimited by click and arrows, with cloud/reload persistence${skipPerformance?'; performance deferred':` and independent simulation (${capped.fps.toFixed(1)} / ${unlimited.fps.toFixed(1)} FPS)`}`);
+  }
   // A newly created profile first shows the native welcome ChoiceBox; key 1 continues.
   await state('MainMenuState');
   if((await snapshot()).window==='WelcomeChoiceBox'){await page.locator('#game').press('1');await windowIs('main');}
+  if(perfOnly){await frameLimitChecks();assert.deepEqual(errors,[]);continue;}
   if(process.env.MENU_OPTIONS_ONLY==='1'){
    await optionsUiChecks(page,{snapshot,state,windowIs,click,pass,name});assert.deepEqual(errors,[]);continue;
   }
@@ -141,44 +192,7 @@ for(const [name,type,options,user] of [['Chromium',chromium,{channel:'chromium'}
   await page.evaluate(({profile,run,ae})=>window.start(ae,run,profile),originalStatistics);
   await state('MainMenuState');
   pass('Scores/statistics/achievements tabs render, leave progression unchanged and close with fullscreen intact');
-  await click(1180,527);await state('SettingsMenuState');
-  const videoRect=(await snapshot()).windowRect;
-  const fps=value=>page.waitForFunction(value=>window.ftlEngine.frameRateLimit()===value,value);
-  await frameLimitTo(videoRect,30);
-  await page.locator('#game').press('ArrowRight');await fps(60);
-  await page.locator('#game').press('ArrowLeft');await fps(30);
-  let capped,unlimited;
-  if(!skipPerformance){
-  const beforeTick=(await snapshot()).tick;
-  capped=await page.evaluate(()=>window.ftlEngine.benchmark(1000));
-  const simulationTicks=(await snapshot()).tick-beforeTick;
-  assert.ok(capped.fps>=25&&capped.fps<=34,JSON.stringify(capped));
-  assert.ok(simulationTicks>capped.frames*3,'Render cap throttled simulation updates');
-  }
-  for(const value of [60,90,120,240,360,0]){await cycleFrameLimit(videoRect);await fps(value);}
-  if(!skipPerformance){
-  unlimited=await page.evaluate(async()=>{
-   let browserFrames=0,id;const count=()=>{browserFrames++;id=requestAnimationFrame(count);};id=requestAnimationFrame(count);
-   try{return {...await window.ftlEngine.benchmark(1000,0),browserFrames};}finally{cancelAnimationFrame(id);}
-  });
-  // Display refresh and competing work bound actual FPS. Unlimited must draw
-  // each available animation frame, rather than promise a hardware throughput.
-  assert.ok(Math.abs(unlimited.frames-unlimited.browserFrames)<=2,JSON.stringify({capped,unlimited}));
-  }else console.log('SKIP '+name+': measured FPS and simulation throughput (FTL_SKIP_PERFORMANCE=1)');
-  await cycleFrameLimit(videoRect);await fps(30);
-  await page.locator('#game').press('ArrowLeft');await fps(0);await page.locator('#game').press('ArrowLeft');await fps(360);
-  await page.screenshot({path:'.build/options-'+name.toLowerCase()+'.png'});
-  // Save: into this browser at once, then to the account; the next launch (after a reload) has the setting.
-  await page.locator('#save').click();await page.waitForFunction(()=>/^Saved · synced/.test(document.getElementById('save-status').textContent));
-  await page.reload();await page.locator('#launch').click();
-  await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});await fps(360);
-  await click(1180,527);await state('SettingsMenuState');
-  const restoredRect=(await snapshot()).windowRect;
-  await cycleFrameLimit(restoredRect);await fps(0);
-  await page.locator('#save').click();await page.waitForFunction(()=>/^Saved · synced/.test(document.getElementById('save-status').textContent));
-  await page.reload();await page.locator('#launch').click();
-  await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});await fps(0);
-  pass(`Frame Limit cycles 30/60/90/120/240/360/Unlimited by click and arrows, with cloud/reload persistence${skipPerformance?'; performance deferred':` and independent simulation (${capped.fps.toFixed(1)} / ${unlimited.fps.toFixed(1)} FPS)`}`);
+  await frameLimitChecks();
   const progressBefore=await page.evaluate(()=>window.ftlEngine.diagnosticProfile());
   await click(1180,585);await state('CreditsState');
   const credits=await snapshot();assert.ok(credits.backers>1000&&credits.creditLines>credits.backers);assert.ok(credits.scroll<=-70);
@@ -241,3 +255,4 @@ for(const [name,type,options,user] of [['Chromium',chromium,{channel:'chromium'}
  finally {await browser.close();}
 }
 await writeFile('.build/menu-results.json',JSON.stringify({at:new Date().toISOString(),checks},null,2));
+gatesChecked();

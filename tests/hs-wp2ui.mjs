@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // WP2 in-run UI check (Hyperspace): a run, then the ship window's upgrades and crew manifest through real clicks, with frames in $WP2_OUT
 // (paging, rename, crew limit boxes, drag swap). Test-only.   WP2_SHIP=PLAYER_SHIP_MVKESTREL  [FTL_HS_MOD_SESSION=... NODE_OPTIONS=--import=...] node /app/tests/hs-wp2ui.mjs
 //
@@ -102,7 +103,7 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const session=process.env.FTL_HS_MOD_SESSION?JSON.parse(await readFile(process.env.FTL_HS_MOD_SESSION,'utf8')):null;

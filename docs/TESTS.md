@@ -300,6 +300,13 @@ and fails when the handles Lua holds grow with the loads, which is what kept eve
 after `gc()` inside the full-run probe is not a leak figure: the probe is one long job of the page, so what waits for the end
 of a job (a `WeakRef` read, the queued saves) stays until it returns. Measure leaks with the page yielding between steps.
 
+Replaced runs: the `vanilla` and `ae` modes (every fixture) fail a layout when, after its new game and two loads, the drone
+runtime's static per-ship maps still hold a ship of a run that was replaced (`DroneRuntime.otherRunEntries`; they kept each
+replaced run alive until a frame of the next one ran, so the paused diagnostics page grew by a run per probe: 284 -> 2358
+MiB after GC over Multiverse's `vanilla` mode). The Android unit test `ReplacedRunsTest` checks the same with weak
+references and `System.gc()`. The page cannot force a collection itself, so the heap after a forced GC is measured from
+outside through CDP (`.build/hs/leak/`, not part of the suites).
+
 The diagnostics modes also run with Hyperspace (F2) and Hyperspace + Multiverse (F3) data. There they check the rules, not
 vanilla's data: `gameplay-parity` holds back its steps that compare with captures of native vanilla (seeds, draw counts,
 pools, maps, stores) and reports them as not run, and the rule checks that hold vanilla's numbers or classes follow the
@@ -307,6 +314,16 @@ mod's. They do not establish parity with native Hyperspace; the full runs and `h
 ship specifications and 340 player ships, so `BASELINE_MODE_TIMEOUT_MS` raises the 180 s limit per mode for `encounters`,
 `ae`, `vanilla` and `campaign`. `BASELINE_ENCOUNTER_BATCH=<n>` runs `encounters` in slices on a fresh page and
 `BASELINE_ENCOUNTER_RANGE=<first>,<end>` limits it to part of the sorted list; a slice with failures does not stop the next.
+`BASELINE_CAMPAIGN=ae` or `vanilla` runs one half of `campaign` (its six AE or six vanilla traversals) on a fresh page,
+so the job starts one engine: a second Multiverse engine start in the same page adds several GB within seconds (the
+whole mode peaks at 6.5 GB without pixels, one half at 2.8-3.0 GB); the two halves together have the whole mode's twelve checks.
+`FTL_NOPIXELS=1` (`tests/lib/nopixels.mjs`) runs the modes without pixels: every WebGL draw and clear is a no-op and
+each texture gets 1x1 storage without its image (the engine keeps its own sizes and runs every update and render call),
+so Chromium's software GL holds no texture memory (0.8-1.1 GB of a Multiverse mode) and spends no CPU rasterising.
+`readPixels` and the game canvas's `toDataURL`/`toBlob` throw then, so a check that reads pixels fails instead of
+comparing blanks; `baseline.mjs` leaves it off when a selected mode reads the canvas (`gameplay-parity`:
+GameplayParityAssets7/Jump6/PsB4Checks through BrowserPixels) and prints `NOPIXELS on` or `NOPIXELS off: <mode> reads
+the canvas`. `FTL_NOPIXELS_FORCE=1` applies it anyway (to show that such a mode then fails).
 
 `gameplay-parity` also runs `GameplayWeapons17Checks` in every mode (vanilla, F2, F3). It covers a weapon armed by touch
 that loses its power (ion, damage, or another weapon taking the bar) being disarmed as in WeaponControl::OnLoop, so the next
@@ -414,8 +431,12 @@ pw, sb and en against the recorded oracle.
 (explosion1 at 0.25), a loop sliding out over 500 ms of real time, a sound, loop and track the files lack (silent; the
 playlist stalls on the missing track), an empty playlist fading to silence, the battle flag set with no track playing,
 door sounds as the animation starts (and none for a door turned back halfway), and under Hyperspace a crew power's
-effect, power and finish sounds in the original's order. `web/self-tests.mjs`' audio clock (and `tests/audio.mjs`) keeps a
-missing sound or music file's source AL_INITIAL. Sound trace pairs: `BrowserEngine.soundTrace` logs what our engine plays,
+effect, power and finish sounds in the original's order; and two host rules of report 106 (nothing of the original's): a
+change of the sound volume reaches every playing sound, also those after an ended one, and a loop that found no free
+voice starts again once one is free. `web/self-tests.mjs`' audio clock (and `tests/audio.mjs`) keeps a
+missing sound or music file's source AL_INITIAL, and asks again for a sound whose load failed once when it is next
+played (not for a missing one); an effect that has waited two seconds for an audio context that does not resume gives
+its voice back (a loop and the music wait on). Android's mixer: `AudioMixerTest` ([ANDROID.md](ANDROID.md#testing)). Sound trace pairs: `BrowserEngine.soundTrace` logs what our engine plays,
 `tools/native-capture/sessions/ps-u4-sound.json` runs the same sessions in `FTLGame-sound.exe` (`sweep/vanilla/run.sh`,
 `EXE=sound`) and `tools/ui-capture.sh`, and `tools/native-capture/sound-pair.py <native.bin> <ui-capture log> --session ID
 --sync KIND:NAME` pairs them (`--hs 1` reads the Hyperspace oracle's ring of `tools/hs-oracle/make-sound-exe.py`, session
@@ -618,6 +639,41 @@ turn 18 degrees a second (`mapMarkers`). Native sides: `tools/hs-oracle/sessions
 tracer: Zoltans killed out of combat, healed while dying, a clone bay; `ps-b4b-flash` F2: frames after the battery
 starts; `ps-b4b-flagleave` F2: the flagship's beacon, away, the flagship moved on, back).
 
+Players' reports on 2.1.1 (`gameplay-parity`'s `GameplayParityFixContentChecks`, every mode): a sector's rarity list
+(`sectorRarities`: the pool of every sector of the loaded data is made, a rarity of 6 is listed and never drawn;
+`hackedSector`: Multiverse's SECTOR_HACKER_UNIQUE, whose list gives mantis_free 6, is generated and arrived at); the
+over-capacity slot (`overCapacitySwap`: the waiting weapon, drone or augment and an owned one change places whichever
+is carried onto the other, with the mouse and with a finger through the touch router: a tap, then a press that carries);
+the beacon map (`pickedBeaconLines`: the hovered or picked beacon's connections are drawn in yellow, the ship's in
+green, and under Hyperspace with every connection shown each connection of the sector is on the map; `mapMarkerPlace`:
+the ship's and the flagship's marker art sits beside its beacon, level with it, in the mouse and the touch layout).
+Android unit test `SectorRarityTest`: the rarity list as EventsParser reads it and the weights of the pick. The store's
+sold boxes are in `hs-ships` (the `store` probe buys the first box of every category, draws the page and draws it again
+from the store's save; a bought crew member or augment ended the run). On the emulator `tools/android-touch/overcap.mjs`
+carries the waiting augment and weapon onto an owned one and back with one finger.
+
+`gameplay-parity`'s `GameplayParityFixCrewChecks` holds four crew reports of release 2.1.1 (vanilla, F2, F3):
+`mindControlledDiesCloned` and `mindSystemCrewDiesCloned` (HS105: a crew member that dies mind controlled is its own
+side's again when cloned, after reloads too; the second goes through a real enemy mind system); `mindControlledDoors`
+(107/110: a mind-controlled crew member walks through the blast doors of its own ship, a lockdown holds it, the path
+search still counts those doors as sealed) and `forcedOpenDoor` (a blast door broken down and shut again lets the
+boarder through while it is forced open); `targetsSpread` (109: a new target is drawn for every shot, both sides, while
+two fighters on one slot stay on each other); `boardersAfterTheFight` and `crewKillStopsSabotage` (111: boarders stop
+sabotaging and fighting when the ship is not hostile any more, boarders aboard the player's ship go on). The Ai2 check
+`sabotageLatch` holds the same rule for boarders aboard the player's ship. Native sides:
+`tools/hs-oracle/sessions/fix-crew.json` (F3 with the tracer and the probe `data/hs_oracle/fix-crew.lua`: `fx-clone`,
+`fx-doors`, `fx-spread`, `fx-sab`, `fx-jump`).
+
+`gameplay-parity`'s `GameplayParitySaveMigrationChecks` holds the save revision and the migration step of loading a run
+([SAVES.md](SAVES.md), "Save revision and migrations"; vanilla, F2, F3): `revisionRoundTrip` (a written run carries the
+current revision and keeps it over a load; a newer one loads unmigrated), `stuckCrewFreed` (a run written as release
+2.1.1 wrote it, without a revision, with a crew member mind controlled and no system holding it: free after the load,
+the run written again is current and is not migrated again), `stuckBodyFreed` (the same mark on a body in the clone
+bay), `idleSystemDoesNotHold` (the same beside the enemy's mind system between two uses), `heldCrewStays` (a crew member the enemy's mind system holds stays with it), `currentRevisionKeeps` (the stuck
+state in a current run stays), `importedOriginal` (vanilla data: a run from the original game in its wrapper does not
+pass the migration step). Android: `SaveMigrationsTest` (`android :app:testDebugUnitTest`), the same shared code on a
+ship's crew without game data: the revision attribute, the migrations a revision needs, the wrapper, migration 1.
+
 `gameplay-parity`'s `GameplayParityPsW1Checks` holds the fleet rules of parity sweep W1 (UpdateDangerZone, RenderLabels):
 a jump takes the beacons inside the zone in list order, with the fleet events that overtaking them one by one in that
 order gives, and holds the centre at 60 (a wait does not); a warning mark stays when the next move's reach shrinks and
@@ -714,7 +770,8 @@ confirmation on the screen, and the extra one dismissed with its button and Yes.
 dragged onto another keeps the order (no reorder on the crew screen; Hyperspace's swaps). Touch without Hyperspace: the iPad's
 DISMISSAL DropBox (`dismissBox`, at the iPad's (600, 500) of the crew window) on the screen and clear of the boxes (none
 under Hyperspace, user FU1-C1); on the emulator a
-crew box carried onto it lights it (`dismissHot`) and, lifted there, opens the dismiss confirmation. On the emulator:
+crew box carried onto it lights it (`dismissHot`) and, lifted there, opens the dismiss confirmation; the item waiting in
+the over-capacity slot and an owned one change places, carried either way (`items` lists every item box). On the emulator:
 `tools/android-touch/overcap.mjs` ([ANDROID.md](ANDROID.md#testing)); round 21's runs and frames: `.build/hs/reports/overcap.md`.
 
 ## Window places
@@ -860,6 +917,17 @@ The runner (`.build/hs/prod-int/hsq.sh`) runs `hs-mv-tutorial.mjs` and `hs-store
 `native-import.mjs` on vanilla, F2 and F3 with the `.build/hs/save-tools/` set (jobs `hs-mv-tutorial`,
 `hs-store-overflow`, `hs-native-import-<fixture>`).
 
+Repeatable twins (ps-twin): the twin's probe (`BrowserHsWp5CrewDiagnostics`, `hsRuntimeProbe("wp5-crew <probe ...>")`)
+runs every phase synchronously in frames of 1/60 s, so the machine's speed reaches it only through what the page left
+before it. `<probe rng="n">` starts both simulation streams, Hyperspace's run-seed source and the script timers' goals
+from n; every probe starts a fresh Lua state with the session's scripts (after `rng`), the Lua clock as after a steady
+run (`LuaFps.steady`: no SpeedFactor, frame count or RunningTime of the page's real frames or of an earlier probe) and
+without the crew definitions a lookup inserted (CustomCrewManager::GetDefinition). So the same `rng` gives the same
+rows alone, beside other jobs, starved (`--cpus 0.5` and busy loops) and after a wait in the main menu, as the first or
+a later probe of a page. `<probe fps="f">` runs the phases at f frames per second, the same game time (frame-period
+studies). `.build/hs/sweep/twin2/browser.sh` sets them (`TWIN_RNG`, `TWIN_SEEDS=auto:<k>` for a session's fixed seed
+set, `TWIN_FPS`), and `sweep/jobs2/` runs each job over its seed set (`jobs2/mk.py`).
+
 Events and choices (sweep W2): the vanilla gameplay-parity mode's `choice rules` step
 (`GameplayParityVanillaNativeChecks`) holds the 1.6.14 answers of `tools/native-capture/sessions/ps-w2-van.json`: the
 repair station's choices at 0/3/8/12 hull damage, a stealing Continue open with no scrap, TRADER_UPGRADES_LIST's
@@ -919,6 +987,123 @@ sweep/fixtures/ps-m3/map.json`. `sweep/jobs/ps-m3-cmp.py` pairs the rows by name
 timeline). The full-run policy (oracle `autoplay` and `BrowserHsFullRunDiagnostics`) also skips Multiverse's toggle
 menu and Sylvan hailing himself, two choices that lead back to the same box; the oracle's `HS_ORACLE.fixdrive()` also
 resumes a game a stray console line paused.
+
+## Faster native comparisons and runs (ps-infra kit)
+
+Beside the existing tools, in ignored `.build/hs/` (proofs and switch-over steps in `.build/hs/reports/ps-infra.md`):
+
+- `infra/fixedstep/`: the HS oracle and the 1.6.14 capture in fixed-step mode. `fstep.py` patches the container's copy of
+  FTLGame.exe (1.6.9 rolled back, or 1.6.14 and its fixture exes) so the game's two clocks are a virtual counter that only
+  the end of a frame moves, by the real-time oracle's measured frame period (16.708 ms, 59.85 fps; some native results
+  depend on it, e.g. flak hits), and the frame limiter's wait becomes a gate the driver
+  opens frame by frame. `fast_oracle.py` runs the unchanged `oracle.py` / `driver.py` with time counted in frames
+  (`sleep(s)` = s * 60 frames, xdotool delays as frames between press and release). Every frame gets the same step,
+  whatever the machine's load, and frames run as fast as llvmpipe renders them. The wall-clock seeds of an unseeded run
+  (the game's boot `srandom32(time(0))`, Hyperspace's `seededRng` from `system_clock`, Lua's string hash seed) come from
+  one number drawn per launch and logged as `[fstep] seed N`; `FSTEP_SEED=N` repeats that run frame for frame. While the
+  game stands at the gate it reads its X events (PeekMessageW, PM_NOREMOVE), each input gets 0.1 s of real time for that,
+  and the X server's key autorepeat is off (a key held over the driver's real-time waits repeated).
+  `run-fast.sh <sessions.json> [ids]`
+  (HS) and `capture-fast.sh` (1.6.14) take the same arguments as `tools/hs-oracle/run.sh` / `sweep/vanilla/run.sh`;
+  `FSTEP=0` runs the plain real-time game with timing lines. `rowspread.py --rt <traces> --fs <traces>` is the check that
+  a fixed-step run gives the real-time rows (equal where real-time runs agree, inside their spread where they do not, and
+  identical between two fixed-step runs).
+- `tools/docker-slot2.sh`: the slot script with a first-come-first-served queue, slots weighted by measured memory
+  (`slots.gb`), nested calls that reuse the caller's slot, light docker commands without a slot, and an oracle or capture
+  run (which already holds `oracle.lock`) put at the front.
+- `tools/par2/par2.py`: `par.py` (imported, so the same jobs and checks) starting the longest recorded job first, and,
+  once `docker-slot2.sh` is the slot script, one slot per job.
+- `sweep/twin2/`, `sweep/jobs2/`: the browser twins with WebGL draw and clear calls made no-ops (everything else runs),
+  for the twin jobs whose rows do not read pixels.
+
+## Two-phase test flow (flow.py): the release gate
+
+`.build/hs/tools/flow/flow.py` runs the whole check set (it imports `tools/par/par.py`'s job list, so every check and
+command stays single-sourced) in two phases. Reports and proofs: `.build/hs/reports/ps-flow.md` (sections PERF, GATE).
+
+    cd .build/hs/tools/par
+    PAR_WT=<worktree> PAR_TAG=<tag> py -3 ../flow/flow.py [--no-build]     the whole gate: functional, then performance
+    ... flow.py --no-build --only '<regex>'      any subset by job name (pieces have their own names: `--list`)
+    ... flow.py --no-build --failed <run dir>    only what did not pass there; a twin job's passed pieces are copied over
+    ... flow.py --no-build --perf                the performance phase alone
+    ... flow.py --list                           the jobs: phase, admission GB, expected minutes, dependencies, command
+    FLOW_POLITE=1 ...                            "I am using the PC": 2 lanes, --cpus 6 per container (about half the cores)
+    TWIN_DEPTH=full ...                          the twin jobs at their full seed counts (ps-b2 6, ps-fu3 4)
+
+- **Functional phase**, in parallel: every check whose result must not depend on machine speed. Web tests run with
+  `FTL_HANG_S` (tests/lib/hang.mjs: each positive Playwright wait and each test deadline gets at least that long; one that
+  still runs out fails as `HANG after N s at <file:line>`, a hang, not a failed check), `FTL_SKIP_PERFORMANCE=1` and
+  `LAUNCHER_SKIP_FPS_CHECK=1`; resource-cache-ui (no performance limit) runs whole there, benchmarks included. Long jobs
+  are split so a retry costs one piece: `web-menus-<script>` (one per menus script), `p-F3-encounters-1..4` (case
+  ranges), and the nine twin jobs (ps-b2, ps-fu3, ps-b3, hs-ps-m3, hs-ps-c6, hs-ps-m1, hs-ps-w1-map, hs-ps-w2-ops,
+  hs-ps-fu2) as TWIN's piece groups from `sweep/jobs2/pieces.json` (`<job>-<n>`: `TWIN_ONLY=<sessions:seeds>
+  sh sweep/jobs2/<job>.sh <run>/twin/<job>`) plus `<job>-collect` (`TWIN_COLLECT=1`, no container), which starts after
+  its pieces and runs the comparators; a missing or failed piece fails the collect with `MISSING piece <session>:<k>`.
+  Pieces and collect share one output folder and one depth (`TWIN_DEPTH`; an explicit `TWIN_SEEDS` overrides both
+  and then no longer matches the groups: do not set it for the gate). A job that fails is tried once more with the
+  same command.
+- **Real input at any speed** (tests/lib/input.mjs; `.build/hs/reports/ps-pauses.md`): the page queues every key and
+  pointer event and the engine handles the queue only in its next animation frame, so a look at the game right after
+  a press can still see the game from before it. A test that drives the game by real input flushes after each input
+  (`flush(page)`: two animation frames) before it looks or decides what to press next, checks the effect it needs (the
+  console's line before Enter, the trace line a command logs), and takes a scenario's pauses ("wait 2 s" of an oracle
+  session) as stepped game time (`steppedClock(context)`, then `gameWait(page, s)`: frame intervals of at most 50 ms,
+  as web/game.mjs steps), so a slow page waits longer and plays the same game. Fixed pauses in wall-clock time are
+  only for pacing that changes nothing (screenshots).
+  Launcher pages lay out for a moment after `sessionReady` (the Play page's save line moves the panels below it by a
+  line), so a click aimed then can land beside its target: a panel is opened with `openDetails(page, selector)`, which
+  clicks its summary while it is still closed.
+- **Admission by measured memory, without swap**: the Docker VM stays at 12 GB; with nothing of ours running about
+  10.8 GB of it is free, so `FLOW_GB` (default 9.8) is what our containers' peaks may add up to. A job counts its
+  measured cgroup peak (`flow/jobmem.json`; twin groups: pieces.json) plus `FLOW_MARGIN` (0.5), never more than the
+  job's own `--memory` cap (mods 5 GB); unmeasured jobs 2.5 GB; collect jobs and the Android build (host) count
+  nothing. `FLOW_LANES` (default: the Docker slots of `tools/slots.max`, at most 4) caps the jobs at once. Among the
+  jobs that fit, the heavier memory class starts first and the longest expected job (`flow/jobmin.json`,
+  `tools/flow/mkjobmin.py`) first within it (longest-first alone leaves the 5-8 GB jobs for the end, where they cannot
+  pair). p-F3-campaign runs with `--memory 8g` (its peak is 7.7-7.9 GB). `tools/flow/flowsim.py` replays this rule
+  without Docker and gives the expected minutes: about 130 min at 3 or 4 lanes (memory-bound), 160-200 polite.
+- **Polite mode** (`FLOW_POLITE=1`): 2 lanes, and every functional container gets `--cpus 6` (a `docker` shim,
+  `tools/flow/polite/docker`, in front of the real one; `FLOW_POLITE_CPUS` changes it), the Android build
+  `--max-workers=4`. The functional checks are speed-independent, so it only takes longer. The performance phase is
+  not capped (it measures this machine as it is) and runs as always.
+- **Performance phase**, after the functional phase has drained: it takes every Docker slot (`tools/slots/<i>`, held by
+  a small bash process that exits if flow.py dies) for its whole duration, so nothing that uses the slots starts beside
+  it; each job in turn gets one slot lent, one job at a time; the slots are freed at the end. Containers that still run
+  (outside the slots, e.g. the user's own) are recorded in every PERF row, with the VM's load. `perf-menus`,
+  `perf-launcher` and `perf-diagnostics-ui` run their script gates-only (`FTL_PERF_ONLY=1`: sign-in and the setup the
+  gates need, then only the gates; every other check of the script ran in the functional phase):
+  - menus: launch, then Options' Frame Limit section (per browser: capped benchmark fps in [25, 34], simulation ticks
+    more than 3 x the capped frames, unlimited |frames - browser frames| in [0, 2], the setting's persistence);
+  - launcher: the Tests page's first checks, then the benchmark block (Chromium, per phase 1-3 at the 30 FPS limit: fps
+    in [25, 35], frames >= 101, browser fps >= fps - 0.5, browser callbacks >= frames, and > frames when the browser
+    ran above 33 fps; both browsers: Stop cancels a benchmark and keeps cloud progress);
+  - diagnostics-ui: the two-category run whose results the timing export keeps, then browser timing (callbacks > 10,
+    fps > 0, interval p95 > 0; Stop and a hidden tab cancel it) and Firefox's unlimited benchmark (per phase 1-3:
+    frames - browser callbacks = 0, |fps - browser fps| < 0.1).
+  `hs-hslua-*` run whole (one engine probe measures the 0.5 ms Lua bridge gate and runs its semantics checks). The
+  phase takes about 4 min. `FLOW_PERF_MODE=whole` runs the web scripts whole with the gates on (comparisons),
+  `FLOW_PERF_DOCKER_X='--cpus 1'` slows only the performance jobs (the proof that a slow machine misses the gates).
+- **A PERF row**: tests print each gate as `PERF {"name","value","lo","hi","unit","margin","ok"}` (tests/lib/perf.mjs;
+  `"open":true` when the bounds are exclusive, written `(lo..hi)`; `null` is no bound), hs-lua's as its engine line
+  `PASS|FAIL bridge (...): mean N ms` (limit 0.5 ms, exclusive, for the drawing variants). The summary prints
+  `ok|MISS <job> <gate> <value> <unit> [lo..hi] margin <m> try <n> load {load1, load5, MiB available} beside: <containers>`;
+  the margin is the distance to the nearer bound, negative when missed. A script measures all its gates (`gate()`) and
+  fails once at the end (`gatesChecked()`: `N performance gate(s) missed: ...`), so one miss hides no other row. A miss
+  is tried once more (that job only). `tools/flow/gatecmp.py --whole <runs> --gates <runs> --func <runs>` sets
+  gates-only runs against whole-script runs.
+- **Summary rows** (`summary.txt`; first line: commit, image, minutes per phase, lanes, GB, polite, twin depth):
+  `passed`; `FAILED <job> <exact check>` (an assertion with its test file:line, a `HANG after N s at <file:line>` with
+  its step, a comparator row as `expected <oracle> | actual <ours>`, an engine slice with its case, a collect's
+  `MISSING piece`): failed twice; `RETRIED-D|R|T` (failed, then passed; the kind and cause of the first failure from
+  kinds.json: D a deadline, R an order race, T a timing-dependent result; listed, not a release blocker);
+  `UNEXPLAINED` (failed, then passed, no known cause: counts as not passed); `PERF` (a gate missed, then within on the
+  retry: counts as not passed) and `PERF-FAILED` (missed twice); then one row per gate, then every job's minutes per
+  attempt. `results.json`: `not_passed` (the release gate: everything but passed and RETRIED-D/R/T) and `retried`.
+- **Evidence**: every attempt in `<run>/attempts/<job>/<n>/` (runner.log, the job's logs, a collect's output folder
+  without the oracle copy and pictures: cmp files, rows, browser logs); twin outputs in `<run>/twin/<job>/`. To rerun
+  only what failed: `--failed <run dir>` (a failed twin piece takes its collect along; a failed collect reruns alone over
+  the copied results).
+- `FLOW_DOCKER_X='--cpus 1'` starves every functional job (the proof that results do not depend on speed).
 
 ## Developer verification
 
@@ -1042,4 +1227,6 @@ Set `FTL_SKIP_PERFORMANCE=1` when performance testing is deferred. Browser suite
 browser-timing measurements and flagship benchmark runs (including cache/session benchmark runs), logging each
 skip explicitly. Frame-limit controls, persistence, functional engine checks and browser coverage still run.
 Keep test jobs and browsers sequential. Unset the variable or set it to `0` to restore performance coverage;
-a run with it enabled does not establish performance acceptance.
+a run with it enabled does not establish performance acceptance. `FTL_PERF_ONLY=1` is its counterpart for
+menus.mjs, launcher.mjs, diagnostics-ui.mjs and resource-cache-ui.mjs: only the performance part and the setup it
+needs run (the two together are refused); one run with each covers every check of the script.

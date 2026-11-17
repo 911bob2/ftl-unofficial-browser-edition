@@ -2,9 +2,9 @@
 
 The target remains all official vanilla and Advanced Edition gameplay, complete runs, desktop Chrome/Edge/Firefox, native engine save format, password authentication, private owner-supplied assets, and a single Linux amd64 application container behind an existing Nginx Proxy Manager. Mods, mobile controls, vanilla save interchange, multiplayer, and offline launch are outside scope.
 
-## UI fidelity review of Gemini's branch — 2026-10-05
+## UI fidelity review — 2026-10-05
 
-Review branch `codex/ui-fidelity-review` preserves Gemini's commits and unrelated
+The review kept the earlier button work and unrelated
 security drafts. Corrected native button state colors/glyph centering, hangar
 heading baselines, crew Customize font/hit bounds, empty equipment art, grid
 frame/tab geometry, weapon-frame stretching/wrapping and desktop autofire

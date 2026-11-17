@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 import assert from 'node:assert/strict';
 import {readFile,writeFile} from 'node:fs/promises';
 import {execFile} from 'node:child_process';
@@ -9,7 +10,7 @@ import {fileURLToPath} from 'node:url';
 const origin=process.env.TEST_ORIGIN??'http://localhost:8081';
 if(!['http://localhost:8081','http://localhost:8082'].includes(origin))throw Error('This test mutates disposable accounts; use an isolated localhost:8081 or :8082 instance.');
 const fixture=process.env.TEST_FIXTURE_DIR??(origin.endsWith(':8082')?'.build/security-data':'.build/test-data');
-const deadline=Date.now()+20000;
+const deadline=Date.now()+hangMs(20000);
 while(!(await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false))){if(Date.now()>deadline)throw Error('Disposable test instance did not become ready');await new Promise(r=>setTimeout(r,250));}
 const credentials=new Map((await readFile(fixture+'/bootstrap-credentials.txt','utf8')).split(/\r?\n/).filter(l=>l.includes('\t')).map(l=>l.split('\t')));
 class Client {

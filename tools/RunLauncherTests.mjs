@@ -26,7 +26,7 @@ async function fixture(port,directory,production=false,unavailable=false,extra={
  }
  const child=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
  children.add(child);child.on('exit',()=>children.delete(child));
- const deadline=Date.now()+30000;
+ const deadline=Date.now()+Math.max(30000,(Number(process.env.FTL_HANG_S)||0)*1000);
  while(!await fetch('http://localhost:'+port+'/health/ready').then(r=>r.ok).catch(()=>false)) {if(child.exitCode!==null||Date.now()>deadline)throw Error('Disposable fixture did not start on '+port);await pause(250);}
  return {data,child};
 }
@@ -42,13 +42,16 @@ async function audioSink(){
  const socket=join(directory,'native');
  const child=spawn('pulseaudio',['--daemonize=no','--exit-idle-time=-1','--log-target=stderr','-n','--load=module-native-protocol-unix socket='+socket,'--load=module-null-sink sink_name=ftl_tests'],{stdio:'ignore',env:{...process.env,XDG_RUNTIME_DIR:directory}});
  children.add(child);child.on('exit',()=>children.delete(child));
- const deadline=Date.now()+10000;
+ const deadline=Date.now()+Math.max(10000,(Number(process.env.FTL_HANG_S)||0)*1000);
  while(!await import('node:fs/promises').then(fs=>fs.access(socket).then(()=>true,()=>false))) {
   if(child.exitCode!==null||Date.now()>deadline)throw Error('Isolated test audio sink did not start');await pause(100);
  }
  return 'unix:'+socket;
 }
-function command(script,env) {return new Promise((resolve,reject)=>{const child=spawn(script==='server-security'?'dotnet':'/usr/local/bin/node',script==='server-security'?['/app/security-tests/Ftl.SecurityTests.dll']:['/app/tests/'+script+'.mjs'],{cwd:root,env:{...process.env,...env},stdio:['ignore','pipe','pipe']});children.add(child);child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.on('error',reject);child.on('exit',code=>{children.delete(child);resolve(code??1);});});}
+// FTL_HANG_S (the functional phase): every test script loads tests/lib/hang.mjs, so a slow machine makes a wait slower, never
+// a check fail; a wait that runs out reports as HANG with its step.
+const hangImport=process.env.FTL_HANG_S?{NODE_OPTIONS:((process.env.NODE_OPTIONS??'')+' --import=/app/tests/lib/hang.mjs').trim()}:{};
+function command(script,env) {env={...env,...hangImport};return new Promise((resolve,reject)=>{const child=spawn(script==='server-security'?'dotnet':'/usr/local/bin/node',script==='server-security'?['/app/security-tests/Ftl.SecurityTests.dll']:['/app/tests/'+script+'.mjs'],{cwd:root,env:{...process.env,...env},stdio:['ignore','pipe','pipe']});children.add(child);child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.on('error',reject);child.on('exit',code=>{children.delete(child);resolve(code??1);});});}
 try {
  await mkdir('.build',{recursive:true});
  // A 4 MiB account storage limit lets tests/saves-v2.mjs reach it.

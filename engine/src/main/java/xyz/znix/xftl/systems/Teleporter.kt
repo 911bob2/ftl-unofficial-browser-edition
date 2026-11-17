@@ -754,6 +754,7 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         for (crew in party) crew.teleportAnimatedTo(if (send) target else room!!)
         this.party += party
         teleportSound.play()
+        xyz.znix.xftl.game.GameHaptics.teleport(ship)
         lockUnits(LOCK_UNITS.getOrElse(powerSupplied - 1) { 0 })
         hsChargeLevel = 0f
         onCooldown = true

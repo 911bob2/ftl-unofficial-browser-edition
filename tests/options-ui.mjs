@@ -95,7 +95,9 @@ export async function optionsUiChecks(page,{snapshot,state,windowIs,click,pass,n
  async function hoverAndPixels() {
   const b=await canvas.boundingBox(),scale=Math.min(b.width/1280,b.height/720);
   await page.mouse.move(b.x+(b.width-1280*scale)/2+points.hover.x*scale,b.y+(b.height-720*scale)/2+points.hover.y*scale);
-  await page.waitForTimeout(100);
+  // six engine frames for the hover to register and draw (was a fixed 100 ms: on a slow machine fewer frames ran)
+  const t0=JSON.parse(await page.evaluate(()=>window.ftlEngine.debugSnapshot())).tick;
+  await page.waitForFunction(t=>JSON.parse(window.ftlEngine.debugSnapshot()).tick>=t+6,t0);
   return page.evaluate(({x,y})=>{
    window.renderFrame(0);const gl=window.ftlGL.gl,buf=new Uint8Array(24*24*4);
    gl.readPixels(Math.round(x)-12,720-Math.round(y)-12,24,24,gl.RGBA,gl.UNSIGNED_BYTE,buf);

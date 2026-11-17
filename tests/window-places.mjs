@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // Where the mouse layout's windows sit (docs/TESTS.md, round 23), in vanilla or in a Hyperspace session (the loader's
 // preload sets window.ftlModSession from FTL_HS_MOD_SESSION): the ship window (upgrades, crew and equipment tabs), the
 // store, the star map and the sector map, the pause menu and the options, an event and the game over, each opened in
@@ -22,7 +23,7 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const session=process.env.FTL_HS_MOD_SESSION?JSON.parse(await readFile(process.env.FTL_HS_MOD_SESSION,'utf8')):null;
@@ -49,7 +50,7 @@ try{
  const closeWindows=async()=>{for(let i=0;i<40;i++){const s=await snapshot(),w=s.window;if(w==='game')return;
    if(w!=='DialogueWindow')await key('Escape');else if(s.dialogue?.ready){const p=await probe(),c=p.choices.findIndex(t=>/proceed|enough|continue|leave|ignore/i.test(t));await key(String(c>=0?c+1:1+i%Math.max(1,p.choices.length)));}
    await page.waitForTimeout(400);}throw Error('a window stays open: '+(await snapshot()).window);};
- const waitWindow=async(name,ms=8000)=>{const end=Date.now()+ms;for(;;){const s=await snapshot();if(s.window===name&&s.windowRect)return s.windowRect;if(Date.now()>end)throw Error(name+' does not open: '+s.window);await page.waitForTimeout(200);}};
+ const waitWindow=async(name,ms=8000)=>{const end=Date.now()+hangMs(ms);for(;;){const s=await snapshot();if(s.window===name&&s.windowRect)return s.windowRect;if(Date.now()>end)throw Error(name+' does not open: '+s.window);await page.waitForTimeout(200);}};
 
  await page.evaluate(()=>window.ftlEngine.newRun('PLAYER_SHIP_HARD',1));
  await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).state==='InGameState',{},{timeout:120000});

@@ -132,7 +132,8 @@ class PathFinder(val ship: Ship) {
                 if (door.isAirlock)
                     continue
                 val i = index[door] ?: continue
-                val penalty = if (door.isLockedFor(crew)) 1000 else 0
+                // Door::IsSealed with the walker's own ship id (CrewMember::SetRoomPath), mind controlled or not
+                val penalty = if (door.isSealedFor(crew)) 1000 else 0
                 val newCost = cost[current] + pixelDistance(doors[current].pixelCentre, door.pixelCentre) + penalty
                 if (newCost < cost[i]) {
                     cost[i] = newCost

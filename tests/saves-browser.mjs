@@ -1,3 +1,4 @@
+import {hangMs,hangError} from './lib/hang.mjs';
 // Save model 2 in the website (docs/SAVES.md), Chromium and Firefox, against the disposable 8084 fixture. Every browser
 // context is one device (its own device store and device id); a second page in a context is another tab.
 // Covers: offline play that keeps going and syncs later; the missing-content notice; two tabs (lock line, Override, the
@@ -12,6 +13,7 @@ import {chromium, firefox} from 'playwright';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {testCatalogue} from './fixtures/mods/catalogue.mjs';
 import {zipSync} from '../web/vendor/fflate-0.8.3.mjs';
+import {openDetails} from './lib/input.mjs';
 
 const origin = process.env.MENU_ORIGIN ?? 'http://localhost:8084';
 assert.equal(origin, 'http://localhost:8084', 'Use the disposable 8084 fixture');
@@ -57,7 +59,7 @@ const api = (page, path, {method = 'GET', body, headers = {}} = {}) => page.eval
 }, {path, method, body, headers});
 /** The cloud copy of a save, read outside the page (page routes do not apply). */
 /** Polls `test` (an async check in Node) until it holds. */
-async function until(test, what, timeout = 30000) { const end = Date.now() + timeout; while (!await test()) { if (Date.now() > end) throw Error('Timed out: ' + what); await new Promise(r => setTimeout(r, 200)); } }
+async function until(test, what, timeout = 30000) { const end = Date.now() + hangMs(timeout); while (!await test()) { if (Date.now() > end) throw hangError(what, timeout); await new Promise(r => setTimeout(r, 200)); } }
 const cloud = async (context, id) => (await context.request.get(origin + '/api/saves/' + id)).json();
 const deviceSave = (page, id) => page.evaluate(async id => {
   const {deviceStore, LOCAL_ACCOUNT} = await import('/web/device-store.mjs'), me = await (await fetch('/api/auth/me')).json();
@@ -171,8 +173,12 @@ for (const [name, type, options, users] of [['Chromium', chromium, {channel: 'ch
     const taken = await cloud(phoneContext, id);
     assert.equal(taken.lock.device, 'Pixel 8');
     // The laptop's game hears it on its next contact (its next save) and stops; nothing it wrote reaches the account.
-    await a.evaluate(() => window.ftlEngine.newRun('PLAYER_SHIP_HARD', 1)); await state(a, 'InGameState');
-    await a.evaluate(() => window.ftlSaveDurably());
+    // Its next contact is usually that save; on a slow machine the page's own sync can come first, and the game stops
+    // then (engine gone: newRun or the save throws). Either way: the notice once, nothing it wrote reaches the account.
+    try {
+      await a.evaluate(() => window.ftlEngine.newRun('PLAYER_SHIP_HARD', 1)); await state(a, 'InGameState');
+      await a.evaluate(() => window.ftlSaveDurably());
+    } catch (e) { await openDialog(a, 'save-overridden-dialog').waitFor({timeout: 30000}).catch(() => { throw e; }); console.log('NOTE the laptop heard of the override before its save: ' + String(e.message).split(String.fromCharCode(10))[0]); }
     await openDialog(a, 'save-overridden-dialog').waitFor();
     assert.match(await a.locator('#save-overridden-dialog').innerText(), /This save was taken over on Pixel 8 at \d{1,2}:\d\d( [AP]M)?\. Progress and unlocks since your last sync were discarded\./);
     assert.equal((await cloud(laptop, id)).revision, taken.revision);
@@ -199,7 +205,23 @@ for (const [name, type, options, users] of [['Chromium', chromium, {channel: 'ch
         body: {name: cur.name, setup: cur.setup, meta: cur.meta, run: cur.run.replace(/(<!--[^>]*-->)?\s*$/, '<!--' + mark + '-->'), kind: 'manual'}});
       assert.equal(r.status, 200, JSON.stringify(r.body)); return r.body.revision;
     };
-    await playHere(a, id, 'laptop-1'); await put('phone-1');
+    // Both copies change: the laptop's run here (not synced yet), the phone's in the account. The laptop page syncs on its
+    // own (its first pass after a reload, a wake), and an upload of the laptop's copy between the phone's read and write
+    // would make the phone's write the stale one (409). The scenario means: the phone writes first, the laptop's copy
+    // reaches the account afterwards. So the laptop's uploads of this save wait until the phone has written.
+    const bothChange = async (laptopMark, phoneMark) => {
+      let release; const held = new Promise(r => { release = r; });
+      const own = url => new URL(url).pathname === '/api/saves/' + encodeURIComponent(id);
+      const pending = [];
+      const hold = route => {
+        if (route.request().method() !== 'PUT') return route.continue();
+        const sent = held.then(() => route.continue()); pending.push(sent); return sent;
+      };
+      await a.route(own, hold);
+      try { await playHere(a, id, laptopMark); return await put(phoneMark); }
+      finally { release(); await Promise.all(pending); await a.unroute(own, hold); }
+    };
+    await bothChange('laptop-1', 'phone-1');
     await syncNow(a); await savesPage(a);
     // The list shows the device copy at once ("Not synced") and the account's answer when the page's first pass is done.
     await a.waitForFunction(id => document.querySelector(`li.save-row[data-id="${id}"]`)?.dataset.status === 'CONFLICT', id);
@@ -213,7 +235,7 @@ for (const [name, type, options, users] of [['Chromium', chromium, {channel: 'ch
     assert.match((await cloud(laptop, id)).run, /phone-1-->$/);
     await saveAndClose(a);
     // "Keep this device's copy" while the phone plays the save: the usual lock question, never a silent override.
-    await playHere(a, id, 'laptop-2'); const phoneRevision = await put('phone-2');
+    const phoneRevision = await bothChange('laptop-2', 'phone-2');
     const phoneHolds = await api(p, '/saves/' + id + '/lock', {method: 'POST', headers: {'X-FTL-Instance': 'saves-browser-phone', 'X-FTL-Device': 'browser;test-pixel-8;Pixel%208'}, body: {override: false}});
     assert.equal(phoneHolds.status, 200, JSON.stringify(phoneHolds.body));
     await syncNow(a); await savesPage(a);
@@ -248,7 +270,7 @@ for (const [name, type, options, users] of [['Chromium', chromium, {channel: 'ch
     const modContext = await device(browser), modder = tab(await modContext.newPage(), errors);
     await signIn(modder, users[1]);
     await modder.goto(origin + '/?view=play'); await ready(modder);
-    await modder.locator('#mods-panel > summary').click(); await modder.locator('#mods-catalogue .catalogue-row').first().waitFor();
+    await openDetails(modder, '#mods-panel'); await modder.locator('#mods-catalogue .catalogue-row').first().waitFor();
     await modder.locator('#mods-root .file-drop input[type=file]').setInputFiles([{name: 'renamed-content.zip', mimeType: 'application/zip', buffer: Buffer.from(content.bytes)}, {name: 'my-tweaks.zip', mimeType: 'application/zip', buffer: custom}]);
     await modder.waitForFunction(() => document.querySelectorAll('#mods-root [data-badge="verified"]').length === 1 && document.querySelectorAll('#mods-root [data-badge="custom"]').length === 1);
     await modder.waitForFunction(() => /with mods/.test(document.getElementById('launch-label').textContent));

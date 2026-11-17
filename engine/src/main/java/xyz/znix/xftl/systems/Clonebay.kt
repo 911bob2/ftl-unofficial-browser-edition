@@ -410,6 +410,7 @@ class Clonebay(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         cloneProgress = 0f
 
         cloneSound.play()
+        xyz.znix.xftl.game.GameHaptics.crewCloned(ship)
 
         if (ship.sys.debugFlags.noClone.set)
             return

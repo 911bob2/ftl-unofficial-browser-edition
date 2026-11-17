@@ -383,7 +383,21 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         }
         val inUse = if (touchSellTab) 0 else if (xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)) minOf(1, overCapacityBoxes.size) else (4..5).count { overCapacityShown(it) }
         val arrows = buttons.filterIsInstance<ArrowButton>().filter { it.overPager }.joinToString(",") { r(it.pos.x, it.pos.y, it.size.x, it.size.y) }
-        return "\"over\":[$boxes],\"overPages\":$inUse,\"overArrows\":[$arrows]"
+        // Every item box (kind, index or cargo slot id, the item's blueprint name, its place): what a pointer carries.
+        val items = diagnosticItemBoxes().joinToString(",") {
+            "{\"kind\":\"${it.kind}\",\"index\":${it.index},\"item\":${ftl.browser.BrowserDebug.quote(it.item?.name)},\"locked\":${hsLocked(it.item)},\"rect\":${r(it.x, it.y, it.w, it.h)}}"
+        }
+        return "\"over\":[$boxes],\"overPages\":$inUse,\"overArrows\":[$arrows],\"items\":[$items]"
+    }
+
+    /** Tests: an item box as laid out now: its kind, its index (a cargo box's slot id), its item and its rectangle. */
+    class DiagnosticItemBox(val kind: String, val index: Int, val item: Blueprint?, val x: Int, val y: Int, val w: Int, val h: Int)
+
+    /** Tests: every weapon, drone, augment and cargo box (cargo slot 4 is the over-capacity item box's, 5 the augment box's). */
+    fun diagnosticItemBoxes(): List<DiagnosticItemBox> {
+        fun box(kind: String, index: Int, b: Buttons.DragDropBlueprintButton) = DiagnosticItemBox(kind, index, b.blueprint, b.pos.x, b.pos.y, b.size.x, b.size.y)
+        return weaponButtons.mapIndexed { i, b -> box("weapon", i, b) } + droneButtons.mapIndexed { i, b -> box("drone", i, b) } +
+            augmentButtons.map { box("augment", augmentIndex.getValue(it), it) } + cargoButtons.map { box("cargo", cargoSlots.getValue(it), it) }
     }
 
     fun drawDrag(g: Graphics) {
@@ -832,8 +846,10 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
             return null
         }
 
-        // Find the blueprint the user is trying to drop the item into
-        val hovered = target ?: buttons.firstOrNull { it.hovered } ?: return
+        // Find the blueprint the user is trying to drop the item into. The over-capacity box's slot lies on the
+        // box and is an EquipmentBox like the others (Equipment's box list, 0x5399f0 / MouseUp 0x539d40: an item
+        // dropped on it changes places with the one it holds), so the slot is looked for before the box under it.
+        val hovered = target ?: buttons.firstOrNull { it.hovered && !isLeaveBehindBox(it) } ?: buttons.firstOrNull { it.hovered } ?: return
         val weaponFrom = weaponButtons.indexOf(drag)
         val weaponTo = weaponButtons.indexOf(hovered)
         if (weaponFrom >= 0 && weaponTo >= 0) {
@@ -945,6 +961,10 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         Button(game, overBoxPos, ConstPoint(272, overCapacityHeight(titleKey, text1Key, gap, text2Key))) {
 
         override val makesHoverNoise: Boolean get() = false
+
+        // A warning, not a button: a finger that comes down on it, or on the slot inside it, presses at once, so
+        // the item in the slot can be picked up and carried off like any other.
+        override val touchLift: Boolean get() = false
 
         /** The augment box (overAugImage), else the item box (overBox). */
         val augmentBox = titleKey == "overcapacity_aug_title"

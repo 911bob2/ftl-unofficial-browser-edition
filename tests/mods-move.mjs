@@ -8,6 +8,7 @@ import {join} from 'node:path';
 import {chromium} from 'playwright';
 import {onboardingCookies} from './lib/onboarding.mjs';
 import {expectedConsoleError} from './lib/launch.mjs';
+import {openDetails} from './lib/input.mjs';
 
 const origin = process.env.MENU_ORIGIN ?? 'http://localhost:8084';
 assert.equal(origin, 'http://localhost:8084', 'Use the disposable 8084 fixture');
@@ -96,7 +97,7 @@ try {
     if ((await (await fetch('/api/auth/me')).json()).mustChangePassword) { r = await post('password', {currentPassword: initial, newPassword: password}); if (!r.ok) throw Error('rotation'); csrf = (await (await fetch('/api/auth/csrf')).json()).token; await post('login', {username: user, password}); }
   }, {user: 'user04', password: 'mods-move-password-user04', initial: initial.get('user04')});
   await page.goto(origin + '/?view=play'); await ready(page);
-  await page.locator('#mods-panel > summary').click();
+  await openDetails(page, '#mods-panel');
   const all = [hsFile, ...mvFiles];
   await page.locator('#mods-root .file-drop input[type=file]').setInputFiles(all);
   await page.waitForFunction(n => document.querySelectorAll('#mods-root [data-badge]').length >= n, all.length, {timeout: 600000});

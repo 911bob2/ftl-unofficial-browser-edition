@@ -69,6 +69,11 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     private GameMap gameMap;
     private Ship player;
     private Ship enemy;
+
+    /** The save revision the loaded run was written with (savegame.SaveMigrations); NOT_LOADED for a new or imported run. */
+    public int loadedSaveRevision = xyz.znix.xftl.savegame.SaveMigrations.NOT_LOADED;
+    /** What the migrations of this load did, one line each; the debug log has the same lines. */
+    public List<String> saveMigrationLines = java.util.Collections.emptyList();
     private ShipAI enemyAI;
 
     private LootPool lootPool;
@@ -286,6 +291,10 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         if (xyz.znix.xftl.hs.HS.modded) xyz.znix.xftl.hs.save.HsSpaceId.restoreEarly(root);
         loadGameState(root);
         isCurrentlyLoadingSave = false;
+        // A run of an older save revision is repaired here (savegame.SaveMigrations), before the ships' first update,
+        // so everything after it sees the repaired state.
+        loadedSaveRevision = xyz.znix.xftl.savegame.SaveMigrations.revisionOf(root);
+        saveMigrationLines = xyz.znix.xftl.savegame.SaveMigrations.migrate(this, loadedSaveRevision);
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.drones.DroneRuntime.hsCrewBodies(this);
         currentBeacon.getSector().clearVisitedEvents(currentBeacon);
 
@@ -2198,6 +2207,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
                 FTLSound arrive = getSounds().getSampleOrWarn("jumpArrive");
                 if (arrive != null) {
                     arrive.play();
+                    GameHaptics.moment(GameHaptics.ARRIVE);
                 }
             }
 
@@ -2260,6 +2270,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         FTLSound leave = getSounds().getSampleOrWarn("jumpLeave");
         if (leave != null) {
             leave.play();
+            GameHaptics.moment(GameHaptics.JUMP);
         }
     }
 
@@ -2623,6 +2634,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
      */
     public Document saveGameState() {
         Element root = new Element("xftlSaveGame");
+        xyz.znix.xftl.savegame.SaveMigrations.stamp(root);
         root.setAttribute("enableAE", Boolean.toString(enableAdvancedEdition));
         root.setAttribute("browserRngState", ftl.browser.BrowserRandom.snapshot());
         root.setAttribute("browserNativeRngState", ftl.browser.NativeRandom.snapshot());
@@ -3590,6 +3602,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             FTLSound eventDamage = getSounds().getSampleOrWarn("eventDamage");
             if (eventDamage != null) {
                 eventDamage.play();
+                GameHaptics.moment(GameHaptics.EVENT_DAMAGE);
             }
         }
         for (EventHullDamage damage : resources.getDamage()) {

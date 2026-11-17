@@ -14,6 +14,7 @@ import {chromium, firefox} from 'playwright';
 import {onboardingCookies, withOnboarding} from './lib/onboarding.mjs';
 import {expectedConsoleError} from './lib/launch.mjs';
 import {zipSync} from '../web/vendor/fflate-0.8.3.mjs';
+import {openDetails} from './lib/input.mjs';
 
 const origin = process.env.MENU_ORIGIN ?? 'http://localhost:8084';
 assert.equal(origin, 'http://localhost:8084', 'Use the disposable 8084 fixture');
@@ -103,7 +104,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
   try {
     await signIn(page, user);
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     const addFiles = files => page.locator('#mods-root .file-drop input[type=file]').setInputFiles(files);
 
     // ---- Too little browser storage: the file is refused at once, with the reason, in both ways it can happen --------
@@ -135,14 +136,14 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     // (The file is read before the write: Firefox took 36 s for 679 MB with other containers running. The old hang was 600 s.)
     assert.ok(await refusedBig('the browser refuses the write') < 90000, 'a refused write has to fail fast');
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     if (process.env.SOFTLOCK_FILL_QUOTA && name === 'Chromium') {
       // A real refusal, for a run by hand with a large file: other data fills the quota, the estimate is told to leave
       // room, and the browser itself refuses the write. The time it takes is printed, and the run stops there.
       const fillPage = page;
       fillPage.setDefaultTimeout(60000);
       await fillPage.goto(origin + '/?view=play'); await ready(fillPage);
-      await fillPage.locator('#mods-panel > summary').click();
+      await openDetails(fillPage, '#mods-panel');
       const left = await fillPage.evaluate(async size => {
         const db = await new Promise((resolve, reject) => { const r = indexedDB.open('softlock-fill', 1); r.onupgradeneeded = () => r.result.createObjectStore('fill'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
         const chunk = new Blob([crypto.getRandomValues(new Uint8Array(65536))]), big = new Blob(Array(1024).fill(chunk));
@@ -219,7 +220,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
 
     // ---- Missing: Play refuses and names the file -----------------------------------------------------------------
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     await page.getByRole('button', {name: 'Remove My Tweaks'}).click();
     await page.locator('#mods-remove-dialog-yes').click();
     await page.waitForFunction(n => document.querySelectorAll('#mods-root [data-badge]').length === n, hsFiles.length);
@@ -230,7 +231,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
 
     // ---- Different: the same name with other bytes is not the save's file ------------------------------------------
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     await addFiles([{name: 'my-tweaks.zip', mimeType: 'application/zip', buffer: other}]);
     await page.waitForFunction(n => document.querySelectorAll('#mods-root [data-badge]').length === n, hsFiles.length + 1);
     await savesPage(page);

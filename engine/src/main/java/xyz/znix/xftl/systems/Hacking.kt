@@ -440,6 +440,7 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         pulseDuration = duration
 
         startSound.play()
+        xyz.znix.xftl.game.GameHaptics.hackPulse(ship)
     }
 
     override fun hotkeyPressed(key: Hotkey) {

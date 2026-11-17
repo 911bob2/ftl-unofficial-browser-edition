@@ -14,10 +14,15 @@ import org.newdawn.slick.openal.OggInputStream;
 
 /**
  * Sound files to PCM. Ogg Vorbis goes through the engine's Java decoder: the platform's codec gives back one packet per
- * round trip, which took a four minute track about 90 s on the emulator, so music started that late. Anything else (WAV),
- * or an Ogg file that decoder refuses, goes through the platform's.
+ * round trip, which took a four minute track about 90 s on the emulator, so music started that late. Plain PCM in a
+ * WAV file is read here too: the platform's codec took 260 to 550 ms to set up for a click of 30 ms (emulator), so a
+ * button's sound came that late the first time, and again each time it had been freed. Anything else, or a file those
+ * two refuse, goes through the platform's.
  */
 final class PcmDecoder {
+    /** The platform's codec may go this long without taking or giving anything before the decode is given up. */
+    private static final long STALL_NANOS = 10_000_000_000L;
+
     private PcmDecoder() {
     }
 
@@ -47,7 +52,55 @@ final class PcmDecoder {
                 android.util.Log.w("FTL-Audio", "Java Ogg decoder refused a file: " + e);
             }
         }
-        return decodePlatform(file, stopped);
+        Pcm wav = decodeWav(file);
+        return wav != null ? wav : decodePlatform(file, stopped);
+    }
+
+    private static boolean tag(byte[] f, int at, String name) {
+        return f[at] == name.charAt(0) && f[at + 1] == name.charAt(1) && f[at + 2] == name.charAt(2) && f[at + 3] == name.charAt(3);
+    }
+
+    private static int le16(byte[] f, int at) {
+        return (f[at] & 0xff) | (f[at + 1] & 0xff) << 8;
+    }
+
+    private static int le32(byte[] f, int at) {
+        return le16(f, at) | le16(f, at + 2) << 16;
+    }
+
+    /**
+     * Uncompressed PCM, 8 or 16 bit, mono or stereo, in a RIFF file; null for anything else (the platform's decoder gets
+     * it). 16 bit samples as they are, 8 bit ones (unsigned) centred and widened. A data chunk that says more than the
+     * file holds gives what is there (some of the game's files have that, or bytes after it).
+     */
+    static Pcm decodeWav(byte[] f) {
+        if (f.length < 44 || !tag(f, 0, "RIFF") || !tag(f, 8, "WAVE")) return null;
+        int format = 0, channels = 0, rate = 0, bits = 0;
+        int at = 12;
+        while (at + 8 <= f.length) {
+            int length = le32(f, at + 4), body = at + 8;
+            if (length < 0) return null;
+            if (tag(f, at, "fmt ")) {
+                if (length < 16 || body + 16 > f.length) return null;
+                format = le16(f, body);
+                channels = le16(f, body + 2);
+                rate = le32(f, body + 4);
+                bits = le16(f, body + 14);
+            } else if (tag(f, at, "data")) {
+                if (format != 1 || (bits != 8 && bits != 16) || channels < 1 || channels > 2 || rate <= 0) return null;
+                int width = bits / 8;
+                int bytes = Math.min(length, f.length - body);
+                int samples = (bytes - bytes % (width * channels)) / width;
+                if (samples == 0) return null;
+                ShortBuffer out = ByteBuffer.allocateDirect(samples * 2).order(ByteOrder.nativeOrder()).asShortBuffer();
+                if (bits == 16) for (int i = 0; i < samples; i++) out.put(i, (short) le16(f, body + 2 * i));
+                else for (int i = 0; i < samples; i++) out.put(i, (short) (((f[body + i] & 0xff) - 128) << 8));
+                return new Pcm(out, channels, rate);
+            }
+            if (length > f.length - body) return null;
+            at = body + length + (length & 1);
+        }
+        return null;
     }
 
     /**
@@ -106,7 +159,7 @@ final class PcmDecoder {
         return new Pcm(target, channels, rate);
     }
 
-    private static Pcm decodePlatform(byte[] file, java.util.function.BooleanSupplier stopped) throws IOException {
+    static Pcm decodePlatform(byte[] file, java.util.function.BooleanSupplier stopped) throws IOException {
         MediaExtractor extractor = new MediaExtractor();
         MediaCodec codec = null;
         try {
@@ -133,11 +186,16 @@ final class PcmDecoder {
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             boolean inputDone = false, outputDone = false;
             byte[] chunk = new byte[0];
+            // A codec that neither takes input nor gives output would hold the one decoder thread for ever, and with it
+            // every sound not decoded yet. The failed decode is tried again when the sound is next played (MixerCore).
+            long progress = System.nanoTime();
             while (!outputDone) {
                 if (stopped.getAsBoolean()) return null;
+                if (System.nanoTime() - progress > STALL_NANOS) throw new IOException("The decoder stalled");
                 if (!inputDone) {
                     int in = codec.dequeueInputBuffer(1_000);
                     if (in >= 0) {
+                        progress = System.nanoTime();
                         ByteBuffer buffer = codec.getInputBuffer(in);
                         int size = extractor.readSampleData(buffer, 0);
                         if (size < 0) {
@@ -156,6 +214,7 @@ final class PcmDecoder {
                     channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
                     rate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE);
                 } else if (outIndex >= 0) {
+                    progress = System.nanoTime();
                     ByteBuffer buffer = codec.getOutputBuffer(outIndex);
                     if (info.size > 0 && buffer != null) {
                         if (chunk.length < info.size) chunk = new byte[info.size];

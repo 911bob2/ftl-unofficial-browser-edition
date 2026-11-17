@@ -58,6 +58,39 @@ export async function audioClockChecks(){
     await new Promise(resolve=>setTimeout(resolve,0));await new Promise(resolve=>setTimeout(resolve,0));
     assert.equal(audio.call('getSource',missing,0x1010),0x1011,'A missing track must not play or end');
     audio.call('deleteSource',missing);
+    // A sound that is there but failed to load once (a request that failed, report 106) is asked for again when it is
+    // next played, once its wait is over: it must not stay silent until the page is reloaded. A missing file is never
+    // asked for.
+    const tick=async()=>{for(let i=0;i<4;i++)await new Promise(resolve=>setTimeout(resolve,0));};
+    let requests=0;
+    const flaky=createAudio({audio:[{name:'flaky.ogg'}]},async()=>{if(requests++===0)throw Error('The request failed');return new ArrayBuffer(1);},context);
+    const flakySource=flaky.call('source'),flakyBuffer=flaky.buffer('flaky.ogg');
+    flaky.call('sourcei',flakySource,0x1009,flakyBuffer);flaky.call('play',flakySource);await tick();
+    assert.equal(flaky.call('getSource',flakySource,0x1010),0x1011,'A sound that failed to load must not play or end');
+    flaky.call('play',flakySource);await tick();
+    assert.equal(requests,1,'A failed sound must not be asked for again before its wait is over');
+    flaky.buffers.get(flakyBuffer).retryAt=0;
+    flaky.call('play',flakySource);await tick();
+    assert.equal(requests,2,'A failed sound must be asked for again when it is next played');
+    assert.equal(flaky.call('getSource',flakySource,0x1010),0x1012,'A sound whose second load worked must play');
+    assert.equal(flaky.buffer('flaky.ogg'),flakyBuffer,'The sound keeps its id');
+    flaky.call('play',flakySource);await tick();assert.equal(requests,2,'A loaded sound is not asked for again');
+    flaky.buffer('none.ogg');flaky.call('sourcei',flakySource,0x1009,flaky.buffer('none.ogg'));flaky.call('play',flakySource);await tick();
+    flaky.call('play',flakySource);await tick();assert.equal(requests,2,'A missing file is never asked for');
+    // An effect that waits for an audio context that does not resume gives its voice back after two seconds; a loop and
+    // the music wait on. Its late start is cancelled.
+    let clock=0,started=0;
+    const stuck=createAudio({audio:[{name:'hit.ogg'},{name:'audio/music/a.ogg'}]},async()=>new ArrayBuffer(1),{...context,state:'suspended',resume:()=>new Promise(()=>{}),
+      createBufferSource(){started++;return {playbackRate:{value:1},connect(){},disconnect(){},start(){},stop(){}};}},()=>clock);
+    const hit=stuck.buffer('hit.ogg'),effect=stuck.call('source'),loop=stuck.call('source'),music=stuck.call('source');
+    stuck.call('sourcei',effect,0x1009,hit);stuck.call('play',effect);
+    stuck.call('sourcei',loop,0x1009,hit);stuck.call('sourcei',loop,0x1007,1);stuck.call('play',loop);
+    stuck.music(music,'audio/music/a.ogg');await tick();
+    clock=2000;assert.equal(stuck.call('getSource',effect,0x1010),0x1012,'An effect waits up to two seconds');
+    clock=2001;assert.equal(stuck.call('getSource',effect,0x1010),0x1014,'An effect that waited over two seconds gives its voice back');
+    clock=60000;assert.equal(stuck.call('getSource',loop,0x1010),0x1012,'A loop waits');
+    assert.equal(stuck.call('getSource',music,0x1010),0x1012,'Music waits');assert.equal(started,0);
+    stuck.call('play',effect);clock=61000;assert.equal(stuck.call('getSource',effect,0x1010),0x1012,'The next play of it waits anew');
   } finally {console.error=quiet;}
   // Firefox rejects a pending resume when a test/game closes its AudioContext.
   // Deleting the waiting source must consume that rejection and never start it.
@@ -83,7 +116,7 @@ export async function audioClockChecks(){
   assert.deepEqual(failures,['Device unavailable']);
   gestureContext.resume=async()=>{gestureContext.state='running';};
   assert.equal(await resumeAudio(gestureContext,error=>failures.push(error.message)),true);
-  return 'PASS audio clock, pitch changes, pause/resume, seek, stop, missing files, pending source/gesture resume cancellation, retry and cleanup';
+  return 'PASS audio clock, pitch changes, pause/resume, seek, stop, missing files, a failed load tried again, a waiting effect given up, pending source/gesture resume cancellation, retry and cleanup';
 }
 
 export async function framePacingChecks(){

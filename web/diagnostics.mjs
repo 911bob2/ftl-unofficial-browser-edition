@@ -146,6 +146,10 @@ async function fetchBytes(path){const r=await fetch(path,{cache:'no-cache'});if(
 // The loading screen over the preview while an engine starts, instead of the new canvas's black.
 function showLoading(text){$('preview-empty').hidden=false;$('preview-empty').textContent=text;$('preview-status').textContent='Loading…';}
 let modLaunch=null;
+// The run's verified game bundle, for each engine it boots (one per mode or case; Multiverse's is 513 MB): the server
+// provider reads and hashes it again on every call, beside the copy the stopped engine still holds.
+let bootBytes=null;
+const fetchBoot=async()=>bootBytes?.byteLength?bootBytes:(bootBytes=await assets.fetchBoot());
 /** The merged mod files of `kind` for this run (one set kept at a time; a packaged fixture's data is already merged). */
 async function modFiles(kind){
  if(modSets[kind].preloaded)return null;
@@ -164,8 +168,11 @@ async function boot(ae,mods=null,label='the temporary engine'){
  // or a later engine's scripts call into the stopped one (and keep it in memory).
  delete window.ftlHsLua;
  const launch=mods?await modFiles(mods):null;
- engine=await loadGame({canvas:$('game'),manifest:launch?.manifest??manifest,fetchBoot:launch?.fetchBoot??assets.fetchBoot,fetchEngine:assets.fetchEngine,fetchAudio:launch?.fetchAudio??assets.fetchAudio,mods:launch?.overlay??null,onProgress:status,onSave:()=>{},ae,audioContext,closeAudioContext:false});engine.suspend(true);window.diagnosticSeed('71');$('preview-empty').hidden=true;$('preview-status').textContent='Temporary run';
+ engine=await loadGame({canvas:$('game'),manifest:launch?.manifest??manifest,fetchBoot:launch?.fetchBoot??fetchBoot,fetchEngine:assets.fetchEngine,fetchAudio:launch?.fetchAudio??assets.fetchAudio,mods:launch?.overlay??null,onProgress:status,onSave:()=>{},ae,audioContext,closeAudioContext:false});engine.suspend(true);window.diagnosticSeed('71');$('preview-empty').hidden=true;$('preview-status').textContent='Temporary run';
 }
+// The campaign's AE and vanilla halves (tests/baseline.mjs BASELINE_CAMPAIGN): ?campaign=ae or ?campaign=vanilla runs that
+// half alone on the page's first engine: a second Multiverse engine start in one page adds several GB within seconds.
+const campaignHalves=()=>{const half=new URLSearchParams(location.search).get('campaign');return half==='ae'?[true]:half==='vanilla'?[false]:[true,false];};
 const probes={mechanics:'mechanicsProbe',progress:'progressProbe',combat:'combatProbe',interaction:'interactionProbe',warnings:'warningsProbe','gameplay-options':'optionsProbe','gameplay-parity':'gameplayParityProbe','ae-mode':'aeProbe',drones:'droneProbe',unlocks:'unlockProbe',achievements:'achievementProbe',tutorial:'tutorialProbe','tutorial-isolation':'tutorialIsolationProbe','tutorial-gates':'tutorialGatesProbe','tutorial-adapter':'tutorialAdapterProbe','tutorial-overlay':'tutorialOverlayProbe','tutorial-entry':'tutorialEntryProbe','tutorial-encounters':'tutorialEncountersProbe','tutorial-play':'tutorialPlayProbe'};
 // Browser modules: checks of the page's own code with in-memory inputs only (no saves, account, mod library or storage).
 const vectors='/web/test-vectors/mods/',loadVector=name=>name.endsWith('.json')?fetch(vectors+name,{cache:'no-cache'}).then(r=>{if(!r.ok)throw Error('Test vectors unavailable (HTTP '+r.status+')');return r.json();}):import(vectors+name);
@@ -235,7 +242,7 @@ async function run(ids,resumeId=null){
    else if(id==='server')await record(label,()=>serverTests(resumeId));
    else if(id==='hs-rules'||id==='mv-rules'){for(const [name,probe] of gameplayRules){await boot(true,suite.mods,label);if(cancelled)throw new DOMException('Stopped','AbortError');await record((id==='hs-rules'?'Hyperspace':'Multiverse')+' · '+name,()=>window[probe]());}}
    else{
-    await boot(id!=='vanilla',suite.mods??null,label);if(cancelled)throw new DOMException('Stopped','AbortError');
+    await boot(id==='campaign'?campaignHalves()[0]:id!=='vanilla',suite.mods??null,label);if(cancelled)throw new DOMException('Stopped','AbortError');
     if(suite.mods)await settleMenu();
     if(id==='hs-core'||id==='mv-core')await record(label,()=>hsCore(id==='mv-core'));
     else if(id==='mv-lua')await record(label,()=>window.hsLuaProbe(0));
@@ -245,7 +252,7 @@ async function run(ids,resumeId=null){
     else if(id==='audio')await record(label,checkAudio);
     else if(id==='performance')await benchmark();
     else if(id==='hs-lua'){await (await import('./hs-lua.mjs'+version)).loadHsLua(version);await record(label,()=>window.hsLuaProbe(0));}
-    else if(id==='campaign'){for(const ae of [true,false]){if(!ae)await boot(false);for(let difficulty=0;difficulty<3;difficulty++)for(const seed of [71,537])await record(`${ae?'AE':'Vanilla'} campaign · difficulty ${difficulty} · seed ${seed}`,()=>window.campaignProbe(difficulty,seed));}}
+    else if(id==='campaign'){const halves=campaignHalves();for(const ae of halves){if(ae!==halves[0])await boot(ae);for(let difficulty=0;difficulty<3;difficulty++)for(const seed of [71,537])await record(`${ae?'AE':'Vanilla'} campaign · difficulty ${difficulty} · seed ${seed}`,()=>window.campaignProbe(difficulty,seed));}}
     else if(id==='encounters'){const [from,count]=(new URLSearchParams(location.search).get('encounters')??'').split(',').map(Number),all=window.encounterList().split('\n');for(const name of count?all.slice(from,from+count):all)if(await record('Encounter '+name,()=>window.encounterProbe(name,6))===undefined)await boot(true);/* an engine that threw is not fit for the next case */}
     else{const ships=window.shipList().split('\n');for(const ship of ships)for(let difficulty=0;difficulty<3;difficulty++)await record(ship+' · difficulty '+difficulty,()=>window.probe(ship,difficulty));}
    }
@@ -256,7 +263,7 @@ async function run(ids,resumeId=null){
  finally{
   try{engine?.stop();}catch(e){report.error??=e.message;log('Cleanup failed: '+e.message);}engine=null;if($('preview-empty').hidden)$('preview-status').textContent='Finished · last frame';report.finished=new Date().toISOString();report.status=cancelled?'cancelled':report.error||report.results.some(r=>r.status==='failed')?'failed':'passed';
   await audioContext?.close().catch(()=>{});audioContext=null;
-  assets?.dispose();assets=null;modLaunch=null;runController=null;document.body.dataset.workload='';busy=false;
+  assets?.dispose();assets=null;bootBytes=null;modLaunch=null;runController=null;document.body.dataset.workload='';busy=false;
   status(report.status==='passed'?'Completed':report.status==='cancelled'?'Stopped':'Completed with failures');log('DONE '+report.status);summarize();
   if(report.error)showView('cases');lockControls(false);
  }

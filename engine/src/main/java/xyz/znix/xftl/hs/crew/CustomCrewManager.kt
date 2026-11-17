@@ -71,6 +71,12 @@ object CustomCrewManager {
         return true
     }
 
+    /** Diagnostics (the twin probe): drops every definition GetDefinition inserted, as at a game launch. */
+    @JvmStatic
+    fun forgetAllImplicit() {
+        blueprintNames.entries.removeIf { it.value.implicit }
+    }
+
     /** The definition without HS's insert-on-lookup (for UI/diagnostics). */
     @JvmStatic
     fun definitionOrNull(name: String?): CrewDefinition? = name?.let { blueprintNames[it] }

@@ -1,3 +1,5 @@
+import {hangError,hangMs} from './lib/hang.mjs';
+import {flush,gameWait,steppedClock} from './lib/input.mjs';
 // Multiverse's tutorial (MV 5.5.1: <disableDefaultTutorial>, data/mv_scripts/tutorial.lua) from the real main menu,
 // against the original (oracle session bt-mv-tutorial4 in tools/hs-oracle/sessions/bugs-tests.json). Screenshots of each
 // step go to MVT_OUT; the probe lines come from the page's engine snapshot.
@@ -16,13 +18,15 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const session=JSON.parse(await readFile(process.env.FTL_HS_MOD_SESSION,'utf8'));
 const browser=withOnboarding(await chromium.launch({headless:true,args:['--disable-dev-shm-usage']}),origin),context=await browser.newContext({viewport:{width:1280,height:720}}),page=await context.newPage();
 // Every Lua log line to the page console (the engine only warns about errors there by itself).
 await context.addInitScript(()=>{window.ftlHsLuaLog=(kind,text)=>console.log('[Lua] '+text);});
+// The session's pauses are game time (lib/input.mjs): the oracle waited N seconds of a full-speed game.
+await steppedClock(context);
 const errors=[],logs=[];page.setDefaultTimeout(120000);
 page.on('pageerror',e=>errors.push('PAGE '+e.message));page.on('crash',()=>errors.push('PAGE CRASHED'));
 page.on('console',e=>{const t=e.text();if(e.type()==='error'&&!expectedConsoleError(e))errors.push('CONSOLE '+t);else logs.push(t);});
@@ -200,51 +204,65 @@ try{
  console.log('PASS main menu');
  const snap=async()=>JSON.parse(await page.evaluate(()=>window.ftlEngine.debugSnapshot()));
  const at=async(x,y)=>{const box=await page.locator('#game').boundingBox(),s=Math.min(box.width/1280,box.height/720);return [box.x+(box.width-1280*s)/2+x*s,box.y+(box.height-720*s)/2+y*s];};
- const click=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.up();await page.waitForTimeout(400);};
+ // Each input is handled by the game (flush) before the next step looks at the game or sends more (lib/input.mjs).
+ const click=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.up();await flush(page);await gameWait(page,0.4);};
  const shot=async name=>page.locator('#game').screenshot({path:join(out,name+'.png')});
  // One game pixel's colour from a 2x2 page screenshot at its place (as tests/ui-presentation.mjs reads it).
  const pixel=async(x,y)=>{const [px,py]=await at(x,y);const png=await page.screenshot({clip:{x:px,y:py,width:2,height:2}});
   return page.evaluate(async b=>{const m=await createImageBitmap(new Blob([Uint8Array.from(atob(b),c=>c.charCodeAt(0))],{type:'image/png'}));
    const c=new OffscreenCanvas(m.width,m.height),g=c.getContext('2d');g.drawImage(m,0,0);m.close();return [...g.getImageData(0,0,1,1).data].slice(0,3);},png.toString('base64'));};
- await page.waitForTimeout(2000);
- if((await snap()).window==='WelcomeChoiceBox'){await page.locator('#game').press('1');await page.waitForTimeout(500);}
+ await gameWait(page,2);
+ if((await snap()).window==='WelcomeChoiceBox'){await page.locator('#game').press('1');await flush(page);await gameWait(page,0.5);}
  await shot('00-menu');
- await click(1070,423);await page.waitForTimeout(3000);
+ await click(1070,423);await gameWait(page,3);
  const s=await snap();await writeFile(join(out,'snapshot.json'),JSON.stringify(s,null,1));
  assert.equal(s.state,'InGameState','the tutorial runs');assert.equal(s.ship,'PLAYER_SHIP_TUTORIAL');
  // The steps of the oracle session bt-mv-tutorial4: the same clicks and keys, the same Lua probes of tutorial.lua's text
  // boxes (BT.box logs the current lesson and its first box), BT.cont for a lesson that only waits for its Continue.
- const key=async k=>{await page.locator('#game').press(k);await page.waitForTimeout(250);};
+ const key=async k=>{await page.locator('#game').press(k);await flush(page);await gameWait(page,0.25);};
  // A choice box's answer: wait until the box takes input, press, then until it is gone or another opened (true then).
  const box=d=>d&&d.event+JSON.stringify(d.choices);
- const answer=async k=>{let d=null;for(let i=0;i<80&&!(d=(await snap()).dialogue)?.ready;i++)await page.waitForTimeout(250);if(!d?.ready)return false;
-  await key(k);for(let i=0;i<16;i++){const e=(await snap()).dialogue;if(e&&box(e)!==box(d))return true;await page.waitForTimeout(250);}return false;};
+ const answer=async k=>{let d=null;for(let i=0;i<80&&!(d=(await snap()).dialogue)?.ready;i++)await gameWait(page,0.25);if(!d?.ready)return false;
+  await key(k);for(let i=0;i<16;i++){const e=(await snap()).dialogue;if(e&&box(e)!==box(d))return true;await gameWait(page,0.25);}return false;};
  // The console opens only once the start jump's fly-in is over (HS: not while the ship jumps), as in the original.
- const consoleOpen=()=>page.evaluate(()=>/^open=true/.test(window.hsWp7UiProbe('console')));
- const command=async c=>{for(let i=0;!await consoleOpen();i++){assert.ok(i<40,'the console opens');await key('Backslash');await page.waitForTimeout(250);}
-  await page.keyboard.type('LUA '+c,{delay:5});await key('Enter');await page.waitForTimeout(500);
+ // The console's line as the engine has it ("left the game": a command that ended the run, as the last BT.cont()).
+ const consoleLine=()=>page.evaluate(()=>JSON.parse(window.ftlEngine.debugSnapshot()).state!=='InGameState'?'left the game':window.hsWp7UiProbe('console').replace(/ paused=\w+$/,''));
+ const consoleOpen=async()=>/^open=true/.test(await consoleLine());
+ // A probe line logged since [from] (BT.box / BT.pt answer the typed command with one).
+ const traced=async(from,k,tag)=>{const end=Date.now()+hangMs(120000);
+  while(!logs.slice(from).some(l=>l.includes('"k":"'+k+'"')&&l.includes('"tag":"'+tag+'"'))){if(Date.now()>end)throw hangError('the '+k+' line tagged '+tag,120000);await page.waitForTimeout(50);}};
+ // The console key opens the console, and in the open console it types its character (HS's InputBox takes every typed
+ // character; only Escape closes it). Each press is handled (key() flushes) before the next look, so a press still
+ // queued in the page can no longer type a '\' in front of the command (`\LUA ...`: unknown, nothing logged).
+ const command=async c=>{for(let i=0;!await consoleOpen();i++){assert.ok(i<40,'the console opens');await key('Backslash');await gameWait(page,0.25);}
+  const line='LUA '+c,from=logs.length;
+  await page.keyboard.type(line,{delay:5});await flush(page);
+  assert.equal(await consoleLine(),'open=true text='+line+' cursor='+line.length,'the console has the typed line');
+  await key('Enter');const ran=await consoleLine();assert.ok(ran==='open=true text= cursor=0'||ran==='left the game','the console ran the line: '+ran);
+  const probe=/^BT\.(box|pt)\('(\w+)'\)$/.exec(c);if(probe)await traced(from,probe[1]==='box'?'tbox':'pt',probe[2]);
+  await gameWait(page,0.5);
   // HS's console box closes on Enter (InputBox::TextEvent, TEXT_CONFIRM); the port's console stays open to show its
   // output (docs/CONSOLE.md), so it is closed here before the next click goes to the game, as in the oracle session.
-  if(await consoleOpen()){await key('Escape');await page.waitForTimeout(250);}
+  if(await consoleOpen()){await key('Escape');await gameWait(page,0.25);}
   assert.ok(!await consoleOpen(),'the console closes');};
  // Lua runs through HS's console command LUA, as the oracle's lua step types it.
  await command(BOX);await command(CONT);await command(WATCH);await command(PT);
  for(const step of STEPS){
   if(step[0]==='click')await click(step[1],step[2]);else if(step[0]==='key')await key(step[1]);else if(step[0]==='lua')await command(step[1]);
-  else if(step[0]==='wait')await page.waitForTimeout(step[1]*1000);else if(step[0]==='shot')await shot(step[1]);
+  else if(step[0]==='wait')await gameWait(page,step[1]);else if(step[0]==='shot')await shot(step[1]);
   // tutorial.lua draws its boxes in the SHIP_STATUS render event, which the original draws after the enemy's target
   // window: the box's white frame over the target window stays white (oracle ps-u5-mvt 14-fight-icon, frame 4 px wide).
   else if(step[0]==='white'){for(let i=1;i<step.length;i+=2){const c=await pixel(step[i],step[i+1]);assert.ok(c.every(v=>v>=235),'the tutorial box frame at '+step[i]+','+step[i+1]+' is '+c+', not white over the target window');}}
-  else if(step[0]==='move'){const [px,py]=await at(step[1],step[2]);await page.mouse.move(px,py);}
+  else if(step[0]==='move'){const [px,py]=await at(step[1],step[2]);await page.mouse.move(px,py);await flush(page);}
   else if(step[0]==='movetrace'){const line=logs.map(l=>l.slice(l.indexOf('{'))).find(l=>l.includes('"k":"'+step[1]+'"')&&l.includes('"tag":"'+step[2]+'"'));
-   assert.ok(line,'no '+step[1]+' line tagged '+step[2]);const p=JSON.parse(line);const [px,py]=await at(p.x,p.y);await page.mouse.move(px,py);await page.waitForTimeout(300);}
-  else if(step[0]==='mdown'){await page.mouse.down();await page.waitForTimeout(150);}else if(step[0]==='mup'){await page.mouse.up();await page.waitForTimeout(400);}
+   assert.ok(line,'no '+step[1]+' line tagged '+step[2]);const p=JSON.parse(line);const [px,py]=await at(p.x,p.y);await page.mouse.move(px,py);await flush(page);await gameWait(page,0.3);}
+  else if(step[0]==='mdown'){await page.mouse.down();await flush(page);await gameWait(page,0.15);}else if(step[0]==='mup'){await page.mouse.up();await flush(page);await gameWait(page,0.4);}
   // The oracle's choice-box steps: pick answers the box showing now, choose answers boxes in turn ("1*": 1 until none opens).
   else if(step[0]==='pick'){assert.ok(await answer(step[2]),'pick '+step[1]+': no box opened next');}
   else if(step[0]==='choose'){const keys=step[1].split(' '),repeat=keys.at(-1).endsWith('*');if(repeat)keys[keys.length-1]=keys.at(-1).slice(0,-1);
    for(let i=0;i<40;i++){const k=keys[Math.min(i,keys.length-1)],opened=await answer(k),last=i>=keys.length-1;if(last&&(!repeat||!opened))break;assert.ok(opened,'choose '+step[1]+': press '+(i+1)+' opened no box');}}
-  else if(step[0]==='waittrace'){for(let i=0;i<step[2]*4&&!(await snap()).dialogue;i++)await page.waitForTimeout(250);}}
- await page.waitForTimeout(500);
+  else if(step[0]==='waittrace'){for(let i=0;i<step[2]*4&&!(await snap()).dialogue;i++)await gameWait(page,0.25);}}
+ await gameWait(page,0.5);
  const boxes=logs.filter(l=>l.includes('"k":"tbox"')).map(l=>JSON.parse(l.slice(l.indexOf('{'),l.lastIndexOf('}')+1)));
  await writeFile(join(out,'tbox.json'),JSON.stringify(boxes,null,1));
  console.log('boxes '+JSON.stringify(boxes));

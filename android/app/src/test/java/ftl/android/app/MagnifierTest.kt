@@ -128,11 +128,14 @@ class MagnifierTest {
 
     @Test
     fun itsHapticHasItsOwnSwitch() {
-        val magnifier = Haptics.Action.of(TouchHaptics.MAGNIFIER)
-        assertEquals(Haptics.Action.MAGNIFIER, magnifier)
+        val magnifier = Haptics.Moment.of(TouchHaptics.MAGNIFIER)
+        assertEquals(Haptics.Moment.MAGNIFIER, magnifier)
         assertEquals("Magnifier", magnifier!!.title)
-        assertNull(Haptics.planFor(TouchHaptics.MAGNIFIER, 1, Haptics.Strength.MEDIUM, Haptics.Kind.PRIMITIVES, setOf(Haptics.Action.POWER)))
-        assertNotNull(Haptics.planFor(TouchHaptics.MAGNIFIER, 1, Haptics.Strength.MEDIUM, Haptics.Kind.PRIMITIVES, setOf(Haptics.Action.MAGNIFIER)))
-        assertNull(Haptics.planFor(TouchHaptics.POWER, 1, Haptics.Strength.MEDIUM, Haptics.Kind.PRIMITIVES, setOf(Haptics.Action.MAGNIFIER)))
+        val both = Haptics.Settings.DEFAULT
+        val off = Haptics.Strength.OFF
+        fun plan(what: Int, s: Haptics.Settings) = Haptics.planFor(what, 1, s, Haptics.Kind.PRIMITIVES, true)
+        assertNull(plan(TouchHaptics.MAGNIFIER, both.with(Haptics.Moment.MAGNIFIER, off)))
+        assertNotNull(plan(TouchHaptics.MAGNIFIER, both.with(Haptics.Moment.POWER, off)))
+        assertNull(plan(TouchHaptics.POWER, both.with(Haptics.Moment.POWER, off)))
     }
 }

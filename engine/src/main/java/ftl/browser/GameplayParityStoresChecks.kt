@@ -15,7 +15,7 @@ import xyz.znix.xftl.vanillasave.VanillaSaveWriter
 import xyz.znix.xftl.weapons.DroneBlueprint
 
 /**
- * Checks for store generation (see the stores section of AGENT_HANDOFF.md):
+ * Checks for store generation (see the stores section of the project notes):
  * the sections, items, crew, systems and resources of a store for a known
  * stream state and ship, the drone control rules, and the saves.
  *

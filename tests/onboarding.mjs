@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // Server-side behaviour of first-visit onboarding, public registration, persistent sessions, account deletion and the
 // single bootstrap administrator. Disposable instances only: the main fixture (ACCOUNT_TEST_ORIGIN) plus two instances
 // this script starts itself for settings that must be fixed at start-up (forced-closed registration, an hourly cap).
@@ -198,7 +199,7 @@ async function start(port,dir,extra={}){
  const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_ENVIRONMENT:'Development',FTL_DATA_DIR:dir,FTL_ASSETS_DIR:assets,PUBLIC_ORIGIN:'http://localhost:'+port,TRUSTED_PROXIES:'127.0.0.1',FTL_TEST_RUNNER_ENABLED:'false',...extra};
  for(const key of ['FTL_PUBLIC_LIMIT','FTL_LOGIN_LIMIT','FTL_REGISTER_LIMIT','FTL_PUBLIC_REGISTRATION','FTL_REGISTRATION_HOURLY_LIMIT'])if(!(key in extra))delete env[key];
  const child=spawn('dotnet',[dll],{cwd:dirname(dll),stdio:'ignore',env});children.add(child);child.on('exit',()=>children.delete(child));
- const deadline=Date.now()+40000;while(!await fetch('http://localhost:'+port+'/health/ready').then(r=>r.ok).catch(()=>false)){if(child.exitCode!==null||Date.now()>deadline)throw Error('Instance on '+port+' did not start');await pause(250);}
+ const deadline=Date.now()+hangMs(40000);while(!await fetch('http://localhost:'+port+'/health/ready').then(r=>r.ok).catch(()=>false)){if(child.exitCode!==null||Date.now()>deadline)throw Error('Instance on '+port+' did not start');await pause(250);}
  return child;
 }
 async function stop(child){if(child.exitCode!==null)return;child.kill('SIGTERM');await new Promise(resolve=>{child.once('exit',resolve);setTimeout(()=>{child.kill('SIGKILL');resolve();},3000).unref();});}

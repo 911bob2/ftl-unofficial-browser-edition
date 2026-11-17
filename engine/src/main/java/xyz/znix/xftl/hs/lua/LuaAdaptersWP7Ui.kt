@@ -606,8 +606,11 @@ object LuaAdaptersWP7Ui {
      * SetMaxTime (the goal), ResetMinMax(min, max), Start(int goal), Update (one frame of time) and Done's new random
      * goal for a looping timer.
      */
+    /** The draws of a looping script timer's next goal (unseeded); the twin probe seeds it with its `rng`. */
+    @JvmField val timerRandom = java.util.Random()
+
     private fun timers() {
-        val random = java.util.Random()
+        val random = timerRandom
         val make = LuaMethod { n ->
             val t = if (n >= 2) LuaOwnTimer(arg.int(2), arg.int(1)) else LuaOwnTimer(0, 0)
             ret.obj(t, A.T_TimerHelper)

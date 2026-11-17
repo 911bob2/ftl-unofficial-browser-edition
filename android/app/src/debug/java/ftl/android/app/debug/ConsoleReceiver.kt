@@ -56,6 +56,29 @@ class ConsoleReceiver : BroadcastReceiver() {
             context.getSharedPreferences(ftl.android.app.icons.AppIcons.PREFS, Context.MODE_PRIVATE).edit().putBoolean("refused", cmd.endsWith("on")).apply()
             return
         }
+        if (cmd.startsWith("haptic ")) {
+            // haptic <number> [amount]: a TouchHaptics kind or GameHaptics moment, as the engine reports it to the running game.
+            val a = cmd.substring(7).trim().split(' ')
+            ftl.android.AndroidHost.get().haptic(a[0].toInt(), a.getOrNull(1)?.toInt() ?: 1)
+            return
+        }
+        if (cmd.startsWith("hapticset ")) {
+            // hapticset strength <OFF|LIGHT|MEDIUM|STRONG> | preset <touch|light|combat|full> | level <moment key> <strength>:
+            // Settings > Haptics without the screen; a running game keeps what it started with.
+            val a = cmd.substring(10).trim().split(' ')
+            val now = ftl.android.app.game.Haptics.saved(context)
+            val off = ftl.android.app.game.Haptics.Strength.OFF
+            val strength = { s: String -> ftl.android.app.game.Haptics.Strength.valueOf(s.uppercase()) }
+            val next = when (a[0]) {
+                "strength" -> now.copy(master = strength(a[1]))
+                "preset" -> now.with(ftl.android.app.game.Haptics.Preset.entries.first { it.key == a[1] })
+                else -> now.with(ftl.android.app.game.Haptics.Moment.entries.first { it.key == a[1] }, strength(a[2]))
+            }
+            ftl.android.app.game.Haptics.save(context, next)
+            Log.i(ftl.android.app.game.Haptics.TAG, "settings strength=${next.master} preset=${next.preset?.key ?: "custom"} on=" +
+                ftl.android.app.game.Haptics.Moment.entries.filter { next.level(it) != off }.joinToString(",") { it.key + ":" + next.level(it).name[0] })
+            return
+        }
         if (cmd.startsWith("hapticdevice ")) {
             // Pretends a weaker vibrator (PRIMITIVES, AMPLITUDE, ON_OFF, NONE) for Settings > Haptics; "auto" is the real one.
             val k = cmd.substringAfter(' ').uppercase()
@@ -118,6 +141,17 @@ class ConsoleReceiver : BroadcastReceiver() {
             Thread { ftl.android.audio.PcmCheck.run(cmd.substring(9)) }.start()
             return
         }
+        if (cmd.startsWith("audiocache ")) {
+            // Another size for the mixer's cache of decoded sounds (MB), to see sounds freed and decoded again.
+            ftl.android.audio.AudioMixer.get().setCacheBytes(cmd.substring(11).trim().toLong() shl 20)
+            Log.i("FTL-Audio", ftl.android.audio.AudioMixer.get().stats())
+            return
+        }
+        if (cmd.startsWith("audiostate ")) {
+            // One sound's state in the mixer: ready, decoding, freed, failed or missing.
+            Log.i("FTL-Audio", "state " + ftl.android.audio.AudioMixer.get().describe(cmd.substring(11).trim()))
+            return
+        }
         if (cmd.startsWith("audiobuf ")) {
             // Decodes a sound into the mixer's cache without playing it.
             ftl.android.audio.AudioMixer.get().buffer(cmd.substring(9))
@@ -172,6 +206,11 @@ class ConsoleReceiver : BroadcastReceiver() {
                     c!!.javaClass.getDeclaredField("index").apply { isAccessible = true }.setInt(c, i)
                     c.javaClass.getDeclaredField("canContinue").apply { isAccessible = true }.setBoolean(c, def!!.steps[i].continueButton)
                 }
+            }
+            else if (cmd.startsWith("playsound ")) {
+                // playsound <sounds.xml name>: plays that effect once, as the game does.
+                state.sounds.getSample(cmd.substring(10).trim()).play()
+                Log.i("FTL-Audio", "played " + cmd.substring(10).trim())
             }
             else if (cmd.startsWith("showevent ")) state.debugShowEvent(cmd.substring(10))
             else if (cmd == "power") {

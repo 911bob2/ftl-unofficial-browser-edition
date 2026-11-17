@@ -176,10 +176,14 @@ internal object GameplayHudU1Checks {
         ship.health = ship.maxHealth
         main.render(container, graphics)
         val hull = { n: Int -> xyz.znix.xftl.hs.render.HsConsole.run(state, "HULL $n"); main.render(container, graphics) }
+        // The warning runs 6 s of real time from the fall (WarningFlasher keeps System.nanoTime): its end must lie 6 s
+        // after a moment between just before and just after the fall, however long the fall and its frame took.
+        val before = System.nanoTime()
         hull(-(ship.maxHealth / 3))
+        val after = System.nanoTime()
         val (t75, run75, stop75) = state.shipUI.diagnosticHullWarning()
         check(run75 && t75 == tr["warning_hull_75"]) { "below 75 %: $run75 ${t75.replace("\n", "|")}" }
-        check(stop75 - System.nanoTime() in 5_000_000_000L..6_000_000_000L) { "the warning runs ${stop75 - System.nanoTime()} ns, not 6 s" }
+        check(stop75 in before + 6_000_000_000L..after + 6_000_000_000L) { "the warning ends ${stop75 - before} ns after the fall began (${after - before} ns for the fall), not 6 s" }
         val until = System.nanoTime() + 30_000_000L
         while (System.nanoTime() < until) { /* the second fall comes later */ }
         hull(-(ship.maxHealth / 3))

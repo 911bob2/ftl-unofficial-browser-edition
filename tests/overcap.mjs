@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // The over-capacity boxes (docs/TESTS.md, round 21): a fourth augment, a weapon past full cargo, both at once, and a
 // crew member past the limit, reached through the debug console's get (docs/CONSOLE.md), in vanilla or in a Hyperspace
 // session (the loader's preload sets window.ftlModSession from FTL_HS_MOD_SESSION). For each state the engine's
@@ -21,7 +22,7 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const session=process.env.FTL_HS_MOD_SESSION?JSON.parse(await readFile(process.env.FTL_HS_MOD_SESSION,'utf8')):null;
@@ -54,7 +55,7 @@ try{
    if(w!=='DialogueWindow')await key('Escape');else if(s.dialogue?.ready){const p=await probe(),c=p.choices.findIndex(t=>/proceed|enough|continue/i.test(t));await key(String(c>=0?c+1:1+i%Math.max(1,p.choices.length)));}
    await page.waitForTimeout(400);}throw Error('a window stays open: '+(await snapshot()).window);};
  // the equipment or crew screen opened by a get; a mod's event box that came up first is answered
- const shipWindow=async what=>{for(let i=0;i<8;i++){const p=await probe();if(p.window==='ShipWindow')return;
+ const shipWindow=async what=>{for(let i=0,end=Date.now()+hangMs(2400);i<8||Date.now()<end;i++){const p=await probe();if(p.window==='ShipWindow')return;
    if(p.window==='DialogueWindow'){await key('Escape');await key('1');await page.waitForTimeout(400);continue;}
    await page.waitForTimeout(300);}assert.equal((await probe()).window,'ShipWindow',what+': the ship window opens on it');};
  const fill=async(kind,pick,until)=>{for(let i=0;i<40;i++){await run('get '+kind+' '+pick(i));const l=await last();if(until.test(l))return l;if(/not added/.test(l)&&!/stack/.test(l))return l;}throw Error(kind+': never full');};
@@ -93,6 +94,26 @@ try{
  await shipWindow('augment');await page.waitForTimeout(500);await shot('1-augment');
  await checkEquipment('augment',['augment'],1);
  pass(mode+': the augment over-capacity box');
+ // Player report MV103, with the real mouse: the augment waiting in the over-capacity slot and an owned one change
+ // places whichever of the two is carried onto the other (the original's Equipment: the slot is a box like the others;
+ // an owned item carried onto the slot did nothing, the box under the slot took the drop).
+ if(hasLayout){
+  const drag=async(o,a,b)=>{const [x1,y1]=await at(o.x+a.x+a.w/2,o.y+a.y+a.h/2),[x2,y2]=await at(o.x+b.x+b.w/2,o.y+b.y+b.h/2);
+   await page.mouse.move(x1,y1);await flush();await page.mouse.down();await flush();
+   for(let i=1;i<=6;i++){await page.mouse.move(x1+(x2-x1)*i/6,y1+(y2-y1)*i/6);await flush();}
+   await page.mouse.up();await flush();await page.waitForTimeout(300);};
+  let m=await layout(false);const over=()=>m.items.find(i=>i.kind==='cargo'&&i.index===5);
+  const waiting=over()?.item,owned=m.items.find(i=>i.kind==='augment'&&i.item&&!i.locked&&i.item!==waiting);
+  assert.ok(waiting&&owned,'an augment waits and one is owned '+JSON.stringify(m.items));
+  await drag(m.origin,owned.rect,over().rect);m=await layout(false);await shot('1b-owned-onto-slot');
+  assert.equal(over()?.item,owned.item,owned.item+' carried onto the over-capacity slot takes its place '+JSON.stringify(m.items.map(i=>i.kind+i.index+'='+i.item)));
+  const back=m.items.find(i=>i.kind==='augment'&&i.item===waiting);
+  assert.ok(back,waiting+' is in an augment box now');
+  await drag(m.origin,over().rect,back.rect);m=await layout(false);await shot('1c-slot-onto-owned');
+  assert.equal(over()?.item,waiting,'carried back onto it, '+waiting+' waits in the slot again');
+  assert.ok(m.items.some(i=>i.kind==='augment'&&i.item===owned.item),owned.item+' is owned again');
+  pass(mode+': the waiting augment and an owned one change places either way (mouse)');
+ }
  // ---- a weapon past full cargo: the item box too
  await key('Escape');
  const weaponPool=(await items('weapon')).filter(i=>!i.tags.includes('event only'));

@@ -32,6 +32,7 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
             if (value < old && !hsSilent) {
                 shieldsDownSound.play()
+                xyz.znix.xftl.game.GameHaptics.shieldLayerLost(ship)
             }
         }
 
@@ -172,6 +173,7 @@ class Shields(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         rechargeTimer = 0f
         activeShields++
+        xyz.znix.xftl.game.GameHaptics.shieldLayerBack(ship)
     }
 
     private fun updateHacked(dt: Float) {

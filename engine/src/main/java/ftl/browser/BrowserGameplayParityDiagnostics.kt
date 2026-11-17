@@ -19,7 +19,7 @@ import kotlin.random.Random
 
 /**
  * Focused regressions for the gameplay parity port (native rules recorded
- * in AGENT_HANDOFF.md). Controlled fixtures, not played campaigns. Checks for
+ * in the project notes). Controlled fixtures, not played campaigns. Checks for
  * the 1:1 pass live in GameplayParity*Checks.kt files and are run from [run].
  */
 object BrowserGameplayParityDiagnostics {
@@ -135,6 +135,9 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityPsB2Checks.run") { GameplayParityPsB2Checks.run(main, container) }
             step("GameplayParityPsB3Checks.run") { GameplayParityPsB3Checks.run(main, container) }
             step("GameplayParityPsB4Checks.run") { GameplayParityPsB4Checks.run(main, container) }
+            step("GameplayParityFixContentChecks.run") { GameplayParityFixContentChecks.run(main, container) }
+            step("GameplayParityFixCrewChecks.run") { GameplayParityFixCrewChecks.run(main, container) }
+            step("GameplayParitySaveMigrationChecks.run") { GameplayParitySaveMigrationChecks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)

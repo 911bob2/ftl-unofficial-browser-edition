@@ -31,6 +31,7 @@ class WarningFlasher(
      */
     val sound: String? = null
 ) {
+    private val hapticKey = key
     private var wasShowing = false
     private var lastDrawNanos = 0L
     private var textLines: List<String> = game.translator[key].split("\n")
@@ -172,6 +173,7 @@ class WarningFlasher(
 
     /** The message's not-running to running transition (WarningMessage::Start): its sound, if it has one. */
     private fun startSound() {
+        GameHaptics.warning(sound, hapticKey)
         val name = sound ?: return
         game.sounds.getSampleOrWarn(name)?.play()
     }

@@ -23,7 +23,7 @@ import xyz.znix.xftl.weapons.DroneBlueprint
 
 /**
  * Checks for the seeding, sector generation and eager event pass (see the
- * map/events section of AGENT_HANDOFF.md): the stream, the weighted item
+ * map/events section of the project notes): the stream, the weighted item
  * picks, the crew factory, event creation in the original's draw order, the
  * sector tree and the beacon map for known seeds, and the saves.
  *

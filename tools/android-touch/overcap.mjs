@@ -9,7 +9,8 @@
 // dismiss button on the screen, none under the crew screen's over-capacity box; without Hyperspace a crew box dragged
 // onto another goes back, the order kept (no reorder there; Hyperspace's CustomCrewManifest swaps); a tap on the extra
 // crew member's dismiss button and then on Yes dismisses them; a crew box carried onto the DISMISSAL box (the iPad's)
-// lights it and, lifted there, asks the same and dismisses on Yes. Frames: <dir>/<name>-*.png.
+// lights it and, lifted there, asks the same and dismisses on Yes; the augment and the weapon waiting in the
+// over-capacity slot change places with an owned one, carried either way (player report MV103). Frames: <dir>/<name>-*.png.
 import { Device, sleep } from './device.mjs';
 
 const arg = (name, dflt) => {
@@ -72,6 +73,60 @@ async function dragRect(s, o, a, b) {
     await sleep(700);
 }
 
+/**
+ * One finger carries the item of box [a] onto box [b] (rects relative to the window's origin): a tap selects it, the
+ * next press on it and a slide of over 9 px pick it up, the lift drops it. Held by the point the touch layout carries
+ * an item by: (50, 33) of a weapon or drone box, (117, 20) of an augment box.
+ */
+async function carry(s, o, a, b) {
+    const { w, h } = landscape();
+    const scale = h / 768;
+    const grab = (r) => (r.w > 200 ? [117, 20] : [50, 33]);
+    const at = (r) => [Math.round((w - s.canvasW * scale) / 2 + (o.x + r.x + grab(r)[0]) * scale), Math.round((o.y + r.y + grab(r)[1]) * scale)];
+    const from = at(a), to = at(b);
+    d.shell(`input tap ${from.join(' ')}`);
+    await sleep(600);
+    d.shell(`input motionevent DOWN ${from.join(' ')}`);
+    await sleep(150);
+    for (let i = 1; i <= 8; i++) {
+        const t = i / 8;
+        d.shell(`input motionevent MOVE ${Math.round(from[0] + (to[0] - from[0]) * t)} ${Math.round(from[1] + (to[1] - from[1]) * t)}`);
+        await sleep(80);
+    }
+    await sleep(200);
+    d.shell(`input motionevent UP ${to.join(' ')}`);
+    await sleep(700);
+}
+
+/**
+ * Player report MV103: the item waiting in the over-capacity slot and an owned one change places, whichever of the two
+ * the finger carries onto the other (the original's Equipment: the slot is a box like the others).
+ */
+async function checkSwap(s, what, slot, ownedKind) {
+    let b = await boxes();
+    const overItem = () => b.items.find((i) => i.kind === 'cargo' && i.index === slot);
+    const waiting = overItem()?.item;
+    const owned = b.items.find((i) => i.kind === ownedKind && i.item && !i.locked && i.item !== waiting);
+    if (!check(!!waiting && !!owned, `${what}: an item waits in the over-capacity slot and one is owned`, JSON.stringify(b.items))) return;
+    await carry(s, b.origin, overItem().rect, owned.rect);
+    b = await boxes();
+    d.frame(`${name}-swap-${what}-1`);
+    // by box, not by name: the other boxes may hold the same blueprint (augment boxes are in name order, so there
+    // the waiting one is looked up by name)
+    const boxOf = (item) => (ownedKind === 'augment' ? b.items.find((i) => i.kind === ownedKind && i.item === item)
+        : b.items.find((i) => i.kind === ownedKind && i.index === owned.index));
+    check(boxOf(waiting)?.item === waiting && overItem()?.item === owned.item, `${what}: ${waiting} carried onto ${owned.item}: the two change places`,
+        JSON.stringify(b.items.map((i) => `${i.kind}${i.index}=${i.item}`)));
+    const back = boxOf(waiting);
+    if (back?.item !== waiting || !overItem()) return;
+    await carry(s, b.origin, back.rect, overItem().rect);
+    b = await boxes();
+    d.frame(`${name}-swap-${what}-2`);
+    check(overItem()?.item === waiting && boxOf(owned.item)?.item === owned.item,
+        `${what}: ${waiting} carried back onto the over-capacity slot: the two change places again`,
+        JSON.stringify(b.items.map((i) => `${i.kind}${i.index}=${i.item}`)));
+}
+
 function checkEquipment(b, what, kinds) {
     check(b.tab === 'EQUIPMENT', `${what}: the equipment screen is open`, b.tab);
     check(b.over.length === 1, `${what}: one over-capacity box shows`, JSON.stringify(b.over));
@@ -100,6 +155,8 @@ for (const a of augments) {
 }
 d.frame(`${name}-1-augment`);
 checkEquipment(b, 'augment', 1);
+await checkSwap(s, 'augment', 5, 'augment');
+b = await boxes();
 
 // ---- weapons until one waits in the item box: both in use
 for (let i = 0; i < 12; i++) {
@@ -117,6 +174,11 @@ if (b.overArrows.length) {
     check(b.over.length === 1 && b.over[0].kind !== first, `the pager's arrow shows the other box (${first} -> ${b.over[0]?.kind})`);
     checkEquipment(b, 'both, other page', 2);
 }
+// the weapon's box, whichever page shows it now
+b = await boxes();
+if (b.over[0]?.kind !== 'item' && b.overArrows.length) await tapRect(s, b.origin, b.overArrows[1]);
+await checkSwap(s, 'weapon', 4, 'weapon');
+b = await boxes();
 
 // ---- crew until one is past the limit: the crew screen
 const accept = b.others.find((o) => o.name === 'accept')?.rect;
@@ -168,8 +230,10 @@ if (extra) {
 }
 // The iPad's DISMISSAL box (touch, ps-fu1): beside the crew grid and clear of it; a crew box picked up, carried onto
 // it (it lights while the box is over it) and lifted there opens the same confirmation, and Yes dismisses.
+// Without Hyperspace only: its crew screen has no DISMISSAL box (ShipWindow.addTouchDismissBox).
 b = await boxes();
-if (b.window !== null && b.tab === 'CREW') {
+if (s.hsActive) console.log('  Hyperspace: no DISMISSAL box on the crew screen');
+else if (b.window !== null && b.tab === 'CREW') {
     if (check(!!b.dismissBox, 'the crew screen has its DISMISSAL box', JSON.stringify(b).slice(0, 200))) {
         check(inside(b.dismissBox, b.screen), 'the DISMISSAL box is on the screen', JSON.stringify(b.dismissBox));
         for (const o of b.others.filter((o) => o.name !== 'dismissBox'))

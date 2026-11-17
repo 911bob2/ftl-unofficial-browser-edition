@@ -174,8 +174,10 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
             ship.aiSurrendered = true
             val event = spec?.surrender
             if (!ship.browserJumping) {
-                if (event != null)
+                if (event != null) {
                     ship.sys.showShipEnding(event, ship)
+                    xyz.znix.xftl.game.GameHaptics.moment(xyz.znix.xftl.game.GameHaptics.ENEMY_SURRENDERS)
+                }
                 return
             }
         }
@@ -193,6 +195,7 @@ class ShipAI @JvmOverloads constructor(val ship: Ship, val player: Ship, private
                 // ShipAI::SetEscapeTimer (0x6254c0): a timer that isn't positive means 15 seconds.
                 ship.escapeTimer = startingEscapeTimer()
                 ship.sys.showShipEnding(event, ship)
+                xyz.znix.xftl.game.GameHaptics.moment(xyz.znix.xftl.game.GameHaptics.ENEMY_ESCAPING)
             } else {
                 // 0x625990: a missing escape event cancels the escape for good.
                 ship.escapeHealth = -100

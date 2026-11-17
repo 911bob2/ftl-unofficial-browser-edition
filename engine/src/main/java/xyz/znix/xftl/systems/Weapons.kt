@@ -456,8 +456,10 @@ class Weapons(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             val weapons = ship.hardpoints.mapNotNull { it.weapon }
             for (weapon in weapons) {
                 val firedNow = fired?.any { it.weapon.asWeaponInstance() === weapon } == true
-                if (weapon in readyBefore && weapon !in readyWeapons && !firedNow)
+                if (weapon in readyBefore && weapon !in readyWeapons && !firedNow) {
                     ship.sys.sounds.getSampleOrWarn("weaponReady")?.play()
+                    xyz.znix.xftl.game.GameHaptics.moment(xyz.znix.xftl.game.GameHaptics.WEAPON_CHARGED)
+                }
                 if (isChargedGoal(weapon)) readyWeapons.add(weapon) else readyWeapons.remove(weapon)
             }
             readyWeapons.retainAll(weapons.toSet())

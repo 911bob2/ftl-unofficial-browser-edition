@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 const skipPerformance=process.env.FTL_SKIP_PERFORMANCE==='1';
+// FTL_PERF_ONLY=1: the performance phase's gates-only mode: the suite runs, the two three-phase benchmarks between them
+// and the cache checks that cover them; the corrupted/interrupted download and sign-out checks run in the functional phase.
+const perfOnly=process.env.FTL_PERF_ONLY==='1';
+if(perfOnly&&skipPerformance)throw Error('FTL_PERF_ONLY=1 runs only the gates; it cannot be combined with FTL_SKIP_PERFORMANCE=1');
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {chromium,firefox} from 'playwright';
@@ -84,6 +88,7 @@ for(const [name,type,options] of browsers){
   assert.equal(requests.get('/api/assets/boot'),1);assert.ok([...requests.values()].every(count=>count===1),JSON.stringify([...requests]));
   assert.ok(manifests>=(skipPerformance?7:9),'Every run must fetch a fresh manifest');pass('Page reload preserves the cache with fresh authorization on every run');
   assert.deepEqual(await page.evaluate(async()=>(await(await fetch('/api/saves')).json()).saves),before);pass(skipPerformance?'Cached tests preserve cloud progress; benchmarks deferred':'Cached tests and benchmarks preserve cloud progress');
+  if(perfOnly){assert.deepEqual(errors,[]);evidence.push({browser:name,bootRequests:requests.get('/api/assets/boot'),audioRequests:[...requests].filter(([path])=>path.includes('/audio/')).length,manifestRequests:manifests});continue;}
   // A corrupted copy in Cache Storage (same length, garbled scrap/missile/drone icons) and a download that stalls
   // and stops half way are both caught and replaced, and the game draws the true icons.
   const icons=['img/ui_icons/icon_scrap.png','img/ui_icons/icon_missiles.png','img/ui_icons/icon_drones.png','img/ui_icons/icon_fuel.png'];

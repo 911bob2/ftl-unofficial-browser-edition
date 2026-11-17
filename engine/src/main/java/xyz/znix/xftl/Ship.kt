@@ -1782,6 +1782,7 @@ class Ship(
                     blowApart()
                     destructionSoundPlayed = true
                     sys.sounds.getSampleOrWarn("explosion1")?.playAt(1f)
+                    xyz.znix.xftl.game.GameHaptics.shipDestroyed(this)
                 } else {
                     for (gib in gibs)
                         gib.update(dt)
@@ -1928,6 +1929,7 @@ class Ship(
                 return
         }
         sys.sounds.getSampleOrWarn("explosion${ftl.browser.BrowserRandom.nextInt(4) + 1}")?.playAt(0.25f)
+        xyz.znix.xftl.game.GameHaptics.shipBreaking(this)
         destructionSoundTimer = (ftl.browser.BrowserRandom.nextInt(3) + 1) * 0.3f
     }
 
@@ -2062,8 +2064,10 @@ class Ship(
         // enginesOff when the dodge factor of engines and piloting drops to 0.
         // There is no engines-on sound.
         if (isPlayerShip && !startSoundsMuted) {
-            if (isFtlCharged && !ftlReadyLatch)
+            if (isFtlCharged && !ftlReadyLatch) {
                 sys.sounds.getSampleOrWarn("jumpReady")?.play()
+                xyz.znix.xftl.game.GameHaptics.moment(xyz.znix.xftl.game.GameHaptics.FTL_CHARGED)
+            }
             val dodging = engineDodge > 0
             if (dodgeLatch && !dodging)
                 sys.sounds.getSampleOrWarn("enginesOff")?.play()
@@ -2183,6 +2187,7 @@ class Ship(
                 // thing, which would be the case if hitOtherProjectile
                 // played a sound effect.
                 projectileCollisionSound.play()
+                xyz.znix.xftl.game.GameHaptics.shotDown(this)
 
                 if (secondContact == ProjectileContact.DESTROYED)
                     projectiles.removeAt(upperI)
@@ -2362,6 +2367,7 @@ class Ship(
     fun attackShields(damage: Damage, damagePos: IPoint?, ionRoll: Boolean? = null) {
         if (damagePos != null)
             addShieldHit(damagePos)
+        xyz.znix.xftl.game.GameHaptics.shieldHit(this)
 
         // Break super shields first
         // The reason this function is in Ship and not Shields is to support
@@ -2534,6 +2540,7 @@ class Ship(
 
         if (!rockProc) {
             health -= hullDamage
+            xyz.znix.xftl.game.GameHaptics.hullDamage(this, hullDamage)
 
             // The player's last hull damage drives the screen shake (ShipManager +0x49c).
             if (sys.player === this)
@@ -2736,6 +2743,7 @@ class Ship(
         // ShipManager::JumpLeave (1.6.14 0x49c9c0, 1.6.9 0x491b70) ends with PlaySoundMix("jumpLeave") whichever ship
         // leaves: an escaping enemy too. The player's jump plays it in InGameState.beginJumpOut.
         if (!isPlayerShip) sys.sounds.getSampleOrWarn("jumpLeave")?.play()
+        xyz.znix.xftl.game.GameHaptics.shipJumpsAway(this)
         // Hyperspace: the rooms lose their temporal dilation (TemporalSystem.cpp ShipManager::JumpLeave hook).
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsTemporal.jumpLeave(this)
         // Hyperspace JUMP_LEAVE: ShipManager::JumpLeave hook, after the original

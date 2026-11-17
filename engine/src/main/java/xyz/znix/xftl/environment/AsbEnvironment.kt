@@ -141,6 +141,7 @@ class AsbEnvironment(game: InGameState, beacon: Beacon, private var targetMode: 
                 queue += if (hit) AsbProjectile.hit(ship.rooms[BrowserRandom.nextBits(31) % ship.rooms.size], game.player, origin)
                 else AsbProjectile.miss(game.player, origin, live)
                 game.sounds.getSampleOrWarn(if (hit) "fleetFireHeavy" else "fleetFireLight")?.play()
+                xyz.znix.xftl.game.GameHaptics.moment(xyz.znix.xftl.game.GameHaptics.DEFENCE_FIRE)
             }
             // The volley pops its shots from the back, and the player's leaves first natively (c5-ASB-0: the
             // player's shot at 23.82 s, the enemy's at 24.30 s), so the enemy's is queued first.

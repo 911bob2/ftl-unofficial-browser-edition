@@ -38,21 +38,17 @@ abstract class AbstractCrew(
     protected val game: InGameState get() = room.ship.sys
 
     /**
-     * True while the ship this crewmember is standing on is hostile to
-     * them, and hence one they may start sabotaging. The original only
-     * picks a system to work on while the ship's crew AI is running
-     * (CrewAI::UpdateCrewMember 0x627df0 -> 0x626860 -> CrewMember::StartRepair
-     * 0x47e610, which sets CrewMember +0x68); the sabotage step itself
-     * (CrewMember 0x47e850) then goes on with that system until the boarder
-     * leaves the room or the system is destroyed. [sabotagingSystem] is
-     * that latch.
+     * True while this crewmember is at war with the ship it is standing on (the boarding drone's own guard,
+     * [xyz.znix.xftl.drones.BoardingDrone]). Whether a boarder sabotages follows the ship's hostile flag instead,
+     * see [update].
      */
     open val standingShipHostile: Boolean get() = true
 
     /**
-     * CrewMember +0x68 for a boarder: the system it started sabotaging while
-     * [standingShipHostile], which it keeps breaking after the fight is over
-     * for as long as it stays in that room.
+     * CrewMember +0x68 for a boarder: the system it is sabotaging. The ship's crew AI sets it
+     * (CrewAI::UpdateCrewMember 0x627df0 -> 0x626860 -> CrewMember::StartRepair 0x47e610) and the ship's crew loop
+     * (1.6.14 0x4aa670) clears it with CrewMember::StopRepairing in every loop the ship is not hostile, so it never
+     * outlasts the fight.
      */
     internal var sabotagingSystem: xyz.znix.xftl.AbstractSystem? = null
         private set
@@ -970,7 +966,13 @@ abstract class AbstractCrew(
         val hostiles = room.crew.filter {
             it.mode != mode && it.currentAction != Action.DYING && (!xyz.znix.xftl.hs.HS.active || xyz.znix.xftl.hs.crew.HsCrewEffects.validTarget(it))
         }
-        if (hostiles.isNotEmpty() && canFight) {
+        // ShipManager's crew loop (1.6.14 0x4aa670, 1.6.9 0x49ee10) reads the hostile flag of the ship the crew stand
+        // on (ShipManager +0x10: the player's ship always, an enemy while it is fought, [AIUtils.crewAiRuns]). With
+        // the flag clear a crew member ready to fight gets SetCurrentTarget(0, 0) instead of a target, and every
+        // intruder's repair, which is its sabotage, is stopped each loop (CrewMember::StopRepairing): on an enemy
+        // that surrendered or lost its crew nobody fights and no boarder goes on breaking a system.
+        val shipHostile = xyz.znix.xftl.ai.AIUtils.crewAiRuns(room.ship)
+        if (hostiles.isNotEmpty() && canFight && shipHostile) {
             // Check if someone is standing in the same cell as us
             val sameCell = hostiles.firstOrNull { it.standingPosition == roomPosition }
 
@@ -994,22 +996,29 @@ abstract class AbstractCrew(
                     val banked = pendingShotDamage
                     pendingShotDamage = 0f
                     hitCrew(target, banked * attackDamageMult)
+                    // CrewMember::OnLoop (1.6.14 0x482a80): damage dealt to a target without MultiShots (a crew
+                    // member's is false, a door's true) ends with SetCurrentTarget(0, 0), killed or not. The ship's
+                    // crew loop then draws the next target among the room's valid ones (random32 % count), so every
+                    // shot goes to one of the hostile crew in the room at random.
+                    enemyToAttack = null
                 }
             }
 
             if (isPunching) {
+                // Whoever shares the slot is the target, whatever was drawn (the crew loop's same-slot pass).
+                if (enemyToAttack == null && currentAction == Action.FIGHTING && attackTimer != null)
+                    enemyToAttack = sameCell
                 updateAttack(Action.FIGHTING, dt, {
                     // The punch timer is done half-way through the punch: CrewAnimation::OnUpdate (0x482420) banks
                     // (rand%4001 + 3000) / 1000.
-                    hitCrew(enemyToAttack!!, rollShotDamage() * attackDamageMult)
+                    hitCrew(enemyToAttack ?: sameCell!!, rollShotDamage() * attackDamageMult)
                 }, {
                     // If we're punching someone always attack them.
                     enemyToAttack = pickFightingTarget(sameCell, hostiles)
                 })
             } else {
-                // Otherwise pick someone in the room at random to shoot. Keep shooting the crewmember we already
-                // targeted while they're still valid (the fight target at CrewMember+0x188 is only re-rolled when
-                // it becomes invalid, CrewMember 0x47d350).
+                // Otherwise shoot someone in the room: the target kept from the last loop, or one drawn at random
+                // when there is none (a new fight, the target left or died, or the last shot's damage was dealt).
                 val target = pickFightingTarget(sameCell, hostiles)
                 enemyToAttack = target
                 setAim(target.getPixelPositionCentre(), exact = false)
@@ -1031,11 +1040,11 @@ abstract class AbstractCrew(
         if (hsFrozen && (currentAction == Action.REPAIRING || currentAction == Action.REPAIRING_BREACH ||
                 currentAction == Action.FIRE_FIGHTING || currentAction == Action.SABOTAGE)) return
 
+        // A boarder breaks the system of its room while the ship it stands on is hostile: that ship's crew AI starts
+        // the sabotage (CrewAI::UpdateCrewMember 0x627df0 -> 0x626860 -> CrewMember::StartRepair, only while
+        // ShipAI::OnLoop runs the crew AI), and the ship's crew loop stops it again in every loop the flag is clear.
         val system = room.system
-        val latched = system != null && sabotagingSystem === system
-        if (mode == SlotType.INTRUDER && canSabotage && (latched || standingShipHostile) &&
-            system != null && !system.broken
-        ) {
+        if (mode == SlotType.INTRUDER && canSabotage && shipHostile && system != null && !system.broken) {
             sabotagingSystem = system
             isPunching = false
             enemyToAttack = null
@@ -1557,6 +1566,7 @@ abstract class AbstractCrew(
         if (damage.amount > 0f && this is LivingCrew && ownerShip?.isPlayerShip == true) {
             if (health.toInt() <= LOW_HEALTH_WARNING_HP && oldHealth.toInt() > LOW_HEALTH_WARNING_HP) {
                 game.sounds.getSampleOrWarn("lowCrewHealth")?.play()
+                xyz.znix.xftl.game.GameHaptics.crewBadlyHurt()
             }
         }
 
@@ -1567,10 +1577,10 @@ abstract class AbstractCrew(
      * Update the attack animation for fighting and sabotage actions.
      */
     /**
-     * Pick who to fight this attack cycle: whoever occupies our cell
-     * (melee) takes priority, then we stick with our current target while
-     * they're still a valid hostile (the fight target at CrewMember+0x188
-     * is kept, 0x47d350) and only brand-new fights pick a target at random.
+     * Pick who to fight this loop (ShipManager's crew loop, 1.6.14 0x4aa670): whoever occupies our cell (melee)
+     * takes priority; otherwise the current target (CrewMember +0x188) while there is one, and a random one of the
+     * room's hostile crew when there is none. [update] drops the target after every hit that dealt damage, as
+     * CrewMember::OnLoop does, so each shot is drawn anew.
      */
     internal fun pickFightingTarget(sameCell: AbstractCrew?, hostiles: List<AbstractCrew>): AbstractCrew {
         return when {
@@ -2256,6 +2266,7 @@ abstract class AbstractCrew(
         // 10): Lanius use shrikeDeath (AnaerobicAnimation 0x768c80); the
         // Zoltan codename is "energy".
         deathSoundName()?.let { game.sounds.getSampleOrWarn(it)?.play() }
+        xyz.znix.xftl.game.GameHaptics.crewDied(this)
     }
 
     /** The animation's death sound (CrewAnimation::GetDeathSound, vtable slot 10). */

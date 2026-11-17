@@ -137,6 +137,7 @@ class PulsarEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment
 
         if (timeToPulse < 1.2f && !hasPlayedSound) {
             pulseSound.play()
+            xyz.znix.xftl.game.GameHaptics.moment(xyz.znix.xftl.game.GameHaptics.ION_PULSE)
             hasPlayedSound = true
         }
         if (timeToPulse < 0.5f && pulseTimer == null) {

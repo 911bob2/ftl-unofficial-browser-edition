@@ -178,6 +178,7 @@ class NebulaEnvironment(game: InGameState, beacon: Beacon, val ionStorm: Boolean
                 val volume = (NativeRandom.next31() % 101 + 900) / 1000f
                 val sound = game.sounds.getSampleOrWarn("lightning${NativeRandom.next31() % 4 + 1}")
                 sound?.playAt(volume)
+                xyz.znix.xftl.game.GameHaptics.moment(xyz.znix.xftl.game.GameHaptics.LIGHTNING)
             }
             if (flashRunning && flashTime >= FLASH_TIME) {
                 timer = (NativeRandom.next31() % 201 + 100).toFloat()

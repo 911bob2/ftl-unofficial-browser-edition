@@ -39,7 +39,9 @@ class LootPool(private val bpManager: BlueprintManager, sector: SectorType?) {
             val rarity = overrides[bp.name] ?: bp.rarity ?: continue
 
             // See https://subsetgames.com/forum/viewtopic.php?t=33471
-            check(rarity in 0..5) { "Invalid rarity $rarity for blueprint ${bp.name}" }
+            // SetRarity (0x60b8e0) stores a sector's value as it is and the pick (0x764be0) takes every blueprint
+            // whose rarity is not 0, weighing 6 minus the rarity, with no upper limit: a rarity of 6 stays in the
+            // list with no weight, so it is never picked (Multiverse's SECTOR_HACKER_UNIQUE gives mantis_free 6).
             if (rarity == 0) continue
             rarities[bp.name] = rarity
             all.add(bp)
@@ -69,7 +71,8 @@ class LootPool(private val bpManager: BlueprintManager, sector: SectorType?) {
     fun getRandom(rand: Random, filter: (Blueprint) -> Boolean): Blueprint? {
         val items = pool.filter(filter)
         if (items.isEmpty()) return null
-        return pickMany(items, rand, 1)[0]
+        // Nothing left to weigh (every rarity 6 or above): the original divides by the zero sum there.
+        return pickMany(items, rand, 1).firstOrNull()
     }
 
     /**

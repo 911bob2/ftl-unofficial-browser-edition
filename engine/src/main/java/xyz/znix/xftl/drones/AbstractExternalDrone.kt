@@ -255,8 +255,10 @@ abstract class AbstractExternalDrone(
             return
 
         explosion = explodeAnimation.startSingle(game)
-        if (!silent)
+        if (!silent) {
             explodeSound.play()
+            xyz.znix.xftl.game.GameHaptics.droneDestroyed(ownerShip)
+        }
     }
 
     /**

@@ -12,6 +12,7 @@ import {createHash} from 'node:crypto';
 import {chromium, firefox} from 'playwright';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {expectedConsoleError} from './lib/launch.mjs';
+import {flush,openDetails} from './lib/input.mjs';
 import {zipSync} from '../web/vendor/fflate-0.8.3.mjs';
 
 const origin = process.env.MENU_ORIGIN ?? 'http://localhost:8084';
@@ -102,7 +103,7 @@ async function click(page, x, y) {
 /** Close the box of the first beacon. */
 async function closeBox(page) {
   await page.waitForFunction(() => JSON.parse(window.ftlEngine.debugSnapshot()).dialogue?.ready === true, {}, {timeout: 30000});
-  for (let i = 0; i < 6 && (await snapshot(page)).dialogue; i++) { await page.locator('#game').press('1'); await page.waitForTimeout(500); }
+  for (let i = 0; i < 6 && (await snapshot(page)).dialogue; i++) { await page.locator('#game').press('1'); await flush(page); await page.waitForTimeout(500); }
 }
 /** The engine's own player: a run of [beacons] jumps, answering every box, saving and loading once per sector. One JSON line per box. */
 const playRun = (page, beacons) => page.evaluate(n => window.hsFullRunProbe(`537\tPLAYER_SHIP_HARD\t1\nopt\tanygame\t1\nopt\treload\t1\nopt\tbeacons\t${n}`), beacons).then(o => o.trim().split('\n').map(l => JSON.parse(l)));
@@ -118,7 +119,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
   try {
     await signIn(page, user);
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     const files = [...realFiles, {name: 'play-test-fleet.ftl', mimeType: 'application/zip', buffer: dataMod}, {name: 'play-test-texts.ftl', mimeType: 'application/zip', buffer: keptMod}];
     await page.locator('#mods-root .file-drop input[type=file]').setInputFiles(files);
     await page.waitForFunction(n => document.querySelectorAll('#mods-root [data-badge]').length === n, files.length, {timeout: 120000});
@@ -153,10 +154,10 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
       await page.waitForFunction(() => { const d = JSON.parse(window.ftlEngine.debugSnapshot()).dialogue; return d?.ready === true && d.choices.length >= 2; }, {}, {timeout: 30000});
       const before = await snapshot(page);
       assert.ok(before.dialogue.choices.length >= 2, `the real mod's choice is in the box (${before.dialogue.choices.length} choices)`);
-      await page.locator('#game').press('2');
+      await page.locator('#game').press('2'); await flush(page);
       await page.waitForTimeout(1000);
       if (out) await page.screenshot({path: join(out, name + '-real-mod-reward.png')});
-      for (let i = 0; i < 6 && (await snapshot(page)).dialogue; i++) { await page.locator('#game').press('1'); await page.waitForTimeout(500); }
+      for (let i = 0; i < 6 && (await snapshot(page)).dialogue; i++) { await page.locator('#game').press('1'); await flush(page); await page.waitForTimeout(500); }
       assert.ok((await snapshot(page)).scrap > before.scrap, 'the reward is paid');
       pass('a real mod\'s choice is in the sector start box and pays its reward');
     }
@@ -215,7 +216,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
 
     // ---- The soft lock holds the new set, not the old one -----------------------------------------------------------------
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     await page.getByRole('button', {name: 'Remove Play Test Texts'}).click();
     await page.locator('#mods-remove-dialog-yes').click();
     await page.waitForFunction(n => document.querySelectorAll('#mods-root [data-badge]').length === n, files.length - 1);
@@ -257,7 +258,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
 
     // ---- A start ship that names things that do not exist: the hangar shows it and the run starts ----------------------------
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     await page.locator('#mods-root .file-drop input[type=file]').setInputFiles([{name: 'play-test-bad.ftl', mimeType: 'application/zip', buffer: badShipMod}]);
     await page.waitForFunction(n => document.querySelectorAll('#mods-root [data-badge]').length === n, files.length);
     await page.locator('#saves-button').click();

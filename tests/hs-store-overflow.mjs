@@ -1,3 +1,5 @@
+import {hangMs} from './lib/hang.mjs';
+import {flush,gameWait,steppedClock} from './lib/input.mjs';
 // Store with an over-capacity augment (Multiverse, reported on 2.0.1): three augments fill the slots, an event gives a
 // fourth (Sylvan's SYLVAN_DESTRUCTION_2_SHIELD gives SYLVAN_SHIELD_REWARD), then the store opens and shows its sell tab.
 // The original keeps the fourth in the over-capacity augment box, on the equipment screen and on the store's sell tab
@@ -18,11 +20,13 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const session=JSON.parse(await readFile(process.env.FTL_HS_MOD_SESSION,'utf8'));
 const browser=withOnboarding(await chromium.launch({headless:true,args:['--disable-dev-shm-usage']}),origin),context=await browser.newContext({viewport:{width:1280,height:720}}),page=await context.newPage();
+// The session's pauses are game time (lib/input.mjs): the oracle waited N seconds of a full-speed game.
+await steppedClock(context);
 const errors=[];page.setDefaultTimeout(120000);
 page.on('pageerror',e=>errors.push('PAGE '+e.message));page.on('crash',()=>errors.push('PAGE CRASHED'));
 page.on('console',e=>{if(e.type()==='error'&&!expectedConsoleError(e))errors.push('CONSOLE '+e.text());});
@@ -35,13 +39,14 @@ try{
  await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).state==='MainMenuState',{},{timeout:180000});
  console.log('PASS main menu');
  const snap=async()=>JSON.parse(await page.evaluate(()=>window.ftlEngine.debugSnapshot()));
- const key=async(k)=>{await page.locator('#game').press(k);await page.waitForTimeout(250);};
+ // Each input is handled by the game (flush) before the next step looks at the game or sends more (lib/input.mjs).
+ const key=async(k)=>{await page.locator('#game').press(k);await flush(page);await gameWait(page,0.25);};
  const at=async(x,y)=>{const box=await page.locator('#game').boundingBox(),s=Math.min(box.width/1280,box.height/720);return [box.x+(box.width-1280*s)/2+x*s,box.y+(box.height-720*s)/2+y*s];};
- const click=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.up();await page.waitForTimeout(400);};
+ const click=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.up();await flush(page);await gameWait(page,0.4);};
  const shot=async name=>page.locator('#game').screenshot({path:join(out,name+'.png')});
  // Answer every open choice box with the given keys (then '1'), waiting until the box takes keys.
- const answer=async(keys=[],limit=40)=>{for(let i=0;i<limit;i++){const s=await snap();if(!s.dialogue){await page.waitForTimeout(500);if(!(await snap()).dialogue)return i;continue;}
-  if(!s.dialogue.ready){await page.waitForTimeout(150);continue;}await key(keys.shift()??'1');await page.waitForTimeout(300);}throw Error('choice boxes did not end');};
+ const answer=async(keys=[],limit=40)=>{for(let i=0;i<limit;i++){const s=await snap();if(!s.dialogue){await gameWait(page,0.5);if(!(await snap()).dialogue)return i;continue;}
+  if(!s.dialogue.ready){await gameWait(page,0.15);continue;}await key(keys.shift()??'1');await gameWait(page,0.3);}throw Error('choice boxes did not end');};
  await page.evaluate(()=>window.newRun('PLAYER_SHIP_MVKESTREL',1));await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).state==='InGameState');
  // Multiverse's start beacon: the oracle's picks (1 x7, then 2 at START_BEACON_EXPLAIN).
  console.log('start boxes answered: '+await answer(['1','1','1','1','1','1','1','2']));
@@ -49,21 +54,27 @@ try{
  // The HS console the way the oracle's driver types it: backslash opens the box, Return runs the command. HS's box closes
  // on Return (InputBox, TEXT_CONFIRM); the port's console stays open to show its output (docs/CONSOLE.md), so it is closed
  // here before the next key goes to the game, as in the oracle session.
- const consoleOpen=()=>page.evaluate(()=>/^open=true/.test(window.hsWp7UiProbe('console')));
- const command=async c=>{for(let i=0;!await consoleOpen();i++){assert.ok(i<40,'the console opens');await key('Backslash');await page.waitForTimeout(250);}
-  await page.keyboard.type(c,{delay:20});await key('Enter');await page.waitForTimeout(500);
-  if(await consoleOpen()){await key('Escape');await page.waitForTimeout(250);}};
+ // The console key opens the console and, open, types its character (HS's InputBox). Each press is handled (key()
+ // flushes) before the next look, so a press still queued in the page can no longer type a '\' in front of the command.
+ const consoleLine=()=>page.evaluate(()=>window.hsWp7UiProbe('console').replace(/ paused=\w+$/,''));
+ const consoleOpen=async()=>/^open=true/.test(await consoleLine());
+ const command=async c=>{for(let i=0;!await consoleOpen();i++){assert.ok(i<40,'the console opens');await key('Backslash');await gameWait(page,0.25);}
+  await page.keyboard.type(c,{delay:20});await flush(page);
+  assert.equal(await consoleLine(),'open=true text='+c+' cursor='+c.length,'the console has the typed line');
+  await key('Enter');assert.equal(await consoleLine(),'open=true text= cursor=0','the console ran the line');await gameWait(page,0.5);
+  if(await consoleOpen()){await key('Escape');await gameWait(page,0.25);}
+  assert.ok(!await consoleOpen(),'the console closes');};
  for(const a of ['SCRAP_COLLECTOR','AUTO_COOLDOWN','SHIELD_RECHARGE'])await command('AUG '+a);
  await command('SCRAP 500');
  const augs=[...(await run()).matchAll(/<augment[^>]*>/g)].length;console.log('augment elements before the event: '+augs);
- await key('i');await page.waitForTimeout(800);await shot('01-equipment-full');await key('Escape');
- await command('EVENT SYLVAN_DESTRUCTION_2_SHIELD');await page.waitForTimeout(1000);console.log('event boxes answered: '+await answer());
+ await key('i');await gameWait(page,0.8);await shot('01-equipment-full');await key('Escape');
+ await command('EVENT SYLVAN_DESTRUCTION_2_SHIELD');await gameWait(page,1);console.log('event boxes answered: '+await answer());
  assert.ok((await run()).includes('SYLVAN_SHIELD_REWARD'),'the fourth augment is kept (over capacity)');
- await key('i');await page.waitForTimeout(800);await shot('02-equipment-over');await key('Escape');await page.waitForTimeout(300);
- await command('STORE');await page.waitForTimeout(1200);
+ await key('i');await gameWait(page,0.8);await shot('02-equipment-over');await key('Escape');await gameWait(page,0.3);
+ await command('STORE');await gameWait(page,1.2);
  assert.match((await snap()).window??'',/Store/,'the store opened');await shot('03-store-buy');
- await click(588,105);await page.waitForTimeout(1200);await shot('04-store-sell');
- await page.waitForTimeout(1000);
+ await click(588,105);await gameWait(page,1.2);await shot('04-store-sell');
+ await gameWait(page,1);
  const s=await snap();console.log('after the sell tab: state='+s.state+' window='+s.window);
  assert.equal(s.state,'InGameState');assert.match(s.window??'',/Store/,'the store is still open on its sell tab');
  assert.deepEqual(errors,[],'browser errors');

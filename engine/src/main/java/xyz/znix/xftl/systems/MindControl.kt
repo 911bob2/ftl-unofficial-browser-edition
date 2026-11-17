@@ -361,6 +361,21 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         controlLength = duration
 
         startSound.play()
+        xyz.znix.xftl.game.GameHaptics.mindControl(ship)
+    }
+
+    /**
+     * True while this system has [crew] under control: it lists the crew member and its control period runs. A
+     * crew member that is marked as mind controlled while no system holds it is what release 2.1.1 left behind
+     * (savegame.SaveMigrations, migration 1). Right after a load the Hyperspace list is rebuilt first, as the first
+     * loop would.
+     */
+    fun holds(crew: LivingCrew): Boolean {
+        if (xyz.znix.xftl.hs.HS.active) {
+            if (hsRebuild) hsRebuildControlled()
+            return hsTimerFirst < hsTimerSecond && crew in hsControlled
+        }
+        return timeRemaining != null && controlledCrew === crew
     }
 
     /** MindSystem's release (0x62f740) for a ship that stops fighting: the controlled crew go back. */

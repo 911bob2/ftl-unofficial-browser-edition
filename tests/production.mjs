@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 import assert from 'node:assert/strict';
 import {readFile,writeFile} from 'node:fs/promises';
 import http from 'node:http';
@@ -8,7 +9,7 @@ const headers={Host:'ftl-test.example','X-Forwarded-Proto':'https'};
 const checks=[];
 function send(path,options={}){return new Promise((resolve,reject)=>{const req=http.request(target+path,{method:options.method??'GET',headers:options.headers},res=>{const chunks=[];res.on('data',b=>chunks.push(b));res.on('end',()=>{const text=Buffer.concat(chunks).toString();resolve({status:res.statusCode,headers:{get:name=>res.headers[name.toLowerCase()],getSetCookie:()=>res.headers['set-cookie']??[]},text:async()=>text,json:async()=>JSON.parse(text)});});});req.on('error',reject);req.end(options.body);});}
 const request=(path,options={})=>send(path,{...options,headers:{...headers,...options.headers}});
-const ready=Date.now()+30000;
+const ready=Date.now()+hangMs(30000);
 while(!(await fetch(target+'/health/ready').then(r=>r.ok).catch(()=>false))){if(Date.now()>ready)throw Error('Local production fixture did not start');await new Promise(r=>setTimeout(r,250));}
 assert.equal((await send('/',{headers:{Host:'ftl-test.example'}})).status,403);
 assert.equal((await request('/',{headers:{Host:'wrong.example'}})).status,400);

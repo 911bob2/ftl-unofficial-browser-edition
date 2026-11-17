@@ -1,3 +1,4 @@
+import {hangMs,hangError} from './lib/hang.mjs';
 import assert from 'node:assert/strict';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
@@ -6,7 +7,7 @@ import {chromium} from 'playwright';
 import {unzipSync,strFromU8} from '../web/vendor/fflate-0.8.3.mjs';
 const origin='http://localhost:8084',fixture=process.env.DEBUG_FIXTURE_DIR??'.build/debug-data',checks=[];
 const pass=name=>{checks.push(name);console.log('PASS '+name);};
-async function waitUntil(check,label,timeout=30000){const end=Date.now()+timeout;while(!await check()){assert.ok(Date.now()<end,'Timed out waiting for '+label);await new Promise(r=>setTimeout(r,250));}}
+async function waitUntil(check,label,timeout=30000){const end=Date.now()+hangMs(timeout);while(!await check()){if(Date.now()>=end)throw hangError(label,timeout);await new Promise(r=>setTimeout(r,250));}}
 const initial=new Map((await readFile(fixture+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const licenses=await fetch(origin+'/Licenses');assert.equal(licenses.status,200);const notices=await licenses.text();
 for(const name of ['GNU GENERAL PUBLIC LICENSE','GNU AFFERO GENERAL PUBLIC LICENSE','daisyUI-LICENSE.txt','Tailwind-LICENSE.txt','fflate-LICENSE.txt','Roboto-LICENSE.txt'])assert.ok(notices.includes(name));
@@ -52,8 +53,14 @@ await user.json('/debug/sessions','DELETE');
 const browser=withOnboarding(await chromium.launch({headless:true}),origin);const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.setDefaultTimeout(15000);page.on('pageerror',e=>{errors.push(e.message);console.log('PAGE ERROR',e.message);});page.on('console',e=>{if(e.type()==='error')console.log('BROWSER ERROR',e.text());});
 try {
 console.log('UI sign-in');
+// The recorder module (web/debug.mjs) arrives late on a slow device: held back 3 s here, so the clicks below come before
+// it. The boxes must wait for it (disabled until its handlers are set); a click on a box without its handler was lost
+// (O-INFRA-5) and the wait for "Recording" below then ran out.
+const lateRecorder=async route=>{await new Promise(r=>setTimeout(r,3000));await route.continue();};
+await page.route('**/web/debug.mjs*',lateRecorder);
 await page.goto(origin);await page.locator('#login-form [name=username]').fill('user01');await page.locator('#login-form [name=password]').fill(password);await page.locator('#login-form button').click();await page.locator('#launch-panel').waitFor({state:'visible'});
-await page.locator('#logs-button').click();await page.locator('#debug-enabled').check();await page.locator('#console-enabled').check();await page.waitForFunction(()=>document.getElementById('debug-status').textContent.includes('Recording'));
+await page.locator('#logs-button').click();await page.locator('#debug-enabled').check();await page.locator('#console-enabled').check();await page.waitForFunction(()=>document.getElementById('debug-status').textContent.includes('Recording')).catch(async e=>{console.log('debug-status: '+await page.locator('#debug-status').textContent().catch(()=>'?')+'; debug-enabled '+await page.locator('#debug-enabled').isChecked().catch(()=>'?'));throw e;});
+await page.unroute('**/web/debug.mjs*',lateRecorder);
 console.log('UI launch');
 await page.locator('#play-button').click();await page.locator('#launch').click();
 await page.waitForFunction(()=>!!window.ftlEngine,{},{timeout:90000});
@@ -101,7 +108,9 @@ await waitUntil(async()=>(await browserSessionIds()).every(s=>s.finishedUtc),'of
 let retained=await browserSessionIds();assert.ok(retained.every(s=>s.finishedUtc));
 assert.ok(interruptedFinish,'The old-session completion request must be interrupted at least once');
 let offlineFound=false;for(const s of retained){const data=await user.json('/debug/sessions/'+s.id+'/records?search=offline-recovery');offlineFound ||= data.records.length>0;}assert.ok(offlineFound);pass('Offline records recover in order and a stopped session finishes after acknowledgements');
-await page.locator('#debug-enabled').check();await page.waitForFunction(()=>document.getElementById('debug-status').textContent.includes('Recording'));
+// A click turns recording on; the box shows the recorder's state, which a status update can redraw before the start is
+// through, so the check is the recorder's answer, not the box right after the click (Playwright's check()).
+await page.locator('#debug-enabled').click();await page.waitForFunction(()=>document.getElementById('debug-status').textContent.includes('Recording')&&document.getElementById('debug-enabled').checked);
 const activeBeforeReload=(await browserSessionIds()).find(s=>!s.finishedUtc);
 await page.reload();await page.locator('#logs-panel').waitFor({state:'visible'});await page.waitForFunction(()=>document.getElementById('debug-enabled').checked);
 await waitUntil(async()=>{const data=await user.json('/debug/sessions/'+activeBeforeReload.id+'/records?search=session.resume');return data.records.length>0;},'recording resume',15000);pass('Recording survives a page reload without losing its session or sequence');

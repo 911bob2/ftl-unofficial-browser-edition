@@ -1,5 +1,11 @@
+import {gate,gateMisses,gatesChecked} from './lib/perf.mjs';
+import {hangMs} from './lib/hang.mjs';
 import assert from 'node:assert/strict';
 const skipPerformance=process.env.FTL_SKIP_PERFORMANCE==='1';
+// FTL_PERF_ONLY=1: the performance phase's gates-only mode: sign-in, the Tests page and its first checks, then only the
+// benchmark block (gates and benchmark cancellation); the rest runs in the functional phase.
+const perfOnly=process.env.FTL_PERF_ONLY==='1';
+if(perfOnly&&skipPerformance)throw Error('FTL_PERF_ONLY=1 runs only the gates; it cannot be combined with FTL_SKIP_PERFORMANCE=1');
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {chromium,firefox} from 'playwright';
@@ -7,7 +13,7 @@ const origin=process.env.LAUNCHER_ORIGIN??'http://localhost:8084',checks=[],jobs
 // Explicit opt-out for a busy host; the default still enforces the measured FPS/throughput bounds.
 const skipFpsCheck=process.env.LAUNCHER_SKIP_FPS_CHECK==='1';
 const credentials=new Map((await readFile((process.env.DEBUG_FIXTURE_DIR??'.build/debug-data')+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
-const deadline=Date.now()+30000;
+const deadline=Date.now()+hangMs(30000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(Date.now()>deadline)throw Error('Disposable launcher fixture did not start');await new Promise(r=>setTimeout(r,250));}
 const pass=label=>{checks.push(label);console.log('PASS '+label);};
 async function login(page,user='admin'){
@@ -27,7 +33,7 @@ async function api(page,path,body,method=body?'POST':'GET'){return page.evaluate
 // Playwright's waitForFunction treats a returned Promise as truthy before it
 // settles. Poll network state here so a false async result cannot end the wait.
 async function waitForJob(page,id,predicate,timeout=90000){
- const deadline=Date.now()+timeout;
+ const deadline=Date.now()+hangMs(timeout);
  while(true){
   const response=await api(page,'/tests/'+id);
   assert.equal(response.status,200,'Job polling HTTP status');
@@ -56,6 +62,7 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   assert.equal(await page.locator('html').getAttribute('data-theme'),'ftl');
   assert.equal(await page.locator('.appearance').count(),0);
   const available=(await api(page,'/tests')).body.available;assert.equal(available,jobs);
+  if(!perfOnly){
   if(name==='Chromium'){
    await page.locator('#run-tests').click();await done(page);
    const report=await exported(page);assert.equal(report.status,'passed',JSON.stringify(report));assert.equal(report.results.length,19);
@@ -123,6 +130,7 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   assert.ok(playReport.results[0].output.includes('normal combat/rewards'));
   assert.ok(playReport.results[0].output.includes('human play and native presentation comparison remain pending'));
   pass(name+': Tutorial traversal uses normal mechanics and exports remaining human/native acceptance limits');
+  }
   if(skipPerformance)console.log('SKIP '+name+': performance benchmarks and benchmark cancellation (FTL_SKIP_PERFORMANCE=1)');
   else {
   await page.locator('.preset[data-preset="benchmark"]').click();await page.locator('#benchmark-duration').selectOption('5000');await page.locator('#benchmark-limit').selectOption('30');
@@ -130,16 +138,23 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   assert.ok(await page.locator('#run-tests').isDisabled());assert.ok(await page.locator('.preset').first().isDisabled());
   if(name==='Chromium'){
    await done(page);const report=await exported(page);assert.equal(report.status,'passed',JSON.stringify(report));assert.equal(report.benchmark.length,3);
-   for(const sample of report.benchmark){assert.equal(sample.fpsLimit,30);assert.ok(sample.fps>0&&sample.frames>0);if(!skipFpsCheck){assert.ok(sample.fps>=25&&sample.fps<=35,JSON.stringify(sample));assert.ok(sample.frames>100);}assert.ok(sample.frameP95>0);assert.ok(sample.browserFps>=sample.fps-.5,JSON.stringify(sample));assert.ok(sample.browserCallbacks>=sample.frames);if(sample.browserFps>33)assert.ok(sample.browserCallbacks>sample.frames);}
+   // every phase's gates are measured before any miss fails the script (gate(), gatesChecked() at the end)
+   const missedBefore=gateMisses();
+   for(const [i,sample] of report.benchmark.entries()){const phase=name+': benchmark phase '+(sample.phase??i+1)+' ',detail=JSON.stringify(sample);
+    assert.equal(sample.fpsLimit,30);assert.ok(sample.fps>0&&sample.frames>0);
+    if(!skipFpsCheck){gate(phase+'fps (30 FPS limit)',sample.fps,25,35,'fps',{},detail);gate(phase+'frames',sample.frames,101,Infinity,'frames',{},detail);}
+    assert.ok(sample.frameP95>0);gate(phase+'browser fps minus fps',sample.browserFps-sample.fps,-.5,Infinity,'fps',{},detail);gate(phase+'browser callbacks minus frames',sample.browserCallbacks-sample.frames,0,Infinity,'frames',{},detail);
+    if(sample.browserFps>33)gate(phase+'browser callbacks minus frames (browser fps > 33)',sample.browserCallbacks-sample.frames,0,Infinity,'frames',{open:true},detail);}
    await writeFile('.build/launcher-benchmark-results.json',JSON.stringify(report,null,2));
-   if(skipFpsCheck){console.log('SKIP Chrome: measured FPS/throughput acceptance deferred (LAUNCHER_SKIP_FPS_CHECK=1)');pass('Chrome: Three benchmark phases complete with the selected 30 FPS limit; FPS acceptance deferred');}
-   else pass('Chrome: Three measured flagship phases respect the benchmark-only 30 FPS cap');
+   if(skipFpsCheck){console.log('SKIP Chrome: measured FPS/throughput acceptance deferred (LAUNCHER_SKIP_FPS_CHECK=1)');if(gateMisses()===missedBefore)pass('Chrome: Three benchmark phases complete with the selected 30 FPS limit; FPS acceptance deferred');}
+   else if(gateMisses()===missedBefore)pass('Chrome: Three measured flagship phases respect the benchmark-only 30 FPS cap');
    await page.locator('#run-tests').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent.startsWith('Benchmark phase'));
   }
   await page.locator('#stop-tests').click();await done(page);assert.equal((await exported(page)).status,'cancelled');
   assert.deepEqual((await api(page,'/saves')).body.saves,before.body.saves);
   pass(name+': Stop cancels a benchmark, restores controls and preserves cloud progress');
   }
+  if(!perfOnly){
   await page.locator('.preset[data-preset="quick"]').click();await page.screenshot({path:'.build/launcher-'+name.toLowerCase()+'.png',fullPage:true});
   await page.setViewportSize({width:390,height:844});await page.screenshot({path:'.build/launcher-mobile-'+name.toLowerCase()+'.png',fullPage:true});
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Page overflows the mobile viewport');
@@ -165,7 +180,9 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
    assert.equal(report.status,'passed',JSON.stringify(report));assert.equal(report.server.status,'passed');assert.equal(report.server.results.length,7);assert.ok(report.server.results.every(r=>r.status==='passed'));
    assert.deepEqual((await api(page,'/saves')).body.saves,before.body.saves);pass('Runner: All packaged tests pass, reload resumes progress and live account saves stay unchanged');
   }
+  }
   assert.deepEqual(errors,[]);
  }catch(e){console.log('Launcher state:',await page.locator('#test-status').textContent().catch(()=>''));console.log('Launcher output:',await page.locator('#results').textContent().catch(()=>''));console.log('Browser errors:',errors);throw e;}finally{await browser.close();}
 }
 await writeFile('.build/launcher-results.json',JSON.stringify({at:new Date().toISOString(),checks},null,2));
+gatesChecked();

@@ -28,13 +28,24 @@ internal object GameplayParityPsU4Checks {
             // UpdateSoundLoop (0x5d5800) with 0 slides the loop out over 500 ms of real time; the loop restarts at once.
             val fire = sounds.getLoop("fire")
             log.clear()
+            val t0 = System.currentTimeMillis() // the slide starts after this ...
             repeat(3) { fire.continueLoopAnyShip(); sounds.updateLoopedSounds(false) }
             sounds.updateLoopedSounds(false)
+            val t1 = System.currentTimeMillis() // ... and before this
             check(log.filter { it.endsWith(" fire") } == listOf("loop+ fire", "loop- fire")) { "fire loop: $log" }
             check(sounds.diagnosticFadingLoops >= 1) { "the fire loop stopped without sliding out" }
-            val start = System.currentTimeMillis()
-            while (System.currentTimeMillis() - start < 560) sounds.updateLoopedSounds(false)
-            check(sounds.diagnosticFadingLoops == 0) { "a loop still slides after 560 ms" }
+            // The slide-out lasts 500 ms of real time. Bounded by the clock around each update, not by a fixed wait, so
+            // a slow machine (fewer updates) cannot fail it: an update that ended before t0 + 500 must still find it
+            // sliding, one that began at t1 + 500 or later must end it (was: a 560 ms busy loop, then one look).
+            while (true) {
+                val before = System.currentTimeMillis()
+                sounds.updateLoopedSounds(false)
+                val after = System.currentTimeMillis()
+                val sliding = sounds.diagnosticFadingLoops > 0
+                if (after < t0 + 500) check(sliding) { "the loop slid out in under ${after - t0} ms, not 500 ms" }
+                if (before >= t1 + 500) { check(!sliding) { "a loop still slides ${before - t1} ms after it began" }; break }
+                if (!sliding) break
+            }
             parts += "loop slide-out"
 
             // Names the files lack play nothing and stop nothing: PlaySoundMix's "Sound name not found", a loop that
@@ -73,6 +84,52 @@ internal object GameplayParityPsU4Checks {
                 listOf("combat on", "playlist civilian", "track civilian combat=true volume=1.0")) { "combat flag: $log" }
             sounds.setCombatMusic(false)
             parts += "playlist edges"
+
+            // Report 106 (a host rule, nothing of the original's): a change of the sound volume reaches every playing
+            // sound, also those listed after one that has ended. Two rounds, so that no order of the list hides it.
+            // (Every effect voice is stopped first: the sounds this run played before may still hold them.)
+            val store = xyz.znix.xftl.sys.SoundStore.get()
+            val freeVoices = { for (i in 2 until store.sourceCount) store.stopSource(i) }
+            val volumeBefore = sounds.soundEffectVolume
+            try {
+                freeVoices()
+                val a = boom.play()
+                val b = boom.play()
+                val c = boom.play()
+                b.stop()
+                sounds.soundEffectVolume = if (volumeBefore > .5f) .25f else .75f
+                val want = sounds.diagnosticChannelVolume(a)?.times(sounds.soundEffectVolume)
+                check(sounds.diagnosticAppliedGain(a) == want && sounds.diagnosticAppliedGain(c) == want) {
+                    "volume change with an ended sound between: ${sounds.diagnosticAppliedGain(a)}, ${sounds.diagnosticAppliedGain(c)}, want $want"
+                }
+                val d = boom.play()
+                a.stop()
+                c.stop()
+                sounds.soundEffectVolume = if (volumeBefore > .5f) .125f else .875f
+                val wantD = sounds.diagnosticChannelVolume(d)?.times(sounds.soundEffectVolume)
+                check(sounds.diagnosticAppliedGain(d) == wantD) { "volume change with ended sounds around: ${sounds.diagnosticAppliedGain(d)}, want $wantD" }
+                d.stop()
+            } finally {
+                sounds.soundEffectVolume = volumeBefore
+            }
+            parts += "volume reaches all"
+
+            // Report 106: a loop that found no free voice when it started is not silent for as long as it is wanted;
+            // it starts within LOOP_RESTART_UPDATES updates of a voice being free again.
+            val hum = listOf("nebula", "ionStorm", "distress").firstNotNullOfOrNull { sounds.getLoopOrNull(it) } ?: fire
+            repeat(40) { sounds.updateLoopedSounds(false) }
+            freeVoices()
+            val held = ArrayList<xyz.znix.xftl.game.SoundInstance>()
+            repeat(store.sourceCount) { held += boom.play() }
+            hum.continueLoopAnyShip()
+            sounds.updateLoopedSounds(false)
+            val silentAtFirst = sounds.diagnosticSoundingLoops == 0
+            for (h in held) h.stop()
+            repeat(31) { hum.continueLoopAnyShip(); sounds.updateLoopedSounds(false) }
+            val sounding = sounds.diagnosticSoundingLoops
+            sounds.updateLoopedSounds(false)
+            check(silentAtFirst && sounding == 1) { "a loop started with every voice taken: silent at first $silentAtFirst, sounding afterwards $sounding" }
+            parts += "loop restart"
 
             // Doors: Door init (0x46eb40) gives the player's doorAnim soundForward "doorOpen" and soundReverse
             // "doorClose"; Animation::Start (0x5bbc90) plays the first from fully closed and the reverse start

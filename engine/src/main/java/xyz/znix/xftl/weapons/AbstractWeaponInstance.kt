@@ -292,6 +292,7 @@ abstract class AbstractWeaponInstance(type: AbstractWeaponBlueprint, val ship: S
         timeCharged = 0f
         extraCharges = 0
         hsFiringAngle = null
+        xyz.znix.xftl.game.GameHaptics.weaponFired(ship, type)
 
         if (xyz.znix.xftl.hs.HS.active) hsShotsFired++
 

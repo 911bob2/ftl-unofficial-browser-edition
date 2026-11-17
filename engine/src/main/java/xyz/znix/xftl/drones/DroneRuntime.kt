@@ -312,6 +312,27 @@ object DroneRuntime {
         else -> o
     }
 
+    /**
+     * A run became the current state (MainGame.setCurrentState: a new game, a loaded save, the tutorial): the bodies
+     * of ships of other runs leave the per-ship maps now. The space loop drops them as well ([spaceLoop]: a ship whose
+     * `sys` is not the running game is gone), but only on the new run's first unpaused frame; until then these static
+     * maps kept every replaced run alive, with its map, events and ships (a page that starts or loads runs without
+     * playing them grew by a whole run each time). Only entries of another [InGameState] go, so the loop finds the
+     * same maps as before.
+     */
+    @JvmStatic
+    fun runInstalled(game: InGameState) {
+        shipDrones.keys.removeAll { it.sys !== game }
+        arrivals.keys.removeAll { it.sys !== game }
+        hackingBodies.entries.removeAll { e -> (e.value.standaloneOwner ?: e.key.room?.ship)?.let { it.sys !== game } == true }
+    }
+
+    /** Entries of the per-ship maps whose ship belongs to a run other than [game] (diagnostics: none after [runInstalled]). */
+    @JvmStatic
+    fun otherRunEntries(game: InGameState): Int =
+        shipDrones.keys.count { it.sys !== game } + arrivals.keys.count { it.sys !== game } +
+            hackingBodies.entries.count { e -> (e.value.standaloneOwner ?: e.key.room?.ship)?.let { it.sys !== game } == true }
+
     /** A new game or a loaded save: nothing from the last run stays in space. */
     @JvmStatic
     fun reset() {

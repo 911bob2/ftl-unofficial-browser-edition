@@ -1,6 +1,6 @@
 # Android app
 
-Status: in development (branch `claude/android-app-*`). A native app, not a WebView: the same engine sources as the
+Status: in development. A native app, not a WebView: the same engine sources as the
 website, the same accounts and cloud saves, and fully playable offline. Saves follow [SAVES.md](SAVES.md).
 
 ## Build
@@ -42,13 +42,31 @@ Signing needs the owner's key, in `android/signing.properties` (ignored by Git; 
   console command compares a batched and an unbatched frame pixel by pixel; `gfx` prints flushes, GL draws and uploads.
 - **Loop**: the GL thread runs the browser loop: queued input, `step(dt ≤ 0.05)` per frame, render at the settings'
   frame limit.
-- **Audio**: `AudioMixer` mirrors `web/audio.mjs` (sources, buffers, gain, pitch, loop, offsets); Ogg sounds are decoded by
-  the engine's Java decoder and other files by MediaCodec (music on a thread of its own), into direct buffers, which ART
-  keeps in the Java heap (cache with eviction, a quarter of the heap at most, 192 MB at the very most), and mixed into one low-latency `AudioTrack`. The mixer lives as
-  long as the process: when a game ends it forgets its sounds and queued decodes, and keeps the sources, which the
-  engine's `SoundStore` creates once per process. A debug `audio` console command prints what it loaded and played;
+- **Audio**: `MixerCore` mirrors `web/audio.mjs` (sources, buffers, gain, pitch, loop, offsets) and holds every rule;
+  `AudioMixer` gives it the decoder, the threads and one low-latency `AudioTrack`. Ogg sounds are decoded by the engine's
+  Java decoder, plain PCM WAV files by `PcmDecoder.decodeWav` (the platform's codec took 260 to 550 ms to set up for a
+  click on the emulator; the debug `pcmcheck <path>.wav` compares both, the same on all seven vanilla files) and anything
+  else by MediaCodec, music on a thread of its own, into direct buffers, which ART keeps in the Java heap. The mixer lives as long as the process: when a game ends it forgets its sounds and queued decodes, and
+  keeps the sources, which the engine's `SoundStore` creates once per process.
+  **No sound may become unplayable for the rest of a game**: the engine asks for a sound's buffer id once and keeps it
+  (`RealSoundManager.loadRawSound`), so an id stays good for the game's life.
+  - Cache: decoded sounds beyond those playing are kept up to a quarter of the heap (192 MB at the very most; a vanilla
+    track decodes to 24 to 54 MB, an explore and battle pair to 48 to 88, all 34 to 1148). Over that, sounds nobody plays are freed, music first, then effects, least
+    recently heard first. A freed sound keeps its id and is decoded again when it is next played.
+  - A decode that fails (out of memory, a codec error) is tried again when the sound is next played, not before 1 s,
+    doubling up to a minute; out of memory first empties the cache and tries once more. Only a file the game does not
+    have stays silent. The platform decoder gives up after 10 s without progress.
+  - Music and loops wait for their decode however long it takes; an effect that has waited about two seconds is given
+    up, so a decode that hangs holds none of the engine's 61 effect voices.
+  - The mixing thread allocates nothing per block and goes on whatever is thrown; a source that cannot be mixed ends
+    alone. An `AudioTrack` that reports an error, or takes nothing for a second, is opened again.
+  Debug console: `audio` prints the counters (held, freed, decodedAgain, failed, givenUpWaiting, outputReopened),
+  `audiostate <path>` one sound's state, `audiocache <MB>` another cache size, `playsound <name>` plays an effect;
   `adb shell setprop log.tag.FTL-Audio DEBUG` logs each decoded sound.
-- **Audio focus**: the game holds the focus while resumed and goes silent when it loses it (a call, another app's sound).
+- **Audio focus**: the game holds the focus while resumed. Without it (a call, another app's sound) the game is silent and
+  its sounds play on unheard, so effects end as they would; in the background the sounds stand still with the game.
+  After a permanent loss (another app started playing and kept the focus) Android does not give the focus back: the
+  game asks for it again when the app next comes to the front.
 - **Lifecycle**: `onPause` saves (as the browser does on blur/hidden) and silences audio; `onResume` restores. The
   process may die in the background; the save already reached the device store.
 - **Hyperspace Lua**: the same C sources as the wasm build (`hs-lua/hslua.c`, `gen/hs_api.c`, `linit.c`, Lua 5.3.6
@@ -159,20 +177,54 @@ mod adds is chosen in the game and is kept here as it stands. The launcher itsel
 
 ### Haptics
 
-Settings > **Haptics** (`game/Haptics.kt`, its own preferences file, never synced): Off, Light, Medium (the default) or Strong,
-then a switch per action, each on by default (`Haptics.Action`). Off turns every action off; an action switched off plays
-nothing at any strength. The Settings row adds which actions are off. A new action is a `TouchHaptics` kind and an entry in
-`Haptics.Action`. There are two. **System power**: a tick on the touch controls for each power step a system box actually
-gains or loses (a drag, or the flick for all or nothing; for shields a layer). Nothing when the game refuses the step: no free
-reactor power, at the cap, ionised, or a finger held on the same step. **Magnifier**: a tick when the magnifier comes up
-(below). The engine calls `AndroidHost.haptic` (`TouchHaptics`, next to the touch HUD's power change); the browser build
-plays nothing. FTL on iPad has no haptics at all (no haptic or vibration API in its binary), so there is no native setting.
+Settings > **Haptics** (`game/Haptics.kt`, its own preferences file, never synced; `settings/HapticsDialog.kt`). Neither FTL
+on iPad nor on Windows has haptics, so there is no native setting to follow.
 
-The strength comes from what the vibrator can do: a click primitive at scale 0.35, 0.65 or 1 (Android 11 and later, where the
-vibrator has it), else a 10, 15 or 20 ms pulse at amplitude 90, 170 or 255, else a plain 20 ms pulse: then the setting says
-the device cannot vary the strength and offers Off and On. A device without a vibrator shows "This device cannot vibrate".
-Choosing a strength plays one tick. The vibrations are touch feedback (`USAGE_TOUCH`), so Android's Touch feedback setting
-applies on top. Several steps at once (a flick) play that many ticks, 45 ms apart, at most 16.
+- **Strength**: Off, Light, Medium (the default) or Strong, the overall strength. Off turns everything off.
+- **What vibrates**, a preset: **Touch controls only** (the default, and what the app did before there were game moments),
+  **Light** (the touch ticks and the moments that matter most, gently), **Combat** (everything in a fight, no touch ticks, no
+  travel), **Everything**. Any other set of strengths reads **Custom**.
+- **Advanced**: the overall strength, Reset to a preset, then every group with a strength (it sets all of the group's
+  moments; none lit when they differ) and, in the open group, every moment with its own: Off, Light, Medium, Strong.
+  Choosing a strength plays the moment at it; Try plays it again (one that is off plays as at Medium).
+
+**Moments** (`Haptics.Moment`, 57): Touch controls (System power: a tick for each power step a system box actually gains or
+loses, nothing when the game refuses the step; Magnifier: a tick when the magnifier comes up); Your ship (hull hit, shot
+stopped by the shields, shield layer lost and back, system damaged, destroyed, repaired, ionised, breach, fire, the hull and
+oxygen warnings, your ship destroyed); Your weapons (laser, ion, missile, beam, bomb and flak fired, weapon charged, your
+shot missed or shot down); Defence and drones (dodge, incoming shot shot down, drone launched and destroyed, cloak on and
+off); Crew and boarding (crew badly hurt, dead, cloned, intruders aboard, teleporter, mind control and hacking, yours and
+the enemy's); The enemy ship (hull hit, shield hit, shield layer lost, system destroyed, breaking apart, explodes,
+surrenders, charges its FTL, jumps away, crew member dies, cloaks); Travel and hazards (FTL charged, jump, arrival, solar
+flare, ion pulse, lightning, event damage, planetary defence fire).
+
+**Engine side**: `engine/.../game/GameHaptics.kt` is the one hook file; one-line calls sit where the game already decides
+each moment, mostly beside its sound. It only reports (`BrowserEngine.haptic(number, amount)`, the same call the touch ticks
+use): no random number, value or timing changes, and with `GameHaptics.on` false every call returns at once. The app sets
+`on` when a game starts with any game moment switched on; the browser build never does. A new moment is a number in
+`GameHaptics`, a call, and an entry in `Haptics.Moment` (`HapticsTest` fails when the entry is missing). Save loading does not
+pass the hooks.
+
+**Patterns** (`Haptics.Pattern`): tick, rise (two clicks, the second firmer), double, knock, flutter, shake, hard knock, quick
+rise, long rise and fall. What reaches the vibrator is the overall strength's share (0.35, 0.65, 1) times the moment's own
+(0.5, 0.75, 1): clicks are click primitives at that scale (Android 11 and later, where the vibrator has them), everything
+else an amplitude waveform (a tick: a 10 to 20 ms pulse; the touch ticks at the three overall strengths play exactly what
+they always did: scale 0.35, 0.65, 1, or 10, 15, 20 ms at amplitude 90, 170, 255). A vibrator without amplitudes plays each
+pattern's on/off rhythm, and the setting offers Off and On; without a vibrator it says "This device cannot vibrate". More
+hull points make the hull knock a little firmer and longer.
+
+**Together**: one moment at a time and never late (`Haptics.Gate`). While one plays, and for 60 ms after it, only a heavier
+one (the heavier pattern, then the stronger setting; what happens to your own ship counts two patterns heavier, to your
+crew one) takes over; anything else is dropped, not queued. So a volley is its
+knocks, not one buzz. Only a warning (two clicks) or an ending (the long rise and fall) waits, once and for at most half a
+second, for the hit that caused it to end: it would otherwise nearly always be dropped. A touch tick always plays and is not cut off. Game moments reach the vibrator from a thread of their
+own and are dropped if that took over 150 ms; none plays while the app is in the background. Several power steps at once
+(a flick) play that many ticks, 45 ms apart, at most 16. Touch ticks are touch feedback (`USAGE_TOUCH`), game moments media
+vibration (`USAGE_MEDIA`; before Android 13 the game usage), so Android's Touch feedback and Media vibration settings apply
+on top.
+
+**Stored** (preferences `haptics`): `strength`, `model` = 2, `level-<moment>` each. A file from before has only `strength`
+and `action-power` / `action-magnifier`: it reads as Touch controls only, less what was switched off.
 
 ### Magnifier
 
@@ -370,7 +422,13 @@ on yet.
   boxes at one place, the augment box over the item box; on touch one shows at a time, with a pager of two arrows over
   the box (the iPad's `img/ipad/customizeUI/button_arrow`, the art Hyperspace's pager uses at desktop size), turning to
   the box that took an item last. Multiverse's multipleOverCapacity keeps Hyperspace's own pager. The desktop keeps the
-  original's places and overlap.
+  original's places and overlap. The item waiting in the slot is carried like any other (the box around it is a notice,
+  not a button, so a finger on it presses at once), and it changes places with an owned item whichever of the two is
+  carried onto the other, as in the original's Equipment.
+- Beacon map (`JumpWindow`): the beacon a finger picked is the hovered one, as on the iPad: its connections are drawn
+  in yellow (not the one to the ship's beacon) while "beacon paths" is on, the ship's own in green, and Hyperspace's
+  every-connection view draws the rest in white. The ship's and the flagship's markers use the iPad's smaller art,
+  placed where the desktop's 64 x 64 art has its ship: beside the beacon and level with it, so it flies along its circle.
 - Art and text come from the player's `ftl.dat` (`img/ipad/...`, `*_ipad` ids). A mod that blanks the wrench icon
   (Multiverse) gets a labelled Options tab instead.
 - A Hyperspace system over eight levels (Multiverse's shields go to 16) keeps the height of eight in its box: the bars
@@ -469,10 +527,21 @@ on yet.
   adb shell "CLASSPATH=$APK app_process / ftl.android.app.debug.LuaVectors /data/local/tmp/mod-vectors.json '$APK!/lib/x86_64/libftlmanlua.so' [cases|l1|parity|security|native|bombs|smallstack]"
   ```
   It prints PASS/FAIL per case and a total. In git bash, `export MSYS_NO_PATHCONV=1` first.
-- Haptics: `HapticsTest` (when the power tick fires, what each strength plays, which action plays with which switch) and, on
-  the emulator, logcat's `FTL-Haptic` lines (debug builds log every tick, and `skip ... action off` for a switched-off one; `adb shell dumpsys vibrator_manager` lists what the vibrator played). Debug console:
-  `power` logs each system's power and the free reactor power, `ion <system> <units>` ionises one, `hapticdevice
+- Haptics: `HapticsTest` (when the power tick fires; every engine moment in the catalogue once; an old settings file and the
+  default add no vibration; the settings round trip; the presets and Custom; what each pattern plays on each kind of
+  vibrator; Off sends nothing; a volley is its knocks and the heavier moment wins) and, on the emulator, logcat's
+  `FTL-Haptic` lines (debug builds log `play kind=<number> <moment> ... <plan>`, `skip ...: off`, `drop ...: a heavier one
+  is playing`; `adb shell dumpsys vibrator_manager` lists what the vibrator played). Debug console: `haptic <number>
+  [amount]` reports a moment to the running game as the engine does, `hapticset strength <S>` / `preset
+  touch|light|combat|full` / `level <moment> <S>` set Settings > Haptics (from the next game started), `power` logs each
+  system's power and the free reactor power, `ion <system> <units>` ionises one, `hapticdevice
   PRIMITIVES|AMPLITUDE|ON_OFF|NONE|auto` pretends a weaker vibrator for the setting's texts.
+- Sound that recovers (report 106): `AudioMixerTest` (a freed sound keeps its id and plays again; music is freed before
+  effects and playing sounds never; a failed decode is tried again, with waits; out of memory empties the cache and tries
+  once more; a missing file; music waits and retries by itself; a decode that never ends holds no voice; a dead output is
+  opened again; paused holds and muted plays on; a source that cannot be mixed ends alone; a game's end), `WavTest` (the
+  WAV reader). On the emulator:
+  `audiocache 8`, a few jumps, then `audio` (freed and decodedAgain above 0) and `audiostate <path>`.
 - Sign out: `SignOutTest` (the unsynced line's rule, the words equal `web/sign-out.mjs`'s); the dialog on the emulator through
   `uiautomator` taps on Sign out, Cancel and Sign out.
 - Save questions: `SaveWordsTest` (every word equal to `web/save-words.mjs`'s, the list line and stock ship names equal to

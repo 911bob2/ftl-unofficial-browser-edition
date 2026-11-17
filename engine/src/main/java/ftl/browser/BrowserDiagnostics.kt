@@ -1387,6 +1387,11 @@ object BrowserDiagnostics {
             main.loadSavedGame(BrowserXml.parse(stunnedXml))
             check((main.currentState as InGameState).player.crew.first().stunTime == 2f) { "Stun state was not restored" }
         }
+        // The runs this probe replaced (the new game, the first load) are let go: the static drone maps kept each one
+        // alive with its map and events until a frame ran, and a page that never runs one grew by a run per probe.
+        val current = main.currentState as InGameState
+        val kept = xyz.znix.xftl.drones.DroneRuntime.otherRunEntries(current)
+        check(kept == 0) { "The drone runtime still holds $kept ships of replaced runs" }
         return "PASS $ship ${Difficulty.values()[difficulty]} crew=$crewCount xml=${xml.length} RNG/save/render"
     }
 }

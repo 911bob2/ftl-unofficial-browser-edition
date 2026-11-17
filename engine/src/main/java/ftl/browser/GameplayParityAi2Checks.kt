@@ -426,8 +426,11 @@ internal object GameplayParityAi2Checks {
     }
 
     /**
-     * A boarder keeps sabotaging the system it latched onto (CrewMember +0x68, set only while the crew AI runs)
-     * after the fight is over, but one that never latched on doesn't start; the latch survives a save.
+     * A boarder's sabotage follows the hostile flag of the ship it stands on (ShipManager +0x10): the ship's crew AI
+     * starts it (CrewAI::UpdateCrewMember 0x627df0 -> 0x626860 -> CrewMember::StartRepair) and the ship's crew loop
+     * (1.6.14 0x4aa670) stops it again with CrewMember::StopRepairing in every loop the flag is clear. The player's
+     * ship always has the flag, so a boarder there goes on whatever its own ship does; aboard an enemy that stopped
+     * being hostile it stops (GameplayParityFixCrewChecks has that side).
      */
     private fun sabotageLatch(main: MainGame, container: GameContainer): String {
         val state = BrowserGameplayParityDiagnostics.fresh(main, container)
@@ -448,31 +451,31 @@ internal object GameplayParityAi2Checks {
         val latched = boarder(spots[0])
         repeat(5) { latched.update(0.1f) }
         check(latched.currentAction == AbstractCrew.Action.SABOTAGE) { "The boarder didn't start sabotaging" }
-        check(latched.sabotagingSystem === spots[0].system) { "The boarder didn't latch onto the system" }
+        check(latched.sabotagingSystem === spots[0].system) { "The boarder has no system it sabotages" }
 
-        // The fight ends and the boarder now belongs to the (present, but peaceful) other ship.
+        // The fight ends and the boarder now belongs to the (present, but peaceful) other ship: aboard the player's
+        // ship it goes on, and so does one that only starts now.
         state.browserEndHostility()
         latched.ownerShip = enemy
         check(latched.mode == AbstractCrew.SlotType.INTRUDER) { "Fixture boarder isn't an intruder" }
-        check(!latched.standingShipHostile) { "Fixture boarder still counts as hostile" }
         repeat(5) { latched.update(0.1f) }
-        check(latched.currentAction == AbstractCrew.Action.SABOTAGE) { "A latched boarder stopped with the fight" }
+        check(latched.currentAction == AbstractCrew.Action.SABOTAGE) { "A boarder aboard the player's ship stopped with the fight" }
 
-        val idle = boarder(spots[1])
-        idle.ownerShip = enemy
-        repeat(5) { idle.update(0.1f) }
-        check(idle.sabotagingSystem == null && idle.currentAction != AbstractCrew.Action.SABOTAGE) {
-            "A boarder with no fight started sabotaging"
+        val late = boarder(spots[1])
+        late.ownerShip = enemy
+        repeat(5) { late.update(0.1f) }
+        check(late.sabotagingSystem === spots[1].system && late.currentAction == AbstractCrew.Action.SABOTAGE) {
+            "A boarder aboard the player's ship did not start sabotaging after the fight"
         }
 
         val loaded = BrowserGameplayParityDiagnostics.reload(main, state)
-        // The loaded game is hostile again, so only the boarder that had latched on is looked at.
         val latchRoom = player.rooms.indexOf(spots[0])
         val inRoom = loaded.player.crew.filter { loaded.player.rooms.indexOf(it.room) == latchRoom }
-        check(inRoom.any { it.sabotagingSystem != null }) {
-            "The sabotage latch didn't survive the save: ${inRoom.map { "${it.mode}/${it.currentAction}" }}"
+        repeat(5) { for (crew in inRoom) crew.update(0.1f) }
+        check(inRoom.any { it.currentAction == AbstractCrew.Action.SABOTAGE }) {
+            "The sabotage didn't go on after the save: ${inRoom.map { "${it.mode}/${it.currentAction}" }}"
         }
-        return "sabotage latch kept, not started, saved"
+        return "sabotage follows the ship's hostile flag"
     }
 
     /** CrewAI +0x24 keeps the breaches in the order they were made; a save restores that instead of room order. */

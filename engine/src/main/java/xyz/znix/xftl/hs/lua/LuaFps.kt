@@ -38,6 +38,21 @@ object LuaFps : LuaTyped {
         now = 0.0; started = false
     }
 
+    /**
+     * Diagnostics (the twin probe, BrowserHsWp5CrewDiagnostics): the clock as if the game had run steadily at [fps]
+     * up to now and no game time had passed: RunningTime 0, the times 0, the last frame's SpeedFactor and last
+     * second's frame count those of that rate. Otherwise a probe starts from whatever the page's real frames before
+     * it left (their wall-clock length and count, the previous probe's RunningTime), which Lua reads in its first,
+     * zero-time phases. speedLevel/speedEnabled stay as scripts set them.
+     */
+    fun steady(dt: Float, fps: Double) {
+        runningTime = 0f; now = 0.0; oldTime = 0.0; lastTime = 0.0; started = true; frames = 0
+        numFrames = Math.round(fps).toInt()
+        var sf = (dt * 1000.0 / 1000.0 * 16.0).toFloat()
+        if (sf >= 0.5f) sf = 0.5f
+        speedFactor = sf
+    }
+
     /** One frame of [dt] real seconds; returns the game seconds it advances (SpeedFactor / 16). */
     @JvmStatic
     fun onLoop(dt: Float): Float {

@@ -406,6 +406,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         addLockUnits(ionDamage)
 
         powerLimitChanged()
+        xyz.znix.xftl.game.GameHaptics.systemDamage(ship, broken, damage, ionDamage)
     }
 
     /** Native ShipSystem::AddDamage (1.6.9 0x614e50): clamp health, then constrain power to the remaining bars. */
@@ -517,6 +518,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
 
         damagedEnergyLevels--
         powerLimitChanged()
+        xyz.znix.xftl.game.GameHaptics.systemRepaired(ship)
 
         return true
     }

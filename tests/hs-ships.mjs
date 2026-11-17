@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // Hyperspace ships check (ships workstream): boot the real launch path to the main menu with a modded asset set, then
 //  1. compare the engine's parsed ship definitions (hsShipsProbe('defs')) with this file's own reading of the merged XML
 //     by Hyperspace 1.23.2's rules (CustomShipSelect.cpp ParseShipsNode/ParseCustomShipNode, ParseVanillaShipNode);
@@ -161,6 +162,11 @@ function checkStores(r,S){
    }});
   if(pr.length)bad.push(s.id+': '+pr.join('; '));}
  if(r.ui){const u=r.ui;if(u.disabled||!u.bought||u.paid!==u.cost||u.purchased!==1||u.page!==1)bad.push('buy page '+JSON.stringify(u));}else bad.push('buy page: no store with two pages');
+ // Sold boxes (player report MV102): a bought crew member or augment is drawn as an empty box, also from the store's save.
+ const sold=r.sold||[];
+ for(const c of [2,3])if(!sold.some(x=>x.category===c))bad.push('sold boxes: no box of category '+c+' was bought and drawn');
+ if(!sold.some(x=>x.category===3&&x.clicked))bad.push('sold boxes: the crew box was not bought with a click '+JSON.stringify(sold));
+ for(const x of sold)if(x.loadedCount!==0)bad.push('sold box '+x.box+' of '+x.id+' is for sale again after save and load');
  return bad;
 }
 // Custom achievements (CustomAchievements.cpp ParseAchievements): names defined or referenced, and the stats pages
@@ -186,7 +192,7 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const browser=withOnboarding(await chromium.launch({headless:true,args:['--disable-dev-shm-usage']}),origin),context=await browser.newContext({viewport:{width:1440,height:1000}}),page=await context.newPage();

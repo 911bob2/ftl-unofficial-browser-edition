@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 import assert from 'node:assert/strict';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 const origin=process.env.ACCOUNT_TEST_ORIGIN??'http://localhost:8083';
@@ -29,6 +30,6 @@ const debug=await external.json('/api/debug/sessions','POST',{build:'account-tes
 let victim=await user(extInfo.userName);assert.equal((await admin.request('/api/admin/users/'+victim.id,'DELETE',{confirmUsername:'wrong',version:victim.version})).status,400);
 await admin.json('/api/admin/users/'+victim.id,'DELETE',{confirmUsername:victim.userName,version:victim.version});
 assert.equal((await external.request('/api/auth/me')).status,401);assert.equal((await external.request('/api/saves/'+saveId+'/lock','POST',{override:true},device)).status,401);assert.equal((await external.request('/api/debug/sessions','POST',{build:'should-not-exist'})).status,401);
-const deadline=Date.now()+15000;while(await user(victim.userName)){if(Date.now()>deadline)throw Error('Account cleanup did not finish');await new Promise(r=>setTimeout(r,200));}
+const deadline=Date.now()+hangMs(15000);while(await user(victim.userName)){if(Date.now()>deadline)throw Error('Account cleanup did not finish');await new Promise(r=>setTimeout(r,200));}
 pass('Typed deletion immediately revokes access and completes live-data cleanup');
 await mkdir('.build/website-roles-assets',{recursive:true});await writeFile('.build/website-roles-assets/account-results.json',JSON.stringify({checks},null,2));

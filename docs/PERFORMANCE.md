@@ -72,7 +72,7 @@ replicate an older integrated GPU, constrained RAM, different CPU architecture,
 or laptop thermal behavior. Changing the viewport or choosing a device name by
 itself is not a CPU benchmark. A real modest laptop remains the best validation.
 
-The connected Codex in-app browser exposes viewport and visibility controls but
+The connected in-app browser exposes viewport and visibility controls but
 does not expose a CPU-throttling control. Results from that connection must be
 labelled **unthrottled**, with any multiplied time budgets labelled estimates.
 

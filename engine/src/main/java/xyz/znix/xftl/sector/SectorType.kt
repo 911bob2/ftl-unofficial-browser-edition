@@ -8,7 +8,8 @@ import xyz.znix.xftl.requireAttributeValueInt
 
 class SectorType(private val eventManager: EventManager, elem: Element, displayAs: SectorType? = null) {
     val name: String = elem.requireAttributeValue("name")
-    val soundtracks: List<String> = elem.getChild("trackList").mapChildrenText("track")
+    // The original's parser (0x5e8510) gives a description without a trackList the one track "civilian".
+    val soundtracks: List<String> = elem.getChild("trackList")?.mapChildrenText("track") ?: listOf("civilian")
     // GenerateMap (0x5f8ca0) creates this for the start beacon. The final
     // sector names BOSS_NEUTRAL, which it then replaces with LAST_STAND_START.
     val startEventName: String = elem.getChildTextTrim("startEvent") ?: "START_BEACON"
@@ -17,9 +18,10 @@ class SectorType(private val eventManager: EventManager, elem: Element, displayA
     /**
      * The (zero-indexed) earliest sector this is allowed to occur at.
      */
-    val minSector: Int = elem.getAttributeValue("minSector")?.toInt() ?: -1
+    val minSector: Int = elem.getAttributeValue("minSector")?.let { atoiCompat(it) } ?: -1
 
-    val unique: Boolean = elem.getAttributeValue("unique")!!.toBoolean()
+    // Not unique without the attribute (0x5e8510 starts from false and reads minSector with atoi).
+    val unique: Boolean = elem.getAttributeValue("unique")?.toBoolean() ?: false
 
     val events: List<EventInfo> = elem.getChildren("event").mapNotNull {
         val name = it.requireAttributeValue("name")
@@ -64,12 +66,10 @@ class SectorType(private val eventManager: EventManager, elem: Element, displayA
         nameTextId = displayAs?.nameTextId ?: names[0].full
         shortTextId = displayAs?.shortTextId ?: names[0].short
 
-        // Load the rarity overrides
-        check(elem.getChildren("rarityList").size <= 1)
+        // Load the rarity overrides. The original (0x5e8510) reads the first rarityList: every child of it, whatever
+        // its name, gives its `name` and atoi of its `rarity`, with no range (SetRarity 0x60b8e0 stores it as it is).
         rarityOverrides = elem.getChild("rarityList")?.children?.map { e ->
-            check(e.name == "blueprint")
-            check(e.children.size == 0)
-            Pair(e.requireAttributeValue("name"), e.requireAttributeValueInt("rarity"))
+            Pair(e.requireAttributeValue("name"), atoiCompat(e.requireAttributeValue("rarity")))
         }?.toMap() ?: emptyMap()
     }
 

@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // WP6 leftovers, vanilla: the backdrop, planet and background fleet the port picks for a seed, read from the debug
 // snapshot's "scene" next to a screenshot, to set against the native 1.6.14 captures (.build/wp6-left/native).
 // env REPLAYS="csv;csv" (a native start beacon's draws from the capture ring: backdrop pick, planet pick, x, y, turn) replays them instead (window.sceneReplay) and writes /out/replay-<n>.json/.png.
@@ -18,7 +19,7 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const browser=withOnboarding(await chromium.launch({headless:true,args:['--disable-dev-shm-usage']}),origin),context=await browser.newContext({viewport:{width:1280,height:720}}),page=await context.newPage();
@@ -59,7 +60,7 @@ try{
   for(const [x,y] of clicks){
    n++;const before=(await snapshot()).at;
    await click(572,49);await wait(1500);await click(x,y);
-   const end=Date.now()+60000;let s;
+   const end=Date.now()+hangMs(60000);let s;
    while(true){s=await snapshot();if(!s.jumping&&s.at!==before)break;if(Date.now()>end)throw Error('no arrival '+JSON.stringify(s.at));await wait(300);}
    await wait(3000);await record(seed,n);
    await key('1');await wait(1500);await key('1');await wait(1500);

@@ -321,7 +321,12 @@ class LuaTest {
     fun aDeepTreeFailsTheMergeCleanly() {
         val depth = 20_000_000
         val zip = Zip.open(BytesSource(zipOf("data/a.xml.append" to "<x/>")))
-        val base = mapOf("data/a.xml" to ("<a>".repeat(depth) + "</a>".repeat(depth)).toByteArray())
+        // Filled in place: the same bytes as "<a>" x depth + "</a>" x depth, without the three temporary copies of
+        // that text, which did not always fit in the test worker's heap beside the 140 MB itself.
+        val tree = ByteArray(depth * 7)
+        for (i in 0 until depth) { val o = i * 3; tree[o] = '<'.code.toByte(); tree[o + 1] = 'a'.code.toByte(); tree[o + 2] = '>'.code.toByte() }
+        for (i in 0 until depth) { val o = depth * 3 + i * 4; tree[o] = '<'.code.toByte(); tree[o + 1] = '/'.code.toByte(); tree[o + 2] = 'a'.code.toByte(); tree[o + 3] = '>'.code.toByte() }
+        val base = mapOf("data/a.xml" to tree)
         val error = assertFailsWith<MergeError> { mergeMods(base.keys.toList(), { base.getValue(it) }, listOf(MergeArchive("m.zip", zip))) }
         assertTrue(error.message!!.contains("Maximum call stack size exceeded") || error.message!!.startsWith("Not enough memory"), error.message)
     }

@@ -111,6 +111,9 @@ object HsSeeds {
     /** `Global::seededRng` (clock-seeded in HS): the source of a run seed nobody typed. */
     private var seededRng: HsMt19937? = null
 
+    /** Diagnostics (the twin probe's `rng`): the next run seed comes from the generation stream again, as on a new page. */
+    fun diagnosticResetRunSeedSource() { seededRng = null }
+
     /**
      * hyperspace.xml `<seeds enabled allowMetaVars>`. Global::InitializeResources (Resources.cpp) reads every `<seeds>`
      * node in file order, each attribute it has overriding the earlier value, through EventsParser::ParseBoolean

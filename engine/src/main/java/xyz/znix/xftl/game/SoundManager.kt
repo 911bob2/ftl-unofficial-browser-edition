@@ -243,6 +243,9 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
     /** A one-shot's channel volume before the sound volume setting, for the parity checks. */
     fun diagnosticChannelVolume(sound: SoundInstance): Float? = (sound as? RealSoundInstance)?.channelVolume
 
+    /** The gain last given to a sound's source (sound volume setting included), for the checks. */
+    fun diagnosticAppliedGain(sound: SoundInstance): Float? = (sound as? RealSoundInstance)?.appliedGain
+
     private fun updateFadingLoops() {
         if (fadingLoops.isEmpty()) return
         val now = System.currentTimeMillis()
@@ -291,6 +294,8 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
         // Update the currently playing loops based on those counts.
         // Note this effectively clears the loop counts.
         val toRemove = ArrayList<SoundSpec>()
+        val restarted = HashMap<SoundSpec, SoundInstance>()
+        loopUpdates++
 
         for ((spec, sound) in loopSounds.entries) {
             val count = loopCounts.remove(spec) ?: 0
@@ -299,6 +304,16 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
                 trace("loop-", spec.name)
                 fadeOutLoop(sound)
                 toRemove += spec
+                continue
+            }
+
+            // A loop that is wanted but not sounding (no voice was free when it started, or its channel ended under
+            // it) starts again, at most once in LOOP_RESTART_UPDATES updates, instead of staying silent for as long
+            // as it is wanted. Not for a paused one: its channel is held, not ended.
+            if (loopUpdates % LOOP_RESTART_UPDATES == 0 && sound is RealSoundInstance && !sound.isPaused && sound.isStopped) {
+                val again = get(spec).internalPlayRawLoop()
+                again.volume = (1f * count / spec.maxCount).coerceIn(0f..1f)
+                restarted[spec] = again
                 continue
             }
 
@@ -327,7 +342,13 @@ class RealSoundManager(private val df: Datafile, context: ResourceContext) : Sou
         // We can't do this in the loop above since that'd mean modifying
         // the map while it's being iterated over.
         for (spec in toRemove) loopSounds.remove(spec)
+        loopSounds.putAll(restarted)
     }
+
+    private var loopUpdates = 0
+
+    /** Loops now held by a playing or paused channel, for the checks. */
+    val diagnosticSoundingLoops: Int get() = loopSounds.values.count { it is RealSoundInstance && !it.isStopped }
 
     fun updateMusic(dt: Float) {
         // Decode and queue up the next buffer of audio as required.
@@ -714,13 +735,18 @@ private class RealSoundInstance(
             updateVolume()
         }
 
+    /** The gain last given to the source. */
+    var appliedGain: Float = 0f
+        private set
+
     init {
         // If this is a placeholder sound because audio isn't
         // working or something like that, do nothing.
         if (buffer == NO_SOUND_BUFFER) {
             source = NO_SOURCE
         } else {
-            source = SoundStore.get().playAsSound(buffer, 1f, calculateGain(), loop)
+            appliedGain = calculateGain()
+            source = SoundStore.get().playAsSound(buffer, 1f, appliedGain, loop)
 
             if (source == -1) {
                 println("[WARN] No source available to play sound ${spec.name}")
@@ -732,7 +758,8 @@ private class RealSoundInstance(
 
     private fun updateVolume() {
         val sourceHandle = SoundStore.get().getSource(source)
-        AL10.alSourcef(sourceHandle, AL10.AL_GAIN, calculateGain())
+        appliedGain = calculateGain()
+        AL10.alSourcef(sourceHandle, AL10.AL_GAIN, appliedGain)
     }
 
     private fun calculateGain(): Float {
@@ -766,8 +793,9 @@ private class RealSoundInstance(
 
         fun updateVolumes() {
             for (sound in SOURCE_PLAYBACK.values) {
+                // Skip a finished one; the sounds after it still take the new volume.
                 if (sound.isStopped)
-                    return
+                    continue
 
                 sound.updateVolume()
             }
@@ -843,6 +871,7 @@ object SoundTrace {
 private const val PLAYLIST_FADE_OUT = 0.75f
 private const val LOOP_FADE_OUT_MS = 500f
 private const val PLAYLIST_GAP = 2f
+private const val LOOP_RESTART_UPDATES = 30
 
 class SoundSpec(elem: Element) {
     val name: String = elem.name

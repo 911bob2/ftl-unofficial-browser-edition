@@ -258,6 +258,7 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
                 // DroneSystem's PowerDrone (0x638b80) plays "droneLaunch" right there in its not-yet-deployed
                 // branch, once per launched drone and also while the game is paused.
                 droneLaunchSound.play()
+                xyz.znix.xftl.game.GameHaptics.droneLaunched(ship)
             }
         }
 

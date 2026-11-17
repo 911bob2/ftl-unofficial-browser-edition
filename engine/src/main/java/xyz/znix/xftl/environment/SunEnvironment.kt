@@ -111,6 +111,7 @@ class SunEnvironment(game: InGameState, beacon: Beacon) : AbstractEnvironment(ga
         val timeToFlare = nextFlareTime - time
         if (timeToFlare < 1.2f && !hasPlayedSound) {
             flareSound.play()
+            xyz.znix.xftl.game.GameHaptics.moment(xyz.znix.xftl.game.GameHaptics.SOLAR_FLARE)
             hasPlayedSound = true
         }
         if (showWarning && !hasPlayedWarning) {

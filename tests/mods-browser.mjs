@@ -17,6 +17,7 @@ import {withOnboarding} from './lib/onboarding.mjs';
 import {MEGA_STORAGE, megaAttributes, megaEncrypt, testCatalogue} from './fixtures/mods/catalogue.mjs';
 import {modSetHash} from '../web/mods/session.mjs';
 import {zipSync} from '../web/vendor/fflate-0.8.3.mjs';
+import {openDetails} from './lib/input.mjs';
 
 const origin = process.env.MENU_ORIGIN ?? 'http://localhost:8084';
 assert.ok(['http://localhost:8083', 'http://localhost:8084'].includes(origin), 'Use an isolated fixture');
@@ -56,7 +57,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     }, {user, password, initial: initial.get(user)});
     await signIn();
     const play = async () => { await page.goto(origin + '/?view=play'); await page.waitForFunction(() => document.body.dataset.sessionReady === 'true'); };
-    const openMods = async () => { await play(); await page.locator('#mods-panel > summary').click(); await page.locator('#mods-catalogue .catalogue-row').nth(1).waitFor(); };
+    const openMods = async () => { await play(); await openDetails(page, '#mods-panel'); await page.locator('#mods-catalogue .catalogue-row').nth(1).waitFor(); };
     const row = id => page.locator(`#mods-catalogue [data-id="${id}"]`);
     const state = id => row(id).getAttribute('data-state');
     const waitState = (id, ...states) => page.waitForFunction(({id, states}) => states.includes(document.querySelector(`#mods-catalogue [data-id="${id}"]`)?.dataset.state), {id, states}, {timeout: 60000});
@@ -194,7 +195,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     await ext.evaluate(async ({u, p}) => { const csrf = (await (await fetch('/api/auth/csrf')).json()).token; const r = await fetch('/api/auth/register', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf}, body: JSON.stringify({username: u, password: p})}); if (!r.ok) throw Error('register ' + r.status); }, {u: extName, p: 'mods-browser-external-' + randomUUID()});
     await ext.goto(origin + '/?view=play'); await ext.waitForFunction(() => document.body.dataset.sessionReady === 'true');
     assert.deepEqual(await ext.evaluate(async () => [(await fetch('/api/mods/files/f1-override')).status, (await fetch('/api/mods/files/f1-content')).status]), [403, 200]);
-    await ext.locator('#mods-panel > summary').click(); await ext.locator('#mods-catalogue [data-id="f1-override"]').waitFor();
+    await openDetails(ext, '#mods-panel'); await ext.locator('#mods-catalogue [data-id="f1-override"]').waitFor();
     assert.equal(await ext.locator('#mods-source-select').count(), 0);
     assert.equal(await ext.getByRole('button', {name: 'Download F1 Override 1'}).textContent(), 'Download from mega.nz');
     assert.equal(await ext.getByRole('button', {name: 'Download F1 Content 1'}).textContent(), 'Download');
@@ -420,7 +421,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
 
     // 10. Two accounts in one browser: the files are shared, the lists are per account.
     const accountA = await page.evaluate(() => document.body.dataset.account);
-    await play(); await page.locator('#mods-panel > summary').click(); await page.locator('#mods-catalogue .catalogue-row').nth(1).waitFor();
+    await play(); await openDetails(page, '#mods-panel'); await page.locator('#mods-catalogue .catalogue-row').nth(1).waitFor();
     await setMods(true);
     await page.evaluate(async () => { const csrf = (await (await fetch('/api/auth/csrf')).json()).token; await fetch('/api/auth/logout', {method: 'POST', headers: {'X-CSRF-TOKEN': csrf}}); });
     await page.goto(origin); await page.waitForFunction(() => document.body.dataset.sessionReady === 'true');

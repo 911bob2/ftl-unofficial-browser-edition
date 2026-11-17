@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {back} from './gamebar-ui.mjs';
+import {flush} from './lib/input.mjs';
 
 // Controlled boarding setup; subsequent actions use browser input and the
 // normal frame clock. This is interface coverage, not a played campaign.
@@ -21,7 +22,8 @@ export async function warningUiChecks(page,{snapshot,state,windowIs,click,pass,n
   await back(page);await windowIs('PauseWindow');let rect=(await snapshot()).windowRect;
   await click(rect.x+50,rect.y+dy);await windowIs('ConfirmationWindow');
   assert.equal((await snapshot()).confirmation.message,'confirm_end_game');
-  await page.locator('#game').press('1');assert.equal((await snapshot()).window,'ConfirmationWindow');
+  // the key is handled (flush) before the look: a look right after the press sees the window from before it (reports/ps-pauses.md)
+  await page.locator('#game').press('1');await flush(page);assert.equal((await snapshot()).window,'ConfirmationWindow');
   await page.screenshot({path:'.build/warning-'+label.toLowerCase()+'-'+name.toLowerCase()+'.png'});
   await answer(false);await windowIs('PauseWindow');assert.deepEqual(await progress(),original,label+' No mutated progress');await sameFullscreen();
   rect=(await snapshot()).windowRect;await click(rect.x+50,rect.y+dy);await windowIs('ConfirmationWindow');

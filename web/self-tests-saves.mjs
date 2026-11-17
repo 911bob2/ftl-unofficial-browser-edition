@@ -331,5 +331,48 @@ export async function saveSyncChecks({core, assert, log = () => {}}) {
   assert.equal(server.saves.get(own).profile, profile(5));
   pass('an upload without a profile keeps the stored one');
 
+  // The running game's writes (web/game-session.mjs): saves that arrive while a write waits join it, so a burst of
+  // saves (a whole run in one synchronous call) holds one copy of each kind, and the store gets the newest in order.
+  {
+    const added = [], stub = (name, value) => { if (!(name in globalThis)) { globalThis[name] = value; added.push(name); } };
+    stub('document', {hidden: false, addEventListener() {}, removeEventListener() {}});
+    stub('addEventListener', () => {}); stub('removeEventListener', () => {});
+    // In Node an open BroadcastChannel (device-store.mjs's, made on import) keeps the process running: none there.
+    const node = typeof process !== 'undefined' && !!process.versions?.node, Channel = globalThis.BroadcastChannel;
+    if (node) globalThis.BroadcastChannel = class { constructor() { throw Error('single tab'); } };
+    try {
+      const {createGameSession} = await import('./game-session.mjs');
+      if (node) globalThis.BroadcastChannel = Channel;
+      const store = memoryStore(), writes = [], update = store.update;
+      store.update = async (id, change) => { writes.push(id); await new Promise(r => setTimeout(r, 5)); return update(id, change); };
+      const id = crypto.randomUUID();
+      await store.put(newSave(id, 'Queue'));
+      const sync = {written() {}, onOverridden: () => () => {}, setPlaying() {}, heartbeat: async () => ({result: 'ok'})};
+      const session = createGameSession({service: {core, store, sync, device: {name: 'Test', id: 'dev-queue'}}, save: {id}, manifest: {engineBuild: 'test', assetVersion: 'test'}, heartbeatMs: 0});
+      for (let n = 1; n <= 50; n++) session.onSave('run', RUN(n));
+      session.onSave('profile', profile(7));
+      for (let n = 51; n <= 60; n++) session.onSave('run', RUN(n));
+      await session.flush();
+      assert.equal(writes.length, 1, 'sixty runs and a profile saved in one burst: one store write');
+      let kept = await store.get(id);
+      assert.deepEqual([kept.run, kept.profile, kept.meta.playedOn.deviceId], [RUN(60), profile(7), 'dev-queue']);
+      // A save that arrives while a write runs waits for it, then the newest of those that arrived is written.
+      session.onSave('run', RUN(70));
+      await new Promise(r => setTimeout(r, 1));
+      for (let n = 71; n <= 80; n++) session.onSave('run', RUN(n));
+      session.onSave('profile', profile(8));
+      await session.flush();
+      assert.equal(writes.length, 3, 'the running write, then one for everything that arrived during it');
+      kept = await store.get(id);
+      assert.deepEqual([kept.run, kept.profile, session.pending], [RUN(80), profile(8), false]);
+      session.onSave('run', null);
+      await session.flush();
+      kept = await store.get(id);
+      assert.deepEqual([kept.run, kept.hasRun, kept.profile], [null, false, profile(8)], 'an ended run is written as such');
+      session.close();
+    } finally { for (const name of added) delete globalThis[name]; if (node) globalThis.BroadcastChannel = Channel; }
+    pass('the running game\'s writes: saves that arrive while a write waits join it, the newest of each kind is written in order');
+  }
+
   return `PASS ${passed} save sync checks: offline play, conflicts, locks and overrides, tabs, deletions, limits and profiles`;
 }

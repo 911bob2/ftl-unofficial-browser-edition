@@ -1055,9 +1055,16 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         }
 
         override fun draw(g: Graphics) {
-            if (box.category == 3 && !empty) { drawCrewBox(); return }
-            if (box.category == 2 && !empty) { drawAugmentBox(g); return }
-            if (!box.mysteryItem || empty) { super.draw(g); return }
+            // CustomStoreBox::OnRender (CustomStoreBox.cpp): a box that sold its item (count 0) is its button alone,
+            // whatever it held: no name, art or price. The base drawing knows no crew or augment and would still
+            // show a sold weapon, drone or system.
+            if (empty) {
+                if (box.category == 3) image.off.draw(pos.x - 9, pos.y - 9) else image.off.draw(pos)
+                return
+            }
+            if (box.category == 3) { drawCrewBox(); return }
+            if (box.category == 2) { drawAugmentBox(g); return }
+            if (!box.mysteryItem) { super.draw(g); return }
             val img = when { disabled -> image.off; hovered -> image.hover; else -> image.normal }
             img.draw(pos)
             if (box.category == 0 || box.category == 1) {

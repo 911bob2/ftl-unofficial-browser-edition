@@ -1,3 +1,5 @@
+import {hangMs} from './lib/hang.mjs';
+import {flush} from './lib/input.mjs';
 import assert from 'node:assert/strict';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
@@ -7,7 +9,7 @@ import {back,enterFullscreen} from './gamebar-ui.mjs';
 // Real browser input and the normal frame clock. No engine commands, probes,
 // grants, controller observations, seed changes or accelerated time steps.
 const origin='http://localhost:8084',checks=[],timeline=[];
-const readyDeadline=Date.now()+30000;
+const readyDeadline=Date.now()+hangMs(30000);
 while(!await fetch(origin+'/health/ready').then(response=>response.ok).catch(()=>false)) {
  if(Date.now()>readyDeadline)throw Error('Disposable tutorial fixture did not start');
  await new Promise(resolve=>setTimeout(resolve,250));
@@ -29,7 +31,8 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   await page.mouse.click(r.x+(r.width-1280*scale)/2+x*scale,r.y+(r.height-720*scale)/2+y*scale,{button});
  }
  const point=async(x,y)=>{const r=await page.locator('#game').boundingBox(),scale=Math.min(r.width/1280,r.height/720);return {x:r.x+(r.width-1280*scale)/2+x*scale,y:r.y+(r.height-720*scale)/2+y*scale};};
- const press=async key=>{console.log('INPUT '+name+' key '+key);await page.locator('#game').press(key);};
+ // each key is handled (flush) before the next look: dismiss() presses again only while the box is really still open
+ const press=async key=>{console.log('INPUT '+name+' key '+key);await page.locator('#game').press(key);await flush(page);};
  const progress=()=>page.evaluate(()=>({profile:window.ftlEngine.diagnosticProfile(),run:window.ftlEngine.runSave(),storedProfile:window.ftlEngine.profileSave()}));
  // The load event does not wait for this module's asynchronous imports/auth.
  // Await the already-loading module before navigating or using its controls.
@@ -64,7 +67,7 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
  async function exitTutorial() {await back(page);await page.waitForFunction(()=>JSON.parse(window.ftlEngine.debugSnapshot()).window==='PauseWindow');const r=(await snapshot()).windowRect;await click(r.x+r.width/2,r.y+81);await state('MainMenuState');}
  async function next() {const s=await snapshot();assert.ok(s.tutorialContinue);const r=s.tutorialUI.continue;await click(r[0]+r[2]/2,r[1]+r[3]/2);await page.waitForFunction(step=>{const s=JSON.parse(window.ftlEngine.debugSnapshot());return !s.tutorial||s.tutorialStep!==step;},s.tutorialStep);}
  async function pause(value) {if((await snapshot()).playerPaused!==value){await page.waitForFunction(()=>!JSON.parse(window.ftlEngine.debugSnapshot()).playerJumping);await press('Space');await page.waitForFunction(value=>JSON.parse(window.ftlEngine.debugSnapshot()).playerPaused===value,value);}}
- async function dismiss() {for(let i=0;i<8&&(await snapshot()).window==='DialogueWindow';i++){await press('1');await page.waitForTimeout(100);}assert.notEqual((await snapshot()).window,'DialogueWindow');}
+ async function dismiss() {for(let i=0,end=Date.now()+hangMs(800);(i<8||Date.now()<end)&&(await snapshot()).window==='DialogueWindow';i++){await press('1');await page.waitForTimeout(100);}assert.notEqual((await snapshot()).window,'DialogueWindow');}
  async function target(slot) {await press(String(slot+1));const room=(await snapshot()).tutorialUI.enemyRooms.find(r=>r.system==='shields');assert.ok(room);await click(room.x,room.y);await page.waitForFunction(slot=>!!JSON.parse(window.ftlEngine.debugSnapshot()).weapons[slot].target,slot);}
  try {
   console.log('TEST '+name+' login');await page.goto(origin);await appReady();await page.evaluate(async({initial})=>{
@@ -151,7 +154,8 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
      case 'UPGRADES_2':await press('2');break;
      default:throw Error('Unknown real-time tutorial action '+step);
     }
-    await page.waitForFunction(step=>{const s=JSON.parse(window.ftlEngine.debugSnapshot());return !s.tutorial||s.tutorialStep!==step||s.tutorialContinue;},step,{timeout:180000});
+    // The step's action must move the tutorial on (a hang here names the step whose action had no effect).
+    await page.waitForFunction(step=>{const s=JSON.parse(window.ftlEngine.debugSnapshot());return !s.tutorial||s.tutorialStep!==step||s.tutorialContinue;},step,{timeout:180000}).catch(e=>{const h=Error(e.message+' [the tutorial stayed on '+step+' after its action]');h.name=e.name;throw h;});
     s=await snapshot();if(s.tutorial&&s.tutorialStep===step&&s.tutorialContinue)await next();
    }
    assert.equal(visited.length,33);assert.equal(new Set(visited).size,33);await state('MainMenuState');assert.equal(await page.evaluate(()=>document.fullscreenElement?.id),'game-container');assert.deepEqual(await progress(),before);

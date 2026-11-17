@@ -15,7 +15,7 @@ import kotlin.random.Random
  * are overridden to match instead of using Kotlin's rejection sampling.
  *
  * The original draws from one global stream, also used for animations, and
- * reseeds it at every generator (see AGENT_HANDOFF.md). This object is that
+ * reseeds it at every generator (see the project notes). This object is that
  * stream for map, event, ship and reward generation; combat and presentation
  * keep [BrowserRandom] and `VisualRandom`.
  */

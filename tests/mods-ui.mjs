@@ -13,6 +13,7 @@ import {bytesSource, openZip} from '../web/mods/zip.mjs';
 import {mergeMods} from '../web/mods/merge.mjs';
 import {modSetHash} from '../web/mods/session.mjs';
 import {zipSync} from '../web/vendor/fflate-0.8.3.mjs';
+import {openDetails} from './lib/input.mjs';
 
 const origin = process.env.MENU_ORIGIN ?? 'http://localhost:8084', assets = process.env.FTL_ASSETS_DIR ?? '/assets';
 assert.ok(['http://localhost:8083', 'http://localhost:8084'].includes(origin), 'Use an isolated fixture');
@@ -79,7 +80,12 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     }
     async function openMods() {
       await page.goto(origin + '/?view=play'); await page.waitForFunction(() => document.body.dataset.sessionReady === 'true');
-      await page.locator('#mods-panel > summary').click(); await page.locator('#mods-set').waitFor({state: 'attached'});
+      await openDetails(page, '#mods-panel'); await modsLoaded();
+    }
+    // The panel loaded (its mod set line is there), or it says why not: a failed load is a named failure, not a wait.
+    async function modsLoaded() {
+      await page.locator('#mods-set, #mods-error').first().waitFor({state: 'attached'});
+      assert.equal(await page.locator('#mods-error').count() ? await page.locator('#mods-error').textContent() : null, null, 'the Mods panel loads');
     }
     async function launchModded() {
       // One Launch button: with mods enabled it reads "Launch FTL with mods" and starts them.
@@ -99,6 +105,20 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     assert.equal(vanilla.session, null); assert.equal(vanilla.gate.modded, false);
     assert.deepEqual(modules, [], 'vanilla play loaded mod modules: ' + modules.join(', '));
     pass(`vanilla launch: ${vanilla.count} files, no mod session, no mod module loaded`);
+
+    // The Mods panel is in the page before the page's script runs: a click on it then (a slow load) is not lost, the
+    // panel loads once the script runs. Forced: the script is held back until the click is done.
+    {
+      const script = /\/web\/app\.mjs/; let release, sent; const held = new Promise(r => { release = r; }), passed = new Promise(r => { sent = r; });
+      await page.route(script, async r => { await held; await r.continue(); sent(); });
+      await page.goto(origin + '/?view=play', {waitUntil: 'commit'});
+      await page.locator('#mods-panel > summary').click();
+      assert.equal(await page.evaluate(() => document.body.dataset.sessionReady ?? null), null, 'the click came before the page script ran');
+      release(); await passed; await page.unroute(script);
+      await page.waitForFunction(() => document.body.dataset.sessionReady === 'true');
+      await modsLoaded();
+      pass('Mods opened while the page still loads: the panel loads once the page script runs');
+    }
 
     // Import through the real panel, reorder, toggle.
     await openMods();

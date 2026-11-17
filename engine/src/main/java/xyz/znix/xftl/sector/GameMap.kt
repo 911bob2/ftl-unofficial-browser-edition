@@ -369,6 +369,9 @@ class GameMap private constructor(df: Datafile, private val eventManager: EventM
     /** A sector description by name, for diagnostics. */
     fun sectorType(name: String): SectorType? = sectorTypes[name]
 
+    /** Every sector description's name, for diagnostics. */
+    fun sectorTypeNames(): List<String> = sectorTypes.keys.sorted()
+
     private fun parseSectorType(elem: Element, namedSectorTypes: HashMap<String, List<String>>) {
         val name = elem.requireAttributeValue("name")
         if (namedSectorTypes.containsKey(name)) {

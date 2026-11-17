@@ -174,7 +174,7 @@ Modules (all rules come from `savecore.js`, served at `/savecore/savecore.js` an
 | `web/device-store.mjs` | IndexedDB `ftl-saves`: stores `saves`, `runs`, `saveProfiles`, `state`, keyed `account\|id` (`profiles` holds what the migration could not move); local-only play uses the account `local-device`. The device's settings: `readSettings`, `writeSettings`. Changes are announced to the other tabs (BroadcastChannel `ftl-saves`). |
 | `web/device.mjs` | Device `{id, name}` in localStorage `ftl-device` ("Firefox on Windows"); the tab's instance in sessionStorage `ftl-instance` (a duplicated tab takes a new one); the `X-FTL-*` headers. |
 | `web/sync.mjs` | The syncer (Android's `SyncEngine`): passes one at a time, every 2 minutes and on focus, a few seconds after each save. Before the account's list has been read (a page opened offline) the cloud is unknown, not empty: device copies show as "Not synced", never as deleted. |
-| `web/game-session.mjs` | One running game: every engine save goes to the device store in order; a failed write keeps the game running and is retried by the next save; a tab closed with a write still queued keeps it in localStorage `ftl-save-flush` for the next start. |
+| `web/game-session.mjs` | One running game: every engine save goes to the device store in order; saves that arrive while a write waits join it (the newest run and the newest profile, in one store update), so a burst of saves holds one copy of each; a failed write keeps the game running and is retried by the next save; a tab closed with a write still queued keeps it in localStorage `ftl-save-flush` for the next start. |
 | `web/save-service.mjs`, `web/saves-ui.mjs`, `web/dialogs.mjs` | The list rows, New save, backups (`{schema: 3, kind: "ftl-save"}` with run and profile; schema 2 imports without a profile, old schema 1 backups as a save without mods; a recovery snapshot's Download is the same schema 3 file with the snapshot's profile), the questions in the page's own dialogs (no `prompt`/`confirm`/`alert`). |
 | `web/save-words.mjs` | The words of the save questions and notes (lock, override, changed in two places, taken over, deleted elsewhere, delete, restore, not synced, the limit), the Android launcher's too (`SaveWords.kt`; `SaveWordsTest` keeps them equal). They say "this device" on both. |
 | `web/old-saves.mjs` | The migration below; a copy of all old data is stored first (`state` `old-saves-backup`). |
@@ -246,11 +246,37 @@ the prefix); Steam Cloud keeps the same files there.
   and custom system state, crew power cooldowns; crystal lockdown shards (the run is refused). Scores keep the player's score
   as the scrap that gives it. FTL Profile Editor (Vhati, GPL-2.0) was read for the format; no code from it is used.
 
+## Save revision and migrations
+
+Every run the engine writes carries `saveRevision` on its root element (`<xftlSaveGame saveRevision="1">`), the same on
+the website and in the app; it is the engine's own data, as the whole run document is, so nothing beside the run changes.
+A run without it was written by release 2.1.1 or an earlier one and counts as revision 0. When a run loads, the
+migrations above its revision run in order on the loaded game, before the ships' first update
+(`savegame/SaveMigrations.kt`, the one place that knows the revisions); each writes one line to the debug log
+(`persistence` / `save.migration`). Loading rewrites nothing: the run carries the current revision the next time the
+engine saves it. A run of a newer revision than the build knows loads as any run, without migrations (the attribute is
+read and nothing else), and is this build's again once this build saves it.
+
+A run imported from the original game is not migrated: it is the original file in its wrapper
+(`<xftlSaveGame nativeImport="1">`, above), which the importer converts (`MainGame.startImportedRun`) and the run loader
+never sees; the run the engine writes after the conversion is of the current revision. The profile has no revision; no
+migration needs one.
+
+To add a migration: one function in `SaveMigrations` that repairs one named defect of a named release, changes nothing
+else, may run twice, and returns the line for the debug log; add it to `ALL` with the next number and raise `CURRENT`
+to it. Give it a check in `GameplayParitySaveMigrationChecks` that loads a run written without the newer revision.
+
+| Revision | Migration | Repairs |
+| --- | --- | --- |
+| 1 | `freeUnheldMindControl` | Release 2.1.1, report HS105: under Hyperspace a crew member that died mind controlled came back from the clone bay still marked, on the enemy's side for good. A crew member marked as mind controlled while no mind control system of the player's ship or the ship at the beacon holds it (lists it, with its control period running) is released as a system releases it; a body waiting in a clone bay loses the mark. One that a system holds stays with the system. |
+
 ## Engine requirements
 
 - A save that names content the loaded game files lack (an item, crew race, augment or ship of a missing mod) loads
   with that item dropped and a notice listing what was dropped; it never crashes.
-- Saves stay backward compatible (no save-version bump); metadata lives beside the run, not inside it.
+- Saves stay backward compatible: an older build loads a newer run (it ignores what it does not know, the save
+  revision above included), and a newer build repairs an older run through its migrations. Metadata lives beside the
+  run, not inside it.
 - The ship at the beacon is saved whenever there is one and it is not destroyed, hostile or not, with crew or none, as
   WorldManager::SaveGame (1.6.14 0x61a3a0) does: a neutral event ship, an automated guard drone or a crew-killed ship
   reloads as it was, neutral and with its target panel.

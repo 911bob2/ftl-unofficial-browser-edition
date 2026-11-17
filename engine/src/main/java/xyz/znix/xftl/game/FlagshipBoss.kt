@@ -146,14 +146,20 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
         return flagship
     }
 
+    /** Where the map marker's art goes from its beacon ([touchIcon]: the touch layout's art, or null). */
+    internal fun mapIconOffset(touchIcon: xyz.znix.xftl.rendering.Image? = touchFlagshipIcon): xyz.znix.xftl.math.ConstPoint =
+        if (touchIcon != null) xyz.znix.xftl.math.ConstPoint(1, -(touchIcon.height / 2)) else xyz.znix.xftl.math.ConstPoint(-10, -32)
+
     override fun drawMapIcon(g: Graphics, centre: IPoint) {
         // StarMap's constructor (1.6.9 0x5cc560) makes map_icon_boss.png a 64 x 64 primitive at (-10, -32), turned by
         // +0x90 about the beacon (OnRender 0x5d9ab0).
         g.pushTransform()
         g.rotate(centre.x.f, centre.y.f, mapIconRotation)
         val touchIcon = touchFlagshipIcon
-        if (touchIcon != null) touchIcon.draw(centre.x - touchIcon.width / 2, centre.y - 10 - touchIcon.height)
-        else flagshipIcon.draw(centre.x - 10, centre.y - 32)
+        // The touch layout's smaller art is the flagship alone and goes where the 64 x 64 art has it, as on the
+        // iPad: 1 px right of the beacon, centred on its height, so it flies along its circle like the desktop's.
+        val at = mapIconOffset(touchIcon)
+        (touchIcon ?: flagshipIcon).draw(centre.x + at.x, centre.y + at.y)
         g.popTransform()
     }
 

@@ -249,6 +249,8 @@ class GameActivity : Activity() {
         place()
         frame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> frame.post { place() } }
         AudioMixer.get().start()
+        // The engine reports the game's moments only when one of them is switched on (Settings > Haptics).
+        xyz.znix.xftl.game.GameHaptics.on = haptics.kind != Haptics.Kind.NONE && haptics.settings.gameMoments
         if (resumed) resumeGame()
     }
 
@@ -325,11 +327,17 @@ class GameActivity : Activity() {
             .build()
     }
 
-    private fun applySilence() = AudioMixer.get().setPaused(!resumed || focusLost)
+    // In the background the game stands still and so do its sounds. Without the focus on screen the game goes on, and
+    // its sounds with it, unheard: held sources would fill the engine's voices and all sound at once afterwards.
+    private fun applySilence() {
+        AudioMixer.get().setPaused(!resumed)
+        AudioMixer.get().setMuted(focusLost)
+    }
 
     override fun onResume() {
         super.onResume()
         resumed = true
+        haptics.foreground = true
         MemoryNotice.playing(this)
         if (::view.isInitialized) resumeGame()
     }
@@ -345,6 +353,7 @@ class GameActivity : Activity() {
 
     override fun onPause() {
         resumed = false
+        haptics.foreground = false
         MemoryNotice.left(this)
         if (::view.isInitialized) {
             // As the page does when it is hidden: release input and save; the save reaches the device store before the
@@ -387,6 +396,7 @@ class GameActivity : Activity() {
         scope.cancel()
         modLaunch?.close()
         ModSession.current = null
+        xyz.znix.xftl.game.GameHaptics.on = false
         AndroidHost.set(null)
         super.onDestroy()
     }

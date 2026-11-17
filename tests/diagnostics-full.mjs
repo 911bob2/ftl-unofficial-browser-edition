@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // The Tests page's "All tests" as a player runs it: a normal account on a disposable server, a Chromium without
 // navigator.webdriver, and (DIAG_MOD_FILES) Hyperspace and Multiverse added to the browser's mod library through the Mods
 // panel, so their suites run on the library's files. Not part of a suite.
@@ -9,6 +10,7 @@ import {join} from 'node:path';
 import {chromium} from 'playwright';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {expectedConsoleError} from './lib/launch.mjs';
+import {openDetails} from './lib/input.mjs';
 
 const port=8084,origin='http://localhost:'+port,out=process.env.DIAG_OUT||join(process.cwd(),'.build/diagnostics-full');
 const data=join(process.cwd(),'.build/fixture-diagnostics-full');await mkdir(data,{recursive:true});await mkdir(out,{recursive:true});
@@ -16,7 +18,7 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const modFiles=(process.env.DIAG_MOD_FILES||'').split(',').filter(Boolean);
@@ -34,7 +36,7 @@ try{
  await page.evaluate(async({username,initial})=>{let csrf=(await (await fetch('/api/auth/csrf')).json()).token;const post=(p,b)=>fetch('/api/auth/'+p,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-TOKEN':csrf},body:JSON.stringify(b)});const password='diag-full-fixture-'+username;let r=await post('login',{username,password});if(r.status===401)r=await post('login',{username,password:initial});if(!r.ok)throw Error('login '+r.status);csrf=(await (await fetch('/api/auth/csrf')).json()).token;if((await (await fetch('/api/auth/me')).json()).mustChangePassword){r=await post('password',{currentPassword:initial,newPassword:password});if(!r.ok)throw Error('rotation');csrf=(await (await fetch('/api/auth/csrf')).json()).token;await post('login',{username,password});}},{username:'user01',initial:initial.get('user01')});
  await page.goto(origin);
  if(modFiles.length){
-  await page.locator('#mods-panel > summary').click();
+  await openDetails(page, '#mods-panel');
   await page.locator('#mods-root .file-drop input[type=file]').setInputFiles(modFiles);
   await page.waitForFunction(n=>document.querySelectorAll('#mods-root [data-badge]').length===n,modFiles.length,{timeout:900000});
   console.log('PASS '+modFiles.length+' mod files in the library');

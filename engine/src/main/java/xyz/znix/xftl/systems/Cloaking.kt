@@ -134,6 +134,7 @@ class Cloaking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         if (shouldPlayCloakSound) {
             shouldPlayCloakSound = false
             cloakSound.play()
+            xyz.znix.xftl.game.GameHaptics.cloak(ship, true)
         }
 
         animationTimer = max(0f, animationTimer - dt)
@@ -166,6 +167,7 @@ class Cloaking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
                 animationTimer = FADE_TIMER
 
                 unCloakSound.play()
+                xyz.znix.xftl.game.GameHaptics.cloak(ship, false)
             }
         }
     }

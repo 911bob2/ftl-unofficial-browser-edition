@@ -13,6 +13,7 @@ import {chromium, firefox} from 'playwright';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {expectedConsoleError} from './lib/launch.mjs';
 import {zipSync} from '../web/vendor/fflate-0.8.3.mjs';
+import {openDetails} from './lib/input.mjs';
 
 const origin = process.env.MENU_ORIGIN ?? 'http://localhost:8084';
 assert.equal(origin, 'http://localhost:8084', 'Use the disposable 8084 fixture');
@@ -98,7 +99,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
   try {
     await signIn(page, user);
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     await page.locator('#mods-root .file-drop input[type=file]').setInputFiles([{name: 'script-test.ftl', mimeType: 'application/zip', buffer: scriptMod}]);
     await page.waitForFunction(() => /with mods/.test(document.getElementById('launch-label').textContent), {}, {timeout: 120000});
     // The Mods panel: nothing allowed yet, no files, the sandbox setting shown off and disabled with its reason.
@@ -154,7 +155,7 @@ for (const [name, type, options, user] of [['Chromium', chromium, {channel: 'chr
     pass('the answer is kept per mod version; the next session reads the file');
     await page.evaluate(() => window.ftlEngine.stop?.());
     await page.goto(origin + '/?view=play'); await ready(page);
-    await page.locator('#mods-panel > summary').click();
+    await openDetails(page, '#mods-panel');
     await page.locator('#mods-lua-allowed li').first().waitFor();
     assert.match(await page.locator('#mods-lua-allowed').innerText(), /Script Test · allowed to run scripts that use files \(io\.open\) and system commands \(os\.execute\)/);
     assert.match(await page.locator('#mods-lua-files').innerText(), /0\.0 MiB|MiB/);

@@ -1060,6 +1060,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
             existingFire.health = 1f
         } else {
             fires[slot] = FireInstance(this, slot)
+            xyz.znix.xftl.game.GameHaptics.fireStarted(ship)
         }
     }
 
@@ -1079,6 +1080,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
 
         // The breach and air loss sounds are effectively combined
         ship.breachSound.play()
+        xyz.znix.xftl.game.GameHaptics.breach(ship)
 
         // It seems there's some buggy-ness with vanilla not playing this
         // if the same room is breached repeatedly?

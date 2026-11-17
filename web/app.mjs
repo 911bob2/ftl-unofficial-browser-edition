@@ -18,7 +18,7 @@ function show(id,{history=true}={}){
  if(me?.mustChangePassword&&!['password-panel','about-panel','checking-panel'].includes(id))id='password-panel';
  if(id==='launch-panel'&&engine)id='game-panel';
  shell.panel=id;
- if(id==='saves-panel'&&me&&!me.mustChangePassword)savesPage().catch(e=>message(e.message));if(id==='launch-panel'&&me&&!me.mustChangePassword){refreshLaunch();if(modUI&&$('mods-panel').open)modUI.then(u=>u.refresh()).catch(()=>{});}if(id==='account-panel')accountTools().then(t=>t.refresh()).catch(e=>message(e.message));
+ if(id==='saves-panel'&&me&&!me.mustChangePassword)savesPage().catch(e=>message(e.message));if(id==='launch-panel'&&me&&!me.mustChangePassword){refreshLaunch();modsPanelShown();}if(id==='account-panel')accountTools().then(t=>t.refresh()).catch(e=>message(e.message));
  for(const p of document.querySelectorAll('main>section'))p.hidden=p.id!==id;
  for(const [button,panel] of [['play-button',engine?'game-panel':'launch-panel'],['account-button','account-panel'],['saves-button','saves-panel'],['logs-button','logs-panel'],['admin-button','admin-panel'],['about-nav-button','about-panel']]){const current=button==='play-button'?['game-panel','launch-panel'].includes(id):button==='account-button'?['account-panel','password-panel'].includes(id):id===panel;$(button).classList.toggle('btn-active',current);if(current)$(button).setAttribute('aria-current','page');else $(button).removeAttribute('aria-current');}
  const local=$('local-assets');if(local)$(id==='account-panel'?'account-assets':'play-assets').append(local);
@@ -339,8 +339,11 @@ $('launch').addEventListener('click',()=>launchFromButton());
 // Mods panel (its code loads the first time it opens). Catalogue: this account's server downloads, or the public list.
 function modsTools(){return modUI??=Promise.all([import('./mods/library.mjs'+version),saveService()]).then(([m,svc])=>m.mountModLibrary({root:$('mods-root'),account:me.id,role:me.role,local:!!me.local,message,core:svc.core,onChange:shas=>{launchLabel(shas);refreshLaunch();announce();},
  catalogue:catalogueOnce,
- fetchServer:(id,start,end,signal)=>fetch('/api/mods/files/'+encodeURIComponent(id),{headers:{Range:`bytes=${start}-${end}`,'X-FTL-Account':me.id},cache:'no-store',signal})})).catch(err=>{modUI=null;message(err.message);throw err;});}
-$('mods-panel')?.addEventListener('toggle',e=>{if(!e.target.open||!me)return;if(modUI)modUI.then(u=>u.refresh()).catch(()=>{});else modsTools().catch(()=>{});});
+ fetchServer:(id,start,end,signal)=>fetch('/api/mods/files/'+encodeURIComponent(id),{headers:{Range:`bytes=${start}-${end}`,'X-FTL-Account':me.id},cache:'no-store',signal})})).catch(err=>{modUI=null;message(err.message);const p=document.createElement('p');p.id='mods-error';p.className='muted';p.setAttribute('role','alert');p.textContent='The Mods panel could not load: '+err.message+'. Reload the page to try again.';$('mods-root')?.replaceChildren(p);throw err;});}
+// The panel is in the page before this script runs: one opened earlier (a click while the page still loads) loads now,
+// as one opened before sign-in does when the Play page shows.
+function modsPanelShown(){if(!$('mods-panel')?.open||!me)return;if(modUI)modUI.then(u=>u.refresh()).catch(()=>{});else modsTools().catch(()=>{});}
+$('mods-panel')?.addEventListener('toggle',modsPanelShown);modsPanelShown();
 
 // ---- The running game ----
 /** The engine's save goes to the device store; resolves once it is there (throws when this browser could not store it). */

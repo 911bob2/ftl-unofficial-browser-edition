@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 const skipPerformance=process.env.FTL_SKIP_PERFORMANCE==='1';
+// FTL_PERF_ONLY=1: the performance phase's gates-only mode: sign-in, the two-category run whose results the timing
+// export must keep, then only the browser timing and benchmark block; the rest runs in the functional phase.
+const perfOnly=process.env.FTL_PERF_ONLY==='1';
+if(perfOnly&&skipPerformance)throw Error('FTL_PERF_ONLY=1 runs only the gates; it cannot be combined with FTL_SKIP_PERFORMANCE=1');
+import {gate,gateMisses,gatesChecked} from './lib/perf.mjs';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {chromium,firefox} from 'playwright';
@@ -28,6 +33,7 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
  try{
   await login(page);const before=await page.evaluate(async()=>(await(await fetch('/api/saves')).json()).saves),initial=await bounds(page);
   assert.ok(initial.pageHeight<=1000,'Desktop workspace should fit the viewport');
+  if(!perfOnly){
   await page.locator('#individual-tests').evaluate(e=>e.parentElement.open=true);await page.locator('#test-encounters').click();
   await page.waitForFunction(()=>document.getElementById('test-results').rows.length>20,{},{timeout:90000});
   assert.deepEqual(await bounds(page),initial,'Growing live results must not move the preview or page');
@@ -45,6 +51,7 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   await page.locator('#follow-output').uncheck();await page.locator('#results').evaluate(e=>e.scrollTop=0);assert.equal(await page.locator('#results').evaluate(e=>e.scrollTop),0);
   await page.keyboard.press('Tab');await page.locator('#tab-activity').focus();await page.keyboard.press('Home');assert.equal(await page.locator('#tab-cases').getAttribute('aria-selected'),'true');
   pass('137 live encounters, bounded results/output, passed summary, filters, case details and keyboard tabs preserve preview geometry');
+  }
   assert.equal(await page.evaluate(()=>navigator.webdriver),false);
   // Two categories: the loading screen shows for a second between them; then both start at the main menu.
   await page.locator('#custom-selection').evaluate(e=>e.open=true);for(const checkbox of await page.locator('#suite-options input:enabled').all())await checkbox.uncheck();
@@ -63,18 +70,22 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   if(skipPerformance)console.log('SKIP '+name+': browser timing and flagship benchmarks (FTL_SKIP_PERFORMANCE=1)');
   else {
   await page.locator('#measure-browser').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing measured');
-  const timing=await exported(page),sample=timing.browserTiming.at(-1);assert.ok(sample.callbacks>10);assert.ok(sample.fps>0&&sample.intervalP95>0);assert.equal(timing.results.length,2);assert.equal(sample.screen.width>0,true);
+  const missedBefore=gateMisses(),timing=await exported(page),sample=timing.browserTiming.at(-1);gate(name+': browser timing callbacks',sample.callbacks,10,Infinity,'callbacks',{open:true});
+  gate(name+': browser timing fps',sample.fps,0,Infinity,'fps',{open:true});gate(name+': browser timing interval p95',sample.intervalP95,0,Infinity,'ms',{open:true});assert.equal(timing.results.length,2);assert.equal(sample.screen.width>0,true);
   await page.locator('#measure-browser').click();await page.locator('#stop-tests').click();await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing stopped');assert.ok(await page.locator('#run-tests').isEnabled());
   await page.locator('#measure-browser').click();await page.evaluate(()=>{Object.defineProperty(document,'hidden',{value:true,configurable:true});document.dispatchEvent(new Event('visibilitychange'));delete document.hidden;});
   await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Browser timing stopped');assert.match(await page.locator('#browser-rate').innerText(),/visible/);
-  pass('Browser-only measurement exports callback/screen data, Stop and hidden-tab cancellation restore controls');
+  if(gateMisses()===missedBefore)pass('Browser-only measurement exports callback/screen data, Stop and hidden-tab cancellation restore controls');
   if(name==='Firefox'){
    await page.locator('.preset[data-preset="benchmark"]').click();await page.locator('#benchmark-duration').selectOption('5000');await page.locator('#benchmark-limit').selectOption('0');await page.locator('#run-tests').click();
    await page.waitForFunction(()=>document.getElementById('test-status').textContent==='Completed',{},{timeout:90000});const unlimited=await exported(page);assert.equal(unlimited.status,'passed');assert.equal(unlimited.benchmark.length,3);
-   for(const phase of unlimited.benchmark){assert.equal(phase.fpsLimit,0);assert.equal(phase.frames,phase.browserCallbacks);assert.ok(Math.abs(phase.fps-phase.browserFps)<.1);}
-   await writeFile('.build/diagnostics-unlimited-firefox.json',JSON.stringify(unlimited,null,2));pass('Unlimited flagship benchmark draws on every supplied Firefox callback in all three phases');
+   const missedUnlimited=gateMisses();
+   for(const [i,phase] of unlimited.benchmark.entries()){const n=name+': unlimited benchmark phase '+(phase.phase??i+1)+' ';assert.equal(phase.fpsLimit,0);gate(n+'frames minus browser callbacks',phase.frames-phase.browserCallbacks,0,0,'frames',{},JSON.stringify(phase));gate(n+'|fps - browser fps|',Math.abs(phase.fps-phase.browserFps),-Infinity,.1,'fps',{open:true},JSON.stringify(phase));}
+   await writeFile('.build/diagnostics-unlimited-firefox.json',JSON.stringify(unlimited,null,2));if(gateMisses()===missedUnlimited)pass('Unlimited flagship benchmark draws on every supplied Firefox callback in all three phases');
   }
   }
+  if(perfOnly)assert.deepEqual(errors,[]);
+  else {
   // The case list is measured on its own tab (the timing and benchmark runs leave the benchmark tab open).
   await page.locator('#tab-cases').click();
   await page.locator('.preset[data-preset="quick"]').click();await page.locator('#custom-selection').evaluate(e=>e.open=false);await page.screenshot({path:'.build/diagnostics-workspace-'+name.toLowerCase()+'.png'});
@@ -92,6 +103,8 @@ for(const [name,type,options] of [['Chromium',chromium,{channel:'chromium'}],['F
   const failed=await exported(page);assert.equal(failed.status,'failed');assert.equal(failed.server.log.length>300000,true,'Full server report remains exportable');
   assert.deepEqual(await page.evaluate(async()=>(await(await fetch('/api/saves')).json()).saves),before);assert.deepEqual(errors,[]);
   pass('Failures stay visible, long activity is bounded, full reports remain exportable and cloud saves are unchanged');
+  }
  }catch(error){console.log('Diagnostic UI status:',await page.locator('#test-status').textContent().catch(()=>''));await page.screenshot({path:'.build/diagnostics-ui-failure-'+name.toLowerCase()+'.png',fullPage:true}).catch(()=>{});throw error;}finally{await browser.close();}
 }
 await writeFile('.build/diagnostics-workspace-results.json',JSON.stringify({at:new Date().toISOString(),checks},null,2));
+gatesChecked();

@@ -316,7 +316,22 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
         if (ownerShip?.isPlayerShip == true) game.browserAchievements.record(ftl.browser.BrowserAchievementProgress.Action.LOST_CREW)
     }
 
+    /**
+     * What death does to the mind control mark (see [onFinishedDying]); also for a body that a save of release 2.1.1
+     * holds in a clone bay with the mark still on it (savegame.SaveMigrations, migration 1).
+     */
+    fun clearMindControlOfTheDead() {
+        hsMindControlled = false
+        mindControlledBy = null
+    }
+
     override fun onFinishedDying() {
+        // CrewMember::OnLoop (1.6.14 0x482a80, 1.6.9 0x4747f0) clears bMindControlled (+0x53d) in the loop that finds
+        // the death animation over (bDead), and CrewMember::Kill (0x47ba00) clears it too. Neither goes through
+        // SetMindControl, so Hyperspace's hook, which keeps the flag of a dying crew member, does not hold it: a
+        // crew member that died mind controlled is its own side's again when the clone bay brings it back.
+        clearMindControlOfTheDead()
+
         super.onFinishedDying()
 
         val clonebay = ownerShip?.clonebay ?: return

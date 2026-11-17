@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // Saves from the original game (docs/SAVES.md, "Saves from the original game"): Saves > Import from FTL with real files
 // the original wrote, then the conversion. NATIVE_DIR holds the files and NATIVE_EXPECT what each holds, read with an
 // independent reader (docs/TESTS.md); both stay in ignored .build/. Without them only the synthetic checks run.
@@ -23,7 +24,7 @@ const env = {...process.env, ASPNETCORE_URLS: 'http://127.0.0.1:' + port, ASPNET
 const code = await new Promise(resolve => { const p = spawn('dotnet', ['/app/Ftl.Server.dll', 'create-accounts', 'user01:user'], {cwd: '/app', stdio: 'ignore', env}); p.on('error', () => resolve(1)); p.on('exit', resolve); });
 assert.equal(code, 0, 'fixture accounts');
 const server = spawn('dotnet', ['/app/Ftl.Server.dll'], {cwd: '/app', stdio: 'ignore', env});
-const deadline = Date.now() + 180000;
+const deadline = Date.now() + hangMs(180000);
 while (!await fetch(origin + '/health/ready').then(r => r.ok).catch(() => false)) { if (server.exitCode !== null || Date.now() > deadline) throw Error('fixture server did not start'); await new Promise(r => setTimeout(r, 250)); }
 const initial = new Map((await readFile(data + '/bootstrap-credentials.txt', 'utf8')).trim().split(/\r?\n/).map(l => l.split('\t')));
 const session = process.env.FTL_HS_MOD_SESSION ? JSON.parse(await readFile(process.env.FTL_HS_MOD_SESSION, 'utf8')) : null;

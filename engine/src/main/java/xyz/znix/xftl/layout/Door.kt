@@ -600,13 +600,35 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
      * door because it's locked closed.
      */
     fun isLockedFor(crew: AbstractCrew): Boolean {
+        if (!isSealedFor(crew)) return false
+        // CrewMember::GetNewGoal (Hyperspace's rewrite of the original, CustomCrew.cpp): a sealed door stops a crew
+        // member only while `!bMindControlled || door->lockedDown.running`. A mind-controlled crew member walks
+        // through every door of either ship but a locked-down one, and the door opens for it like for anyone.
+        if ((crew as? xyz.znix.xftl.crew.LivingCrew)?.isMindControlled == true)
+            return lockdownTimer > 0f && !isAirlock
+        return true
+    }
+
+    /**
+     * Door::IsSealed(CrewMember::iShipId): asked with the ship the crew member belongs to, not the side it is on,
+     * so mind control changes nothing here. It is what the path search counts a door's 1000 pixel detour by
+     * (CrewMember::SetRoomPath 1.6.9 0x470fd0 hands ShipGraph::FindPath the crew member's iShipId).
+     */
+    fun isSealedFor(crew: AbstractCrew): Boolean {
         if (lockdownTimer > 0f && !isAirlock) return true
-        if (open) {
+        // Door::IsSealed (1.6.14 0x4705c0): an open door and one that is forced open (forcedOpen running, the time
+        // after it was broken down) are sealed by a lockdown alone, whoever asks. A door shut again in that time,
+        // as a hacked door is in every loop, still lets through the crew that broke it and whoever follows.
+        if (open || forcedOpen.running) {
             return false
         }
 
+        // Whose crew member it is on this door's ship: [AbstractCrew.mode] with the mind control swap taken back.
+        val controlled = (crew as? xyz.znix.xftl.crew.LivingCrew)?.isMindControlled == true
+        val side = if (controlled) crew.mode.other else crew.mode
+
         if (isHacked) {
-            return crew.mode == AbstractCrew.SlotType.CREW
+            return side == AbstractCrew.SlotType.CREW
         }
 
         // If there isn't a doors system, the door isn't locked.
@@ -615,7 +637,7 @@ data class Door(val position: ConstPoint, val left: Room?, val right: Room?, val
             return false
         }
 
-        return crew.mode == AbstractCrew.SlotType.INTRUDER
+        return side == AbstractCrew.SlotType.INTRUDER
     }
 
     companion object {

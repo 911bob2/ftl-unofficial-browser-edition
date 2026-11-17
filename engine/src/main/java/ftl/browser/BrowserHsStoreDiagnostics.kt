@@ -100,7 +100,46 @@ object BrowserHsStoreDiagnostics {
                 window.draw(graphics)
                 break
             }
-            return "{\"level\":$level,\"stores\":[${out.joinToString(",")}],\"ui\":${if (ui.isEmpty()) "null" else ui}}"
+            // A sold box of every kind (player report MV102: buying crew or an augment ended the run, and the store of
+            // a save made then could not be opened): the first box of each category is bought with a click where
+            // the ship can take it, the page drawn with the pointer on the box, and drawn again from the store's save.
+            val sold = ArrayList<String>()
+            val seen = HashSet<Int>()
+            for (id in ids) {
+                if (seen.size == 5) break
+                NativeRandom.seed(seed)
+                val s = HsStores.generate(game, HsStores.storeDefs.getValue(id), level)
+                for ((pageIndex, page) in s.pages.withIndex()) for ((secIndex, sec) in page.sections.withIndex()) {
+                    val box = sec.storeBoxes.getOrNull(sec.currentSection)?.firstOrNull() ?: continue
+                    val item = box.blueprint ?: continue
+                    if (!seen.add(sec.category)) continue
+                    game.player.scrap = 100000
+                    s.currentPage = pageIndex
+                    s.itemsPurchased = 0 // each box is tried as the store's first purchase (the purchase limit)
+                    val data = StoreData().also { it.hs = s }
+                    val window = StoreWindow(game, game.player, data) {}
+                    window.draw(graphics)
+                    val equipment = sec.category != 2 && sec.category != 4
+                    val (x, y) = if (equipment) Pair(208 + 20, 103 + 20 + secIndex * 209) else Pair(203 + 60, 83 + 20 + secIndex * 209)
+                    window.updateUI(x, y)
+                    // A system asks before it is bought; its box is sold as buy() sells it.
+                    if (sec.category != 4) window.mouseClick(Input.MOUSE_LEFT_BUTTON, x, y)
+                    val clicked = box.count == 0
+                    box.count = 0
+                    window.updateUI(x, y)
+                    window.draw(graphics)
+                    val e = Element("store"); data.saveToXML(e)
+                    val loaded = StoreData(); loaded.loadFromXML(game, BrowserXml.parse(BrowserXml.write(org.jdom2.Document(e))).rootElement)
+                    val again = loaded.hs ?: error("$id: the store with a sold box lost its pages over save/load")
+                    again.currentPage = pageIndex
+                    val reopened = StoreWindow(game, game.player, loaded) {}
+                    reopened.updateUI(x, y)
+                    reopened.draw(graphics)
+                    val kept = again.pages[pageIndex].sections[secIndex].storeBoxes[sec.currentSection][0].count
+                    sold += "{\"id\":${q(id)},\"category\":${sec.category},\"box\":${q(item.name)},\"clicked\":$clicked,\"loadedCount\":$kept}"
+                }
+            }
+            return "{\"level\":$level,\"stores\":[${out.joinToString(",")}],\"ui\":${if (ui.isEmpty()) "null" else ui},\"sold\":[${sold.joinToString(",")}]}"
         } finally {
             BrowserRandom.restore(rng); NativeRandom.restore(native)
             main.switchToMainMenu()

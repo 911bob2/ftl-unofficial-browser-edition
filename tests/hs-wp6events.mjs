@@ -1,3 +1,5 @@
+import {hangMs} from './lib/hang.mjs';
+import {gameWait,steppedClock} from './lib/input.mjs';
 // WP6 slice A (events) check (Hyperspace): the oracle session tools/hs-oracle/sessions/wp6-events.json (id wp6-events-<part>) replayed
 // through the real UI (new game on the Kestrel start, the session steps, the picks and keys) with the oracle's own Lua driver
 // (tools/hs-oracle/tracer/data/hs_oracle/wp6-events.lua, mounted at /app/tests/wp6-events.lua) read through hsWp6EventsProbe.
@@ -17,13 +19,15 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const driver=await readFile('/app/tests/wp6-events.lua','utf8');
 const sessions=JSON.parse(await readFile('/app/tests/wp6-events.json','utf8'));
 const evx=await readFile('/app/tests/events.xml.append','utf8'),bpx=await readFile('/app/tests/blueprints.xml.append','utf8');
 const browser=withOnboarding(await chromium.launch({headless:true,args:['--disable-dev-shm-usage']}),origin),context=await browser.newContext({viewport:{width:1280,height:720}}),page=await context.newPage();
+// The oracle session's pauses and its "no box for 3 s" are game time (lib/input.mjs): the original ran at full speed.
+await steppedClock(context);
 const errors=[],logs=[];page.setDefaultTimeout(120000);
 page.on('pageerror',e=>errors.push('PAGE '+e.message));page.on('crash',()=>{errors.push('PAGE CRASHED');console.log('PAGE CRASHED');});
 page.on('console',e=>{const t=e.text();if(e.type()==='error'){if(!expectedConsoleError(e))errors.push('CONSOLE '+t+' @'+JSON.stringify(e.location()));}else if(/Hyperspace|unsupported/i.test(t))logs.push(t);});
@@ -39,21 +43,19 @@ try{
  const flush=()=>page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
  const at=async(x,y)=>{const box=await page.locator('#game').boundingBox(),s=Math.min(box.width/1280,box.height/720);return [box.x+(box.width-1280*s)/2+x*s,box.y+(box.height-720*s)/2+y*s];};
  const move=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await flush();};
- const click=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.up();await flush();await page.waitForTimeout(150);};
+ const click=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.up();await flush();await wait(150);};
  const key=async k=>{await page.locator('#game').press(k);await flush();};
- const wait=ms=>page.waitForTimeout(ms);
+ const wait=ms=>gameWait(page,ms/1000);
  const shot=async name=>{await page.locator('#game').screenshot({path:join(out,part+'-'+name+'.png')});};
  const probe=c=>page.evaluate(c=>{try{return window.hsWp6EventsProbe(c);}catch(e){return 'FAILED '+(e&&e.message||e)+' '+String(e&&e.stack||'').slice(0,2000);}},c);
  const ok=async c=>{const r=await probe(c);assert.ok(!r.startsWith('FAILED'),c.slice(0,80)+': '+r);return r;};
  const state=async()=>JSON.parse(await ok('state'));
  const lua=async c=>{const r=await ok('lua:'+c);const [head,...lines]=r.split('\n');assert.equal(head,'PASS',c+': '+head);rows.push(...lines);return lines;};
  // oracle ["pick", EVENT, key]: wait until EVENT's box is the open one, then press the key.
- const pick=async(ev,k,s=30)=>{const end=Date.now()+s*1000;let b;while((b=await probe('box'))!==ev){if(Date.now()>end)throw Error('pick '+ev+': open box '+b);await wait(200);}
+ const pick=async(ev,k,s=30)=>{const end=Date.now()+hangMs(s*1000);let b;while((b=await probe('box'))!==ev){if(Date.now()>end)throw Error('pick '+ev+': open box '+b);await wait(200);}
   await wait(400);await key(String(k));await wait(300);};
- // oracle ["answer", 3]: the autoplay policy until no box is open for 3 s.
  const openMap=async()=>{await click(572,48);await wait(1500);await move(640,700);await wait(700);};
  const openMap0=openMap;
- const chooseAll=async()=>{let quiet=Date.now();for(let i=0;i<60;i++){await wait(400);const r=await ok('answer');if(r){console.log('answer '+r);quiet=Date.now();await wait(800);}else if(Date.now()-quiet>3000)break;}};
 
  const newGame=async()=>{
  if((await snapshot()).window==='WelcomeChoiceBox'){await key('1');}

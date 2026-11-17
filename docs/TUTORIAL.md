@@ -54,17 +54,15 @@ Native event/setup wiring is covered in the encounter release below; the
 main-menu action is now active after real-time browser and packaged acceptance;
 exact native presentation/human play remains unverified.
 
-The Antigravity Gemini 3.8 Flash audit/review is private under
-`.build/agy-tutorial-{audit,review}-notes.md`. It provides audit leads, not
+An earlier audit and review are kept privately. They provide audit leads, not
 verification. Existing exports prove COMBAT_0 reads flag `+0x16c`; the caller/constructor audit now resolves its alias to the explicit pause
 flag `009134ac` written by SetPause `0052ce20`. Field `CombatControl+0x98` must not be
 treated as a room ID based on the audit. The current-executable armament renderer `0x0056fb70` now confirms weapon-box
 flashing for a one-based slot, rather than a targeting restriction. Native
 damage parameters are now confirmed below; exact UI metrics remain open.
 
-Gemini supplied the new instruction-overlay file; Codex reviewed and wired it,
-corrected geometry/text/button spacing and added input/save protection fixtures.
-Its private report is `.build/agy-tutorial-overlay-result.json`.
+The new instruction-overlay file was reviewed and wired in, with corrected
+geometry/text/button spacing and added input/save protection fixtures.
 Native `AllowJumping` at `0x004113b0` permits jumps during the tutorial only in
 `DAMAGE_SYSTEM_7`. `AllowUpgrades` at `0x00411440` permits ship-window opening
 only at INVENTORY_1 or COMBAT_5; it returns true outside the tutorial. The setup audit confirms hull=2, no additional system/personnel, fire, breach,
@@ -136,11 +134,11 @@ progress/key hashes. Native encounters/navigation and full acceptance remain ope
   `0x004a1ef0` calls spread helper `0x0076cc20(room, 2)`; sampling has replacement,
   so the two attempts can land on the same tile.
 
-Codex corrected the delegated candidate's unique-tile fire placement, default
+A review corrected the candidate's unique-tile fire placement, default
 crew placement/name fallbacks and personnel-damage suppression. The dedicated
 Tutorial setup launcher fixture tests actual early transitions, repair/venting,
 replacement saves, duplicate effects, restart and ordinary-run guards. It is not
-a complete played tutorial. Gemini's read-only audit confirmed the damage/fire
+a complete played tutorial. A read-only audit confirmed the damage/fire
 semantics and identified the room-placement/recruitment path. Direct placement
 now avoids an intermediate spawn room and does not count setup crew as career
 recruits; ordinary acquisition behavior is retained.

@@ -1,3 +1,5 @@
+import {hangMs} from './lib/hang.mjs';
+import {gameWait,steppedClock} from './lib/input.mjs';
 // WP6 map check (Hyperspace): the oracle's sessions/wp6-map.json replayed through the real UI (hangar seed box typed,
 // start chain answered with its keys, the beacon map opened and clicked) with the oracle's own Lua driver
 // (tools/hs-oracle/tracer/data/hs_oracle/wp6-map.lua, mounted at /app/tests/wp6-map.lua) read through hsWp6MapProbe.
@@ -18,11 +20,13 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const driver=await readFile('/app/tests/wp6-map.lua','utf8'),driver2=await readFile('/app/tests/wp6-left.lua','utf8');
 const browser=withOnboarding(await chromium.launch({headless:true,args:['--disable-dev-shm-usage']}),origin),context=await browser.newContext({viewport:{width:1280,height:720}}),page=await context.newPage();
+// The oracle session's pauses and its "no box for 3 s" are game time (lib/input.mjs): the original ran at full speed.
+await steppedClock(context);
 const errors=[],logs=[];page.setDefaultTimeout(120000);
 page.on('pageerror',e=>errors.push('PAGE '+e.message));page.on('crash',()=>{errors.push('PAGE CRASHED');console.log('PAGE CRASHED');});
 page.on('console',e=>{const t=e.text();if(e.type()==='error'){if(!expectedConsoleError(e))errors.push('CONSOLE '+t+' @'+JSON.stringify(e.location()));}else if(/Hyperspace|unsupported/i.test(t))logs.push(t);});
@@ -38,21 +42,23 @@ try{
  const flush=()=>page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
  const at=async(x,y)=>{const box=await page.locator('#game').boundingBox(),s=Math.min(box.width/1280,box.height/720);return [box.x+(box.width-1280*s)/2+x*s,box.y+(box.height-720*s)/2+y*s];};
  const move=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await flush();};
- const click=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.up();await flush();await page.waitForTimeout(150);};
+ const click=async(x,y)=>{const [px,py]=await at(x,y);await page.mouse.move(px,py);await page.mouse.down();await page.mouse.up();await flush();await wait(150);};
  const key=async k=>{await page.locator('#game').press(k);await flush();};
- const wait=ms=>page.waitForTimeout(ms);
+ const wait=ms=>gameWait(page,ms/1000);
+ const stepped=()=>page.evaluate(()=>window.__ftlSteppedMs);
  const shot=async name=>{await page.locator('#game').screenshot({path:join(out,part+'-'+name+'.png')});};
  const probe=c=>page.evaluate(c=>{try{return window.hsWp6MapProbe(c);}catch(e){return 'FAILED '+(e&&e.message||e)+' '+String(e&&e.stack||'').slice(0,2000);}},c);
  const ok=async c=>{const r=await probe(c);assert.ok(!r.startsWith('FAILED'),c.slice(0,80)+': '+r);return r;};
  const state=async()=>JSON.parse(await ok('state'));
  const lua=async c=>{const r=await ok('lua:'+c);const [head,...lines]=r.split('\n');assert.equal(head,'PASS',c+': '+head);rows.push(...lines);return lines;};
  // oracle ["pick", EVENT, key]: wait until EVENT's box is the open one, then press the key.
- const pick=async(ev,k,s=30)=>{const end=Date.now()+s*1000;let b;while((b=await probe('box'))!==ev){if(Date.now()>end)throw Error('pick '+ev+': open box '+b);await wait(200);}
+ const pick=async(ev,k,s=30)=>{const end=Date.now()+hangMs(s*1000);let b;while((b=await probe('box'))!==ev){if(Date.now()>end)throw Error('pick '+ev+': open box '+b);await wait(200);}
   await wait(400);await key(String(k));await wait(300);};
  // oracle ["answer", 3]: the autoplay policy until no box is open for 3 s.
  const openMap=async()=>{await click(572,48);await wait(1500);await move(640,700);await wait(700);};
  const openMap0=openMap;
- const chooseAll=async()=>{let quiet=Date.now();for(let i=0;i<60;i++){await wait(400);const r=await ok('answer');if(r){console.log('answer '+r);quiet=Date.now();await wait(800);}else if(Date.now()-quiet>3000)break;}};
+ const chooseAll=async()=>{let quiet=await stepped();for(let i=0;i<60;i++){await wait(400);const r=await ok('answer');if(r){console.log('answer '+r);quiet=await stepped();await wait(800);}else if(await stepped()-quiet>3000)break;}
+  assert.equal(await probe('box'),'','the answers leave no box open (the oracle answers until none is open for 3 s)');};
  await wait(2000);
  if(part!=='rock'&&part!=='rock2')console.log(await ok('driver:'+driver));
  if(part==='inf')console.log(await ok('options:infinite,splitAllNodeView'));
@@ -97,13 +103,13 @@ try{
   for(const [n,k] of path.entries()){
    const before=await state();
    console.log('sector '+(n+1)+' '+await ok('sector:'+k));
-   const end=Date.now()+60000;let s;
+   const end=Date.now()+hangMs(60000);let s;
    while(true){s=await state();if(s.sector!==before.sector&&!s.jumping)break;if(Date.now()>end)throw Error('no arrival '+JSON.stringify(s));await wait(300);}
    await wait(2000);await chooseAll();await wait(1000);
    console.log('arrived '+JSON.stringify(await state()));
   }
   console.log('QUESTS '+await ok('quests'));
-  {const end=Date.now()+150000;while(!(await state()).ftl){if(Date.now()>end)throw Error('FTL not ready');await chooseAll();await wait(1000);}}
+  {const end=Date.now()+hangMs(150000);while(!(await state()).ftl){if(Date.now()>end)throw Error('FTL not ready');await chooseAll();await wait(1000);}}
   await openMap0();await shot('r-map');
   await writeFile(join(out,part+'.jsonl'),rows.join('\n')+'\n');console.log('PASS hs-wp6map rock rows='+rows.length);
  }else{
@@ -140,9 +146,9 @@ try{
   await lua("WP6L.board('b4','human',4,false)");await wait(2000);await lua("WP6L.state('s4')");
   await lua("WP6L.board('b5','human',1,false)");await wait(1000);await lua("WP6L.state('s5')");
   await lua("WP6L.killall('k1')");await wait(6000);await lua("WP6L.state('s6')");
-  {const end=Date.now()+150000;while(!(await state()).ftl){if(Date.now()>end)throw Error('FTL not ready');await wait(1000);}}
+  {const end=Date.now()+hangMs(150000);while(!(await state()).ftl){if(Date.now()>end)throw Error('FTL not ready');await wait(1000);}}
   await click(572,48);await wait(2000);await click(577,385);
-  {const end=Date.now()+60000;let s;while(true){s=await state();if(!s.jumping&&s.at!==startAt)break;if(Date.now()>end)throw Error('no arrival '+JSON.stringify(s));await wait(300);}}
+  {const end=Date.now()+hangMs(60000);let s;while(true){s=await state();if(!s.jumping&&s.at!==startAt)break;if(Date.now()>end)throw Error('no arrival '+JSON.stringify(s));await wait(300);}}
   await wait(2000);await chooseAll();await wait(2000);
   await lua("WP6L.state('s7')");
   await lua("WP6L.clear('c1')");await wait(2000);await lua("WP6L.state('s8')");
@@ -154,7 +160,7 @@ try{
   await lua("WP6M.load('COMBAT_CHECK_HAZARD_ASTEROID')");await wait(1500);await key('1');await wait(1500);await move(640,700);await wait(700);await shot('e03-stack');
   await lua("WP6M.dump('e-ast')");
   await click(572,48);await wait(1500);await click(577,385);
-  {const end=Date.now()+60000;let s;while(true){s=await state();if(!s.jumping&&s.at!==startAt)break;if(Date.now()>end)throw Error('no arrival '+JSON.stringify(s));await wait(300);}}
+  {const end=Date.now()+hangMs(60000);let s;while(true){s=await state();if(!s.jumping&&s.at!==startAt)break;if(Date.now()>end)throw Error('no arrival '+JSON.stringify(s));await wait(300);}}
   await wait(1500);await pick('DROPPOINT_CRAZYZOLTAN',3);await pick('DROPPOINT_CRAZYZOLTAN 225',2);await wait(3000);
   await lua("WP6M.dump('e-b2')");
   await lua("WP6M.load('COMBAT_CHECK_HAZARD_IONSTORM')");await wait(1500);await key('1');await wait(1500);await move(640,700);await wait(700);await shot('e04-storm');
@@ -171,7 +177,7 @@ try{
    await lua('Hyperspace.App.world.starMap.bChoosingNewSector = true');await wait(1000);
    if([1,3,4,8,9,10].includes(n)){await move(640,700);await wait(700);await shot('i'+String(n+10).padStart(2,'0')+'-sectors-'+n);}
    console.log('sector '+n+' '+await ok('sector'));
-   const end=Date.now()+60000;let s;
+   const end=Date.now()+hangMs(60000);let s;
    while(true){s=await state();if(s.sector!==before.sector&&!s.jumping)break;if(Date.now()>end)throw Error('no arrival in sector '+n+' '+JSON.stringify(s));await wait(300);}
    await wait(2000);await chooseAll();await wait(1000);
    await lua(`WP6M.dump('s${n}')`);console.log('arrived '+JSON.stringify(await state()));

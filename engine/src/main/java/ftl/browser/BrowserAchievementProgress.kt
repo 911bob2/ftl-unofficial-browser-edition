@@ -147,6 +147,8 @@ class BrowserAchievementProgress(private val game: InGameState) {
     }
 
     fun damageDodged(ship: Ship, hullDamage: Int) {
+        // Every shot that misses a ship passes here: the one place for the miss and dodge haptics.
+        xyz.znix.xftl.game.GameHaptics.shotMissed(ship)
         if (game.isCurrentlyLoadingSave || ship !== game.player || !ship.isCloakActive) return
         damageAvoidedInCloak += hullDamage.coerceAtLeast(0)
         recordCounter("damageAvoidedInCloak", damageAvoidedInCloak)

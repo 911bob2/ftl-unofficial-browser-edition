@@ -27,6 +27,35 @@ object BrowserHsWp5CrewDiagnostics {
             val fixture = BrowserXml.parse(xml).rootElement
             // `seed`: the run seed the oracle typed into the hangar's seed box (a seeded run: the same sector map)
             fixture.getAttributeValue("seed")?.let { xyz.znix.xftl.hs.sector.HsSeeds.requestedSeed = it.trim().toLong() }
+            // `rng`: a fixed start for the simulation's random streams, so the same probe gives the same rows on every
+            // run (both streams otherwise start from the page's clock and from whatever drew before the probe).
+            fixture.getAttributeValue("rng")?.trim()?.toLong()?.let {
+                BrowserRandom.restore((it xor 0x5DEECE66DL).toString()); NativeRandom.restore((it and 0xFFFFFFFFL).toString())
+                // and the two generators a page keeps from its first game on: the run seed's source (Global::seededRng,
+                // one draw per new game) and the looping script timers' goals
+                xyz.znix.xftl.hs.sector.HsSeeds.diagnosticResetRunSeedSource()
+                xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.timerRandom.setSeed(it)
+            }
+            // A fresh Lua state with the session's scripts, as after a page load (as LuaProbe does): the globals an
+            // earlier probe of this page set (its G table, the clock it counted, hooks) and the scripts' state after the
+            // page's real menu frames do not reach this probe. After `rng`, so the scripts' load-time draws are seeded too.
+            xyz.znix.xftl.hs.lua.HsLua.graphics?.let { g -> xyz.znix.xftl.hs.lua.HsLua.stop(); xyz.znix.xftl.hs.lua.HsLua.startForSession(main, g) }
+            check(HS.luaActive)
+            // Hyperspace's process-wide definitions that a lookup inserts (CustomCrewManager::GetDefinition: only the
+            // first crew member of a race hyperspace.xml leaves out is the vanilla class, ps-b3-zy): as at a launch.
+            xyz.znix.xftl.hs.crew.CustomCrewManager.forgetAllImplicit()
+            // `fps`: the frame rate the phases' frames run at (default 60). A phase's `frames` are counted at 60 fps;
+            // at another rate it runs the same game time in frames of 1/fps s (fractions carried to the next phase),
+            // each through LuaFps.onLoop as a real frame of that length (CFPS::OnLoop's SpeedFactor and its 0.5 clamp).
+            val fps = fixture.getAttributeValue("fps")?.trim()?.toDouble() ?: 60.0
+            var carry = 0.0
+            // The frame step. At 60 fps exactly the old constant: Kotlin folds 1f / 60f to a float32 literal, while a
+            // step computed at run time stays a JS double in TeaVM (0.016666666666666666 against 0.01666666753590107),
+            // and that difference moves crew positions enough to change rows (ps-c6-en mc:0.20:r, room 2 against 3).
+            val step = if (fps == 60.0) 1f / 60f else 1f / fps.toFloat()
+            // The Lua clock as after a steady run at that rate (the page's real frames before the probe would leak
+            // their wall-clock SpeedFactor and frame count into the probe's first, zero-time phases).
+            xyz.znix.xftl.hs.lua.LuaFps.steady(step, fps)
             // `difficulty`: the hangar's difficulty button the oracle session clicked (EASY / NORMAL / HARD)
             main.startDiagnosticGame(fixture.getAttributeValue("ship") ?: "PLAYER_SHIP_MVKESTREL", fixture.getAttributeValue("difficulty")?.let { Difficulty.valueOf(it) } ?: Difficulty.NORMAL)
             main.update(container, 0f)
@@ -155,7 +184,11 @@ object BrowserHsWp5CrewDiagnostics {
                     main.update(container, 0f)
                 }
                 val code = phase.getAttributeValue("lua")
-                val frames = phase.getAttributeValue("frames")?.toInt() ?: 0
+                val frames60 = phase.getAttributeValue("frames")?.toInt() ?: 0
+                val frames = if (fps == 60.0 || frames60 == 0) frames60 else {
+                    val exact = frames60 * fps / 60.0 + carry
+                    val n = maxOf(1, Math.floor(exact).toInt()); carry = exact - n; n
+                }
                 val close = phase.getAttributeValue("close") == "true"
                 // `draw`: every frame of the phase is also rendered (tooltip delays and other render-timed effects)
                 val draw = phase.getAttributeValue("draw") == "true"
@@ -168,7 +201,7 @@ object BrowserHsWp5CrewDiagnostics {
                 // update and ON_TICK.
                 repeat(frames) { i ->
                     // as BrowserEngine.step: the frame's SpeedFactor first (scripts time themselves with it)
-                    main.update(container, xyz.znix.xftl.hs.lua.LuaFps.onLoop(1f / 60f))
+                    main.update(container, xyz.znix.xftl.hs.lua.LuaFps.onLoop(step))
                     if (i == 0) {
                         code?.let { run(it) }
                         if (close) (main.currentState as InGameState).shipUI.diagnosticCloseWindow()

@@ -1,3 +1,4 @@
+import {hangMs} from './lib/hang.mjs';
 // The one debug console (docs/CONSOLE.md) through the website, in vanilla or in a Hyperspace session (the loader's
 // preload sets window.ftlModSession from FTL_HS_MOD_SESSION, as for hs-core.mjs): the gating rule with the Logs page's
 // "Debug console" setting off (vanilla: closed on ` and \; Hyperspace: \ opens it while the mod has
@@ -24,7 +25,7 @@ const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_EN
 const code=await new Promise(resolve=>{const p=spawn('dotnet',['/app/Ftl.Server.dll','create-accounts','user01:user'],{cwd:'/app',stdio:'ignore',env});p.on('error',()=>resolve(1));p.on('exit',resolve);});
 assert.equal(code,0,'fixture accounts');
 const server=spawn('dotnet',['/app/Ftl.Server.dll'],{cwd:'/app',stdio:'ignore',env});
-const deadline=Date.now()+180000;
+const deadline=Date.now()+hangMs(180000);
 while(!await fetch(origin+'/health/ready').then(r=>r.ok).catch(()=>false)){if(server.exitCode!==null||Date.now()>deadline)throw Error('fixture server did not start');await new Promise(r=>setTimeout(r,250));}
 const initial=new Map((await readFile(data+'/bootstrap-credentials.txt','utf8')).trim().split(/\r?\n/).map(l=>l.split('\t')));
 const session=process.env.FTL_HS_MOD_SESSION?JSON.parse(await readFile(process.env.FTL_HS_MOD_SESSION,'utf8')):null;
@@ -71,6 +72,9 @@ try{
   pass('vanilla without the setting: the console stays closed');
  }else{
   assert.equal((await probe()).gate,true,'the mod has <console enabled="true"/>');
+  // HS opens the console only when the ship is not jumping (CommandGui::KeyDown's hook), and a new run starts with the
+  // fly-in: wait for its end (ShipManager bJumping) instead of a fixed pause, which a slow page outlasts (reports/ps-pauses.md)
+  await page.waitForFunction(()=>window.hsWp7UiProbe("lua:print('WP6A:'..tostring(Hyperspace.ships.player.bJumping))")==='PASS\nfalse',undefined,{polling:100});
   await key('Backquote');assert.equal(await isOpen(),false,'` stays the speed hotkey');
   await key('Backquote');
   await key('Backslash');assert.equal(await isOpen(),true,'\\ opens it as Hyperspace does');
@@ -446,8 +450,8 @@ try{
  console.log('LOADEVENT/EVENT '+ev+': '+loaded+' / '+replaced);
  assert.equal(loaded,'DialogueWindow','LOADEVENT '+ev);assert.equal(replaced,'DialogueWindow','EVENT '+ev);
  s=await run('EXIT');console.log('EXIT window '+s.window);assert.notEqual(s.window,'game','EXIT opens the map');await closeWindows();
- s=await run('spawn-ship REBEL 1.normal');await page.waitForTimeout(500);s=await probe();assert.ok(s.enemy,'an enemy');
- s=await run('DELETECREW');await page.waitForTimeout(500);s=await probe();assert.equal(s.enemy.crew,0,'DELETECREW');
+ s=await run('spawn-ship REBEL 1.normal');for(const end=Date.now()+hangMs(500);;){await page.waitForTimeout(100);s=await probe();if(s.enemy||Date.now()>end)break;}assert.ok(s.enemy,'an enemy');
+ s=await run('DELETECREW');for(const end=Date.now()+hangMs(500);;){await page.waitForTimeout(100);s=await probe();if(s.enemy.crew===0||Date.now()>end)break;}assert.equal(s.enemy.crew,0,'DELETECREW');
  s=await run('DELETE');assert.ok(s.enemy===null||s.enemy.dead,'DELETE');
  await page.waitForTimeout(1500);await closeWindows();
  pass(mode+': STORE LOADEVENT EVENT EXIT DELETECREW DELETE');
@@ -478,7 +482,7 @@ try{
  console.log('weapons full: '+l);assert.match(l,/^Granted: .* - cargo full: it waits in the equipment screen's over-capacity box/,'the next weapon waits in the over-capacity box');
  // the equipment screen opens on the box (Equipment::AddWeapon calls Equipment::Open); a mod's event box that came up
  // first goes before it, and closing it opens the screen (the event window's own path)
- const equipment=async what=>{for(let i=0;i<6;i++){const p=await probe();if(p.window==='ShipWindow')return p;
+ const equipment=async what=>{for(let i=0,end=Date.now()+hangMs(1800);i<6||Date.now()<end;i++){const p=await probe();if(p.window==='ShipWindow')return p;
    if(p.window==='DialogueWindow'){console.log(what+': an event box first: '+JSON.stringify(p.choices));await key('Escape');await key('1');await page.waitForTimeout(400);if(!(await isOpen()))await key('Backquote');continue;}
    await page.waitForTimeout(300);}assert.equal((await probe()).window,'ShipWindow',what+': the equipment screen opens on it');};
  s=await equipment('weapon');await shot('r2-full-weapon');

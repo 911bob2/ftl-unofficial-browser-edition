@@ -17,18 +17,38 @@ export function createGameSession({service, save, manifest, onStatus = () => {},
   const visibility = () => { if (document.hidden) { if (resumed != null) playSeconds += (performance.now() - resumed) / 1000; resumed = null; } else resumed ??= performance.now(); };
   document.addEventListener('visibilitychange', visibility);
 
-  // The newest write of each kind that failed ({write, latest, error}); a later write of that kind replaces it, and
+  // The newest save of each kind whose write failed ({save, error}); a later write of that kind replaces it, and
   // flush() tries it once more (the engine does not save an unchanged run or profile again).
   const failed = {run: null, profile: null};
   const failureNow = () => failed.run?.error ?? failed.profile?.error ?? null;
-  const enqueue = (write, latest, kind) => {
-    pending++; unqueued = {...unqueued, ...latest};
-    queue = queue.then(write).then(() => { failed[kind] = null; }, error => {
-      failed[kind] = {write, latest, error};
+  // A write waits while the one before it runs. The saves that arrive meanwhile join the waiting write, which keeps the
+  // newest run and the newest profile and writes them in one store update: the device store keeps only the newest of
+  // each anyway. So at most one save of each kind waits, however often the engine saves before the page gets to write
+  // (a whole run in one synchronous call, a slow store), instead of one copy of the save per call.
+  let waiting = null;
+  const enqueue = save => {
+    unqueued = {...unqueued, [save.kind]: save.xml, at: save.at};
+    if (waiting) { waiting[save.kind] = save; return queue; }
+    const saves = waiting = {[save.kind]: save};
+    pending++;
+    queue = queue.then(() => { if (waiting === saves) waiting = null; return write(saves); }).then(() => { for (const kind in saves) failed[kind] = null; }, error => {
+      for (const kind in saves) failed[kind] = {save: saves[kind], error};
       onStatus('Not saved: ' + error.message, true); console.error('Save failed', error);
     }).finally(() => { if (--pending === 0) unqueued = null; });
     return queue;
   };
+  const meta = (cur, run) => ({...cur.meta, playedOn: {platform: 'browser', device: device.name, deviceId: device.id, at: run.at},
+    engineBuild: manifest.engineBuild ?? null, gameData: manifest.assetVersion ?? null, summary: core.summary(run.xml, seconds())});
+  async function write({run, profile}) {
+    if (frozen) return;
+    await store.update(id, cur => {
+      let next = run ? core.written(cur, run.xml, meta(cur, run)) : null;
+      if (profile) next = core.profileWritten(next ?? cur, profile.xml) ?? next;
+      return next;
+    });
+    if (run) onStatus('Saved on this device · ' + new Date().toLocaleTimeString());
+    sync.written(id);
+  }
 
   /** The engine's save callback: kind "run" (xml null when the run ended), "profile", or "settings" (the browser's, not the save's). */
   function onSave(kind, xml) {
@@ -37,29 +57,20 @@ export function createGameSession({service, save, manifest, onStatus = () => {},
     if (kind === 'run') {
       if (xml === lastRun) return;
       lastRun = xml ?? null;
-      const at = new Date().toISOString(), meta = cur => ({...cur.meta, playedOn: {platform: 'browser', device: device.name, deviceId: device.id, at},
-        engineBuild: manifest.engineBuild ?? null, gameData: manifest.assetVersion ?? null, summary: core.summary(xml ?? null, seconds())});
-      enqueue(async () => {
-        if (frozen) return;
-        await store.update(id, cur => core.written(cur, xml ?? null, meta(cur)));
-        onStatus('Saved on this device · ' + new Date().toLocaleTimeString());
-        sync.written(id);
-      }, {run: xml ?? null, at}, 'run');
+      enqueue({kind, xml: xml ?? null, at: new Date().toISOString()});
     } else if (kind === 'profile' && xml != null) {
       if (xml === lastProfile) return;
       lastProfile = xml;
-      enqueue(async () => {
-        if (frozen) return;
-        await store.update(id, cur => core.profileWritten(cur, xml));
-        sync.written(id);
-      }, {profile: xml, at: new Date().toISOString()}, 'profile');
+      enqueue({kind, xml, at: new Date().toISOString()});
     }
   }
 
   /** Waits until every save written so far is in the device store (a failed one is tried again); throws when one is not. */
   async function flush() {
     await queue;
-    for (const kind of ['run', 'profile']) { const f = failed[kind]; if (f && !frozen) await enqueue(f.write, f.latest, kind); }
+    const retry = ['run', 'profile'].map(kind => failed[kind]).filter(f => f && !frozen);
+    for (const f of retry) enqueue(f.save);
+    if (retry.length) await queue;
     const error = failureNow(); if (error) throw error;
   }
 

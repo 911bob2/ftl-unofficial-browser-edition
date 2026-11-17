@@ -598,6 +598,8 @@ return false;
         }
 
         this.currentState = currentState;
+        // The static drone maps let go of the runs this one replaced (they kept each replaced run alive until a frame ran)
+        if (currentState instanceof InGameState game) xyz.znix.xftl.drones.DroneRuntime.runInstalled(game);
 
         gameContainer.getInput().removeAllListeners();
         gameContainer.getInput().addListener(currentState);
