@@ -419,6 +419,10 @@ CustomRewards, CustomSectors, Seeds); the files used are identical to 1.23.2. Ev
 - **Crew picks** (`HsCrew`): HS_GetRandomCrewList, the SelectRandomCrew override (reseed, libstdc++
   `random_shuffle` with `random32() % i`, stable sort by ESSENTIAL) for crew loss; lastSelectedCrewSeed is the
   engine's crew kill seed (WorldManager +0x12a0), which both games clear only where a new event sequence starts (CreateLocation's arrival, OnLoop's ship endings, CREW_STUCK and jump; 1.6.14 0x6183a0 / 0x61b930, 1.6.9 the same): a new `DialogueWindow` clears it, the events a choice leads to keep it.
+  The other SelectRandomCrew hook (`HsCrew.autoShipCrew`, report 201b): an automated ship without crew of its own aboard
+  first gets a woman named by the text `autoship_dismissed_crew_name`, which no mod defines ("Could not find: ..."). It
+  is asked by a script and by transformRace (crew aboard the enemy or waiting to be cloned); a crew loss never reaches
+  it, as the CreateLocation / UpdateLocation hooks clear the loss under the same condition.
 - **Ship definitions (bridge)**: `HsEvents.shipDefinition` reads `<customShip>` (default, `load`, repeats) for the
   hidden augments and startingFuel/startingScrap until hs.ship owns CustomShipSelect.
 - **Lua** (`HsEventsLua`): PRE/POST_CREATE_CHOICEBOX around CreateChoiceBox, `script.on_game_event` before

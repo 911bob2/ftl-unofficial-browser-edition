@@ -33,13 +33,53 @@ object HsEventTooltip {
         return null
     }
 
+    private val hold = xyz.znix.xftl.game.InfoStack.HoldScroll()
+
+    /** The lowest y the box may reach, in the coordinates the event window draws in (set by the window; null: the screen). */
+    @JvmStatic
+    var screenBottom: (() -> Int)? = null
+
+    /** The wheel: the reward box's text, when the box is lower than it (InfoStack). True if it moved. */
+    @JvmStatic
+    fun wheel(game: InGameState, change: Int): Boolean = panel?.takeIf { panelGame === game }?.scrollWheel(change, -1, -1) ?: false
+
+    /**
+     * The touch layout shows the box while a finger holds its choice: the finger's way up or down moves the text
+     * (InfoStack.HoldScroll). True while it does: the window keeps the choice that is held.
+     */
+    @JvmStatic
+    fun hold(down: Boolean, y: Int): Boolean {
+        val p = panel ?: return false
+        return hold.update(down, y, p.scrolls) { p.scrollBy(it) }
+    }
+
+    /** The finger moved the text since it came down: its lift picks no choice. */
+    @JvmStatic
+    val holdScrolled: Boolean get() = hold.scrolled
+
+    /** For the checks: lets go of the panel and with it of the game it was made for. */
+    @JvmStatic
+    fun diagnosticReset() { panel = null; panelGame = null; screenBottom = null }
+
+    /** For the checks: the panel the reward box is drawn with. */
+    @JvmStatic
+    fun diagnosticPanel(game: InGameState): InfoPanel = panel?.takeIf { panelGame === game } ?: InfoPanel(game).also { panel = it; panelGame = game }
+
     private fun hideEventTooltip(w: AbstractWeaponBlueprint): Boolean = w.hs?.hideEventTooltip == true
 
     /** ChoiceBox::OnRender hook, after the box. */
     @JvmStatic
     fun render(game: InGameState, g: Graphics, reward: Any?, centered: Boolean) {
-        if (reward == null) return
+        if (!xyz.znix.xftl.game.TouchRouter.fingerDown) hold.update(false, 0, false) {}
+        if (reward == null) {
+            // not shown: its texts stop scrolling
+            panel?.takeIf { panelGame === game }?.frame()
+            return
+        }
         val p = panel?.takeIf { panelGame === game } ?: InfoPanel(game).also { panel = it; panelGame = game }
+        p.frame()
+        // the canvas' height here; the event window may be drawn scaled (the website's touch layout)
+        p.screenBottom = screenBottom
         p.position = if (TouchMode.enabled) {
             // Right of the box when the canvas has the room, else against the canvas' right edge.
             val right = TouchMode.hudX + if (centered) 818 else 668

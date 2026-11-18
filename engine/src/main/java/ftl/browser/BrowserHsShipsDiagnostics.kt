@@ -85,7 +85,11 @@ object BrowserHsShipsDiagnostics {
             check(after.hardpoints.map { it.weapon?.type?.name } == weapons) { "weapons changed over save/load" }
             main.update(container, 0f)
             main.render(container, graphics)
-            return json
+            // Report 201: the run goes on once its start boxes are answered (a ship without crew is automated, not dead).
+            val nativeRng = NativeRandom.snapshot()
+            val found = try { GameplayParityCrewlessChecks.afterStart(main, container) } finally { NativeRandom.restore(nativeRng) }
+            return json.dropLast(1) + ",\"over\":${found.over?.let(q) ?: "null"},\"ownCrewAlive\":${found.ownCrewAlive}," +
+                "\"automatedAfter\":${found.automated}}"
         } finally {
             BrowserRandom.restore(rng)
         }

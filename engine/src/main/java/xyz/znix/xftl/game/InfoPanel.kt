@@ -37,6 +37,82 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
     @JvmField
     var touchBottom = 0
 
+    /**
+     * The height kept free under the boxes for a control the owner draws there (the touch layout's purchase box): the
+     * boxes end that far above the edge of the screen (InfoStack).
+     */
+    var controlHeight = 0
+
+    /** The lowest y of the screen in the coordinates this panel is drawn in; null: the screen's height. */
+    var screenBottom: (() -> Int)? = null
+
+    /** The description's and the tip's text when their box is lower than the text (InfoStack). */
+    @JvmField val descScroll = InfoStack.Scroller()
+    @JvmField val tipScroll = InfoStack.Scroller()
+    private var descDrawn = false
+    private var tipDrawn = false
+
+    /** The description box's height as last drawn (the boxes under it follow it), and whether a system's. */
+    var lastDescHeight = INFO_HEIGHT_SYSTEM
+        private set
+    private var lastDescSystem = false
+
+    /**
+     * For the checks: the boxes drawn since [frame] as "name x y w h content view last" (content and view 0 unless
+     * the text scrolls; last: the last line's baseline from the box's top).
+     */
+    @JvmField val drawnBoxes = ArrayList<String>()
+
+    /** For the checks: this text in place of every description and tip. */
+    var diagnosticText: String? = null
+
+    /** For the checks: the boxes are laid out and listed in [drawnBoxes], nothing is drawn. */
+    var diagnosticDry = false
+
+    /** The owner calls this once per frame before it draws: nothing is drawn yet, a box not drawn again stops scrolling. */
+    fun frame() {
+        touchBottom = 0
+        if (!descDrawn) descScroll.clear()
+        if (!tipDrawn) tipScroll.clear()
+        descDrawn = false
+        tipDrawn = false
+        lastDescSystem = false
+        drawnBoxes.clear()
+    }
+
+    private val columnBottom: Int get() = (screenBottom?.invoke() ?: InfoStack.screenHeight(game)) - InfoStack.EDGE - controlHeight
+
+    /** A press at ([x], [y]) in the panel's coordinates: true if it took hold of a box's text (a drag then moves it). */
+    fun scrollPress(x: Int, y: Int): Boolean = descScroll.press(x, y) || tipScroll.press(x, y)
+    val scrollDragging: Boolean get() = descScroll.dragging || tipScroll.dragging
+    fun scrollDrag(y: Int) { descScroll.drag(y); tipScroll.drag(y) }
+    fun scrollRelease() { descScroll.release(); tipScroll.release() }
+    /** True where a press would take hold of a box's text. */
+    fun scrollHits(x: Int, y: Int): Boolean = descScroll.contains(x, y) || tipScroll.contains(x, y)
+
+    /**
+     * The wheel ([change] < 0: down the text) with the pointer at ([x], [y]): the box under the pointer, else (the
+     * pointer rests on the item whose text this is) the description and then the tip. True if any text moved.
+     */
+    fun scrollWheel(change: Int, x: Int, y: Int): Boolean {
+        if (change == 0) return false
+        val by = if (change < 0) WHEEL_STEP else -WHEEL_STEP
+        if (descScroll.contains(x, y)) return descScroll.scrollBy(by) != by
+        if (tipScroll.contains(x, y)) return tipScroll.scrollBy(by) != by
+        return scrollBy(by)
+    }
+
+    /** A box is lower than its text. */
+    val scrolls: Boolean get() = descScroll.active || tipScroll.active
+
+    /** Moves the texts by [by]: down the description, then the tip; back up the tip first. True if any text moved. */
+    fun scrollBy(by: Int): Boolean {
+        val order = if (by > 0) listOf(descScroll, tipScroll) else listOf(tipScroll, descScroll)
+        var left = by
+        for (s in order) if (s.active) left = s.scrollBy(left)
+        return left != by
+    }
+
     var position: IPoint = ConstPoint.ZERO
     /** InfoBox::SetDescription's width argument; null keeps the default. */
     var customWidth: Int? = null
@@ -187,14 +263,16 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
             val desc = (info.race.desc?.get(translator) ?: "") + if (powers.isEmpty()) "" else "\n\n" + powers.joinToString("\n")
             height = max(hsLines(titleFont, textWidth, title.get(translator)) * 20 + hsLines(descriptionFont, textWidth, desc) * 17 + 28, 183)
         }
-        drawDescriptionBox(title, info.race.desc, null, powers, height)
+        drawDescriptionBox(title, info.race.desc, null, powers, height, below = if (skills) 24 + 242 else 0)
 
         if (!skills) return
 
         // Draw the skills box
-        val skillsY = position.y + height + 24
-        windowRenderer.render(position.x, skillsY, 323, 242)
+        val skillsY = position.y + lastDescHeight + 24
         touchBottom = max(touchBottom, skillsY + 242)
+        drawnBoxes += "skills ${position.x} $skillsY 323 242 0 0"
+        if (diagnosticDry) return
+        windowRenderer.render(position.x, skillsY, 323, 242)
 
         val leftIconX = position.x + 9
         val rightIconX = position.x + 164
@@ -243,7 +321,8 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
      * Note: this does not render the system power bars!
      */
     fun drawDescriptionBoxSystem(blueprint: SystemBlueprint) {
-        drawDescriptionBox(blueprint.title, blueprint.desc, null, emptyList(), INFO_HEIGHT_SYSTEM)
+        drawDescriptionBox(blueprint.title, blueprint.desc, null, emptyList(), INFO_HEIGHT_SYSTEM, below = POWER_BOX_BELOW)
+        lastDescSystem = true
     }
 
     /**
@@ -251,86 +330,152 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
      */
     fun drawDescriptionBoxSystem(system: AbstractSystem) {
         // The artillery system uses it's weapon's title/description.
-        drawDescriptionBox(system.title, system.description, null, emptyList(), INFO_HEIGHT_SYSTEM)
+        drawDescriptionBox(system.title, system.description, null, emptyList(), INFO_HEIGHT_SYSTEM, below = POWER_BOX_BELOW)
+        lastDescSystem = true
     }
 
+    /** One line of a box's text: [y] is its baseline from the box's top. */
+    private class TextLine(val font: SILFontLoader, val x: Int, val y: Int, val text: String, val colour: Colour)
+
+    /**
+     * Draws [lines] in the box at ([x], [y]), [width] x [height]. Text that ends inside the box (or, on the desktop
+     * layout, inside the screen with the box at its [natural] height: the original's look) is drawn as it is; else it is
+     * clipped to the box and moved by [scroller], with the bar.
+     */
+    private fun drawBoxText(name: String, build: (narrow: Boolean) -> List<TextLine>, x: Int, y: Int, width: Int, height: Int, natural: Int, scroller: InfoStack.Scroller) {
+        var lines = build(false)
+        var last = lines.maxOfOrNull { it.y } ?: 0
+        // scrolled text is cut where the frame's art ends, top and bottom (the hangar's frame is the game's)
+        val view = height - 2 * InfoStack.FRAME_INNER
+        val desktop = !TouchMode.enabled
+        val g = Graphics.current
+        // the last line's baseline stays TEXT_BOTTOM above the frame's lower edge (Hyperspace's own boxes leave 12)
+        val fits = last + TEXT_BOTTOM <= height || (desktop && height >= natural && y + last + TEXT_INSET <= columnBottom + controlHeight)
+        if (fits || !InfoStack.enabled || (g == null && !diagnosticDry)) {
+            scroller.clear()
+            if (!diagnosticDry) for (l in lines) l.font.drawString(x + l.x.f, y + l.y.f, l.text, l.colour)
+            drawnBoxes += "$name $x $y $width $height 0 0 $last"
+            return
+        }
+        // the text is wrapped again, narrower: the bar gets a lane of its own at the right
+        lines = build(true)
+        last = lines.maxOfOrNull { it.y } ?: 0
+        scroller.begin(lines.joinToString("\n") { it.text }, x, y, width, height, last + TEXT_BOTTOM - InfoStack.FRAME_INNER, view,
+            y + InfoStack.FRAME_INNER, y + height - InfoStack.FRAME_INNER)
+        if (g != null && !diagnosticDry) {
+            scroller.clipped(g) {
+                for (l in lines) {
+                    val ly = y + l.y - scroller.offset
+                    if (ly < y - 8 || ly > y + height + 24) continue
+                    l.font.drawString(x + l.x.f, ly.f, l.text, l.colour)
+                }
+            }
+            scroller.drawBar(g)
+        }
+        drawnBoxes += "$name $x $y $width $height ${scroller.content} $view $last"
+    }
+
+    /**
+     * The description box and, under it, the tip's. [height] is the description box's height in the original; [below]
+     * is the height of what the caller draws under the boxes (a gap and a box of fixed size). The boxes, [below] and
+     * the owner's control ([controlHeight]) share the screen by InfoStack's rule.
+     */
     fun drawDescriptionBox(
         title: GameText?,
         description: GameText?,
         tip: GameText?,
         extraLines: List<String>,
         height: Int,
-        warning: String = ""
+        warning: String = "",
+        below: Int = 0
     ) {
-        windowRenderer.render(position.x, position.y, panelWidth, height)
-        touchBottom = max(touchBottom, position.y + height)
+        // the description's lines, as InfoBox::OnRender places them ([narrow]: beside the scroll bar)
+        fun descriptionLines(narrow: Boolean): List<TextLine> {
+            val wrap = textWidth - if (narrow) SCROLL_LANE else 0
+            val lines = ArrayList<TextLine>()
+            var y = 30
 
-        var y = position.y + 30
-
-        val titleStr = title?.get(translator)
-        if (titleStr != null) {
-            val lines = titleFont.wrapString(titleStr, textWidth)
-            for (line in lines) {
-                titleFont.drawString(
-                    position.x + 11f, y.f,
-                    line,
-                    Colour.white
-                )
-                y += 20
-            }
-        }
-
-        // InfoBox::OnRender: the description starts 15px below the title block.
-        y += 3
-
-        // InfoBox::OnRender (0x564410): a warning (InfoBox::warning; only Hyperspace's augment boxes set one here)
-        // starts 10 px below the title in (255, 120, 120), and the description follows straight under it.
-        if (warning.isNotEmpty()) {
-            y -= 5
-            for (line in descriptionFont.wrapString(warning, textWidth)) {
-                descriptionFont.drawString(position.x + 11f, y.f, line, WARNING_COLOUR)
-                y += 17
-            }
-        }
-
-        val descriptionStr = description?.get(translator)
-        if (descriptionStr != null) {
-            val lines = descriptionFont.wrapString(descriptionStr, textWidth)
-
-            for (line in lines) {
-                descriptionFont.drawString(position.x + 11f, y.f, line, Colour.white)
-                y += 17
+            val titleStr = title?.get(translator)
+            if (titleStr != null) {
+                for (line in titleFont.wrapString(titleStr, wrap)) {
+                    lines += TextLine(titleFont, 11, y, line, Colour.white)
+                    y += 20
+                }
             }
 
-            // Draw the extra lines, which are for stuff like weapon attributes.
-            y += 17
-            for (extra in extraLines) {
-                for (line in descriptionFont.wrapString(extra, textWidth)) {
-                    descriptionFont.drawString(position.x + 11f, y.f, line, Colour.white)
+            // InfoBox::OnRender: the description starts 15px below the title block.
+            y += 3
+
+            // InfoBox::OnRender (0x564410): a warning (InfoBox::warning; only Hyperspace's augment boxes set one here)
+            // starts 10 px below the title in (255, 120, 120), and the description follows straight under it.
+            if (warning.isNotEmpty()) {
+                y -= 5
+                for (line in descriptionFont.wrapString(warning, wrap)) {
+                    lines += TextLine(descriptionFont, 11, y, line, WARNING_COLOUR)
                     y += 17
                 }
             }
+
+            val descriptionStr = diagnosticText ?: description?.get(translator)
+            if (descriptionStr != null) {
+                for (line in descriptionFont.wrapString(descriptionStr, wrap)) {
+                    lines += TextLine(descriptionFont, 11, y, line, Colour.white)
+                    y += 17
+                }
+
+                // The extra lines, which are for stuff like weapon attributes.
+                y += 17
+                for (extra in extraLines) {
+                    for (line in descriptionFont.wrapString(extra, wrap)) {
+                        lines += TextLine(descriptionFont, 11, y, line, Colour.white)
+                        y += 17
+                    }
+                }
+            }
+            return lines
         }
 
-        if (tip != null) {
-            val tipStr = translator[tip]
-            // InfoBox::CreateTipBox (1.6.14 0x55d980): the tip wraps in font 9 at the description's width + 2 and its frame
-            // is 323 wide (1.6.14 ps-w3-van s-h-weap1: "...a system or a subsystem." on two lines).
-            // Desktop layout only; the touch layout keeps its own.
-            val desktop = !TouchMode.enabled && !xyz.znix.xftl.sys.PlatformSpecific.INSTANCE.isTouchUi
-            val tipLines = tipFont.wrapString(tipStr, if (desktop) textWidth + 2 else panelWidth - 30)
-
-            val tipY = position.y + height + 17
-            val tipHeight = 31 + tipLines.size * 15
-
-            windowRenderer.render(position.x, tipY, if (desktop) 323 else panelWidth, tipHeight)
-            touchBottom = max(touchBottom, tipY + tipHeight)
-
-            var lineY = tipY + 27
-            for (line in tipLines) {
-                tipFont.drawString(position.x + 13f, lineY.f, line, Colour.white)
+        // InfoBox::CreateTipBox (1.6.14 0x55d980): the tip wraps in font 9 at the description's width + 2 and its frame
+        // is 323 wide (1.6.14 ps-w3-van s-h-weap1: "...a system or a subsystem." on two lines).
+        // Desktop layout only; the touch layout keeps its own.
+        val desktop = !TouchMode.enabled && !xyz.znix.xftl.sys.PlatformSpecific.INSTANCE.isTouchUi
+        fun tipLines(narrow: Boolean): List<TextLine> {
+            val lines = ArrayList<TextLine>()
+            if (tip == null) return lines
+            var lineY = 27
+            val wrap = (if (desktop) textWidth + 2 else panelWidth - 30) - if (narrow) SCROLL_LANE else 0
+            for (line in tipFont.wrapString(diagnosticText ?: translator[tip], wrap)) {
+                lines += TextLine(tipFont, 13, lineY, line, Colour.white)
                 lineY += 15
             }
+            return lines
+        }
+        val tipLines = tipLines(false)
+        val tipNatural = 31 + tipLines.size * 15
+
+        // InfoStack: the boxes share the screen above the owner's control
+        val parts = ArrayList<InfoStack.Part>()
+        parts += InfoStack.Part(height, text = true)
+        if (tip != null) parts += InfoStack.Part(tipNatural, text = true, gapAbove = 17)
+        if (below > 0) parts += InfoStack.Part(below, text = false)
+        val heights = InfoStack.fit(position.y, columnBottom, parts)
+        val boxHeight = heights[0]
+
+        if (!diagnosticDry) windowRenderer.render(position.x, position.y, panelWidth, boxHeight)
+        touchBottom = max(touchBottom, position.y + boxHeight)
+        lastDescHeight = boxHeight
+        lastDescSystem = false
+        descDrawn = true
+        drawBoxText("description", ::descriptionLines, position.x, position.y, panelWidth, boxHeight, height, descScroll)
+
+        if (tip != null) {
+            val tipY = position.y + boxHeight + 17
+            val tipHeight = heights[1]
+            val tipWidth = if (desktop) 323 else panelWidth
+            if (!diagnosticDry) windowRenderer.render(position.x, tipY, tipWidth, tipHeight)
+            touchBottom = max(touchBottom, tipY + tipHeight)
+            tipDrawn = true
+            drawBoxText("tip", ::tipLines, position.x, tipY, tipWidth, tipHeight, tipNatural, tipScroll)
         }
     }
 
@@ -343,9 +488,12 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
      */
     fun drawSystemPowerBox(g: Graphics, system: SystemBlueprint, energyLevels: Int, undoablePower: Int, maxPower: Int = system.maxPower) {
         val x = position.x
-        val y = position.y + 133
+        // 12 under the description box (121 high unless the screen is too low for both, InfoStack)
+        val y = position.y + (if (lastDescSystem) lastDescHeight else INFO_HEIGHT_SYSTEM) + 12
         val totalWidth = panelWidth
         touchBottom = max(touchBottom, y + 226)
+        drawnBoxes += "levels $x $y $totalWidth 226 0 0"
+        if (diagnosticDry) return
 
         val scrapIcon = getImg("img/upgradeUI/details_scrap.png")
 
@@ -459,6 +607,16 @@ class InfoPanel private constructor(private val game: InGameState?, private val 
 
         /** InfoBox::OnRender's warning colour (0x87e390: 1, 120/255, 120/255, 1). */
         private val WARNING_COLOUR = Colour(255, 120, 120)
+        /** On the desktop layout a text that ends this far above the screen's edge is drawn as the original draws it. */
+        const val TEXT_INSET = 5
+        /** The width a box's text gives up to the scroll bar while it scrolls. */
+        const val SCROLL_LANE = 12
+        /** The room under a box's last baseline. */
+        const val TEXT_BOTTOM = 10
+        /** One wheel step: three lines of the description. */
+        const val WHEEL_STEP = 51
+        /** Under a system's description: 12 and the levels box, 226 high. */
+        const val POWER_BOX_BELOW = 12 + 226
         const val INFO_HEIGHT_SYSTEM = 121
         const val INFO_HEIGHT_AUGMENT = 136
         const val INFO_HEIGHT_CREW = 168

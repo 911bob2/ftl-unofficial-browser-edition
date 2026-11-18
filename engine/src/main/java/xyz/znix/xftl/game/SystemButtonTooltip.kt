@@ -19,6 +19,11 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
             else -> system.undamagedEnergy
         }
 
+        // 0x004df760: the level line is GetLevelDescription(GetEffectivePower() - 1), so a manned sensors or doors system
+        // reads one level up (native Auto-Cruiser, sensors of level 1: "Level 2: See enemy interior", oracle fix-201
+        // f201-auto-tip-sensors).
+        val levelPower = power + ((system as? SubSystem)?.manningLevelBonus ?: 0)
+
         val levelText: String = when {
             // SystemBox::GenerateTooltip (1.6.9 0x4d0710) asks GetLevelDescription(power - 1, tooltip) at power 0 too, so
             // Hyperspace's GET_LEVEL_DESCRIPTION runs with level 0 and its text replaces the off line (oracle ps-m1-ev ev|ui)
@@ -42,10 +47,10 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
                     val time = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.systems.HsSystems.cloneLevel(power).cloneSpeed.toInt()
                     else Clonebay.durationForLevel(power).toInt()
                     game.translator["clone"].replaceArg(time)
-                } else xyz.znix.xftl.hs.lua.LuaShipEvents.levelName(system.blueprint, power - 1, true, game.translator)
+                } else xyz.znix.xftl.hs.lua.LuaShipEvents.levelName(system.blueprint, levelPower - 1, true, game.translator)
 
                 game.translator["level"]
-                    .replaceArg(power)
+                    .replaceArg(levelPower)
                     .replaceArg(name, 2)
             }
         }
@@ -77,6 +82,11 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
             lines += ""
             lines += game.translator["manning_bonus"].replaceArg(desc)
         }
+        // 0x004df760: sensors (7) and doors (8) with IsMannedBoost say subsystem_manned there ("Manned: +1 System Level").
+        if (system is SubSystem && system.manningLevelBonus > 0) {
+            lines += ""
+            lines += game.translator["manning_bonus"].replaceArg(game.translator["subsystem_manned"])
+        }
 
         lines += ""
         lines += game.translator["status"]
@@ -88,8 +98,10 @@ class SystemButtonTooltip(val game: InGameState, val system: AbstractSystem) : D
         }
         if (powerStateKey != null) lines += "-" + game.translator[powerStateKey] + " "
 
-        // 0x004df760: "unmanned" only while BlockedBoosted(true) lets the system be manned (no cap below the level).
-        if (power > 0 && system.info.canBeManned && !system.statusBlocksBoost(true) && system.manningCrew == null) {
+        // 0x004df760: "unmanned" only while BlockedBoosted(true) lets the system be manned (no cap below the level) and
+        // IsMannedBoost (0x63bbc0) is 0, which it is not on an automated ship's undamaged system.
+        if (power > 0 && system.info.canBeManned && !system.statusBlocksBoost(true) && system.manningCrew == null &&
+            !system.mannedByAutomation) {
             lines += "-" + game.translator["unmanned"] + " "
         }
 

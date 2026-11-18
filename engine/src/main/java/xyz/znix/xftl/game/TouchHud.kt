@@ -386,8 +386,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val ready = ship.isFtlCharged
         val red = ui.touchEnginesWarningRed
         val piloting = ship.piloting
-        val pilotOn = piloting != null && piloting.undamagedEnergy > 0 &&
-            (ship.isAutoScout || ship.friendlyCrew.any { it.room == piloting.room })
+        val pilotOn = piloting != null && piloting.pilotLight
         val enginesOn = (ship.engines?.powerSelected ?: 0) >= 1
         // The tab with the two lights comes out only to say what stops the jump.
         if (!pilotOn || !enginesOn) {

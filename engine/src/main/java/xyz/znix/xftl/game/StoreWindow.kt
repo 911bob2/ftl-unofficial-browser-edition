@@ -232,6 +232,7 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         // Under the confirm dialog the store is drawn at half brightness, the dialog itself in the middle of the screen.
         val tint = Graphics.tint
         if (hsConfirm != null) Graphics.tint = Colour(tint.r * .5f, tint.g * .5f, tint.b * .5f, tint.a)
+        beginInfo()
         if (sellTab) {
             drawSell(g)
         } else if (hsStore != null) {
@@ -265,27 +266,76 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         // Draw the info for whatever the player is hovering
         if (touchBuy != null) {
             val selected = touchSelected
-            if (selected != null && !sellTab) {
-                infoPanel.touchBottom = 0
-                selected.drawInfoPanel(g)
-                touchBuy.drawBelow(g, infoPanel)
-            } else {
-                touchBuy.hide()
-            }
+            if (selected != null && !sellTab) drawBuyInfo(g, false) { selected.drawInfoPanel(g) } else touchBuy.hide()
         } else {
-        val hoveredBuyButton = buttons.filterIsInstance<BuyButton>().firstOrNull { it.hovered }
-        // The buy tab's item boxes (weapons, drones, augments, resources) are 323 wide, a system's 333 (1.6.14 ps-w3-van
-        // s-h-weap1, s-h-fuel against s-h-sys1; oracle ps-w3-mv i-h-weap1 932..1254 under Multiverse).
-        val width = infoPanel.customWidth
-        if (hoveredBuyButton != null && hoveredBuyButton !is RepairButton && !TouchMode.enabled &&
-            hoveredBuyButton.blueprint !is xyz.znix.xftl.systems.SystemBlueprint) infoPanel.customWidth = 323
-        try { hoveredBuyButton?.drawInfoPanel(g) } finally { infoPanel.customWidth = width }
+            val hoveredBuyButton = buttons.filterIsInstance<BuyButton>().firstOrNull { it.hovered }
+            if (hoveredBuyButton != null) drawBuyInfo(g, hoveredBuyButton !is RepairButton &&
+                hoveredBuyButton.blueprint !is xyz.znix.xftl.systems.SystemBlueprint) { hoveredBuyButton.drawInfoPanel(g) }
         }
 
         sellPanel.drawDrag(g)
         Graphics.tint = tint
         hsConfirm?.draw(g)
     }
+
+    /** InfoStack: the info boxes end above the touch layout's BUY / SELL box and inside the screen. */
+    private fun beginInfo() {
+        infoPanel.frame()
+        infoPanel.controlHeight = if (touchBuy != null) TouchGetBox.HEIGHT else 0
+        infoPanel.screenBottom = { scaleWindowPoint(0, InfoStack.screenHeight(game)).y }
+    }
+
+    /**
+     * The buy tab's info boxes ([info] draws them) for the picked item (touch, with the BUY box under them) or the
+     * hovered one. [narrow]: the item boxes (weapons, drones, augments, resources) are 323 wide, a system's 333 (1.6.14
+     * ps-w3-van s-h-weap1, s-h-fuel against s-h-sys1; oracle ps-w3-mv i-h-weap1 932..1254 under Multiverse).
+     */
+    private fun drawBuyInfo(g: Graphics, narrow: Boolean, info: () -> Unit) {
+        if (touchBuy != null) {
+            info()
+            touchBuy.drawBelow(g, infoPanel)
+            return
+        }
+        val width = infoPanel.customWidth
+        if (narrow && !TouchMode.enabled) infoPanel.customWidth = 323
+        try { info() } finally { infoPanel.customWidth = width }
+    }
+
+    /**
+     * For the checks (InfoStack): the info column of [what] as this window lays it out: an item of the cargo picked in
+     * the sell tab ([sell]), else an item (a blueprint, a crew member, or a title and a text) picked or hovered in the
+     * buy tab. "control x y w h" (the touch layout's BUY / SELL box) and the boxes (InfoPanel.drawnBoxes), one per line.
+     */
+    fun diagnosticInfo(g: Graphics, what: Any, sell: Boolean): String {
+        if (sellTab != sell) sellTab = sell
+        var control: IntArray? = null
+        if (sell) {
+            sellPanel.diagnosticHover = what as Blueprint
+            try { draw(g) } finally { sellPanel.diagnosticHover = null }
+            control = sellPanel.diagnosticTouchSell
+        } else {
+            beginInfo()
+            drawBuyInfo(g, what !is xyz.znix.xftl.systems.SystemBlueprint) {
+                when (what) {
+                    is xyz.znix.xftl.weapons.AbstractWeaponBlueprint -> infoPanel.drawWeapon(what)
+                    is xyz.znix.xftl.weapons.DroneBlueprint -> infoPanel.drawDrone(what)
+                    is xyz.znix.xftl.augments.AugmentBlueprint -> infoPanel.drawAugment(what)
+                    is xyz.znix.xftl.systems.SystemBlueprint -> { infoPanel.drawDescriptionBoxSystem(what); infoPanel.drawSystemPowerBox(g, what, what.startPower, 0) }
+                    is xyz.znix.xftl.crew.LivingCrewInfo -> infoPanel.drawCrew(g, what, nativeLift = hsStore == null)
+                    is Pair<*, *> -> infoPanel.drawAutoBox(what.first as String, what.second as String)
+                    else -> error("no info box for $what")
+                }
+            }
+            control = touchBuy?.diagnosticRect()
+        }
+        val lines = ArrayList<String>()
+        control?.let { lines += "control ${it.joinToString(" ")}" }
+        lines += infoPanel.drawnBoxes
+        return lines.joinToString("\n")
+    }
+
+    /** For the checks: the info panel (its scrolling, the text put in place of every description). */
+    val diagnosticInfoPanel: InfoPanel get() = infoPanel
 
     /** Hyperspace: the store's confirm dialog for a system purchase. */
     private var hsConfirm: ConfirmationWindow? = null
@@ -1185,6 +1235,8 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         val p = scaleWindowPoint(x, y)
         hsConfirm?.let { return it.liftTarget(p.x, p.y) }
         if (touchBuy?.hits(x, y) == true) return touchBuy
+        // a box of text that scrolls takes the press at once (InfoStack)
+        if (infoPanel.scrollHits(p.x, p.y)) return null
         super.liftTarget(x, y)?.let { return it }
         if (sellTab) return sellPanel.buttonAt(p.x, p.y)?.takeIf { it.touchLift }
         return null
@@ -1199,6 +1251,11 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
 
     override fun mouseClick(button: Int, x: Int, y: Int) {
         hsConfirm?.let { val p = scaleWindowPoint(x, y); it.mouseClick(button, p.x, p.y); return }
+        // A press on a box whose text scrolls takes hold of the text (InfoStack).
+        if (button == Input.MOUSE_LEFT_BUTTON) {
+            val p = scaleWindowPoint(x, y)
+            if (infoPanel.scrollPress(p.x, p.y)) return
+        }
         if (touchBuy != null) {
             if (button != Input.MOUSE_LEFT_BUTTON) return
             touchFingerDown = true
@@ -1229,6 +1286,8 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
         if (button == Input.MOUSE_LEFT_BUTTON) {
             touchFingerDown = false
             touchPressedBuy = false
+            hsConfirm?.let { val p = scaleWindowPoint(x, y); it.mouseReleased(button, p.x, p.y) }
+            if (infoPanel.scrollDragging) { infoPanel.scrollRelease(); return }
         }
         super.mouseReleased(button, x, y)
 
@@ -1239,10 +1298,16 @@ class StoreWindow(val game: InGameState, val ship: Ship, val store: StoreData, p
     }
 
     private var hsMouse = ConstPoint(-1, -1)
+    private var pointer = ConstPoint(-1, -1)
+
+    override fun infoScrollWheel(change: Int): Boolean =
+        hsConfirm?.infoScrollWheel(change) ?: infoPanel.scrollWheel(change, pointer.x, pointer.y)
     private val hsLimitTooltip by lazy { xyz.znix.xftl.rendering.FixedStandardTooltip(game, "tooltip_purchase_limit") }
 
     override fun updateUI(x: Int, y: Int) {
         hsConfirm?.let { val p = scaleWindowPoint(x, y); it.updateUI(p.x, p.y); return }
+        pointer = scaleWindowPoint(x, y).let { ConstPoint(it.x, it.y) }
+        if (infoPanel.scrollDragging) { infoPanel.scrollDrag(pointer.y); return }
         if (touchBuy != null) {
             touchUpdate(touchBuy, x, y)
             return

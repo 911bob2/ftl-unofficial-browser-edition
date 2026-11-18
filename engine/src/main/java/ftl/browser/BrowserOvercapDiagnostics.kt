@@ -14,6 +14,8 @@ object BrowserOvercapDiagnostics {
     fun probe(main: MainGame, touch: Boolean, action: String?): String {
         val game = main.currentState as? InGameState ?: return "{\"window\":null}"
         val window = game.shipUI.diagnosticOpenShipWindow ?: return "{\"window\":null}"
+        // the info boxes of the hovered item as the game's own last frame drew them: nothing is laid out again
+        if (action == "info") return window.diagnosticInfoBoxes
         val graphics = BrowserEngine.diagnosticGraphics()
         val was = TouchMode.enabled
         try {

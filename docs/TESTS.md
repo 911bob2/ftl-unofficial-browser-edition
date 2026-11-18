@@ -639,6 +639,24 @@ turn 18 degrees a second (`mapMarkers`). Native sides: `tools/hs-oracle/sessions
 tracer: Zoltans killed out of combat, healed while dying, a clone bay; `ps-b4b-flash` F2: frames after the battery
 starts; `ps-b4b-flagleave` F2: the flagship's beacon, away, the flagship moved on, back).
 
+Info boxes and the control under them (player report 202; `gameplay-parity`'s `GameplayParityInfoBoxChecks`, every
+mode): on a phone's touch canvas (1707 x 768), a tablet's (1024 x 768) and the desktop's (1280 x 720; a phone held
+upright on the website shows the same canvas, the Android app is landscape only) the store's buy tab lays out the info
+column of every weapon, drone, augment, system and crew race of the loaded data and of a 60 line text; the sell tab and
+the equipment screen, with and without the touch layout's over-capacity box, lay out the 24 longest and the 60 line
+text. Each time every box is on the screen, the boxes and the BUY / SELL box do not cover each other, the control is on
+the screen, text that does not scroll ends on the screen (on touch: inside its box), and text that scrolls can be moved
+to its last line. The same holds for the hangar's boxes (the ship list's box at its two heights and the hangar's own
+box, with every player ship's description and the 60 line text), an event's reward box (the 24 longest items and the 60
+line text) and a confirmation with the 60 line text (window and buttons on the screen). Text that scrolls is cut where
+its frame's art ends (report 202b), measured on the art as the game draws it: the info boxes' frame (window_outline.png,
+drawn alone on black) against every scrolled box's clip, top and bottom; the confirmation's own frame (confirm_window.png,
+a column left of the text: the border above, the line above the buttons below); the welcome box's frame above its text
+and its choice below it. The clip may lie at most 2 rows inside that edge. The same run then switches the
+rule off (`InfoStack.enabled`) and the 60 line text must break each of these layouts on every size. `tests/overcap.mjs` (`hs-overcap-*`) hovers an item with the real mouse: its boxes are on the screen; under
+Multiverse the toggle recon drone's boxes end at the screen's edge and the wheel moves both texts to their end
+(`overcap-<mode>-1e-info-recon.png`, `-1f-info-recon-wheel.png`).
+
 Players' reports on 2.1.1 (`gameplay-parity`'s `GameplayParityFixContentChecks`, every mode): a sector's rarity list
 (`sectorRarities`: the pool of every sector of the loaded data is made, a rarity of 6 is listed and never drawn;
 `hackedSector`: Multiverse's SECTOR_HACKER_UNIQUE, whose list gives mantis_free 6, is generated and arrived at); the
@@ -673,6 +691,30 @@ bay), `idleSystemDoesNotHold` (the same beside the enemy's mind system between t
 state in a current run stays), `importedOriginal` (vanilla data: a run from the original game in its wrapper does not
 pass the migration step). Android: `SaveMigrationsTest` (`android :app:testDebugUnitTest`), the same shared code on a
 ship's crew without game data: the revision attribute, the migrations a revision needs, the wrapper, migration 1.
+
+`gameplay-parity`'s `GameplayParityCrewlessChecks` holds report 201, ships without a starting crew (vanilla, F2, F3):
+`everyPlayerShipStarts` (player ships of the loaded data, all layouts: the run starts, two seconds on it is not over,
+a ship without living crew of its own is automated, and those ships are exactly the ones the data gives no crew; with
+up to 60 ships every one is started, with more, as Multiverse's 342, the ones the data gives no crew or an
+`autoShipForce`, 14 of them, because `tests/hs-ships.mjs` (job `hs-ships-F3`) asks the same of each of the 342 it
+starts anyway: 342 more runs in the parity page took that job to its memory cap),
+`crewlessBlueprintIsAutomated` (a blueprint without crew as the player's ship, in vanilla data too),
+`automatedShipHasNoDeadCrew` (an automated ship outlives its last crew member; the same ship not automated ends),
+`deadCrewEndsTheRun`, `cloneBayAndCrewAway` (bodies in a working clone bay and a crew member aboard the enemy count,
+a destroyed clone bay and that crew member's death end the run), `automatedShipFlies` (the manned dodge, the FTL
+charge, the engines' manning level, self-repair, save and load) and `automatedShipShowsItsManning` (the crew slot of
+sensors and doors, no unmanned line in the tooltips, sensors and doors one level up with their manned line, the FTL
+button's pilot light, bManned for a script). Report 201b adds `dismissNeedsTwoCrew mouse` / `touch` (the first crew
+box's Dismiss, and on the touch layout without Hyperspace the DISMISSAL box, open the confirmation with two crew, not
+for the last one; under Hyperspace also for the last one on an automated ship and in the over-limit box) and
+`autoShipRandomCrew` (Hyperspace: an automated ship without crew of its own gets the woman named by
+`autoship_dismissed_crew_name` when a script asks for a random crew member, or a transformRace event while its crew is
+aboard the enemy, under Multiverse also its TEMP_OBYN_JUMP_CONVERT on the Auto-Cruiser; a crew loss or a transformRace
+with no crew at all adds nobody). Native side:
+`tools/hs-oracle/sessions/fix-201.json` (F3 with the probe `data/hs_oracle/fix-201.lua`; the step `["ship", k, ups,
+seed]` of `oracle.py` starts the hangar's k-th ship): `f201-auto`, `f201-cura`, `f201-flag`; `fix-201b.json`
+(`f201b-hs`, F2, probe `fix-201b.lua`): the crew screen with two, one and one automated crew member, then the events and
+a script's SelectRandomCrew on the automated ship without crew.
 
 `gameplay-parity`'s `GameplayParityPsW1Checks` holds the fleet rules of parity sweep W1 (UpdateDangerZone, RenderLabels):
 a jump takes the beacons inside the zone in list order, with the fleet events that overtaking them one by one in that

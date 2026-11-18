@@ -66,6 +66,9 @@ class TouchGetBox(
         draw(g)
     }
 
+    /** For the checks: the whole box (the price and the button) as last drawn, or null when hidden. */
+    fun diagnosticRect(): IntArray? = if (!shown) null else intArrayOf(windowOffset.x - 79, windowOffset.y - 2, 79 + 3 + size.x + 10, 45)
+
     /** Drawn last frame and under ([x], [y]). */
     fun hits(x: Int, y: Int): Boolean = shown && contains(x, y)
 
@@ -81,6 +84,8 @@ class TouchGetBox(
     }
 
     companion object {
+        /** The height the box takes under the info boxes (its gap and its art): InfoPanel.controlHeight. */
+        const val HEIGHT = 48
         private const val BUTTON_H = 34
 
         private fun widthFor(game: InGameState, label: String) =

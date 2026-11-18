@@ -136,8 +136,10 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityPsB3Checks.run") { GameplayParityPsB3Checks.run(main, container) }
             step("GameplayParityPsB4Checks.run") { GameplayParityPsB4Checks.run(main, container) }
             step("GameplayParityFixContentChecks.run") { GameplayParityFixContentChecks.run(main, container) }
+            step("GameplayParityInfoBoxChecks.run") { GameplayParityInfoBoxChecks.run(main, container) }
             step("GameplayParityFixCrewChecks.run") { GameplayParityFixCrewChecks.run(main, container) }
             step("GameplayParitySaveMigrationChecks.run") { GameplayParitySaveMigrationChecks.run(main, container) }
+            step("GameplayParityCrewlessChecks.run") { GameplayParityCrewlessChecks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)

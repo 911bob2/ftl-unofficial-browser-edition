@@ -83,6 +83,7 @@ class SelectShipState(
     val sounds get() = main.gameContent.sounds
     val achievements get() = main.gameContent.achievements
     private lateinit var presentation: HangarPresentation
+    private val infoHold = xyz.znix.xftl.game.InfoStack.HoldScroll()
     val hangarPresentation get() = presentation
     val hoveredDifficulty get() = startGameButton.hoveredDifficulty
     val selectedDifficulty get() = startGameButton.selected
@@ -314,6 +315,10 @@ class SelectShipState(
         if (HangarLayout.touch && !xyz.znix.xftl.game.TouchRouter.fingerDown && !input.isMouseButtonDown(Input.MOUSE_LEFT_BUTTON)) {
             mousePos.x = LIFTED
             mousePos.y = LIFTED
+            infoHold.update(false, 0, false) {}
+        } else if (HangarLayout.touch && infoHold.update(true, input.mouseY, presentation.infoScrolls) { presentation.infoScrollBy(it) }) {
+            // The info box of what the finger holds is lower than its text: the finger's way up or down moves the
+            // text (InfoStack.HoldScroll) and the hangar keeps showing what it held.
         } else {
             mousePos.x = input.mouseX - blockX
             mousePos.y = input.mouseY
@@ -355,6 +360,8 @@ class SelectShipState(
 
     /** What a finger taps (TouchRouter): a welcome or ship list choice, the seed field, a control, a difficulty, Start. */
     override fun liftTarget(canvasX: Int, y: Int): Any? {
+        // a finger that moved an info box's text is no tap
+        if (infoHold.scrolled) return null
         val x = canvasX - blockX
         welcome?.let { w -> return w.liftTarget(x - welcomeDx, y - welcomeDy)?.let { listOf("welcome", it) } }
         if (shipListVisible) return shipList.liftTarget(x, y)
@@ -446,6 +453,8 @@ class SelectShipState(
     }
 
     override fun mouseWheelMoved(change: Int) {
+        welcome?.let { it.wheel(change); return }
+        if (presentation.infoScrollWheel(change)) return
         if (shipListVisible) {
             shipList.mouseWheelMoved(change)
             return

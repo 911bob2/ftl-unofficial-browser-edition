@@ -1093,8 +1093,17 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
                 player.addCrewMember(info, true, false);
         }
         hsStartRooms = null;
-        if (hsStartCrew != null) {
-            xyz.znix.xftl.hs.ship.HsShipState.placeStartingCrew(player, hsStartCrew);
+        // ShipManager::AddInitialCrew (1.6.14 0x4ae2f0, 1.6.9 0x4a3610) ends with bAutomated = true when the blueprint
+        // gave it no crew to add, for the player's ship as for any. An automated ship has no dead crew
+        // (CompleteShip::DeadCrew 0x40a2f0), runs its systems as if manned and repairs itself, and stays automated
+        // whoever comes aboard later: nothing but Hyperspace's own crew list and its autoShipForce clears the flag.
+        boolean blueprintCrew = false;
+        for (ShipBlueprint.InitialCrewSpec spec : blueprint.getInitialCrew()) blueprintCrew |= spec.getAmount() > 0;
+        if (!blueprintCrew) player.setAutomated(true);
+        // Hyperspace (ShipManager_Extend::Initialize, after the original's): its crew list, each member clearing the
+        // flag, then the definition's autoShipForce.
+        if (xyz.znix.xftl.hs.HS.active) {
+            xyz.znix.xftl.hs.ship.HsShipState.placeStartingCrew(player, hsStartCrew != null ? hsStartCrew : java.util.Collections.emptyList());
             hsStartCrew = null;
         }
 
@@ -3826,11 +3835,16 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     }
 
     /**
-     * CompleteShip::DeadCrew (0x40a2f0): the crew factory's count of our crew is zero. A crew member at zero health
+     * CompleteShip::DeadCrew (0x40a2f0): the crew factory's count of our crew is zero and the ship is not automated
+     * (ShipManager +0x4d9). A crew member at zero health
      * no longer counts unless it waits to be cloned and the clone bay has health (ShipManager::GetSystemHealth).
      * Ownership is checked, so crew aboard the enemy, mid-teleport or mind controlled are handled.
      */
     private boolean browserCrewLost() {
+        // `if (count == 0) return !shipManager->bAutomated`: an automated ship (one whose blueprint has no crew,
+        // ShipManager::AddInitialCrew) never has dead crew, with nobody aboard or after everybody it took on died.
+        if (player.isAutomated())
+            return false;
         Clonebay clonebay = player.getClonebay();
         boolean cloning = clonebay != null && clonebay.getUndamagedEnergy() > 0;
         java.util.List<xyz.znix.xftl.crew.AbstractCrew> all = new java.util.ArrayList<>(player.getCrew());
@@ -3845,6 +3859,27 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
                 return false;
         }
         return true;
+    }
+
+    /**
+     * CrewMemberFactory::GetPlayerCrewCount (1.6.14 0x466990, 1.6.9 0x45ce50), the factory's playerCrew as its OnLoop
+     * (1.6.9 0x45e090) counts it: crew of the player's side (iShipId 0: aboard, aboard the enemy, mind control does not
+     * change it) that count for victory (not drones) and are in the game or wait to be cloned, counted here as
+     * [browserCrewLost] counts them. Hyperspace's OnLoop hook (CustomCrew.cpp) leaves out crew without a crew slot.
+     */
+    public int crewFactoryPlayerCount() {
+        Clonebay clonebay = player.getClonebay();
+        boolean cloning = clonebay != null && clonebay.getUndamagedEnergy() > 0;
+        int count = 0;
+        for (LivingCrew crew : playerCrew) {
+            if (crew.getOwnerShip() != player || !(crew.getHealth() > 0f || cloning))
+                continue;
+            if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.events.HsCrew.noSlot != null
+                    && xyz.znix.xftl.hs.events.HsCrew.noSlot.invoke(crew))
+                continue;
+            count++;
+        }
+        return count;
     }
 
     public void updatePlayerCrew() {

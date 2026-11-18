@@ -83,6 +83,23 @@ object HsCrew {
     }
 
     /**
+     * ShipManager::SelectRandomCrew's other HS hook (CustomEvents.cpp:6776, before the original picks): a ship that is
+     * automated and holds none of its own crew (CountCrew(false) == 0) first gets one, AddCrewMemberFromString(
+     * GetText("autoship_dismissed_crew_name"), "human", false, 0, false, false): a woman in room 0 who stays aboard.
+     * No mod defines the text, so the name is TextLibrary's "Could not find: autoship_dismissed_crew_name"
+     * (0x5a9f40). Its draws are AddCrewMemberFromString's (1.6.14 0x4aea60) with a name given: the class blueprint's
+     * own name (GetCrewBlueprint), the animation timer and the colours. True when a crew member was added.
+     */
+    fun autoShipCrew(game: InGameState, ship: xyz.znix.xftl.Ship): Boolean {
+        if (!ship.isAutomated || xyz.znix.xftl.crew.CrewStuck.countCrew(ship, false) != 0) return false
+        val room = ship.rooms.firstOrNull { it.id == 0 } ?: return false
+        val info = game.crewFactory.createNamed(game, "human", game.translator["autoship_dismissed_crew_name"], false)
+        ship.addCrewMemberInRoom(info, room, recordRecruitment = false)
+        if (ship === game.player) game.updatePlayerCrew()
+        return true
+    }
+
+    /**
      * ShipManager::SelectRandomCrew's HS hook (priority 100), after the original picked [original]: the eligible crew
      * for [racePref] under the current event's allowNoSlot/blockNoSlot/ignoreEssential ([custom], none outside a
      * custom event), reseeded with [seed] unless it is -1, shuffled and sorted; the first one. The original's pick
@@ -104,6 +121,9 @@ object HsCrew {
     fun transformRacePick(game: InGameState, custom: CustomEvent): LivingCrew? {
         if (game.playerCrew.isEmpty()) return null
         val seed = game.eventManager.crewKillSeed()
+        // SelectRandomCrew itself: an automated ship whose crew is all elsewhere (aboard the enemy, waiting to be
+        // cloned) first gets its human ([autoShipCrew]).
+        autoShipCrew(game, game.player)
         val all = game.playerCrew.filter { it.ownerShip == game.player }
         var candidates = all.filter { it.codename == custom.transformRaceFrom }
         if (candidates.isEmpty()) candidates = all

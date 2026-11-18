@@ -203,6 +203,21 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
     }
 
     /**
+     * ShipManager::AddCrewMemberFromString (1.6.14 0x4aea60) with a name given (Hyperspace's crewless-ship crew member,
+     * HsCrew.autoShipCrew): GetCrewBlueprint draws the class blueprint's own name, which [name] replaces with no draw
+     * of its own; the sex is the caller's [male]; then the crew constructor's draws as in [createFromString].
+     */
+    fun createNamed(game: xyz.znix.xftl.game.InGameState, raceName: String, name: String, male: Boolean): LivingCrewInfo {
+        val race = game.lootPool.getCrewOrRandom(NativeRandom, raceName)
+        newName() // GetCrewBlueprint's name, replaced by the given one
+        NativeRandom.next31() // the animation timer's start delay (TimerHelper::Start)
+        val colours = drawColours(race)
+        hsInitializeDraw(race.name)
+        crystalPowerDraw(race.name)
+        return layered(LivingCrewInfo(game, race, name, colourIndex(race, colours, male)), colours)
+    }
+
+    /**
      * CrewStoreBox 0x51ae20: the race was picked by the caller; the store
      * draws the name first, then the colours, then the skills of the world
      * level (events draw the colours first and skills only when unauthored).

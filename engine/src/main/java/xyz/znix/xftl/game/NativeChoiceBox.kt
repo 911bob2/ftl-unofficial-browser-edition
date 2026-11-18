@@ -43,9 +43,22 @@ class NativeChoiceBox(
         windowRenderer.render(frameX, frameY, WIDTH, frameHeight)
         val x = originX + 25
         val lines = font.font.wrapString(text, WRAP)
-        printLines(lines, x, ORIGIN_Y + 45, Colour.white)
+        // InfoStack: the choices stay inside the frame. A text too long for the room above them scrolls in that room
+        // (the wheel; on touch the way of a finger held on the box); a text that fits is drawn as the original does.
+        val room = textRoom()
+        val textHeight = lines.size * font.lineHeight
+        val shown = if (textHeight > room && InfoStack.enabled) room else textHeight
+        if (shown == textHeight) {
+            scroller.clear()
+            printLines(lines, x, ORIGIN_Y + 45, Colour.white)
+        } else {
+            // cut where the frame's art ends above the text, and where the room ends above the choices
+            scroller.begin(text, frameX, ORIGIN_Y + 40, WIDTH, room + 10, textHeight, room, frameY + InfoStack.FRAME_INNER, ORIGIN_Y + 45 + room)
+            scroller.clipped(g) { printLines(lines, x, ORIGIN_Y + 45 - scroller.offset, Colour.white) }
+            scroller.drawBar(g)
+        }
 
-        var rowY = ORIGIN_Y + 45 + lines.size * font.lineHeight + GAP
+        var rowY = ORIGIN_Y + 45 + shown + GAP
         rows.clear()
         if (TouchMode.enabled) {
             drawTouchRows(g, x + 10, rowY)
@@ -99,12 +112,47 @@ class NativeChoiceBox(
 
     private fun lines(choice: Choice, index: Int) = font.font.wrapString("${index + 1}. ${choice.text}", WRAP)
 
+    private val scroller = InfoStack.Scroller()
+    private val hold = InfoStack.HoldScroll()
+
+    /** The height the text has above the choices when these end 12 above the frame's lower edge. */
+    private fun textRoom(): Int {
+        var rowsHeight = 0
+        choices.forEachIndexed { i, choice ->
+            rowsHeight += if (TouchMode.enabled) font.font.wrapString("${i + 1}. ${choice.text}", TOUCH_WRAP).size * font.lineHeight + 2 + (if (i == 0) 10 else 25)
+            else lines(choice, i).size * font.lineHeight + 12
+        }
+        return maxOf(3 * font.lineHeight, frameHeight - 23 - GAP - rowsHeight - 12)
+    }
+
+    /** The wheel: the text, when it is longer than its room. True if it moved. */
+    fun wheel(change: Int): Boolean {
+        if (!scroller.active || change == 0) return false
+        val by = if (change < 0) InfoPanel.WHEEL_STEP else -InfoPanel.WHEEL_STEP
+        return scroller.scrollBy(by) != by
+    }
+
+    /** For the checks: "frame bottom, last row's bottom, text height, text room" as last drawn. */
+    val diagnosticLayout: String get() = "${frameY + frameHeight} ${rows.maxOfOrNull { it[1] + it[3] } ?: 0} ${font.font.wrapString(text, WRAP).size * font.lineHeight} ${textRoom()}"
+
+    /**
+     * For the checks: "frame top, clip top, clip bottom, first row's top" as last drawn (the clip's are 0 when the text
+     * does not scroll).
+     */
+    val diagnosticClip: String get() = "$frameY ${if (scroller.active) scroller.clip[1] else 0} " +
+        "${if (scroller.active) scroller.clip[1] + scroller.clip[3] else 0} ${rows.firstOrNull()?.get(1) ?: 0}"
+
     private fun printLines(lines: List<String>, x: Int, top: Int, colour: Colour) {
         lines.forEachIndexed { i, line -> font.print(x.f, (top + i * font.lineHeight).f, line, colour) }
     }
 
     /** ChoiceBox::MouseMove: the row under the pointer, or -1. */
     fun mouseMove(x: Int, y: Int) {
+        // touch: a finger held on the box moves a text longer than its room, and is then no tap
+        if (TouchMode.enabled && hold.update(TouchRouter.fingerDown, y, scroller.active) { scroller.scrollBy(it) } && hold.scrolled) {
+            hovered = -1
+            return
+        }
         hovered = rowAt(x, y)
     }
 
@@ -125,7 +173,7 @@ class NativeChoiceBox(
     }
 
     /** What a finger taps at ([x], [y]) (TouchRouter.LiftTargets): an available choice's index, or null. */
-    fun liftTarget(x: Int, y: Int): Int? = rowAt(x, y).takeIf { it >= 0 && choices[it].type != 1 }
+    fun liftTarget(x: Int, y: Int): Int? = if (hold.scrolled) null else rowAt(x, y).takeIf { it >= 0 && choices[it].type != 1 }
 
     /** The chosen index, if the click lands on an available choice. */
     fun click(x: Int, y: Int): Int? {

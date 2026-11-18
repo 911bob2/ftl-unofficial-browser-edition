@@ -113,6 +113,27 @@ try{
   assert.equal(over()?.item,waiting,'carried back onto it, '+waiting+' waits in the slot again');
   assert.ok(m.items.some(i=>i.kind==='augment'&&i.item===owned.item),owned.item+' is owned again');
   pass(mode+': the waiting augment and an owned one change places either way (mouse)');
+  // Player report 202, with the real mouse: the info boxes of a hovered item stay on the screen (InfoStack). A text
+  // that fits keeps the original's boxes; Multiverse's toggle recon drone (a long description and a long tip) gets
+  // boxes that end at the screen's edge, and the wheel moves the text to its end.
+  const info=async()=>JSON.parse(await page.evaluate(()=>window.overcapProbe(false,'info')));let shown=null;
+  const boxes=m=>m.info.map(l=>{const f=l.split(' ');return {name:f[0],x:+f[1],y:+f[2],w:+f[3],h:+f[4],content:+f[5],view:+f[6],last:+f[7]};});
+  const hover=async item=>{const [x,y]=await at(m.origin.x+item.rect.x+item.rect.w/2,m.origin.y+item.rect.y+item.rect.h/2);await page.mouse.move(x+1,y+1);await flush();await page.mouse.move(x,y);await flush();await flush();shown=await info();return boxes(shown);};
+  const onScreen=(bs,what)=>{assert.ok(bs.length>0,what+': an info box shows');for(const b of bs){assert.ok(b.y>=0&&b.y+b.h<=720,what+': the '+b.name+' box is on the screen '+JSON.stringify(b));
+   if(b.content===0&&(b.name==='description'||b.name==='tip'))assert.ok(b.y+b.last+4<=720,what+': its text ends on the screen '+JSON.stringify(b));}};
+  const weapon=m.items.find(i=>i.kind==='weapon'&&i.item);
+  if(weapon){const bs=await hover(weapon);onScreen(bs,weapon.item);await shot('1d-info-'+weapon.item);pass(mode+': the info boxes of '+weapon.item+' are on the screen');}
+  if(mode==='mv'){const before=m.items.filter(i=>i.item).length;await run('get drone RECON_BOARDER');await page.waitForTimeout(300);m=await layout(false);if(!m.items.some(i=>i.item==='RECON_BOARDER')){console.log('no RECON_BOARDER in this data ('+before+' items): the long text step is skipped');}else{
+   const drone=m.items.find(i=>i.item==='RECON_BOARDER');assert.ok(drone,'the recon drone is in a box '+JSON.stringify(m.items.map(i=>i.kind+i.index+'='+i.item)));
+   let bs=await hover(drone);await shot('1e-info-recon');onScreen(bs,'RECON_BOARDER');
+   const scrolling=bs.filter(b=>b.content>b.view);assert.ok(scrolling.length>0,'RECON_BOARDER: a box is lower than its text and scrolls '+JSON.stringify(bs));
+   assert.deepEqual(shown.infoScroll,[0,0],'RECON_BOARDER: the texts start at their top');
+   for(let i=0;i<40;i++){await page.mouse.wheel(0,120);await flush();}
+   bs=await hover(drone);await shot('1f-info-recon-wheel');
+   const d=bs.find(b=>b.name==='description'),t=bs.find(b=>b.name==='tip');
+   assert.deepEqual(shown.infoScroll,[d&&d.content>d.view?d.content-d.view:0,t&&t.content>t.view?t.content-t.view:0],'RECON_BOARDER: the wheel moves the texts to their end '+JSON.stringify(bs));
+   pass(mode+': the long texts of the recon drone stay on the screen and the wheel reaches their end');}
+  }
  }
  // ---- a weapon past full cargo: the item box too
  await key('Escape');

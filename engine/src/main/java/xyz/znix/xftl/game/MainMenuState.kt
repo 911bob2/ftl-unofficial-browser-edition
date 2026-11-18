@@ -211,6 +211,9 @@ class MainMenuState(private val main: MainGame, private val datafile: Datafile) 
      * MainMenu::MouseClick: the menu, its confirmation and its welcome box act on the press; the release does nothing
      * here (MainMenu::MouseUp only lets go of the options' sliders).
      */
+    /** The welcome box's text, when a mod's is longer than its room (InfoStack). */
+    override fun mouseWheelMoved(change: Int) { welcome?.wheel(change) }
+
     override fun mousePressed(button: Int, x: Int, y: Int) {
         confirmation?.let { it.mouseClick(button, x, y); return }
         welcome?.let { if (button == Input.MOUSE_LEFT_BUTTON && it.click(x - welcomeDx, y - welcomeDy) != null) welcome = null; return }

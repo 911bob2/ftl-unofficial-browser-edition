@@ -595,6 +595,8 @@ object LuaAdaptersWP5Ship {
         // non-drone crew of that species (any species when none match) by random32() % n; its blueprint (a copy)
         LuaReg.method(A.M_ShipManager_SelectRandomCrew, LuaMethod {
             val s = self(); val seed = arg.int(2); var race = arg.str(3) ?: ""
+            // HS's other hook (CustomEvents.cpp:6776): an automated ship without crew of its own aboard gets one first
+            LuaAdapters.inGame()?.let { xyz.znix.xftl.hs.events.HsCrew.autoShipCrew(it, s) }
             if (seed != -1) ftl.browser.NativeRandom.seed(seed)
             fun pool() = s.crew.filter { c -> LuaAdapters.crewShipId(c) == 0 && !isDrone(c) && (race.isEmpty() || c.hsSpecies == race) }
             var list = pool()

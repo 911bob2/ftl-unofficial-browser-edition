@@ -22,14 +22,12 @@ abstract class SubSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint)
         private set
     fun hsWritePower(v: Int) { hsPowerWrite = v - undamagedEnergy }
 
-    open val effectivePower: Int
-        get() {
-            val manned = manningCrew != null || ((ship.isAutoScout || ship.isAutomated) && !damaged && info.canBeManned)
-            if ((this is Sensors || this is Doors) && manned && !damaged && undamagedEnergy > 0) {
-                return undamagedEnergy + hsPowerWrite + 1
-            }
-            return undamagedEnergy + hsPowerWrite
-        }
+    /** The level a manned sensors or doors system gains (see the comment above; by its crew or by an automated ship). */
+    val manningLevelBonus: Int
+        get() = if ((this is Sensors || this is Doors) && (manningCrew != null || mannedByAutomation) && !damaged &&
+            undamagedEnergy > 0) 1 else 0
+
+    open val effectivePower: Int get() = undamagedEnergy + hsPowerWrite + manningLevelBonus
 
     init {
         check(blueprint.info!!.isSubSystem)
@@ -116,7 +114,9 @@ abstract class SubSystem(blueprint: SystemBlueprint) : AbstractSystem(blueprint)
     internal val manningBarName: String
         get() = when {
             isIonised -> "ion"
-            manningCrew != null -> "on"
+            // on with an active-manning level, which an automated ship gives its own systems (native Auto-Cruiser:
+            // sensors and doors lit with no crew aboard, oracle fix-201 f201-auto-10s)
+            manningCrew != null || mannedByAutomation -> "on"
             statusBlocksBoost(true) -> "ion"
             else -> "off"
         }

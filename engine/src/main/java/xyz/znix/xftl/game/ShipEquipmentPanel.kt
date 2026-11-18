@@ -370,6 +370,18 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         "\"over\":${xyz.znix.xftl.hs.ship.HsEquipment.overCount(ship)},\"buttons\":${buttons.size}}"
 
     /**
+     * The touch layout has the over-capacity box under the picked item's info boxes: its top (or its pager's), which
+     * the info boxes stay above (InfoStack), or null when none is shown there.
+     */
+    fun touchInfoFloor(): Int? {
+        if (!TouchMode.enabled || touchSellTab) return null
+        val boxes = overCapacityBoxes.filter { overBoxDrawn(if (it.augmentBox) 5 else 4) }.map { it.pos.y }
+        if (boxes.isEmpty()) return null
+        val arrows = buttons.filterIsInstance<ArrowButton>().filter { it.overPager }.map { it.pos.y }
+        return (boxes + arrows).min() - 2
+    }
+
+    /**
      * Tests (ShipWindow.diagnosticOverCapacity): the over-capacity boxes drawn (kind, place relative to [origin], 272 x
      * DropBox::GetHeight, the item box in it), how many are in use (the touch pager's pages) and the pager's arrows.
      */
@@ -712,7 +724,14 @@ class ShipEquipmentPanel(private val game: InGameState, val ship: Ship) {
         if (x in 293 until 293 + 290 && hsAugPageCount > 1) { hsAugPage = turn(hsAugPage, hsAugPageCount); updateButtons() }
     }
 
+    /** For the checks: the item whose info is shown, as if it were the one hovered or picked. */
+    var diagnosticHover: Blueprint? = null
+
+    /** For the checks: the sell tab's SELL box as last drawn (x, y, width, height), or null when hidden. */
+    val diagnosticTouchSell: IntArray? get() = if (sellUI && TouchMode.enabled) touchSell.diagnosticRect() else null
+
     fun getHoveredBlueprint(): Blueprint? {
+        diagnosticHover?.let { return it }
         // Don't show anything while a blueprint is being dragged.
         if (draggingBlueprint != null)
             return null

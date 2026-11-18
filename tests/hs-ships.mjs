@@ -239,6 +239,9 @@ try{
   if(d.startingScrap!==-1&&s.scrap!==d.startingScrap)problems.push('scrap '+s.scrap+' != '+d.startingScrap);
   if(d.startingFuel!==-1&&s.fuel!==d.startingFuel)problems.push('fuel '+s.fuel+' != '+d.startingFuel);
   if(d.forceAutomated!==null&&s.automated!==d.forceAutomated)problems.push('automated '+s.automated);
+  // Report 201: two seconds after the start boxes are answered the run goes on; a ship with no living crew of its own is automated.
+  if(s.over!==null)problems.push('the run is over two seconds after its start ('+s.over+')');
+  if(s.ownCrewAlive===0&&!s.automatedAfter)problems.push('no living crew and not automated');
   if(bp){const sys=els(els(bp).find(n=>n.name==='systemList')??{children:[]});const starts=n=>sys.some(x=>x.name===n&&x.attrs.get('start')!=='false');
    const vanillaCrew=els(bp).filter(n=>n.name==='crewCount').reduce((a,n)=>a+lexInt(n.attrs.get('amount')),0);
    if(s.crew.length<vanillaCrew)problems.push('crew '+s.crew.length+' < blueprint '+vanillaCrew);
@@ -310,7 +313,7 @@ try{
   if(sysNote.length)console.log('NOTE HS custom systems not in the engine yet (systems workstream): '+sysNote.length+'\n  '+sysNote.join('\n  '));
   if(od.length)failed=true;
  }
- console.log((bad.length?'FAILED':'PASS')+' starts: '+ships.length+' ships ('+ships.filter(x=>reachable.has(x)).length+' in the hangar), '+bad.length+' with problems'+(bad.length?'\n  '+bad.join('\n  '):''));
+ console.log((bad.length?'FAILED':'PASS')+' starts: '+ships.length+' ships ('+ships.filter(x=>reachable.has(x)).length+' in the hangar, '+results.filter(x=>x.ownCrewAlive===0).length+' without living crew), '+bad.length+' with problems'+(bad.length?'\n  '+bad.join('\n  '):''));
  if(offHangar.length)console.log('NOTE blueprints outside the HS hangar that fail to start: '+offHangar.length+'\n  '+offHangar.join('\n  '));
  if(bad.length)failed=true;
  // 2c. custom stores generated for a run of the MV Kestrel: definitions, prices, pages, save round trip, the buy page.

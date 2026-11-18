@@ -520,6 +520,7 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
             val reward = hovered?.takeIf { !it.isContinue }?.let { o ->
                 xyz.znix.xftl.hs.render.HsEventTooltip.reward(o.choiceResources.items, o.choiceResources.crew, o.event.removedStuff.isNotEmpty())
             }
+            xyz.znix.xftl.hs.render.HsEventTooltip.screenBottom = { scaleWindowPoint(0, InfoStack.screenHeight(game)).y }
             xyz.znix.xftl.hs.render.HsEventTooltip.render(game, g, reward, boxCentred)
         }
     }
@@ -1416,6 +1417,10 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         // itself - don't pass it the converted point.
         val p = scaleWindowPoint(x, y)
 
+        // The reward box of the choice a finger holds is lower than its text: the finger's way up or down moves the
+        // text (InfoStack.HoldScroll) and the choice stays the one held.
+        if (TouchMode.enabled && xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsEventTooltip.hold(TouchRouter.fingerDown, p.y)) return
+
         hoveredOption = null
         // Hyperspace ScrollingChoiceBox::MouseMove: choices answer only inside the box, at the scrolled position
         val py = if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.mouseMove(game, p.x, p.y) ?: return else p.y
@@ -1433,6 +1438,8 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
 
     /** What a finger taps (TouchRouter): a choice (its row), a scroll button; the scroll bar takes the press. */
     override fun liftTarget(x: Int, y: Int): Any? {
+        // a finger that moved the reward box's text is no tap
+        if (xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsEventTooltip.holdScrolled) return null
         super.liftTarget(x, y)?.let { return it }
         val p = scaleWindowPoint(x, y)
         if (xyz.znix.xftl.hs.HS.active) {
@@ -1459,6 +1466,10 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     override fun mouseScroll(change: Int) {
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.hs.render.HsScrollingChoiceBox.wheel(change)
     }
+
+    /** The reward box of the hovered choice, when lower than its text, takes the wheel before the event box (InfoStack). */
+    override fun infoScrollWheel(change: Int): Boolean =
+        xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.hs.render.HsEventTooltip.wheel(game, change)
 
     override fun mouseClick(button: Int, x: Int, y: Int) {
         if (button != Input.MOUSE_LEFT_BUTTON) return

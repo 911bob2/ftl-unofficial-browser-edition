@@ -224,7 +224,7 @@ class HangarPresentation(private val state: SelectShipState) {
         return 564+(i/2)*minOf(93,186/rows)
     }
     private val advancedX get() = pick(975,750)
-    private val infoAnchor get() = xyz.znix.xftl.math.ConstPoint(pick(952,308),pick(104,79))
+    private val infoAnchor get() = xyz.znix.xftl.math.ConstPoint(pick(infoPlace(false).x,infoPlace(true).x),pick(infoPlace(false).y,infoPlace(true).y))
 
     private fun crewDescription(c: StartingCrew): String {
         val race=state.blueprints[c.species] as CrewBlueprint
@@ -345,7 +345,15 @@ class HangarPresentation(private val state: SelectShipState) {
         if (!touch) drawPanels(g)
     }
 
+    /** The wheel over the hangar: an info box lower than its text moves the text (InfoStack). */
+    fun infoScrollWheel(change: Int): Boolean = infoPanel.scrollWheel(change, -1, -1)
+
+    /** An info box now shown is lower than its text; [infoScrollBy] moves it (the touch layout's holding finger). */
+    val infoScrolls: Boolean get() = infoPanel.scrolls
+    fun infoScrollBy(by: Int) { infoPanel.scrollBy(by) }
+
     fun draw(g: Graphics) {
+        infoPanel.frame()
         if (touch) drawPanels(g)
         if (touch) state.getImgOrNull("img/ipad/customizeUI/box_mainmenu.png")?.let { xyz.znix.xftl.game.TouchArt.frame(it,808,8,209,50,13) }
         state.getImg("img/customizeUI/box_shipname.png").draw(pick(6,7),8)
@@ -830,8 +838,8 @@ class HangarPresentation(private val state: SelectShipState) {
      * The touch list has it under its type tabs, right of the lower cards.
      */
     fun drawShipListInfoBox(title: String,description: String,height: Int,touchList: Boolean=false) {
-        infoPanel.position=if(touchList) xyz.znix.xftl.math.ConstPoint(540,530) else xyz.znix.xftl.math.ConstPoint(460,534)
-        infoPanel.customWidth=360
+        infoPanel.position=shipListInfoPlace(touchList)
+        infoPanel.customWidth=SHIP_LIST_INFO_WIDTH
         infoPanel.drawDescriptionBox(GameText.literal(title),GameText.literal(description),null,emptyList(),height-14)
         infoPanel.customWidth=null
     }
@@ -850,7 +858,13 @@ class HangarPresentation(private val state: SelectShipState) {
         lines.forEach { descriptionFont.drawString(x+11f,baseline,it,Colour.white);baseline+=17f }
     }
 
-    private companion object {
+    companion object {
+        /** The ship list's info box (for the checks too): its place in the 1280 wide frame or the touch block, its width. */
+        fun shipListInfoPlace(touchList: Boolean)=if(touchList) xyz.znix.xftl.math.ConstPoint(540,530) else xyz.znix.xftl.math.ConstPoint(460,534)
+        const val SHIP_LIST_INFO_WIDTH = 360
+        /** The hangar's info boxes (a ship's description, an item, a system): desktop and touch place. */
+        fun infoPlace(touch: Boolean)=if(touch) xyz.znix.xftl.math.ConstPoint(308,79) else xyz.znix.xftl.math.ConstPoint(952,104)
+
         /** HL2 at 2x: the hangar's TextButton font. */
         const val BUTTON_FONT = 62
         /** The touch layout's ship select art. */

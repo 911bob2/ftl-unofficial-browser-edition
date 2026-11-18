@@ -441,6 +441,21 @@ on yet.
   replaces a window or screen never taps what is under it
   ([ORIGINAL_BEHAVIOR.md](ORIGINAL_BEHAVIOR.md#one-click-one-receiver-2026-11-05)). Two-step store buying, map and
   hangar as on the iPad. A mouse's left button acts on its press on these screens, as on the desktop.
+- Info boxes (`InfoStack`, `InfoPanel`): an item's description, its tip, the crew skills or a system's levels and the
+  BUY / UPGRADE / SELL box under them (`TouchGetBox`) are one column that ends at the screen's edge (on the equipment
+  screen: at the over-capacity box). Boxes of fixed size and the control keep their size; the text boxes keep the
+  original's heights while everything fits, else they share what is left (a box needing less than an even share keeps
+  its height) and a box lower than its text scrolls: a finger's drag on the box, the wheel on the desktop layout (it
+  goes to the text first, as to Hyperspace's scrolling tooltip, and at the text's end does what it did before), with a
+  bar and arrows at the box's right edge while more text waits. A window uses it by calling `infoPanel.frame()` once
+  per frame, setting `controlHeight` and `screenBottom`, and passing presses, moves and the wheel to
+  `scrollPress` / `scrollDrag` / `scrollRelease` / `scrollWheel`; the desktop layout uses the same rule, so a text that
+  fits looks as in the original and one that would leave the screen scrolls instead. Boxes that are only there while a
+  finger holds what they describe (the hangar's info boxes and its ship list's box, an event choice's reward box, a
+  tooltip taller than the screen) cannot be dragged themselves: there the holding finger's way up or down moves the
+  text (`InfoStack.HoldScroll`), the screen keeps what the finger held, and a finger that moved the text is no tap when
+  it lifts. A confirmation whose text would make it taller than the screen keeps its buttons on the screen and scrolls
+  the text (`ConfirmationWindow`).
 - Over capacity (`ShipWindow`, `ShipEquipmentPanel`): the crew screen's over-capacity box sits under the window's left
   half, where the iPad game puts it (30, 484); Hyperspace's box for the crew member past the limit (on the
   desktop at x 146 under that box) goes right of it, as below it would be off the screen, and its dismiss confirmation

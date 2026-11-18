@@ -568,6 +568,10 @@ class Graphics {
     companion object {
         private var CURRENT: Graphics? = null
 
+        /** The graphics being drawn with now (for code that is handed no Graphics). */
+        @JvmStatic
+        val current: Graphics? get() = CURRENT
+
         /**
          * A colour every draw is multiplied by, like the native
          * CSurface::GL_SetColorTint (eg the ship list under its tutorial).

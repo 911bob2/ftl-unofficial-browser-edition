@@ -485,7 +485,7 @@ class ShipList(private val state: SelectShipState, private val touch: Boolean = 
         close(blueprint)
     }
 
-    fun mouseWheelMoved(change: Int) { /* All official families fit in the native grid. */ }
+    fun mouseWheelMoved(change: Int) { tutorial?.wheel(change) /* All official families fit in the native grid. */ }
 
     private companion object {
         /** The top left corner of the touch list's upper panel. */

@@ -174,7 +174,8 @@ object NativeTooltip {
             x += 16
             y -= mouseY + height - 670
             // Hyperspace's rewrite (RedesignedTooltips.cpp) keeps the top on screen: no higher than y 50
-            if (mouseY < y + height) y = if (hs) maxOf(50, mouseY - height - 10) else y - (y + height - mouseY + 10)
+            // (a box taller than the screen scrolls in every mode, see below, and keeps its top on screen the same way)
+            if (mouseY < y + height) y = if (hs || (height > 620 && xyz.znix.xftl.game.InfoStack.enabled)) maxOf(50, mouseY - height - 10) else y - (y + height - mouseY + 10)
         }
         if (!staticPos && mouseX + width > 1260) {
             // Hyperspace: a box beside the cursor's row goes to the cursor's left instead of over it
@@ -183,7 +184,9 @@ object NativeTooltip {
         }
 
         // Hyperspace: a box taller than 620 is cut at y 670 and scrolls (ScrollingTooltip)
-        val scrolling = hs && height > 620
+        // Without Hyperspace the original has no such limit (its own tooltips are short); a mod's taller one left the
+        // screen, so it scrolls the same way (InfoStack's rule: no text out of reach).
+        val scrolling = height > 620 && (hs || xyz.znix.xftl.game.InfoStack.enabled)
         val visualHeight = if (scrolling) 670 - y else height
         g.colour = Colour(0f, 0f, 0f, 0.95f)
         g.fillRect(x, y, width, visualHeight)
@@ -199,6 +202,14 @@ object NativeTooltip {
             if (key == HsScroll.tooltip) scroll = HsScroll.amount
             else { HsScroll.tooltip = key; HsScroll.amount = 0f; HsScroll.max = height - 580f }
             HsScroll.shown = key
+            // The touch layout has no wheel, and the tooltip is only there while a finger holds what it belongs to:
+            // that finger's way up or down moves the text (InfoStack.HoldScroll).
+            if (xyz.znix.xftl.game.TouchMode.enabled && xyz.znix.xftl.game.InfoStack.enabled) {
+                HsScroll.hold.update(HsScroll.diagnosticFinger ?: xyz.znix.xftl.game.TouchRouter.fingerDown, mouseY, true) {
+                    HsScroll.amount = (HsScroll.amount + it).coerceIn(0f, maxOf(0f, HsScroll.max))
+                }
+                scroll = HsScroll.amount
+            }
             y += 20
         }
         val text = {
@@ -243,7 +254,15 @@ object NativeTooltip {
 
         /** Each frame starts with no scrolling tooltip shown. */
         @JvmStatic
-        fun frame() { shown = "" }
+        fun frame() {
+            shown = ""
+            if (!xyz.znix.xftl.game.TouchRouter.fingerDown) hold.update(false, 0, false) {}
+        }
+
+        @JvmField val hold = xyz.znix.xftl.game.InfoStack.HoldScroll()
+
+        /** For the checks: a finger is down (true) or lifted (false) whatever the touch router says; null: ask it. */
+        @JvmField var diagnosticFinger: Boolean? = null
     }
 }
 

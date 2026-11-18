@@ -41,7 +41,14 @@ class ConfirmationWindow(
     private val boxWidth = max(minimumWidth, yesWidth + noWidth + 100)
     private val lines = (literalMessage ?: context.translator[messageKey]).replace("\\n", "\n").split('\n')
         .flatMap { bodyFont.font.wrapString(it, boxWidth - 40) }
-    private val bodyHeight = lines.size * bodyFont.lineHeight
+    private val textHeight = lines.size * bodyFont.lineHeight
+    /**
+     * InfoStack: the text's part of the window is as tall as the text unless the window would then be taller than the
+     * screen; then it ends where the buttons still fit and the text scrolls in it (a drag, the wheel).
+     */
+    private val bodyHeight = if (!InfoStack.enabled) textHeight else minOf(textHeight, maxOf(3 * bodyFont.lineHeight,
+        InfoStack.screenHeight(null) - 2 * InfoStack.EDGE - (image.height - 22)))
+    private val scroller = InfoStack.Scroller()
     override val size: IPoint = ConstPoint(boxWidth, bodyHeight + image.height - 22)
     private val yesX = boxWidth / 2 - (yesWidth + 14 + noWidth) / 2
     private val noX = yesX + yesWidth + 14
@@ -89,8 +96,21 @@ class ConfirmationWindow(
         piece(right - 10, y, 31, 46, 88, 44, 31, 46)
         piece(right + 21, y, boxWidth - right - 41, 46, 119, 44, 1, 46)
         piece(boxWidth - 20, y, 20, 46, 120, 44, 20, 46)
-        bodyFont.printCenter((position.x + boxWidth / 2).f, (position.y + 17).f, lines.joinToString("\n"),
-            Constants.TEXT_BUTTON_NORMAL)
+        if (textHeight <= bodyHeight || !InfoStack.enabled) {
+            scroller.clear()
+            bodyFont.printCenter((position.x + boxWidth / 2).f, (position.y + 17).f, lines.joinToString("\n"),
+                Constants.TEXT_BUTTON_NORMAL)
+        } else {
+            // the text is cut where the frame's art ends: under the top border and its glow, above the glow of the
+            // line over the buttons
+            scroller.begin(lines, position.x, position.y + 12, boxWidth, bodyHeight + 8, textHeight, bodyHeight,
+                position.y + FRAME_TOP, position.y + bodyHeight + FRAME_BOTTOM)
+            scroller.clipped(g) {
+                bodyFont.printCenter((position.x + boxWidth / 2).f, (position.y + 17 - scroller.offset).f, lines.joinToString("\n"),
+                    Constants.TEXT_BUTTON_NORMAL)
+            }
+            scroller.drawBar(g)
+        }
         for ((index, x, width, label) in listOf(
             ButtonLabel(0, yesX, yesWidth, yesLabel), ButtonLabel(1, noX, noWidth, noLabel))) {
             g.colour = if (hovered == index) xyz.znix.xftl.hs.render.HsColors.tbSelected() else xyz.znix.xftl.hs.render.HsColors.tbActive()
@@ -100,6 +120,15 @@ class ConfirmationWindow(
     }
 
     private data class ButtonLabel(val index: Int, val x: Int, val width: Int, val label: String)
+
+    private companion object {
+        /**
+         * confirm_window.png (vanilla's and Multiverse's art alike): the top border (rows 7-11) and the glow under it
+         * end at row 18; the glow over the line above the buttons starts 13 under the text's part (its art row 35).
+         */
+        const val FRAME_TOP = 18
+        const val FRAME_BOTTOM = 13
+    }
     private fun targetAt(x: Int, y: Int): Int = when {
         y !in position.y + buttonY until position.y + buttonY + 24 -> -1
         x in position.x + yesX until position.x + yesX + yesWidth -> 0
@@ -109,7 +138,25 @@ class ConfirmationWindow(
 
     override fun liftTarget(x: Int, y: Int): Any? = targetAt(x, y).takeIf { it >= 0 }
 
+    /** For the checks: the window's height and where its buttons are, from its top: "height buttonY text view". */
+    val diagnosticLayout: String get() = "${size.y} $buttonY $textHeight $bodyHeight"
+
+    /** For the checks: where the scrolling text was cut when last drawn, from the window's top: "top bottom" ("0 0": none). */
+    val diagnosticClip: String get() = if (!scroller.active) "0 0" else
+        "${scroller.clip[1] - position.y} ${scroller.clip[1] + scroller.clip[3] - position.y}"
+
+    override fun infoScrollWheel(change: Int): Boolean {
+        if (!scroller.active || change == 0) return false
+        val by = if (change < 0) InfoPanel.WHEEL_STEP else -InfoPanel.WHEEL_STEP
+        return scroller.scrollBy(by) != by
+    }
+
+    override fun mouseReleased(button: Int, x: Int, y: Int) {
+        if (button == Input.MOUSE_LEFT_BUTTON) scroller.release()
+    }
+
     override fun updateUI(x: Int, y: Int) {
+        if (scroller.dragging) { scroller.drag(y); return }
         val target = targetAt(x, y)
         if (target >= 0 && target != hovered && !resolved)
             context.mainGame.gameContent.sounds.getSample("hoverBeep").play()
@@ -118,6 +165,7 @@ class ConfirmationWindow(
 
     override fun mouseClick(button: Int, x: Int, y: Int) {
         if (button != Input.MOUSE_LEFT_BUTTON || resolved) return
+        if (scroller.press(x, y)) return
         when (targetAt(x, y)) { 0 -> resolve(true); 1 -> resolve(false) }
     }
 

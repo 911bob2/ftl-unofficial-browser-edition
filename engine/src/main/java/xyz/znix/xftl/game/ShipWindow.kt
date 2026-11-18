@@ -151,6 +151,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     override fun liftTarget(x: Int, y: Int): Any? {
         dismissConfirm?.let { val p = scaleWindowPoint(x, y); return it.liftTarget(p.x, p.y) }
         if (touchUpgradesShown && touchGet?.hits(x, y) == true) return touchGet
+        // a box of text that scrolls takes the press at once (InfoStack)
+        scaleWindowPoint(x, y).let { if (infoPanel.scrollHits(it.x, it.y)) return null }
         super.liftTarget(x, y)?.let { return it }
         if (tab == Tab.EQUIPMENT) {
             val p = scaleWindowPoint(x, y)
@@ -219,10 +221,18 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         return ConstPoint(box.pos.x + 50 + mouseX - touchDragFrom.x, box.pos.y + 46 + mouseY - touchDragFrom.y)
     }
 
-    /** The dragged crew member is over the DISMISSAL box. */
+    /**
+     * CrewEquipBox::OnRender / MouseClick (1.6.14 0x544b10 / 0x542af0, 1.6.9 0x52f410 / 0x52d440): a crew box's Dismiss
+     * is active only while CrewMemberFactory::GetPlayerCrewCount is above 1; Hyperspace's rewrites of both
+     * (CustomCrewManifest.cpp:817, :844) also on an automated ship and for the over-limit box ([over]). The DISMISSAL
+     * box follows the same rule.
+     */
+    private fun dismissActive(over: Boolean) = game.crewFactoryPlayerCount() > 1 || (hsDef != null && (ship.isAutomated || over))
+
+    /** The dragged crew member is over the DISMISSAL box, and may be dismissed. */
     private val touchDismissHot: Boolean
         get() {
-            if (!TouchMode.enabled || tab != Tab.CREW || dismissConfirm != null) return false
+            if (!TouchMode.enabled || tab != Tab.CREW || dismissConfirm != null || !dismissActive(false)) return false
             val p = touchDragPoint() ?: return false
             return touchDismissBox?.contains(p.x, p.y) == true
         }
@@ -416,7 +426,13 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         val backgroundImage = equipment2 ?: if (customTab >= 0) hsCustomBackground() else game.getImg("img/upgradeUI/Equipment/${tab.textureName}_main.png")
         val baseTint = Graphics.tint
         val dismissing = dismissConfirm != null
-        infoPanel.touchBottom = 0
+        infoPanel.frame()
+        infoPanel.controlHeight = if (touchGet != null && touchUpgradesShown) TouchGetBox.HEIGHT else 0
+        infoPanel.screenBottom = {
+            val screen = scaleWindowPoint(0, InfoStack.screenHeight(game)).y
+            // the touch layout's over-capacity box, with the waiting item in it, lies under the info boxes
+            if (tab == Tab.EQUIPMENT) minOf(screen, equipmentPanel.touchInfoFloor() ?: screen) else screen
+        }
         fun tinted(factor: Float) = Colour(baseTint.r * factor, baseTint.g * factor, baseTint.b * factor, baseTint.a)
 
         // TabbedWindow::OnRender (0x00518660) draws the other tabs before the window,
@@ -1081,6 +1097,29 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
     fun diagnosticTurnOverPage() = equipmentPanel.touchTurnOverPage()
 
     /** Tests: the buttons made again for the current layout (TouchMode.enabled) and drawn once, which places them. */
+    /**
+     * For the checks (InfoStack): the equipment tab's info column for [item] as if it were hovered or picked: the
+     * boxes (InfoPanel.drawnBoxes) and "floor y" where the touch layout's over-capacity box begins under them.
+     */
+    fun diagnosticEquipmentInfo(g: Graphics, item: Blueprint): String {
+        equipmentPanel.diagnosticHover = item
+        try { draw(g) } finally { equipmentPanel.diagnosticHover = null }
+        val lines = ArrayList<String>(infoPanel.drawnBoxes)
+        equipmentPanel.touchInfoFloor()?.let { lines += "floor $it" }
+        return lines.joinToString("\n")
+    }
+
+    /** For the checks: the info panel (its scrolling, the text put in place of every description). */
+    val diagnosticInfoPanel: InfoPanel get() = infoPanel
+
+    /**
+     * For the checks (tests/overcap.mjs, action "info"): the info boxes as the last frame drew them ("name x y w h
+     * content view last", on the screen) and how far the description's and the tip's text are moved (InfoStack).
+     */
+    val diagnosticInfoBoxes: String get() =
+        "{\"info\":[${infoPanel.drawnBoxes.joinToString(",") { ftl.browser.BrowserDebug.quote(it) }}]," +
+            "\"infoScroll\":[${infoPanel.descScroll.offset},${infoPanel.tipScroll.offset}]}"
+
     fun diagnosticRelayout(g: Graphics) {
         updateButtons()
         equipmentPanel.diagnosticRelayout()
@@ -1216,6 +1255,12 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
 
     /** Hyperspace Input.cpp: the wheel goes to the crew tab (CustomCrewManifest) or the equipment tab, not the upgrades. */
     val hsTakesWheel: Boolean get() = xyz.znix.xftl.hs.HS.active && (tab == Tab.CREW || tab == Tab.EQUIPMENT)
+
+    override fun infoScrollWheel(change: Int): Boolean {
+        dismissConfirm?.let { return it.infoScrollWheel(change) }
+        val p = scaleWindowPoint(mouseX, mouseY)
+        return infoPanel.scrollWheel(change, p.x, p.y)
+    }
 
     override fun mouseScroll(change: Int) {
         if (hsDef != null && tab == Tab.EQUIPMENT) { val p = scaleWindowPoint(mouseX, mouseY); equipmentPanel.mouseScroll(change, p.x, p.y); return }
@@ -1389,7 +1434,8 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
                 if (!nameHover) {
                     // CustomCrewManifest::MouseClick: pressing a crew box (not its name or dismiss button) picks the crew
                     // member up to move or swap.
-                    if (hsDef != null && mouseY < pos.y + 62) hsDragging = crew
+                    // An inactive Dismiss does not stop it there (CustomCrewManifest::MouseClick, deleteButton.bActive).
+                    if (hsDef != null && (mouseY < pos.y + 62 || !dismissActive(over))) hsDragging = crew
                     return
                 }
 
@@ -1403,6 +1449,9 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             game.translator["crewbox_dismiss"],
             2, dismissFont, 9, { confirmDismiss(crew) }
         ) {
+            // Inactive (dismissActive): TextButton's inactive look, no hover, a click does nothing.
+            override val disabled: Boolean get() = !dismissActive(over)
+
             // The box being dismissed keeps its button highlighted under the popup.
             override fun draw(g: Graphics) {
                 if (touchHidesDragged(crew)) return
@@ -1441,6 +1490,12 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             val p = scaleWindowPoint(x, y)
             it.mouseClick(button, p.x, p.y)
             return
+        }
+
+        // A press on a box whose text scrolls takes hold of the text (InfoStack).
+        if (button == Input.MOUSE_LEFT_BUTTON) {
+            val p = scaleWindowPoint(x, y)
+            if (infoPanel.scrollPress(p.x, p.y)) return
         }
 
         // If we were renaming a crewmember, we're not any more
@@ -1483,7 +1538,13 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
             touchFingerDown = false
             touchPressedGet = false
         }
-        if (dismissConfirm != null) {
+        dismissConfirm?.let {
+            val p = scaleWindowPoint(x, y)
+            it.mouseReleased(button, p.x, p.y)
+            return
+        }
+        if (button == Input.MOUSE_LEFT_BUTTON && infoPanel.scrollDragging) {
+            infoPanel.scrollRelease()
             return
         }
 
@@ -1510,6 +1571,13 @@ class ShipWindow(val game: InGameState, val ship: Ship, initialTab: Tab, private
         dismissConfirm?.let {
             val p = scaleWindowPoint(x, y)
             it.updateUI(p.x, p.y)
+            return
+        }
+
+        if (infoPanel.scrollDragging) {
+            mouseX = x
+            mouseY = y
+            infoPanel.scrollDrag(scaleWindowPoint(x, y).y)
             return
         }
 

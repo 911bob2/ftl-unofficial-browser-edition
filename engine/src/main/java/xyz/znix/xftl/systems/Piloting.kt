@@ -45,13 +45,23 @@ class Piloting(blueprint: SystemBlueprint) : SubSystem(blueprint) {
     /**
      * ShipSystem +0x45 (bManned): ShipManager::OnLoop (0x4aa670) resets it to the automated flag, then the crew loop
      * (0x47b190) sets it for every crew member in the system's room that CrewMember::CanMan - alive, not dying, not
-     * stunned - wherever in the room they stand. GetDodgeFactor (0x49fe90) and the FTL charge read this flag.
+     * stunned - wherever in the room they stand. GetDodgeFactor (0x49fe90) and the FTL charge read this flag. So an
+     * automated ship (ShipManager +0x4d9: the crew-killed flagship, a ship whose blueprint has no crew, the player's
+     * too) always has a pilot.
      */
     val hasPilot: Boolean
-        get() = !ship.browserMannedStale && room!!.crew.any {
+        get() = !ship.browserMannedStale && (ship.isAutomated || room!!.crew.any {
             it.mode == AbstractCrew.SlotType.CREW && it.canManSystem && it.stunTime <= 0f && it.health > 0f
                     && it.currentAction != AbstractCrew.Action.DYING
-        }
+        })
+
+    /**
+     * The pilot light of the FTL button's pullout. FTLButton::OnRender (1.6.9 0x5428b0) asks
+     * ShipManager::SystemFunctions(6), which for piloting is ShipSystem::Functioning (1.6.9 0x6153d0, 1.6.14 0x63a960): bManned and power. An
+     * automated ship's piloting is always manned (see [hasPilot]).
+     */
+    val pilotLight: Boolean
+        get() = undamagedEnergy > 0 && (ship.isAutoScout || ship.isAutomated || ship.friendlyCrew.any { it.room == room })
 
     override fun isMannableBy(crew: AbstractCrew): Boolean {
         // A ship without engines (MV's stations) has none powered (GetSystemPower of a missing system is 0).

@@ -156,6 +156,9 @@ object LuaAdaptersWP5Systems {
      */
     private fun manned(s: AbstractSystem): Boolean {
         if (s.manningCrew != null) return true
+        // ShipManager::OnLoop starts every system's bManned from the ship's automated flag (oracle fix-201: bManned 1
+        // at the crewless Auto-Cruiser's piloting and engines, and at the default ship's once bAutomated is set)
+        if (shipOf(s)?.let { it.isAutomated || it.isAutoScout } == true) return true
         // a Lua-defined system: any crew member of the ship standing in its room, at a console or not, bBoostable or not
         // (oracle sweep-world-y1 y-man: sw_slotless manned by crew at slot 0 of a room without a console)
         if (s.info is xyz.znix.xftl.hs.systems.HsCustomSystemInfo)

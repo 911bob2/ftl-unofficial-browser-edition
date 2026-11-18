@@ -177,6 +177,20 @@ abstract class Window {
     open fun mouseScroll(change: Int) {
     }
 
+    /** Puts the window where a screen of [width] x [height] has it: centred, moved by [windowCentreOffset]. */
+    fun placeIn(width: Int, height: Int) {
+        val scale = renderScale
+        val halfGrowX = (size.x * (scale - 1) / 2).roundToInt()
+        val halfGrowY = (size.y * (scale - 1) / 2).roundToInt()
+        position = windowCentreOffset + ConstPoint((width - size.x) / 2 + halfGrowX, (height - size.y) / 2 + halfGrowY)
+    }
+
+    /**
+     * The wheel, before anything else in the window uses it: a box of text lower than its text (InfoStack) moves the
+     * text and returns true; at the text's end, or with no such box, false and the wheel does what it always did.
+     */
+    open fun infoScrollWheel(change: Int): Boolean = false
+
     /**
      * Called whenever the escape key is pressed.
      *

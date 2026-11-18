@@ -252,6 +252,15 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         }
 
     /**
+     * An automated ship mans its own systems: ShipManager::OnLoop (1.6.14 0x4aa670) writes the ship's automated flag
+     * (+0x4d9) into every system's bManned (+0x45) and active-manning level (+0x48) before the crew loop, and
+     * IsMannedBoost (0x63bbc0) counts that level for a system with the mannable flag (+0x4c) and full health. The
+     * player's ship too (Multiverse's Auto-Cruiser: bManned 1, iActiveManned 1 at piloting and engines with no crew
+     * aboard, oracle fix-201 f201-auto).
+     */
+    val mannedByAutomation: Boolean get() = (ship.isAutoScout || ship.isAutomated) && !damaged && info.canBeManned
+
+    /**
      * True if there should be a white locking box around the system's power,
      * which is shown in hacking/cloaking/mind control when those systems
      * are active.
@@ -895,7 +904,7 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         // ShipManager+0x4d9 into every system's active-manning level (+0x48), and IsMannedBoost
         // (0x63bbc0) / GetEffectivePower (0x63b750) honour it only for a system with the
         // mannable flag (+0x4c, set per type in the ShipSystem constructor) and full health.
-        if ((ship.isAutoScout || ship.isAutomated) && !damaged && info.canBeManned)
+        if (mannedByAutomation)
             return SkillLevel.BASE
 
         return manningCrew?.getSkillLevel(skill)

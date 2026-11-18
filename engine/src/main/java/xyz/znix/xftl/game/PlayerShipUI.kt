@@ -713,12 +713,8 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
 
     private fun positionMenuWindow(window: Window) {
         val container = game.mainGame?.gameContainer ?: return
-        val scale = window.renderScale
-        val halfGrowX = (window.size.x * (scale - 1) / 2).roundToInt()
-        val halfGrowY = (window.size.y * (scale - 1) / 2).roundToInt()
-        window.position = window.windowCentreOffset + ConstPoint(
-            (container.width - window.size.x) / 2 + halfGrowX,
-            (container.height - window.size.y) / 2 + halfGrowY)
+        InfoStack.screenOverride?.let { window.placeIn(it[0], it[1]); return }
+        window.placeIn(container.width, container.height)
     }
 
     private val hullWarningLines = listOf(
@@ -1632,6 +1628,10 @@ class PlayerShipUI(val ship: Ship, private val game: InGameState) {
     }
 
     fun mouseScroll(change: Int) {
+        // Without Hyperspace too, a tooltip taller than the screen scrolls (with it, InGameState asks the tooltip first).
+        if (!xyz.znix.xftl.hs.HS.active && xyz.znix.xftl.rendering.NativeTooltip.HsScroll.wheel(change)) return
+        // A box of text lower than its text takes the wheel first, as Hyperspace's scrolling tooltip does (InfoStack).
+        if (pauseWindow == null && !arrivalHidden && currentWindow?.infoScrollWheel(change) == true) return
         // Hyperspace Input.cpp OnScrollWheel (after a scrolling tooltip): the event box, then the ship window's crew or
         // equipment tab; otherwise the crew list page turns, whatever other window is open.
         if (xyz.znix.xftl.hs.HS.active) {

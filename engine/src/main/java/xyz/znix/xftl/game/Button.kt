@@ -362,8 +362,7 @@ object Buttons {
                 // A ship without piloting or engines (R&D's station) shows that half off: the original asks whether
                 // the system functions, which a missing system never does.
                 val piloting = ship.piloting
-                val hasPilot = ship.isAutoScout || (piloting != null && ship.friendlyCrew.any { it.room == piloting.room })
-                val pilotPath = when (piloting != null && piloting.undamagedEnergy > 0 && hasPilot) {
+                val pilotPath = when (piloting != null && piloting.pilotLight) {
                     true -> "img/buttons/FTL/FTL_pilot_on.png"
                     false -> "img/buttons/FTL/FTL_pilot_off1.png"
                 }
