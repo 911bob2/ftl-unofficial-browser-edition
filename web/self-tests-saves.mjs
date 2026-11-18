@@ -92,7 +92,13 @@ export async function saveSyncChecks({core, assert, log = () => {}}) {
       /** A client of one game instance: call(path, options) as web/save-service.mjs passes it. */
       client(caller) {
         const state = {offline: false};
-        const call = async (p, options = {}) => { if (state.offline) throw new TypeError('Failed to fetch'); return structuredClone(handle(caller, p, options) ?? null); };
+        // loseAnswer: the next PUT is taken by the account but its answer never arrives (the tab hid, the network dropped).
+        const call = async (p, options = {}) => {
+          if (state.offline) throw new TypeError('Failed to fetch');
+          const answer = structuredClone(handle(caller, p, options) ?? null);
+          if (state.loseAnswer && options.method === 'PUT') { state.loseAnswer = false; throw new TypeError('Failed to fetch'); }
+          return answer;
+        };
         return {call, state};
       }};
   }
@@ -330,6 +336,42 @@ export async function saveSyncChecks({core, assert, log = () => {}}) {
   await pc.client.call('/saves/' + own, {method: 'PUT', body: {name: 'x', setup: {key: 'vanilla', mods: []}, meta: {}, run: null, profile: null}, headers: {'If-Match': `"${server.saves.get(own).revision}"`}});
   assert.equal(server.saves.get(own).profile, profile(5));
   pass('an upload without a profile keeps the stored one');
+
+  // An upload the account took whose answer never came back: the account is one revision ahead with this device's own
+  // copy. That is no "Changed in two places": the base moves on, also when the game saved again since (that save then
+  // uploads); a copy another device wrote at that revision still asks.
+  {
+    const lost = crypto.randomUUID(), at = new Date().toISOString();
+    const write = (d, n, who = ['Firefox on Windows', 'dev-pc']) => d.store.update(lost, cur => core.written(cur, RUN(n), meta(who[0], who[1], RUN(n))));
+    await pc.store.put({id: lost, name: 'Lost answer', setup: {key: 'vanilla', mods: []}, createdUtc: at, meta: {}, base: 0, dirty: true, hasRun: false, run: null, nameDirty: false, overridden: null});
+    await write(pc, 60); await pc.sync.syncAll();
+    assert.equal(server.saves.get(lost).revision, 1);
+    // The page went away after the upload; nothing written since.
+    await write(pc, 61); pc.client.state.loseAnswer = true;
+    assert.equal(await pc.sync.uploadNow(lost), false, 'the answer is lost: offline for this page');
+    assert.deepEqual([server.saves.get(lost).revision, server.saves.get(lost).run], [2, RUN(61)], 'the account took it');
+    assert.deepEqual([(await pc.store.get(lost)).base, (await pc.store.get(lost)).dirty], [1, true]);
+    await pc.sync.syncAll();
+    assert.equal(pc.sync.state.decisions.get(lost).status, 'SYNCED', 'its own write, not "Changed in two places"');
+    assert.deepEqual([(await pc.store.get(lost)).base, (await pc.store.get(lost)).dirty, server.saves.get(lost).revision], [2, false, 2]);
+    // The network dropped during play and the game saved again before it came back: that save uploads over the new base.
+    await write(pc, 62); pc.client.state.loseAnswer = true; await pc.sync.uploadNow(lost);
+    await write(pc, 63);
+    assert.equal(await pc.sync.uploadNow(lost), true, 'the 409 is its own write: the newer save uploads');
+    assert.deepEqual([server.saves.get(lost).revision, server.saves.get(lost).run], [4, RUN(63)]);
+    assert.deepEqual([(await pc.store.get(lost)).base, (await pc.store.get(lost)).dirty], [4, false]);
+    // Another device writes the next revision while this one has unsynced progress: still the question.
+    assert.equal((await phone.sync.prepare(lost)).status, 'SYNCED');
+    pc.client.state.offline = true; await write(pc, 64); await pc.sync.uploadNow(lost); pc.client.state.offline = false;
+    await write(phone, 65, ['Pixel 8', 'dev-phone']); await phone.sync.uploadNow(lost);
+    assert.equal(server.saves.get(lost).revision, 5);
+    await pc.sync.syncAll();
+    assert.equal(pc.sync.state.decisions.get(lost).action, 'ASK_CONFLICT', "another device's write still asks");
+    assert.equal(await pc.sync.uploadNow(lost), false); assert.equal(server.saves.get(lost).run, RUN(65), 'never overwritten');
+    assert.equal((await pc.sync.prepare(lost)).action, 'ASK_CONFLICT');
+    await pc.sync.resolveConflict(lost, false);
+  }
+  pass("an upload whose answer was lost (taken by the account) is this device's own write: synced, a newer save uploads after it; another device's write still asks");
 
   // The running game's writes (web/game-session.mjs): saves that arrive while a write waits join it, so a burst of
   // saves (a whole run in one synchronous call) holds one copy of each kind, and the store gets the newest in order.

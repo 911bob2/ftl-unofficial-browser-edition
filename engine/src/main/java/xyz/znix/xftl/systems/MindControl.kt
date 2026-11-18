@@ -174,7 +174,11 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             endSound.play()
         }
 
-        controlledCrew?.mindControlledBy = null
+        controlledCrew?.let { crew ->
+            crew.mindControlledBy = null
+            // CrewMember::SetMindControl(false) from MindSystem's release (0x62f740)
+            if (!crew.isMindControlled) crew.mindControlChanged()
+        }
         timeRemaining = null
         controlledCrew = null
         controlLength = 0f
@@ -356,6 +360,8 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
 
         crew.mindControlledBy = this
+        // CrewMember::SetMindControl(true) from MindSystem::InitiateMindControl (1.6.14 0x62fcc0)
+        crew.mindControlChanged()
         controlledCrew = crew
         timeRemaining = duration
         controlLength = duration
@@ -687,8 +693,10 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             val dying = crew.health <= 0f || crew.currentAction == AbstractCrew.Action.DYING ||
                 !crew.room.ship.crew.contains(crew)
             val value = if (dying) crew.isMindControlled else controlled
+            val changed = value != crew.isMindControlled
             if (!value) crew.mindControlledBy = null
             crew.hsMindControlled = value
+            if (changed && !dying) crew.mindControlChanged()
             val game = crew.room.ship.sys
             if (xyz.znix.xftl.hs.crew.HsCrew.shipId(crew) == 1 && game.player?.hasAugment("MIND_ORDER") == true)
                 game.updatePlayerCrew()

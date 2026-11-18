@@ -130,7 +130,7 @@ fun ModsPanel(work: ModWork, scope: CoroutineScope, onClose: () -> Unit) {
         for (m in mods) Row(Modifier.fillMaxWidth().background(Ftl.surface).border(1.dp, Ftl.line).padding(12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Txt(m.label + (m.file.version.takeIf { it.isNotEmpty() }?.let { " $it" } ?: ""), Ftl.h2)
+                Txt(m.heading, Ftl.h2)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { ModBadges(m.file, m.hyperspace) }
                 Txt("${m.file.name} · ${mib(m.file.size)} · SHA-256 ${m.sha256.take(12)}…", Ftl.small)
             }
@@ -150,7 +150,9 @@ fun ModsPanel(work: ModWork, scope: CoroutineScope, onClose: () -> Unit) {
             Txt("The official links from the mod's page. Downloading connects this device to mega.nz; the file must match the catalogue.", Ftl.small)
             for (c in fromMega) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Txt("${c.title} ${c.version} · ${mib(c.size)}", Ftl.body, Modifier.weight(1f))
-                FtlButton("Download", { run("Downloading ${c.title} from mega.nz…") { p -> app.mods.downloadMega(c, p) } }, enabled = !busy)
+                FtlButton("Download", { run("Downloading ${c.title} from mega.nz…") { p ->
+                    app.mods.downloadMega(c, p) { work.status = "mega.nz is under load and asks for a proof of work: this device is solving it (up to a few minutes)…" }
+                } }, enabled = !busy)
             }
         }
     }
@@ -185,7 +187,7 @@ fun ModPicker(library: List<ModLibrary.Mod>, chosen: List<String>, onChange: (Li
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Txt(if (at >= 0) "${at + 1}." else "–", Ftl.label, Modifier.width(24.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Txt(m.label + (m.file.version.takeIf { it.isNotEmpty() }?.let { " $it" } ?: ""), Ftl.body)
+                Txt(m.heading, Ftl.body)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { ModBadges(m.file, m.hyperspace) }
             }
         }

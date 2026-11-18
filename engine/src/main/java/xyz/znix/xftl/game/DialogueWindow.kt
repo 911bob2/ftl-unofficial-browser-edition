@@ -320,6 +320,7 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         // SetNebula makes the nebula's clouds now, ahead of the box's own draws (once per scene).
         (game.currentBeacon.getEnvironment(game) as? xyz.znix.xftl.environment.NebulaEnvironment)?.ensureSet()
         applyStatuses(event)
+        statusLoop()
 
         if (event.event.isStore) {
             // This does a few things: show the store on the map, enable the store button
@@ -1634,6 +1635,23 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
         val nebula = event.event.environment?.isNebula == true ||
             (event.event === game.currentBeacon.event && game.currentBeacon.nebulaLocation)
         return if (nebula) listOf(NEBULA_STATUS) else emptyList()
+    }
+
+    /**
+     * The end of WorldManager::CheckStatusEffects (1.6.9 0x5eea10, 1.6.14 0x613a10): ShipManager::OnLoop on every
+     * enemy ship, then on the player's, at no time ([Ship.statusLoop]); Hyperspace sets SpeedFactor to 0 around it
+     * (CustomEvents.cpp 7101), which SHIP_LOOP scripts read.
+     */
+    private fun statusLoop() {
+        val lua = xyz.znix.xftl.hs.HS.luaActive
+        val speed = xyz.znix.xftl.hs.lua.LuaFps.speedFactor
+        if (lua) xyz.znix.xftl.hs.lua.LuaFps.speedFactor = 0f
+        try {
+            game.enemy?.statusLoop()
+            playerShip.statusLoop()
+        } finally {
+            if (lua) xyz.znix.xftl.hs.lua.LuaFps.speedFactor = speed
+        }
     }
 
     private fun applyStatuses(event: EvaluatedEvent) {

@@ -87,6 +87,10 @@ object ConsoleRegistry {
         Spec("DELETE", "", "Destroy the enemy ship", group = Groups.ENEMY),
         Spec("EVENT", "<event>", "This beacon's event replaced by <event>, shown as on arrival", group = Groups.WORLD, examples = listOf("EVENT REPAIR_STATION")),
         Spec("LOAD", "<event>|<ship blueprint> <sector>", "LOAD <event>: as EVENT. LOAD <ship blueprint or list> <sector>: this beacon cleared and a hostile ship of that blueprint built for that sector (0 is the first; an unknown blueprint gives the default ship)", group = Groups.WORLD, examples = listOf("LOAD REPAIR_STATION", "LOAD SHIPS_PIRATE 3", "LOAD MANTIS_FIGHTER 0")),
+        Spec("SECTOR", "<sector>", "Jump away at once (no FTL charge or map; it uses a fuel as any jump) to this sector made again as the sector description <sector> (exact name, e.g. SLUG_SECTOR; an unknown one is STANDARD_SPACE; FINAL is the last stand); the sector number stays", group = Groups.WORLD, examples = listOf("SECTOR SLUG_SECTOR", "SECTOR FINAL")),
+        Spec("INDEX", "<n>", "Sets a number the game never reads: changes nothing (the original keeps the word)", group = Groups.DEV),
+        Spec("LOADTEXT", "", "Read the game's text files again (the current language stays)", group = Groups.DEV),
+        Spec("CLEAR_ONLINE_ACH", "ALL|<achievement>", "Clears online store achievements in the original; this build has none, so it changes nothing (the profile's achievements stay)", group = Groups.PROFILE),
         Spec("LANG", "<language>", "Switch the game's language (en, de, es, fr, it, pl, pt, ru, ja, zh-Hans or a mod's own) until the game restarts", group = Groups.DEV, examples = listOf("LANG de", "LANG en")),
     )
 

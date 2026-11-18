@@ -261,8 +261,64 @@ object HsConsole {
 
     // ------------------------------------------------------------------------------------- the original's commands
 
+    /**
+     * INDEX n: RunCommand writes atoi(n) to a global (1.6.14 0x919b50, 1.6.9 0x8cba90) that nothing in either
+     * executable reads (Ghidra: the RunCommand write is its only reference), so it changes nothing; kept for the probes.
+     */
+    @JvmStatic var index = 0
+        private set
+
+    /** LOADTEXT runs so far (the probes): ResourceControl::LoadText reads the text files again. */
+    @JvmStatic var textReloads = 0
+        private set
+
+    /**
+     * The original's words that take the line by prefix before the others (1.6.14 CommandGui::RunCommand 0x52f7b0, in its
+     * order; the same in 1.6.9 0x51b4a0 but CLEAR_ONLINE_ACH): the upper-cased line starts with "INDEX ",
+     * "CLEAR_ONLINE_ACH " or "SECTOR ", or is "LOADTEXT". The argument is the rest of the line as typed. True when one ran.
+     */
+    private fun runPrefixed(game: InGameState, command: String): Boolean {
+        val upper = command.uppercase()
+        when {
+            upper.startsWith("INDEX ") -> index = atoi(command.substring(6))
+            // 1.6.14: "ALL" clears every achievement, else the one named, in the store's online achievements only
+            // (StoreWrapper_ClearAchievement of the store wrapper DLL; the profile's are untouched). This build has no
+            // online store, and 1.6.9 (Hyperspace) has no such command: nothing changes in either.
+            upper.startsWith("CLEAR_ONLINE_ACH ") -> {}
+            upper.startsWith("SECTOR ") -> forceSector(game, command.substring(7))
+            // printf "Reloading all text", then TextLibrary::Clear and every data/text*.xml read again
+            upper == "LOADTEXT" -> { printf("Reloading all text"); game.translator.reload(); textReloads++ }
+            else -> return false
+        }
+        return true
+    }
+
+    /**
+     * SECTOR <name> (1.6.14 0x52fe27): StarMap::forceSectorChoice = name, CommandGui::newLocation = the map's
+     * dummyNewSector (StarMap +0x714), CombatControl::Clear, ShipManager::JumpLeave: the jump leaves at once, with no
+     * charge, fuel or map. The arrival (WorldManager 0x619fc0, Location::newSector) runs StarMap::GenerateMap without
+     * SelectNewSector or AdvanceWorldLevel, so the sector being left is made again at the same level: its description
+     * becomes EventGenerator::GetSpecificSector(name) (0x5da910: the exact name, else "No such sector name" and
+     * STANDARD_SPACE; a FINAL one is the last stand) and the new map starts at its start beacon.
+     */
+    private fun forceSector(game: InGameState, name: String) {
+        val map = game.gameMap
+        val type = map.sectorType(name) ?: map.sectorType("STANDARD_SPACE") ?: return
+        val info = game.currentBeacon.sector.info
+        // the whole description is replaced: its name is the new one's first, any script rename and HS state go
+        info.type = type
+        info.nameIndex = -1
+        info.pickedName = null
+        info.hsName = null
+        info.hsShortName = null
+        info.hsState = null
+        val sector = map.generateSector(info, game)
+        game.beginJumpOut(sector.startBeacon)
+    }
+
     /** CommandGui::RunCommand of 1.6.14 (the words read from the executable's string table). */
     private fun runVanilla(game: InGameState, command: String) {
+        if (runPrefixed(game, command)) return
         val ship = game.player ?: return
         val parts = command.trim().split(' ').filter { it.isNotEmpty() }
         if (parts.isEmpty()) return

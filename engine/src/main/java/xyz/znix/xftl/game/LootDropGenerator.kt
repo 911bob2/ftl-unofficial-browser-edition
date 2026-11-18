@@ -32,8 +32,8 @@ object LootDropGenerator {
      * The autoReward generator (0x5dff60). Each scrap or resource roll
      * replaces the previous value of that resource, so a standard/stuff
      * reward that turns into an item ends with the item's scrap roll.
-     * An event that already names a weapon, drone or augment gets no
-     * random item. [sector] is the 0-based sector.
+     * An event that already names a weapon or drone gets no random item
+     * (see [blocksRandomItem]). [sector] is the 0-based sector.
      */
     fun generateRewards(
         game: InGameState, rand: Random, tierSpec: RewardTier, type: RewardType,
@@ -136,6 +136,19 @@ object LootDropGenerator {
         }
 
         return resources
+    }
+
+    /**
+     * Whether an item the event already names stops the random item. GenerateReward (1.6.14 0x5dff60,
+     * 1.6.9 0x5bbae0) tests the blueprint's type: a weapon or drone of a known `<type>` counts, but an
+     * augment never does (its type is never set and stays -1), nor does a weapon or drone whose type
+     * the loader does not know (StringToWeapon / StringToDrone give -1; a HACKING drone is one).
+     */
+    fun blocksRandomItem(item: Any?): Boolean = when (item) {
+        is xyz.znix.xftl.weapons.UknWeaponBlueprint -> false
+        is xyz.znix.xftl.weapons.AbstractWeaponBlueprint -> true
+        is xyz.znix.xftl.weapons.DroneBlueprint -> item.type != xyz.znix.xftl.weapons.DroneBlueprint.DroneType.HACKING
+        else -> false
     }
 
     private val FMD = listOf(Resource.FUEL, Resource.MISSILES, Resource.DRONES)

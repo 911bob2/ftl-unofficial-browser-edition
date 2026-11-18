@@ -131,6 +131,23 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
     /** CrewMember::bMindControlled: controlled by a mind system (vanilla) or flagged by SetMindControl (Hyperspace). */
     val isMindControlled: Boolean get() = mindControlledBy != null || hsMindControlled
 
+    /**
+     * The rest of CrewMember::SetMindControl (1.6.9 0x4728c0, 1.6.14 0x480c80) once the flag has changed on a crew member
+     * that is not dead, dying or out of the game: it leaves its slot (EmptySlot), takes the first free slot of its room
+     * for its new side (FindSlot(iRoomId, -1, true): Room::GetEmptySlot, or Ship::GetAvailableRoom when the room is full
+     * for that side) and walks there (MoveToRoom(room, slot, true)). It also clears bActiveManning and currentSystem, which
+     * the next crew pass sets again (here the crew loop's own manning test).
+     */
+    fun mindControlChanged() {
+        if (health <= 0f || currentAction == Action.DYING || !room.ship.crew.contains(this)) return
+        val side = mode
+        val target = room.firstFreeSlot(side)?.let { xyz.znix.xftl.math.RoomPoint(room, it) }
+            ?: room.ship.findSpaceForCrew(room, side)
+        // EmptySlot: the new side's slots are looked at without this crew member (its reservation is the old side's).
+        setTargetRoom(target.room, target)
+        room.ship.updateCrewReservedSlots()
+    }
+
     private var mindControlAnimation: FTLAnimation? = null
 
     /**
@@ -222,6 +239,8 @@ abstract class LivingCrew(blueprint: CrewBlueprint, anims: Animations, room: Roo
             mindControlledBy = null
             mindControlAnimation = null
             setMindControlBoost(0f, 1f)
+            // the system let go without its release (the ships stopped fighting, the system's ship left)
+            if (controller != null) mindControlChanged()
         } else {
             mindControlAnimation?.update(dt)
             setMindControlBoost(controller.healthBoost, controller.damageBoost)

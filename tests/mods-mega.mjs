@@ -4,7 +4,7 @@
 // `node tools/mods/fetch-mods.mjs <dir> --only multiverse-data-5.5.1` (developer, needs the internet).
 import assert from 'node:assert/strict';
 import {createHash, randomBytes} from 'node:crypto';
-import {createDecryptor, decryptAttributes, fileKey, MegaError, megaFileInfo, megaRange, parseMegaLink} from '../web/mods/mega.mjs';
+import {createDecryptor, decryptAttributes, fileKey, hashcashChallenge, hashcashThreshold, MegaError, megaFileInfo, megaRange, parseMegaLink, solveHashcash, verifyHashcash} from '../web/mods/mega.mjs';
 import {createSha256} from '../web/mods/sha256.mjs';
 import {MEGA_HANDLE, MEGA_KEY, MEGA_STORAGE, megaAttributes, megaEncrypt, megaLink, testCatalogue} from './fixtures/mods/catalogue.mjs';
 
@@ -63,6 +63,39 @@ assert.equal(retried.size, 5); assert.equal(tries, 2);
 for (const [response, kind] of [[new Response('', {status: 509}), 'quota'], [new Response('', {status: 404}), 'expired'], [new Response(new Uint8Array(3)), 'network']])
   assert.equal((await megaRange(MEGA_STORAGE, 0, 15, {fetch: async () => response}).catch(e => e)).kind, kind);
 pass('MEGA errors map to next steps: ' + [...new Set(kinds)].join(', ') + '; EAGAIN is retried; storage 509/404/short reads');
+
+// MEGA's proof of work (HTTP 402 + X-Hashcash), as its web client and SDK answer it. The vector: a fixed 48-byte token at
+// easiness 160, whose smallest answer (nonce 271, "AAABDw") an independent hashlib run of the SDK's algorithm found.
+export const HASHCASH_VECTOR = {token: 'CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW', easiness: 160, solution: 'AAABDw'};
+assert.deepEqual([0, 63, 64, 100, 160, 192, 255].map(hashcashThreshold), [8, 1016, 1024, 74752, 8519680, 16777216, 127 * 2 ** 24], 'thresholds');
+for (const bad of [null, '', '2:160:1:' + HASHCASH_VECTOR.token, '1:256:1:' + HASHCASH_VECTOR.token, '1:-1:1:' + HASHCASH_VECTOR.token, '1:160:1:' + HASHCASH_VECTOR.token.slice(1), '1:160:' + HASHCASH_VECTOR.token, '1:1:1:x'])
+  assert.equal(hashcashChallenge(bad), null, String(bad));
+const challenge = hashcashChallenge(` 1:${HASHCASH_VECTOR.easiness}:1731410499:${HASHCASH_VECTOR.token}
+`);
+assert.equal(challenge.easiness, 160); assert.equal(challenge.bytes.length, 48);
+assert.equal(await solveHashcash(challenge, {lanes: 1}), HASHCASH_VECTOR.solution, 'the smallest answer, one lane');
+assert.ok(await verifyHashcash(challenge, HASHCASH_VECTOR.solution)); assert.ok(!await verifyHashcash(challenge, 'AAABDg'));
+// the answer checked outside our code: SHA-256 of prefix + token x 262144, first word big-endian at or below the threshold
+const checkOutside = solution => { const h = createHash('sha256'); h.update(Buffer.from(solution, 'base64url')); const t = Buffer.from(HASHCASH_VECTOR.token, 'base64url'); for (let i = 0; i < 262144; i++) h.update(t); return h.digest().readUInt32BE(0) <= hashcashThreshold(160); };
+const fourLanes = await solveHashcash(challenge, {lanes: 4});
+assert.ok(checkOutside(HASHCASH_VECTOR.solution) && checkOutside(fourLanes), 'four lanes: ' + fourLanes);
+await assert.rejects(solveHashcash(hashcashChallenge('1:0:1:' + HASHCASH_VECTOR.token), {lanes: 1, budget: 300}), e => e.kind === 'busy', 'a budget');
+// megaFileInfo: the 402 answer is solved and the same request sent again with "X-Hashcash: 1:<token>:<answer>"
+const sent = [], proofs = [];
+const challenged = async (url, init) => {
+  sent.push({url, cash: init.headers['X-Hashcash'] ?? null});
+  if (!init.headers['X-Hashcash']) return new Response('', {status: 402, headers: {'X-Hashcash': `1:160:1731410499:${HASHCASH_VECTOR.token}`}});
+  const [v, token, answer] = init.headers['X-Hashcash'].split(':');
+  assert.equal(v, '1'); assert.equal(token, HASHCASH_VECTOR.token); assert.ok(checkOutside(answer), 'the answer sent');
+  return json([{s: 5, g: MEGA_STORAGE}]);
+};
+const solvedInfo = await megaFileInfo(megaLink, {fetch: challenged, onProof: p => proofs.push(p)});
+assert.equal(solvedInfo.size, 5); assert.equal(sent.length, 2); assert.equal(sent[0].url, sent[1].url, 'the same request again');
+assert.deepEqual(proofs, [{easiness: 160, threshold: 8519680}]);
+let asked = 0;
+const always = await megaFileInfo(megaLink, {fetch: async () => { asked++; return new Response('', {status: 402, headers: {'X-Hashcash': `1:160:1:${HASHCASH_VECTOR.token}`}}); }, attempts: 1}).catch(e => e);
+assert.equal(always.kind, 'busy'); assert.equal(asked, 4, 'three answers, then it stops');
+pass('MEGA proof of work: the challenge header, the threshold, the SDK answer (vector and four lanes, checked by node:crypto), the request sent again with it; a fourth challenge stops');
 
 // Resumable SHA-256 (downloads continue after a reload with the stored state).
 for (const cut of [0, 1, 63, 64, 65, 1000, big.length - 1]) {

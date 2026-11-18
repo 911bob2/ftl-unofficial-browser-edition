@@ -84,6 +84,25 @@ class SaveCoreTest {
         assertEquals(4, Sync.uploaded(s, "run-a", "p1", 4).base)
     }
 
+    /** An upload whose answer was lost after the server took it is this device's own write, not "Changed in two places". */
+    @Test
+    fun aLostAnswerIsOwnWriteNotAConflict() {
+        val s = LocalSave("s1", "Save 1", Setup.VANILLA, "", SaveMeta(), 3, true, true, "run-a", profile = "p1", hasProfile = true)
+        val cloud = CloudSave("s1", "Save 1", Setup.VANILLA, "", "", 4, SaveMeta(), true, 5, null, true, 2)
+        assertEquals(SyncAction.ASK_CONFLICT, Sync.decide(s, cloud, false).action, "without the rule: a conflict")
+        assertTrue(Sync.ownWrite(s, cloud, "run-a", "p1", "run-a", "p1"))
+        assertTrue(Sync.ownWrite(s, cloud, "run-a", "p0", "run-a", null), "an upload without a profile keeps the stored one")
+        assertFalse(Sync.ownWrite(s, cloud, "run-b", "p1", "run-a", "p1"), "another device's run")
+        assertFalse(Sync.ownWrite(s, cloud, "run-a", "p2", "run-a", "p1"), "another device's unlocks")
+        assertFalse(Sync.ownWrite(s, cloud.copy(revision = 5), "run-a", "p1", "run-a", "p1"), "a write after it was someone else's")
+        assertFalse(Sync.ownWrite(s.copy(dirty = false), cloud, "run-a", "p1", "run-a", "p1"), "nothing unsynced: an ordinary fetch")
+        assertFalse(Sync.ownWrite(s.copy(overridden = Overridden("Pixel 8", "android", "t")), cloud, "run-a", "p1", "run-a", "p1"))
+        assertFalse(Sync.ownWrite(s, cloud.copy(setup = Setup("a".repeat(64), emptyList())), "run-a", "p1", "run-a", "p1"), "other mods")
+        // Saves written since the lost one stay unsynced over the new base.
+        assertEquals(4, Sync.uploaded(s.copy(run = "run-b"), "run-a", "p1", 4).base)
+        assertTrue(Sync.uploaded(s.copy(run = "run-b"), "run-a", "p1", 4).dirty)
+    }
+
     @Test
     fun aSaveHoldsItsProfile() {
         val empty = LocalSave("s1", "Save 1", Setup.VANILLA, "", SaveMeta(), 3, false, false)

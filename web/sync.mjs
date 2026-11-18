@@ -36,6 +36,11 @@ export function createSync({core, store, call, instance, deviceId, now = () => n
   const headers = revision => revision == null ? {} : {'If-Match': `"${revision}"`};
   const path = id => '/saves/' + encodeURIComponent(id);
   const sameDevice = lock => !!lock && lock.deviceId === deviceId;
+  // What the uploads of each save sent from this page, over which base, until one is answered (the last few). An answer lost after the server took the
+  // write (the tab hid or closed, the network dropped) leaves the account one revision ahead with this device's own copy:
+  // core.ownWrite tells that from a change made elsewhere, so it is never asked as "Changed in two places".
+  // notMine: the account revision already found to be another device's (fetched once, not on every pass).
+  const sent = new Map(), notMine = new Map();
 
   function wentOffline(e) {
     state.online = false;
@@ -71,9 +76,11 @@ export function createSync({core, store, call, instance, deviceId, now = () => n
   const lockCall = (id, body) => call(path(id) + '/lock', {method: 'POST', body: {override: false, acknowledge: false, ...body}});
 
   /** Uploads the device copy over cloud revision `revision`; the decision left afterwards. */
-  async function upload(local, revision, kind = 'auto', retried = false) {
+  async function upload(local, revision, kind = 'auto', retried = false, again = false) {
     try {
+      sent.set(local.id, [...(sent.get(local.id) ?? []).slice(-3), {base: revision, run: local.run ?? null, profile: local.profile ?? null}]);
       const r = await call(path(local.id), {method: 'PUT', body: body(local, kind), headers: headers(revision)});
+      sent.delete(local.id);
       await store.update(local.id, cur => core.uploaded(cur, local.run, local.profile, r.revision));
       state.errors.delete(local.id);
       return {status: 'SYNCED', action: 'NONE', rename: false};
@@ -100,7 +107,9 @@ export function createSync({core, store, call, instance, deviceId, now = () => n
         }
         // Another tab of this browser plays it: that tab uploads. Another device holds it: the player chooses.
         case 'locked': return sameDevice(lock) ? {status: 'PENDING', action: 'NONE', rename: false, lock} : {status: 'CONFLICT', action: 'ASK_CONFLICT', rename: false, lock};
-        case 'revision_conflict': return {status: 'CONFLICT', action: 'ASK_CONFLICT', rename: false};
+        case 'revision_conflict':
+          if (!again) { const own = await ownWrite(local.id, {known: e.detail?.revision ?? null, kind}); if (own) return own; }
+          return {status: 'CONFLICT', action: 'ASK_CONFLICT', rename: false};
         case 'deleted': return {status: 'DELETED', action: local.dirty ? 'ASK_DELETED' : 'REMOVE_LOCAL', rename: false};
         default:
           // saves_full, storage_full, bad_*: the save stays here, unsynced, and the row says why.
@@ -114,6 +123,25 @@ export function createSync({core, store, call, instance, deviceId, now = () => n
     const c = await call(path(id));
     const {run = null, profile = null, ...info} = c;
     return {cloud: info, run, profile};
+  }
+
+  /**
+   * The account's newer copy is this device's own upload that lost its answer (core.ownWrite): the base moves on to it
+   * and what was written here since uploads (unless `upload` is false); null when the copy is another device's.
+   * known: the account's revision when the caller has it (a list, a 409), to skip what cannot be this device's write.
+   */
+  async function ownWrite(id, {known = null, fetched = null, kind = 'auto', upload: send = true} = {}) {
+    const local = await store.get(id);
+    if (!local?.dirty || local.overridden) return null;
+    if (known != null && (known !== local.base + 1 || notMine.get(id) === known)) return null;
+    const {cloud: c, run, profile} = fetched ?? await fetchCloud(id);
+    const tried = [...(sent.get(id) ?? []).filter(s => s.base === local.base), {run: local.run ?? null, profile: local.profile ?? null}];
+    const mine = tried.find(t => core.ownWrite(local, c, run, profile, t.run, t.profile));
+    if (!mine) { notMine.set(id, c.revision); return null; }
+    sent.delete(id); state.cloud.set(id, c);
+    const after = await store.update(id, cur => core.uploaded(cur, mine.run, mine.profile, c.revision));
+    if (!after?.dirty) return {status: 'SYNCED', action: 'NONE', rename: false};
+    return send ? upload(after, c.revision, kind, false, true) : {status: 'PENDING', action: 'UPLOAD', rename: false};
   }
 
   /** Carries out what needs no question; returns the decision left for the player. */
@@ -133,6 +161,7 @@ export function createSync({core, store, call, instance, deviceId, now = () => n
         return {status: 'SYNCED', action: 'NONE', rename: false};
       }
       case 'REMOVE_LOCAL': await store.remove(id); return {status: 'DELETED', action: 'NONE', rename: false};
+      case 'ASK_CONFLICT': return (await ownWrite(id, {known: cloud?.revision ?? null})) ?? d;
       default: return d;
     }
   }
@@ -232,6 +261,7 @@ export function createSync({core, store, call, instance, deviceId, now = () => n
       }
       case 'CREATE': return upload(local, 0);
       case 'REMOVE_LOCAL': await store.remove(id); return {status: 'DELETED', action: 'NONE', rename: false, removed: true};
+      case 'ASK_CONFLICT': return (await ownWrite(id, {fetched: {cloud, run, profile}, upload: false})) ?? d;
       default: return d;
     }
   });

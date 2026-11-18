@@ -62,7 +62,8 @@ class ConsoleTest {
         "CREDITS", "VICTORY", "VARIABLE", "VAR", "METAVARIABLE", "METAVAR", "MVAR", "ACH", "ACH_LOCK", "SWITCHALL", "SWITCH",
         "WEAPON",
     )
-    private val originalWords = listOf("SCRAP", "FUEL", "MISSILES", "DRONES", "HULL", "DRONE", "AUG", "CREW", "GOD", "DELETE", "EVENT", "LOAD")
+    private val originalWords = listOf("SCRAP", "FUEL", "MISSILES", "DRONES", "HULL", "DRONE", "AUG", "CREW", "GOD", "DELETE", "EVENT", "LOAD",
+        "INDEX", "SECTOR", "LOADTEXT", "CLEAR_ONLINE_ACH", "LANG")
 
     /** The port's development commands before the merge. */
     private val ourNames = listOf(

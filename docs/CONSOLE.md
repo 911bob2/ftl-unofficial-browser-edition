@@ -159,7 +159,10 @@ difficulty, `GOD` sets the reactor to the ship's maximum (HS: the ship definitio
 is not 0. The original's `LANG` (TextLibrary::SetLanguage, not saved) and `SHIP <name>`
 (ScoreKeeper::UnlockShip with its popup) are ported (parity sweep U2), and its `LOAD` (WorldManager::CheckLoadEvent:
 `LOAD <event>` as `EVENT`, `LOAD <ship blueprint> <sector>` a hostile ship built for that sector; parity sweep U2b, our
-checkpoint command is `dev-load` now); `INDEX`, `SECTOR`, `LOADTEXT` and `CLEAR_ONLINE_ACH` are not ([ORIGINAL_BEHAVIOR.md](ORIGINAL_BEHAVIOR.md#keys-hotkeys-and-the-console-parity-sweep-u2-2026-11-06)).
+checkpoint command is `dev-load` now). `SECTOR <name>`, `INDEX <n>`, `LOADTEXT` and `CLEAR_ONLINE_ACH` are ported too
+(NEXT-1): `SECTOR` jumps away at once and makes the sector being left again as that sector description (the number
+stays), `LOADTEXT` reads the text files again, `INDEX` and `CLEAR_ONLINE_ACH` change nothing, as in the original
+([ORIGINAL_BEHAVIOR.md](ORIGINAL_BEHAVIOR.md#keys-hotkeys-and-the-console-parity-sweep-u2-2026-11-06)).
 
 <!-- generated: ConsoleReference.markdown, see ConsoleTest -->
 
@@ -259,6 +262,7 @@ checkpoint command is `dev-load` now); `INDEX`, `SECTOR`, `LOADTEXT` and `CLEAR_
 | `VICTORY` | Same as CREDITS |  |
 | `EVENT <event>` | This beacon's event replaced by <event>, shown as on arrival | `EVENT REPAIR_STATION` |
 | `LOAD <event>\|<ship blueprint> <sector>` | LOAD <event>: as EVENT. LOAD <ship blueprint or list> <sector>: this beacon cleared and a hostile ship of that blueprint built for that sector (0 is the first; an unknown blueprint gives the default ship) | `LOAD REPAIR_STATION`, `LOAD SHIPS_PIRATE 3`, `LOAD MANTIS_FIGHTER 0` |
+| `SECTOR <sector>` | Jump away at once (no FTL charge or map; it uses a fuel as any jump) to this sector made again as the sector description <sector> (exact name, e.g. SLUG_SECTOR; an unknown one is STANDARD_SPACE; FINAL is the last stand); the sector number stays | `SECTOR SLUG_SECTOR`, `SECTOR FINAL` |
 
 ### Profile: ships and achievements
 
@@ -277,6 +281,7 @@ checkpoint command is `dev-load` now); `INDEX`, `SECTOR`, `LOADTEXT` and `CLEAR_
 | `MVAR <name> [value]` | Same as METAVAR (needs Hyperspace) |  |
 | `ACH <achievement>` | Unlock an achievement (profile) | `ACH ACH_FULL_ARSENAL` |
 | `ACH_LOCK <achievement>` | Lock a mod achievement again (profile) (needs Hyperspace) |  |
+| `CLEAR_ONLINE_ACH ALL\|<achievement>` | Clears online store achievements in the original; this build has none, so it changes nothing (the profile's achievements stay) |  |
 
 ### Mods and scripting
 
@@ -306,6 +311,8 @@ checkpoint command is `dev-load` now); `INDEX`, `SECTOR`, `LOADTEXT` and `CLEAR_
 | `reload-console` | Reload the console (useful with Java HotSwap) |  |
 | `reload-flags` | Reload the debug flags (useful with Java HotSwap) |  |
 | `help [search]` | The command reference: every command by group, with its usage, what it does and examples. Type after help to search it; tap or click a command to fill it in | `help`, `help get` |
+| `INDEX <n>` | Sets a number the game never reads: changes nothing (the original keeps the word) |  |
+| `LOADTEXT` | Read the game's text files again (the current language stays) |  |
 | `LANG <language>` | Switch the game's language (en, de, es, fr, it, pl, pt, ru, ja, zh-Hans or a mod's own) until the game restarts | `LANG de`, `LANG en` |
 
 <!-- end of the generated reference -->

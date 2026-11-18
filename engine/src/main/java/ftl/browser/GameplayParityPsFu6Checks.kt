@@ -20,6 +20,10 @@ import xyz.znix.xftl.weapons.AbstractWeaponBlueprint
  * - CrewAI::CheckForProblems (1.6.14 0x628900) counts a room's boarders with 0x49b930, which skips a mind-controlled
  *   crew member (+0x53d) that is not fighting (+0x99): the enemy's own pilot taken over at its station makes no combat
  *   task (HS oracle ps-fu6-mc: the second crew member sets off only when the pilot starts fighting).
+ * - CrewMember::SetMindControl (1.6.9 0x4728c0, 1.6.14 0x480c80): taken over or let go, a crew member leaves its slot and
+ *   walks to the first free slot of its room for its new side (FindSlot(iRoomId, -1, true), MoveToRoom).
+ * - CrewAI::UpdateCrewMember (1.6.9 0x603410): a fight (task 7) whose slot's room has no boarders left turns idle at
+ *   once, walking or not.
  */
 internal object GameplayParityPsFu6Checks {
     fun run(main: MainGame, container: GameContainer): String {
@@ -38,6 +42,9 @@ internal object GameplayParityPsFu6Checks {
             case("aiLastTargets") { aiLastTargets(main, container) }
             case("crewStuckDying") { crewStuckDying(main, container) }
             case("mindControlledNotFighting") { mindControlledNotFighting(main, container) }
+            case("mindControlReslot") { mindControlReslot(main, container) }
+            case("combatEndsWithoutBoarders") { combatEndsWithoutBoarders(main, container) }
+            case("combatKeptForMindControlled") { combatKeptForMindControlled(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
@@ -147,5 +154,95 @@ internal object GameplayParityPsFu6Checks {
         check(combat == 0) { "a mind-controlled crew member that does not fight made $combat combat tasks" }
         xyz.znix.xftl.systems.MindControl.setMindControl(crew, false)
         return "a mind-controlled crew member counts as a boarder only while it fights"
+    }
+    private fun mindControlReslot(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        state.debugSpawnShip(state.eventManager.getShip("PIRATE"), Difficulty.NORMAL, 2, 71)
+        state.debugFlags.noEnemyFire.set = true
+        val enemy = state.enemy!!
+        repeat(3) { state.updateGameState(.05f) }
+        // A crew member standing where its side's first free slot is not (a station off slot 0, or a second crew
+        // member of the room): staying put would then miss the slot SetMindControl's FindSlot gives.
+        fun off(c: LivingCrew): Boolean {
+            val free = c.room.firstFreeSlot(AbstractCrew.SlotType.INTRUDER) ?: return false
+            val at = c.currentSlotPoint
+            return at.room === c.room && (at.x != free.x || at.y != free.y)
+        }
+        val own = enemy.crew.filterIsInstance<LivingCrew>().filter { it.ownerShip === enemy }
+        // Else one sent to its room's second cell (its slot is where it walks to; its station pulls it back later).
+        val crew = own.firstOrNull { off(it) } ?: own.first { it.room.cellCount > 1 }.also { c ->
+            check(c.setTargetRoom(c.room, c.room.slotToPoint(1))) { "no second slot to stand in" }
+        }
+        check(off(crew)) { "the crew member stands on the boarders' first free slot already" }
+        val room = crew.room
+        val intruderSlot = room.firstFreeSlot(AbstractCrew.SlotType.INTRUDER)
+            ?: return "mind control re-slot (no free boarder slot)"
+        xyz.znix.xftl.systems.MindControl.setMindControl(crew, true)
+        check(crew.mode == AbstractCrew.SlotType.INTRUDER) { "the taken-over crew member is not on the boarders' side" }
+        val taken = crew.currentSlotPoint
+        check(taken.room === room && taken.x == intruderSlot.x && taken.y == intruderSlot.y) {
+            "taken over, the crew member walks to $taken, not to the first free boarder slot $intruderSlot of its room"
+        }
+        repeat(60) { state.updateGameState(.05f) }
+        val here = crew.room
+        val crewSlot = here.firstFreeSlot(AbstractCrew.SlotType.CREW) ?: return "mind control re-slot (room full)"
+        xyz.znix.xftl.systems.MindControl.setMindControl(crew, false)
+        check(crew.mode == AbstractCrew.SlotType.CREW) { "the released crew member is not on the crew's side" }
+        val freed = crew.currentSlotPoint
+        check(freed.room === here && freed.x == crewSlot.x && freed.y == crewSlot.y) {
+            "released, the crew member walks to $freed, not to the first free crew slot $crewSlot of its room"
+        }
+        return "mind control moves the crew member to its new side's first free slot"
+    }
+
+    private fun combatEndsWithoutBoarders(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        state.debugSpawnShip(state.eventManager.getShip("PIRATE"), Difficulty.NORMAL, 2, 71)
+        state.debugFlags.noEnemyFire.set = true
+        val enemy = state.enemy!!
+        repeat(3) { state.updateGameState(.05f) }
+        val crew = enemy.crew.filterIsInstance<LivingCrew>().first { it.ownerShip === enemy }
+        val other = enemy.rooms.first { it !== crew.room && it.crew.isEmpty() && it.firstFreeSlot(AbstractCrew.SlotType.CREW) != null }
+        check(other.crew.none { it.mode == AbstractCrew.SlotType.INTRUDER }) { "boarders in the empty room" }
+        check(crew.setTargetRoom(other)) { "no path to room ${other.id}" }
+        // Walking (an idle crew member's task ends anyway): the fight must end because its room has no boarders.
+        repeat(2) { state.updateGameState(.05f) }
+        check(crew.setTargetRoom(other)) { "no path to room ${other.id}" }
+        enemy.crewAI.debugAssign(crew, xyz.znix.xftl.ai.CombatTask(enemy.crewAI, other))
+        check(!crew.currentAction.isIdle && crew.room !== other) { "the crew member is not on its way to room ${other.id}" }
+        state.updateGameState(.05f)
+        val task = enemy.crewAI.taskOf(crew)
+        check(task !is xyz.znix.xftl.ai.CombatTask) { "a crew member kept walking to fight in room ${other.id}, which has no boarders" }
+        return "a fight ends once its room has no boarders"
+    }
+
+    // ShipManager::UpdateCrewmembers (0x49ee10) counts a mind-controlled crew member as an intruder by GetIntruder
+    // (0x46c3e0), fighting or not, so a fight in its room goes on (HS oracle ps-c6-en mc: the resisting Zoltan stays).
+    private fun combatKeptForMindControlled(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        state.debugSpawnShip(state.eventManager.getShip("PIRATE"), Difficulty.NORMAL, 2, 71)
+        state.debugFlags.noEnemyFire.set = true
+        val enemy = state.enemy!!
+        repeat(3) { state.updateGameState(.05f) }
+        val own = enemy.crew.filterIsInstance<LivingCrew>().filter { it.ownerShip === enemy }
+        // Alone in its room, so it has nobody to fight there.
+        val taken = own.firstOrNull { c -> own.none { it !== c && it.room === c.room } } ?: return "mind-controlled fight (no lone crew member)"
+        val fighter = own.firstOrNull { it !== taken && it.room !== taken.room } ?: return "mind-controlled fight (one room of crew)"
+        val room = taken.room
+        xyz.znix.xftl.systems.MindControl.setMindControl(taken, true)
+        check(taken.mode == AbstractCrew.SlotType.INTRUDER && taken.currentAction != AbstractCrew.Action.FIGHTING) {
+            "the taken-over crew member is not a boarder yet, or fights at once"
+        }
+        check(fighter.setTargetRoom(room)) { "no path to room ${room.id}" }
+        repeat(2) { state.updateGameState(.05f) }
+        check(fighter.setTargetRoom(room)) { "no path to room ${room.id}" }
+        enemy.crewAI.debugAssign(fighter, xyz.znix.xftl.ai.CombatTask(enemy.crewAI, room))
+        check(!fighter.currentAction.isIdle && fighter.room !== room) { "the crew member is not on its way to room ${room.id}" }
+        check(taken.room === room && taken.currentAction != AbstractCrew.Action.FIGHTING) { "the taken-over crew member left or fights" }
+        state.updateGameState(.05f)
+        check(enemy.crewAI.taskOf(fighter) is xyz.znix.xftl.ai.CombatTask) {
+            "a fight in room ${room.id} ended although a mind-controlled crew member stands there"
+        }
+        return "a mind-controlled crew member keeps a fight in its room going, fighting or not"
     }
 }

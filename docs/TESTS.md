@@ -267,7 +267,8 @@ garbage and truncated files, the found files, the setup they ask for, the new sa
 mods the save played through Continue and saved in the engine's format, then for every file of the session's game
 (`nativeImportProbe`) the converted run and the run saved from it and loaded again against what the original saved: ship,
 name, hull, fuel, missiles, drone parts, scrap, sector, beacons, crew (name, race, health), systems, weapons, drones,
-augments, cargo, and the profile's layouts, achievements, scores and games.
+augments, cargo, and the profile's layouts, achievements, scores and games; for a save left mid-fight (`van-a1`, `van-cx`)
+also each weapon's charge of both ships (`charges`, `enemyCharges`, the fraction of its charge time, within 0.01).
 
 The files are real saves of the original (never in Git): vanilla from `tools/native-capture/` sessions, Hyperspace and
 Multiverse from `tools/hs-oracle/` sessions that play a few beacons and Save and Quit. `expect.json` comes from an independent
@@ -436,7 +437,11 @@ change of the sound volume reaches every playing sound, also those after an ende
 voice starts again once one is free. `web/self-tests.mjs`' audio clock (and `tests/audio.mjs`) keeps a
 missing sound or music file's source AL_INITIAL, and asks again for a sound whose load failed once when it is next
 played (not for a missing one); an effect that has waited two seconds for an audio context that does not resume gives
-its voice back (a loop and the music wait on). Android's mixer: `AudioMixerTest` ([ANDROID.md](ANDROID.md#testing)). Sound trace pairs: `BrowserEngine.soundTrace` logs what our engine plays,
+its voice back (a loop and the music wait on). `tests/audio.mjs`' music memory check plays six sectors' cross-fades
+and combat toggles with 5-minute tracks: at most 192 MiB held (as Android counts it), each version decoded once per
+sector, music dropped before an effect, a playing, fading or paused track kept, a dropped track decoded again and
+playing, every decoded channel handed to script (so Chromium can collect a dropped one), and a burst of track changes
+decoding only its last track (fails on the unlimited audio.mjs: 202 MiB held). Android's mixer: `AudioMixerTest` ([ANDROID.md](ANDROID.md#testing)). Sound trace pairs: `BrowserEngine.soundTrace` logs what our engine plays,
 `tools/native-capture/sessions/ps-u4-sound.json` runs the same sessions in `FTLGame-sound.exe` (`sweep/vanilla/run.sh`,
 `EXE=sound`) and `tools/ui-capture.sh`, and `tools/native-capture/sound-pair.py <native.bin> <ui-capture log> --session ID
 --sync KIND:NAME` pairs them (`--hs 1` reads the Hyperspace oracle's ring of `tools/hs-oracle/make-sound-exe.py`, session

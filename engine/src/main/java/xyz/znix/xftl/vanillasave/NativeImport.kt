@@ -83,6 +83,11 @@ object NativeImport {
 
         override fun isShipBlueprint(name: String) = content.blueprintManager.getOrNull(name) is xyz.znix.xftl.LazyShipBlueprint
 
+        override fun droneType(name: String) = (content.blueprintManager.getOrNull(name) as? xyz.znix.xftl.weapons.DroneBlueprint)?.type?.name
+
+        override fun artilleryCount(blueprint: String) =
+            content.blueprintManager.getShip(blueprint).sourceElement.getChild("systemList")?.getChildren("artillery")?.size ?: 0
+
         override fun hasCrystalTimers(race: String) = race == "crystal" && !(HS.active && xyz.znix.xftl.hs.crew.CustomCrewManager.isRace(race))
 
         override fun customSystemCount() = if (HS.active) maxOf(0, xyz.znix.xftl.hs.systems.HsSystems.lastSystemId() - xyz.znix.xftl.hs.systems.HsSystems.SYS_CUSTOM_FIRST + 1) else 0

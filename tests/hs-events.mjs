@@ -7,12 +7,16 @@ import {hangMs} from './lib/hang.mjs';
 //   HS_EVENTS_OUT=/out/x.jsonl node /app/tests/hs-events.mjs
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdir,readFile,writeFile} from 'node:fs/promises';
+import {access,mkdir,readFile,rename,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {chromium} from 'playwright';
 import {withOnboarding} from './lib/onboarding.mjs';
 import {expectedConsoleError,launchGame} from './lib/launch.mjs';
 
+// A retry writes to the same HS_EVENTS_OUT: the earlier attempt's output and console move aside first (<out>.attempt-N).
+if(process.env.HS_EVENTS_OUT){const o=process.env.HS_EVENTS_OUT,there=f=>access(f).then(()=>true,()=>false);
+ if(await there(o)||await there(o+'.console.txt')){let n=1;while(await there(o+'.attempt-'+n)||await there(o+'.attempt-'+n+'.console.txt'))n++;
+  for(const[a,b]of[[o,o+'.attempt-'+n],[o+'.console.txt',o+'.attempt-'+n+'.console.txt']])if(await there(a))await rename(a,b);}}
 const port=8084,origin='http://localhost:'+port;
 const data=join(process.cwd(),'.build/fixture-hs-events');await mkdir(data,{recursive:true});
 const env={...process.env,ASPNETCORE_URLS:'http://127.0.0.1:'+port,ASPNETCORE_ENVIRONMENT:'Development',FTL_DATA_DIR:data,FTL_ASSETS_DIR:'/assets',PUBLIC_ORIGIN:origin,TRUSTED_PROXIES:'127.0.0.1',FTL_TEST_RUNNER_ENABLED:'false',FTL_REGISTER_LIMIT:'200',FTL_LOGIN_LIMIT:'500',FTL_PUBLIC_LIMIT:'5000'};
@@ -44,6 +48,16 @@ try{
  const result=JSON.parse(out.trim().split('\n').pop());
  console.log(result.result+' boxes='+result.boxes+' in '+(Date.now()-t1)+' ms');
  assert.ok(result.result.startsWith('PASS'),result.result);
+ // The probe fixes the simulation's random start: from two other page RNG states (window.diagnosticSeed) the fights,
+ // and so every line, come out the same (fix-evf3: without it the pirate fight's damage, and rarely a game over,
+ // followed the page's clock).
+ for(const rng of ['7','4']){
+  const again=await page.evaluate(({s,rng})=>{window.diagnosticSeed(rng);return window.hsEventsProbe(s);},{s:script,rng});
+  if(again!==out){const a=out.split('\n'),b=again.split('\n'),i=a.findIndex((l,j)=>l!==b[j]);await writeFile(process.env.HS_EVENTS_OUT+'.rng-'+rng,again);
+   const x=String(a[i]),y=String(b[i]);let c=0;while(c<x.length&&x[c]===y[c])c++;
+   assert.fail('probe output follows the page RNG (diagnosticSeed '+rng+'): first difference at line '+(i+1)+' ('+x.slice(0,40)+'...): ...'+x.slice(Math.max(0,c-60),c+40)+' | ...'+y.slice(Math.max(0,c-60),c+40));}
+ }
+ console.log('PASS same output from page RNG states 7 and 4');
  assert.deepEqual(errors,[],'browser errors');
 }catch(e){failed=true;console.log('FAILED',e.stack||e);console.log('errors',JSON.stringify(errors.slice(0,40),null,1));console.log('logs',logs.slice(0,40).join('\n'));
  await page.screenshot({path:join(data,'failure.png')}).catch(()=>{});}

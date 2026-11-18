@@ -327,7 +327,7 @@ object HsRewards {
             return
         }
         // The original GenerateReward with the custom type still the local one (HS resets it after this call).
-        val explicit = created.weapon != null || created.drone != null || created.augment != null
+        val explicit = LootDropGenerator.blocksRandomItem(created.weapon) || LootDropGenerator.blocksRandomItem(created.drone)
         val r = LootDropGenerator.generateRewardsAtLevel(game, NativeRandom, level.coerceIn(0, 2), type, worldLevel, explicit)
         if (r.fuel != 0) created.fuel = r.fuel
         if (r.missiles != 0) created.missiles = r.missiles

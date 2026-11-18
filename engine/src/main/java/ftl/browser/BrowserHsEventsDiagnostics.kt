@@ -25,9 +25,14 @@ object BrowserHsEventsDiagnostics {
     private const val DT = 0.05f
 
     /**
-     * [script]: tab-separated lines; the first is `seed<TAB>ship<TAB>difficulty (0-2)[<TAB>autoplay]` (autoplay: the
-     * oracle autoplay's interventions run while waiting), then `pick<TAB>EVENT<TAB>n`,
-     * `jump<TAB>x,y`, `sector`, `wait<TAB>seconds` or `lua<TAB>code`.
+     * [script]: tab-separated lines; the first is `seed<TAB>ship<TAB>difficulty (0-2)[<TAB>autoplay][<TAB>rng=N]`
+     * (autoplay: the oracle autoplay's interventions run while waiting; rng: the simulation's random start, default the
+     * run seed), then `pick<TAB>EVENT<TAB>n`, `jump<TAB>x,y`, `sector`, `wait<TAB>seconds` or `lua<TAB>code`.
+     *
+     * The run seed fixes the map and the events, not the fights: combat draws from the simulation stream
+     * ([BrowserRandom]), which a page starts from its clock. Without a fixed start the same script played a fight
+     * differently on every run (the original does too: its two oracle recordings of mv-seed-12345 take different hull
+     * damage in the same fight), and a rare outcome (the crew lost while the script waits for the FTL drive) failed it.
      */
     fun run(main: MainGame, container: GameContainer, graphics: Graphics, scriptText: String): String {
         if (!HS.active) return "SKIP hs-events: Hyperspace is not active"
@@ -73,9 +78,14 @@ object BrowserHsEventsDiagnostics {
                 lastBox = name
                 madeSince.add(name)
             }
+            // A fixed start for the simulation's random streams (as the twin probe's `rng`): the same script plays the
+            // same on every run, whatever the page drew before.
+            val rngSeed = lines[0].drop(3).firstOrNull { it.startsWith("rng=") }?.substring(4)?.toLong() ?: lines[0][0].toLong()
+            BrowserRandom.restore((rngSeed xor 0x5DEECE66DL).toString())
+            xyz.znix.xftl.hs.lua.LuaAdaptersWP7Ui.timerRandom.setSeed(rngSeed)
             main.startDiagnosticGame(lines[0][1], Difficulty.values()[lines[0][2].toInt()])
             idle = 0
-            autoplay = lines[0].getOrNull(3) == "autoplay"
+            autoplay = "autoplay" in lines[0].drop(3)
             line(map(main.currentState as InGameState, Obj().put("k", "map")))
             for (step in lines.drop(1)) {
                 val game = main.currentState as InGameState
@@ -114,7 +124,7 @@ object BrowserHsEventsDiagnostics {
                         while (game.shipUI.isWindowOpen || !game.player.isFtlReady || !game.player.canChargeFTL || game.isPlayerJumping) {
                             frame(main, container)
                             intervene(game, ::line)
-                            if (++waited > 6000) return finish(out, "FAILED jump $x,$y: window=${game.shipUI.isWindowOpen} ftl=${game.player.isFtlReady}", boxes)
+                            if (++waited > 6000) return finish(out, "FAILED jump $x,$y: window=${game.shipUI.isWindowOpen} ftl=${game.player.isFtlReady} ${stuck(game)}", boxes)
                         }
                         val beacon = game.currentBeacon.sector.beacons.firstOrNull { it.pos.x == x && it.pos.y == y }
                             ?: return finish(out, "FAILED jump: no beacon at $x,$y", boxes)
@@ -138,7 +148,7 @@ object BrowserHsEventsDiagnostics {
                         while (game.shipUI.isWindowOpen || !game.player.isFtlReady || !game.player.canChargeFTL || game.isPlayerJumping) {
                             frame(main, container)
                             intervene(game, ::line)
-                            if (++waited > 6000) return finish(out, "FAILED sector: window=${game.shipUI.isWindowOpen} ftl=${game.player.isFtlReady}", boxes)
+                            if (++waited > 6000) return finish(out, "FAILED sector: window=${game.shipUI.isWindowOpen} ftl=${game.player.isFtlReady} ${stuck(game)}", boxes)
                         }
                         val from = game.currentBeacon.sector
                         // The oracle: the star map (StarMap::Open), NEXT SECTOR, then the upper of the next sectors.
@@ -342,6 +352,15 @@ object BrowserHsEventsDiagnostics {
             Obj().put("at", "${b.pos.x},${b.pos.y}").put("ev", b.createdEvent.template.hsName ?: "")
         })
         return o
+    }
+
+    /** Why a wait for the FTL drive did not end: the open window, the game over, the crew aboard and the hull. */
+    private fun stuck(game: InGameState): String {
+        val p = game.player
+        val own = p.crew.count { it is xyz.znix.xftl.crew.LivingCrew && it.ownerShip === p && it.health > 0f }
+        val boarders = p.crew.count { it is xyz.znix.xftl.crew.LivingCrew && it.ownerShip !== p && it.health > 0f }
+        return "open=${game.shipUI.hsDiagnosticWindow?.javaClass?.simpleName} gameOver=${game.shipUI.isGameOverOpen} " +
+            "crew=$own boarders=$boarders hull=${p.health} enemyHull=${game.enemy?.health}"
     }
 
     private fun finish(out: StringBuilder, result: String, boxes: Int): String =

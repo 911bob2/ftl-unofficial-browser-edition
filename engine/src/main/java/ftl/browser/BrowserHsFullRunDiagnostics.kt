@@ -116,7 +116,7 @@ object BrowserHsFullRunDiagnostics {
             }
         }
         val liveImpl = object : NativeRandom.Live {
-            override fun onSeed(seed: Int) { lastSeed = seed; seededInInterval = true; drawsSinceSeed = 0; liveSince = 0; firstLiveAt = -1; liveSites.clear() }
+            override fun onSeed(seed: Int) { if (allSites) drawRuns.add("SEED:$seed" to 0); lastSeed = seed; seededInInterval = true; drawsSinceSeed = 0; liveSince = 0; firstLiveAt = -1; liveSites.clear() }
             override fun onDraw(live: Boolean) {
                 drawsSinceSeed++
                 if (allSites) {
@@ -446,7 +446,7 @@ object BrowserHsFullRunDiagnostics {
                     .put("rngSeed", classSeed ?: "none").put("rngN", classN).put("rngLive", classLive).put("rngLiveAny", classAny)
                     .put("rngFirstLive", classFirst).put("rngSites", classSites).put("oracleIdx", oracleBox?.index ?: -1)
                     .put("oracleSeed", oracleBox?.reseed ?: "unknown").put("liveSeed", liveSeed)
-                    .also { o -> if (allSites && rngClass.startsWith("gap")) o.put("rngRuns", drawRuns.map { listOf(it.second, it.first) }) })
+                    .also { o -> if (allSites && (rngClass.startsWith("gap") || opts["rngallbox"]?.toInt() == boxes - 1)) o.put("rngRuns", drawRuns.map { listOf(it.second, it.first) }) })
                 drawRuns.clear()
                 if (classLive > 0 || liveSeed) { prevLive = true; liveBeacon = curBeacon }
                 liveSince = 0; firstLiveAt = -1; liveSites.clear(); seededInInterval = false; drawsSinceSeed = 0; liveAny = 0

@@ -46,4 +46,29 @@ class SnapshotsTest {
         assertEquals("Mine", Snapshots.restored(local.copy(nameDirty = true), cloud, null, null).name, "a rename not yet synced stays")
         assertEquals(7, Snapshots.restored(null, cloud, null, null).base)
     }
+
+    @Test
+    fun aSnapshotDownloadsAsTheWebsitesSaveFile() {
+        val run = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<xftlSaveGame difficulty=\"NORMAL\"><playerShip displayName=\"Kestrel\" shipId=\"PLAYER_SHIP_HARD\" health=\"20\"><resources SCRAP=\"55\"/></playerShip><gameMap/><currentSector/><visitedSectors><sectorInfo/></visitedSectors></xftlSaveGame>"
+        val payload = obj("name" to "Kestrel run", "setup" to Setup.VANILLA.toJson(), "meta" to obj("engineBuild" to "b1",
+            "playedOn" to obj("platform" to "web", "device" to "Laptop", "deviceId" to "d-1", "at" to "2026-11-04T10:00:00Z")),
+            "run" to run, "profile" to null, "revision" to 7)
+        val text = Snapshots.file(payload, "2026-11-18T12:00:00Z")!!
+        val o = Json.parse(text).objOrNull()!!
+        assertEquals(3, o["schema"].long()?.toInt())
+        assertEquals("ftl-save", o["kind"].str())
+        assertEquals("Kestrel run", o["name"].str())
+        assertEquals(run, o["run"].str())
+        assertEquals("2026-11-18T12:00:00Z", o["savedUtc"].str())
+        assertEquals("b1", o["meta"].objOrNull()?.get("engineBuild").str())
+        // The file goes anywhere, so the device that played it stays out, as for an exported save.
+        assertNull(o["meta"].objOrNull()?.get("playedOn").objOrNull())
+        // It imports back as a save.
+        val parsed = SaveFile.parse(text)
+        assertEquals("Kestrel run", parsed.name)
+        assertEquals(run, parsed.run)
+        assertEquals("ftl-snapshot-7.json", Snapshots.fileName(7))
+        assertNull(Snapshots.file(Json.parse("""{"error":"x"}"""), "t"))
+        assertNull(Snapshots.file(null, "t"))
+    }
 }

@@ -470,7 +470,7 @@ class Event(
         if (autoRewards != null) {
             val sector = game.currentBeacon.sector.sectorNumber
             val rewards = LootDropGenerator.generateRewards(
-                game, rand, autoRewards.second, autoRewards.first, sector, game.difficulty, blueprintRewards.isNotEmpty()
+                game, rand, autoRewards.second, autoRewards.first, sector, game.difficulty, resourcesGained.items.any(LootDropGenerator::blocksRandomItem)
             )
             resourcesGained += rewards
         }

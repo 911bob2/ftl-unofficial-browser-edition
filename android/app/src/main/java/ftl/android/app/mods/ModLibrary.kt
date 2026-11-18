@@ -75,26 +75,44 @@ class ModLibrary(root: File, assets: AssetManager) {
         return mods.first { it.sha256 == hit.sha256 }
     }
 
-    class Mod(val file: ModFile, val title: String?, val hyperspace: Boolean, val source: String) {
+    /** [version] is the archive's metadata version (null: an entry stored before it was kept, read again on [list]). */
+    class Mod(val file: ModFile, val title: String?, val hyperspace: Boolean, val source: String, val version: String? = null) {
         val sha256 get() = file.sha256
         /** The catalogue's name for a Verified file, else the title in the archive's metadata. */
         val label get() = if (file.verified) file.name else title ?: file.name
+        /** The name and version shown for this file, as the website's mod list does (title, then version). */
+        val heading get() = heading(file, title, version)
 
-        fun toJson(): Json.Obj = obj("file" to file.toJson(), "title" to title, "hyperspace" to hyperspace, "source" to source)
+        fun toJson(): Json.Obj = obj("file" to file.toJson(), "title" to title, "hyperspace" to hyperspace, "source" to source, "version" to version)
 
         companion object {
             fun fromJson(j: Json?): Mod? {
                 val o = j.objOrNull() ?: return null
-                return Mod(ModFile.fromJson(o["file"]), o["title"].str(), o["hyperspace"].bool() ?: false, o["source"].str() ?: "local")
+                return Mod(ModFile.fromJson(o["file"]), o["title"].str(), o["hyperspace"].bool() ?: false, o["source"].str() ?: "local", o["version"].str())
+            }
+
+            /** A Verified file: the catalogue's name and version; a Custom one: its metadata title and version (web/mods/library.mjs). */
+            fun heading(file: ModFile, title: String?, version: String?): String {
+                val name = if (file.verified) file.name else title ?: file.name
+                val v = if (file.verified) file.version else version.orEmpty()
+                return if (v.isEmpty()) name else "$name $v"
             }
         }
     }
 
     class ModError(message: String) : Exception(message)
 
+    private val versions = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     @Synchronized
     fun list(): List<Mod> = runCatching { Json.parse(indexFile.readText()).arr().mapNotNull { Mod.fromJson(it) } }.getOrDefault(emptyList())
         .filter { file(it.sha256).exists() }
+        .map { m -> if (m.version != null || m.file.verified) m else Mod(m.file, m.title, m.hyperspace, m.source, metadataVersion(m.sha256)) }
+
+    /** An archive's metadata version, for entries stored before the version was kept ("" when it has none). */
+    private fun metadataVersion(sha256: String): String = versions.getOrPut(sha256) {
+        runCatching { Zip.open(file(sha256)).use { z -> z.get("mod-appendix/metadata.xml")?.let { parseMetadata(z.read(it)).version } } }.getOrNull().orEmpty()
+    }
 
     fun get(sha256: String): Mod? = list().firstOrNull { it.sha256 == sha256 }
 
@@ -137,12 +155,13 @@ class ModLibrary(root: File, assets: AssetManager) {
 
     /**
      * A catalogue file from its official MEGA link, in 16 MiB ranges decrypted on the device. An interrupted download
-     * resumes after its last whole range; the result must match the catalogue's SHA-256.
+     * resumes after its last whole range; the result must match the catalogue's SHA-256. [onProof] is called when
+     * mega.nz asks for a proof of work (HTTP 402) and this device solves it, as MEGA's own clients do (docs/MODS.md).
      */
-    fun downloadMega(entry: CatalogueFile, progress: (Long, Long) -> Unit): Mod {
+    fun downloadMega(entry: CatalogueFile, progress: (Long, Long) -> Unit, onProof: () -> Unit = {}): Mod {
         val link = megaLinks[entry.id] ?: throw ModError("${entry.title} has no MEGA link.")
         try {
-            var info = Mega.fileInfo(link)
+            var info = Mega.fileInfo(link, onProof = { onProof() })
             if (info.size != entry.size) throw ModError("The file behind the MEGA link changed (${info.size shr 20} MiB instead of " +
                 "${entry.size shr 20} MiB); it is not the pinned ${entry.title} ${entry.version}.")
             val part = File(dir, "${entry.sha256}.mega.part")
@@ -166,7 +185,7 @@ class ModLibrary(root: File, assets: AssetManager) {
                         Mega.range(info.url, done, end)
                     } catch (e: MegaError) {
                         if (e.kind != "expired") throw e
-                        info = Mega.fileInfo(link)
+                        info = Mega.fileInfo(link, onProof = { onProof() })
                         Mega.range(info.url, done, end)
                     }
                     val plain = Mega.decrypt(info.keys, encrypted, done)
@@ -220,7 +239,7 @@ class ModLibrary(root: File, assets: AssetManager) {
             val target = file(sha)
             target.delete()
             if (!tmp.renameTo(target)) throw ModError("The mod file could not be stored.")
-            return Mod(classified, meta.first, meta.third, source).also { put(it) }
+            return Mod(classified, meta.first, meta.third, source, meta.second.orEmpty()).also { put(it) }
         } catch (e: ModError) {
             tmp.delete()
             throw e

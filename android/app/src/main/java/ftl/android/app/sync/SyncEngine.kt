@@ -148,8 +148,39 @@ class SyncEngine(context: Context, private val account: Account, private val sto
                 store.delete(id)
                 SyncDecision(ftl.saves.SyncStatus.DELETED, SyncAction.NONE)
             }
+            SyncAction.ASK_CONFLICT -> ownWrite(id, cloud?.revision) ?: d
             else -> d
         }
+    }
+
+    /**
+     * What the uploads of each save sent, over which base, until one is answered (the last few; web/sync.mjs `sent`). An answer lost after the
+     * server took the write (the app went away, the network dropped) leaves the account one revision ahead with this
+     * device's own copy: [Sync.ownWrite] tells that from a change made elsewhere, so it is never asked as a conflict.
+     * [notMine]: the account revision already found to be another device's (fetched once, not on every pass).
+     */
+    private class Sent(val base: Long, val run: String?, val profile: String?)
+    private val sent = java.util.concurrent.ConcurrentHashMap<String, List<Sent>>()
+    private val notMine = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * The account's newer copy is this device's own upload that lost its answer: the base moves on to it and what was
+     * written here since uploads (unless [send] is false); null when the copy is another device's. [known]: the account's
+     * revision when the caller has it (a list, a 409), to skip what cannot be this device's write.
+     */
+    private fun ownWrite(id: String, known: Long?, fetched: ftl.android.app.net.Api.SaveData? = null, send: Boolean = true): SyncDecision? {
+        val api = me ?: return null
+        val local = store.get(id) ?: return null
+        if (!local.dirty || local.overridden != null) return null
+        if (known != null && (known != local.base + 1 || notMine[id] == known)) return null
+        val (c, run, profile) = fetched ?: api.save(id)
+        val tried = sent[id].orEmpty().filter { it.base == local.base } + Sent(local.base, local.run, local.profile)
+        val mine = tried.firstOrNull { Sync.ownWrite(local, c, run, profile, it.run, it.profile) }
+        if (mine == null) { notMine[id] = c.revision; return null }
+        sent.remove(id)
+        val after = store.update(id) { Sync.uploaded(it, mine.run, mine.profile, c.revision) }
+        if (after?.dirty != true) return SyncDecision(ftl.saves.SyncStatus.SYNCED, SyncAction.NONE)
+        return if (send) upload(after, c.revision, again = true) else SyncDecision(ftl.saves.SyncStatus.PENDING, SyncAction.UPLOAD)
     }
 
     private fun body(s: LocalSave) = obj("name" to s.name, "setup" to s.setup.toJson(), "meta" to s.meta.toJson(), "run" to s.run, "profile" to s.profile, "kind" to "auto")
@@ -158,10 +189,12 @@ class SyncEngine(context: Context, private val account: Account, private val sto
     @Volatile var playing: String? = null
 
     /** Uploads the device copy over cloud revision `revision`; records an override when the server reports one. */
-    private fun upload(local: LocalSave, revision: Long, retried: Boolean = false): SyncDecision {
+    private fun upload(local: LocalSave, revision: Long, retried: Boolean = false, again: Boolean = false): SyncDecision {
         val api = me ?: return Sync.decide(local, null, false)
         return try {
+            sent[local.id] = sent[local.id].orEmpty().takeLast(3) + Sent(revision, local.run, local.profile)
             val newRevision = api.putSave(local.id, revision, body(local))
+            sent.remove(local.id)
             store.update(local.id) { Sync.uploaded(it, local.run, local.profile, newRevision) }
             if (local.id in _state.value.refused) updateState { it.copy(refused = it.refused - local.id) }
             SyncDecision(ftl.saves.SyncStatus.SYNCED, SyncAction.NONE)
@@ -182,7 +215,9 @@ class SyncEngine(context: Context, private val account: Account, private val sto
                     store.update(local.id) { Sync.overridden(it, by, at ?: Instant.now().toString()) }
                     SyncDecision(ftl.saves.SyncStatus.OVERRIDDEN, SyncAction.NOTIFY_OVERRIDDEN)
                 }
-                "locked", "revision_conflict" -> SyncDecision(ftl.saves.SyncStatus.CONFLICT, SyncAction.ASK_CONFLICT)
+                "revision_conflict" -> (if (again) null else ownWrite(local.id, (e.body?.get("revision") as? Json.Num)?.value?.toLong()))
+                    ?: SyncDecision(ftl.saves.SyncStatus.CONFLICT, SyncAction.ASK_CONFLICT)
+                "locked" -> SyncDecision(ftl.saves.SyncStatus.CONFLICT, SyncAction.ASK_CONFLICT)
                 "deleted" -> SyncDecision(ftl.saves.SyncStatus.DELETED, if (local.dirty) SyncAction.ASK_DELETED else SyncAction.REMOVE_LOCAL)
                 else -> {
                     // saves_full, storage_full, bad_*: the save stays here, unsynced, and its row says why (web/sync.mjs).
@@ -266,6 +301,7 @@ class SyncEngine(context: Context, private val account: Account, private val sto
                 SyncAction.CREATE -> upload(local!!, 0)
                 // Clean here: nothing to lose, so it goes (the launcher says so).
                 SyncAction.REMOVE_LOCAL -> { store.delete(id); d }
+                SyncAction.ASK_CONFLICT -> cloud?.let { ownWrite(id, null, it, send = false) } ?: d
                 else -> d
             }
         } catch (e: IOException) {
@@ -425,6 +461,21 @@ class SyncEngine(context: Context, private val account: Account, private val sto
             if (e is ApiError) throw e
             throw Unavailable(SNAPSHOTS_OFFLINE)
         }
+    }
+
+    /**
+     * A snapshot as a save file's text (the website's Download: web/saves-ui.mjs snapshotBackup); [Unavailable]
+     * offline or signed out. The file is a copy: importing it adds a new save.
+     */
+    suspend fun snapshotFile(id: String, revision: Long, savedUtc: String): String {
+        val api = me ?: throw Unavailable(SNAPSHOTS_OFFLINE)
+        val payload = try {
+            api.snapshot(id, revision)
+        } catch (e: IOException) {
+            if (e is ApiError) throw e
+            throw Unavailable(SNAPSHOTS_OFFLINE)
+        }
+        return ftl.saves.Snapshots.file(payload, savedUtc) ?: throw IOException("That recovery snapshot cannot be read.")
     }
 
     /**

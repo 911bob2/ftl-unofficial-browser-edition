@@ -70,6 +70,12 @@ public final class SaveCoreJs {
         return write(Sync.INSTANCE.uploaded(local(localJson), uploadedRun, uploadedProfile, (long) revision).toJson(true));
     }
 
+    /** Whether the account's newer copy is this device's own upload whose answer never arrived (Sync.ownWrite). */
+    @JSExport
+    public static boolean savecoreOwnWrite(String localJson, String cloudJson, String cloudRun, String cloudProfile, String sentRun, String sentProfile) {
+        return Sync.INSTANCE.ownWrite(local(localJson), cloud(cloudJson), cloudRun, cloudProfile, sentRun, sentProfile);
+    }
+
     @JSExport
     public static String savecoreFetched(String localJson, String cloudJson, String run, String profile) {
         return write(Sync.INSTANCE.fetched(local(localJson), cloud(cloudJson), run, profile).toJson(true));

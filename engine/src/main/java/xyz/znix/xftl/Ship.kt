@@ -1945,6 +1945,26 @@ class Ship(
         drones?.powerManager?.afterSaveLoad()
     }
 
+    private var inStatusLoop = false
+
+    /**
+     * WorldManager::CheckStatusEffects (1.6.9 0x5eea10, 1.6.14 0x613a10) ends with ShipManager::OnLoop (through
+     * 0x4a2830 / 0x4ada30) on every enemy ship and then the player's, after it applied the event's statuses; it runs
+     * for every event CreateLocation, UpdateLocation and LoadGame load, with or without statuses. So the crew pass sees
+     * a new cap at once, while the box is open and the game paused (native 1.6.14 capture ps-fu1-van fu1-eng f-event:
+     * evasion 10 % under an engine cap with the box open). Hyperspace runs it at SpeedFactor 0 (CustomEvents.cpp 7101
+     * "Fixes time advancement during events"); here it is a zero-time update in every mode (vanilla's one frame of time
+     * is left out). The crew AI is ShipAI's, not ShipManager's, so it does not run.
+     */
+    fun statusLoop() {
+        inStatusLoop = true
+        try {
+            update(0f)
+        } finally {
+            inStatusLoop = false
+        }
+    }
+
     fun update(dt: Float) {
         updateThrusters(dt)
         if (xyz.znix.xftl.hs.HS.active) xyz.znix.xftl.systems.Teleporter.hsRecallOnLoop(this) // HS TELEPORT_RECALL
@@ -2035,8 +2055,11 @@ class Ship(
 
         averageOxygen = rooms.map { it.oxygen }.average().toFloat()
 
-        crewAI.update()
-        intruderAI.update()
+        // CrewAI::OnLoop belongs to ShipAI::OnLoop, not ShipManager::OnLoop: the status pass ([statusLoop]) skips it.
+        if (!inStatusLoop) {
+            crewAI.update()
+            intruderAI.update()
+        }
 
         checkSkills()
 

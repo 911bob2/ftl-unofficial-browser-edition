@@ -65,7 +65,7 @@ class MegaTest {
     fun apiAndStorage() {
         val cipher = bytes("cipher")
         val requests = mutableListOf<Pair<String, String?>>()
-        val api = { answer: () -> Mega.Response -> Mega.Http { url, post -> requests += url to post; answer() } }
+        val api = { answer: () -> Mega.Response -> Mega.Http { url, post, _ -> requests += url to post; answer() } }
         val info = Mega.fileInfo(s("link"), api { json("""[{"s":${cipher.size},"at":"${s("attributes")}","g":"$storage"}]""") })
         assertEquals(cipher.size.toLong(), info.size)
         assertEquals(s("name"), info.name)
@@ -74,7 +74,7 @@ class MegaTest {
         assertEquals(true, url.startsWith(Mega.API + "?id="))
         assertEquals("""[{"a":"g","g":1,"ssl":2,"p":"${s("handle")}"}]""", post)
 
-        val served = Mega.Http { u, _ ->
+        val served = Mega.Http { u, _, _ ->
             val (a, b) = Regex("/(\\d+)-(\\d+)$").find(u)!!.destructured
             Mega.Response(200, cipher.copyOfRange(a.toInt(), b.toInt() + 1))
         }
@@ -95,6 +95,45 @@ class MegaTest {
 
         for ((response, kind) in listOf(Mega.Response(509, ByteArray(0)) to "quota", Mega.Response(404, ByteArray(0)) to "expired",
             Mega.Response(200, ByteArray(3)) to "network"))
-            assertEquals(kind, assertFailsWith<MegaError> { Mega.range(storage, 0, 15, { _, _ -> response }) }.kind)
+            assertEquals(kind, assertFailsWith<MegaError> { Mega.range(storage, 0, 15, { _, _, _ -> response }) }.kind)
+    }
+
+    /**
+     * MEGA's proof of work, as its web client and SDK answer it (tests/mods-mega.mjs has the same vector): a fixed 48-byte
+     * token at easiness 160 whose smallest answer (nonce 271, "AAABDw") an independent hashlib run of the SDK's
+     * algorithm found; the request is sent again with "X-Hashcash: 1:<token>:<answer>"; a fourth challenge stops.
+     */
+    @Test
+    fun proofOfWork() {
+        val token = "CzBVep_E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW"
+        assertEquals(listOf(8L, 1016L, 1024L, 74752L, 8519680L, 16777216L, 127L shl 24), listOf(0, 63, 64, 100, 160, 192, 255).map { Mega.hashcashThreshold(it) })
+        for (bad in listOf(null, "", "2:160:1:$token", "1:256:1:$token", "1:-1:1:$token", "1:160:1:" + token.drop(1), "1:160:$token", "1:1:1:x"))
+            assertNull(Mega.hashcashChallenge(bad), bad)
+        val challenge = Mega.hashcashChallenge(" 1:160:1731410499:$token\n")!!
+        assertEquals(160, challenge.easiness)
+        assertEquals("AAABDw", Mega.solveHashcash(challenge, threads = 1))
+        assertEquals(true, Mega.verifyHashcash(challenge, "AAABDw"))
+        assertEquals(false, Mega.verifyHashcash(challenge, "AAABDg"))
+        val four = Mega.solveHashcash(challenge, threads = 4)
+        assertEquals(true, Mega.verifyHashcash(challenge, four), four)
+        assertEquals("busy", assertFailsWith<MegaError> { Mega.solveHashcash(Mega.hashcashChallenge("1:0:1:$token")!!, threads = 1, budgetMs = 300) }.kind)
+
+        val sent = mutableListOf<Pair<String, String?>>()
+        val proofs = mutableListOf<Int>()
+        val challenged = Mega.Http { url, _, headers ->
+            sent += url to headers["X-Hashcash"]
+            val cash = headers["X-Hashcash"] ?: return@Http Mega.Response(402, ByteArray(0)) { if (it == "X-Hashcash") "1:160:1731410499:$token" else null }
+            val (v, t, answer) = cash.split(':')
+            assertEquals("1", v); assertEquals(token, t); assertEquals(true, Mega.verifyHashcash(challenge, answer))
+            json("""[{"s":5,"g":"$storage"}]""")
+        }
+        assertEquals(5L, Mega.fileInfo(s("link"), challenged, onProof = { proofs += it }).size)
+        assertEquals(2, sent.size)
+        assertEquals(sent[0].first, sent[1].first, "the same request again")
+        assertEquals(listOf(160), proofs)
+        var asked = 0
+        val always = Mega.Http { _, _, _ -> asked++; Mega.Response(402, ByteArray(0)) { if (it == "X-Hashcash") "1:160:1:$token" else null } }
+        assertEquals("busy", assertFailsWith<MegaError> { Mega.fileInfo(s("link"), always, attempts = 1) }.kind)
+        assertEquals(4, asked, "three answers, then it stops")
     }
 }

@@ -141,7 +141,8 @@ daisyUI colours and spacing from `web/styles.css`). Steps, each one screen:
 3. **Saves**: the one list of [SAVES.md](SAVES.md) with sync status, locks, New save, Advanced. **Import from FTL** (on the
    empty list and in New save) takes the files of FTL on a computer, copied to the device, through the system's file picker
    ([SAVES.md](SAVES.md#saves-from-the-original-game)). Each save's ⋯ menu has **Recovery snapshots** when the save is in the
-   account: the last 10 versions (`GET /api/saves/{id}/snapshots`), each but the current one with Restore, as on the website.
+   account: the last 10 versions (`GET /api/saves/{id}/snapshots`), each but the current one with Restore and every one with
+   Download (`GET …/snapshots/{rev}` written as a save file `ftl-snapshot-<rev>.json`, which imports as a new save), as on the website.
    Restore takes the lock (never from another device: it names the device instead), posts
    `/snapshots/{rev}/restore` with `If-Match`, replaces this device's copy with the result (unsynced progress too, after a
    warning) and gives the lock back. Offline or signed out the dialog says the snapshots are in the account.
@@ -152,10 +153,12 @@ daisyUI colours and spacing from `web/styles.css`). Steps, each one screen:
    (Delete anyway). A save the account refused (`saves_full`, `storage_full`, a bad run) says "Not synced: <reason>".
 4. **Mods**: catalogue files (server or MEGA, pinned) and any local `.ftl`/`.zip` (badged Verified or Custom). A set that uses
    Hyperspace without Hyperspace.ftl gets a hint in the picker and a warning on Play, Start and New save's Create
-   ([MODS.md](MODS.md#hyperspace-mod-without-hyperspace)).
+   ([MODS.md](MODS.md#hyperspace-mod-without-hyperspace)). A row names a Verified file by the catalogue's name and
+   version, a Custom one by its `mod-appendix/metadata.xml` title and version, as the website's list does.
    Back returns to the saves; a file being added carries on, its progress shown on the saves list and again on coming back.
    MEGA uses our own reader (`android/mods/.../Mega.kt`, the Kotlin twin of `web/mods/mega.mjs`): 16 MiB ranges
-   decrypted on the device, resumable after the last whole range, accepted only when the catalogue's SHA-256 matches.
+   decrypted on the device, resumable after the last whole range, accepted only when the catalogue's SHA-256 matches. It solves
+   MEGA's proof of work (HTTP 402) as the website does ([MODS.md](MODS.md)), on up to 4 threads.
 
 The launcher opens in the device's orientation (a phone held upright or with rotation locked: vertical) and turns with
 it; dialogs scroll inside what the bars and keyboard leave, with their buttons always on screen.

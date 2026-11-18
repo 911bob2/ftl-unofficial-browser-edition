@@ -35,6 +35,11 @@ class Translator {
 
     constructor(df: Datafile, lang: String) {
         this.df = df
+        loadEnglish(df)
+        setLanguage(lang)
+    }
+
+    private fun loadEnglish(df: Datafile) {
         fun load(name: String) = parseFile(name, df, english, englishUntrimmed)
 
         load("data/text_achievements.xml")
@@ -48,7 +53,18 @@ class Translator {
         // Put a when block here if/when our strings are translated.
         parseEmbedded("assets/lang/en.xml", english, englishUntrimmed)
         untrimmed.putAll(englishUntrimmed)
-        setLanguage(lang)
+    }
+
+    /**
+     * ResourceControl::LoadText (the console's LOADTEXT; 1.6.14 0x5c5ba0): TextLibrary::Clear, then every text file read
+     * again. The current language stays (TextLibrary::currentLanguage is not cleared); its texts are read on first use.
+     */
+    fun reload() {
+        val df = df ?: return
+        english.clear(); englishUntrimmed.clear(); untrimmed.clear()
+        dictionaries.clear(); dictionariesUntrimmed.clear()
+        loadEnglish(df)
+        setLanguage(language)
     }
 
     /**

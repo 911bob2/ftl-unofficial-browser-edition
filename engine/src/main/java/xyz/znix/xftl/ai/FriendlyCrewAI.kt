@@ -71,6 +71,14 @@ class FriendlyCrewAI(private val ship: Ship) {
     private var pendingBreachOrder: List<Pair<Int, Int>>? = null
 
     private var assignments = HashMap<AbstractCrew, AITask>()
+
+    /** The task [crew] holds (parity checks). */
+    internal fun taskOf(crew: AbstractCrew): AITask? = assignments[crew]
+
+    /** Hands [crew] [task] as if an earlier update had (parity checks). */
+    internal fun debugAssign(crew: AbstractCrew, task: AITask) {
+        assignments[crew] = task
+    }
     private var newAssignments = HashMap<AbstractCrew, AITask>()
 
     /**
@@ -280,6 +288,18 @@ class FriendlyCrewAI(private val ship: Ship) {
             // Tasks can automatically reassign their crew, usually back to
             // idle. This matches the CrewAI::UpdateCrewMember logic.
             var task = assignments[crew]?.nextTask(crew)
+
+            // CrewAI::UpdateCrewMember (1.6.9 0x603410, before the busy test): a fight (task 7) turns idle at once,
+            // walking or not, when ShipManager crewCounts[1][currentSlot.roomId] (the room it is walking to) is 0.
+            // ShipManager::UpdateCrewmembers (0x49ee10) counts every crew member standing in a room that is not dead
+            // and not in its death animation by GetIntruder (0x46c3e0: aboard another ship XOR mind controlled), so a
+            // mind-controlled crew member counts whether it fights or not - unlike the problem list's CombatTasks.
+            if (task is CombatTask) {
+                val dest = crew.pathingTarget?.room ?: crew.room
+                val intruders = dest.crew.count { it.mode == AbstractCrew.SlotType.INTRUDER && it.health > 0f &&
+                    it.currentAction != AbstractCrew.Action.DYING }
+                if (intruders == 0) task = null
+            }
 
             // CrewAI::UpdateCrewMember (1.6.14 0x627df0): a crew member holding the teleporting task, walking or not,
             // drops it (idle where it stands) while more crew hold it than CrewAI +0x5c asks for, counting the crew

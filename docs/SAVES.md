@@ -63,6 +63,13 @@ The run and the profile are one unit under one revision and one lock: either one
 conflict or Override lock keeps **one whole copy**, so the discarded device also loses the unlocks it earned since its last
 sync (the discarded cloud version stays a recovery snapshot). Nothing merges.
 
+An upload the account took whose answer never arrived (the tab hid or closed, the app went away, the network dropped)
+leaves the account one revision past the base with this device's own copy. That is not a conflict: when the account's
+copy is exactly one revision ahead, with the same mods and the run and profile this device sent (an upload of this page
+or app still unanswered, or the device copy when nothing was written since), the base moves on to it and anything
+written here since uploads (savecore `Sync.ownWrite`, `web/sync.mjs`, `SyncEngine.kt`). A copy another device wrote
+still asks. The account's copy is fetched once per revision for this check.
+
 A signed-out or local-only player has only `local` saves. **Enable cloud saves** uploads all of them (the migration
 path for today's local-only saves).
 
@@ -239,10 +246,14 @@ the prefix); Steam Cloud keeps the same files there.
   events, event buttons; the profile's Hyperspace unlocks, victories, achievements and meta variables likewise.
 - **The ship at the beacon** of a run without mods comes from its section in the save (hull, crew, weapons), hostile or
   neutral as saved; in a Hyperspace run it is rebuilt from the beacon's event.
+- **The fight in progress** of a run without mods: the battle tail after the map (`VanillaBattleTail`, the order of
+  WorldManager::SaveGame) is read to its end, and each weapon of both ships keeps its charge (ProjectileFactory
+  cooldown) and the player's weapons stay armed as saved. When shots or an asteroid field are in flight, the tail is
+  found as the one place from which the battle states, the ships' ints and BossShip's list end the file exactly; a
+  tail that does not read (a volley queued, an unknown drone) starts the fight uncharged as before.
 - **What does not carry over.** Dead crew waiting in the clonebay; the state of a Hyperspace run's ship in mid-fight;
-  the fight in progress of any run (the save's battle state and shots in flight, which the original's ImportBattleState
-  and LoadSpace restore): weapons start uncharged and the player's unpowered, so the enemy's first volley comes later
-  than in the original (capture `s2-cx`, `.build/hs/reports/ps-s2.md`); Hyperspace custom stores (the beacon keeps a store), background objects, temporal
+  of the fight in progress (any run's tail holds them): shots and asteroids in flight, the enemy AI's timers, drones in
+  flight, hacking and mind control timers, the weapons' charge in a Hyperspace run (its tail is not read); Hyperspace custom stores (the beacon keeps a store), background objects, temporal
   and custom system state, crew power cooldowns; crystal lockdown shards (the run is refused). Scores keep the player's score
   as the scrap that gives it. FTL Profile Editor (Vhati, GPL-2.0) was read for the format; no code from it is used.
 

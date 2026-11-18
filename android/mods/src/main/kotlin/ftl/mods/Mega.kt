@@ -30,13 +30,13 @@ object Mega {
     class Keys(val aes: ByteArray, val nonce: ByteArray)
     class Info(val handle: String, val size: Long, val url: String, val name: String?, val keys: Keys)
 
-    /** One HTTP exchange: a GET, or a POST of `post` as text/plain. Tests inject their own. */
+    /** One HTTP exchange: a GET, or a POST of `post` as text/plain, with extra request [headers]. Tests inject their own. */
     class Response(val status: Int, val body: ByteArray, val header: (String) -> String? = { null })
     fun interface Http {
-        fun send(url: String, post: String?): Response
+        fun send(url: String, post: String?, headers: Map<String, String>): Response
     }
 
-    val http = Http { url, post ->
+    val http = Http { url, post, extra ->
         val c = URI(url).toURL().openConnection() as HttpURLConnection
         try {
             c.connectTimeout = 20_000
@@ -47,6 +47,7 @@ object Mega {
                 c.requestMethod = "POST"
                 c.doOutput = true
                 c.setRequestProperty("Content-Type", "text/plain;charset=UTF-8")
+                for ((k, v) in extra) c.setRequestProperty(k, v)
                 c.outputStream.use { it.write(post.toByteArray()) }
             }
             val status = c.responseCode
@@ -110,25 +111,126 @@ object Mega {
         return cipher.doFinal(bytes)
     }
 
+    // ---- MEGA's proof of work (HTTP 402 with X-Hashcash), as MEGA's own public clients answer it: the web client
+    // (meganz/webclient js/utils/api.js, gencash) and the SDK (meganz/sdk src/hashcash.cpp, src/posix/net.cpp); the
+    // website's web/mods/mega.mjs does the same. The challenge "1:<easiness>:<time>:<token>" (token: 64 base64url
+    // characters, 48 bytes) is answered by a 4-byte prefix whose SHA-256 over prefix + the token 262144 times (12 MiB)
+    // starts with a big-endian 32-bit number at or below the easiness's threshold; the request goes again with
+    // "X-Hashcash: 1:<token>:<base64url prefix>".
+
+    const val HASHCASH_REPEAT = 262144
+    /** The SDK gives up on a challenge after this long (its token lives 300 s; its own budget is 100-150 s). */
+    const val HASHCASH_BUDGET_MS = 270_000L
+    private const val HASHCASH_SOLVES = 3
+
+    class Challenge(val token: String, val bytes: ByteArray, val easiness: Int)
+
+    /** The challenge of an X-Hashcash answer header, or null when it is not one (the SDK's checks). */
+    fun hashcashChallenge(header: String?): Challenge? {
+        val p = header?.trim()?.split(':') ?: return null
+        if (p.size != 4 || p[0].toIntOrNull() != 1) return null
+        val easiness = p[1].toIntOrNull() ?: return null
+        if (easiness !in 0..255 || p[3].length != 64 || !p[3].all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_' }) return null
+        val bytes = runCatching { Base64.getUrlDecoder().decode(p[3]) }.getOrNull() ?: return null
+        return if (bytes.size == 48) Challenge(p[3], bytes, easiness) else null
+    }
+
+    /** The largest acceptable first word of the hash: ((e & 63) * 2 + 1) << ((e >> 6) * 7 + 3), as both clients compute it. */
+    fun hashcashThreshold(easiness: Int): Long = (((easiness and 63) shl 1) + 1).toLong() shl ((easiness shr 6) * 7 + 3)
+
+    /** The token 262144 times: the part of every attempt's input after the prefix (shared by the threads, read only). */
+    private fun tokenArea(bytes: ByteArray): ByteArray {
+        val area = ByteArray(HASHCASH_REPEAT * 48)
+        System.arraycopy(bytes, 0, area, 0, 48)
+        var filled = 48
+        while (filled < area.size) { val n = minOf(filled, area.size - filled); System.arraycopy(area, 0, area, filled, n); filled += n }
+        return area
+    }
+
+    private fun firstWord(digest: java.security.MessageDigest, prefix: ByteArray, area: ByteArray): Long {
+        digest.update(prefix)
+        digest.update(area)
+        val h = digest.digest()
+        return ((h[0].toLong() and 255) shl 24) or ((h[1].toLong() and 255) shl 16) or ((h[2].toLong() and 255) shl 8) or (h[3].toLong() and 255)
+    }
+
+    /** Whether [solution] (base64url of 4 bytes) answers the challenge (the SDK's validateHashcash). */
+    fun verifyHashcash(challenge: Challenge, solution: String): Boolean {
+        val prefix = runCatching { Base64.getUrlDecoder().decode(solution) }.getOrNull() ?: return false
+        if (prefix.size != 4) return false
+        return firstWord(java.security.MessageDigest.getInstance("SHA-256"), prefix, tokenArea(challenge.bytes)) <= hashcashThreshold(challenge.easiness)
+    }
+
+    /**
+     * Finds the prefix on [threads] threads (thread w tries the nonces w, w + threads, ..., big-endian, as the SDK
+     * does). Throws MegaError("busy") after [budgetMs], [InterruptedException] when [cancelled].
+     */
+    fun solveHashcash(challenge: Challenge, threads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
+                      budgetMs: Long = HASHCASH_BUDGET_MS, cancelled: () -> Boolean = { false }): String {
+        val area = tokenArea(challenge.bytes)
+        val threshold = hashcashThreshold(challenge.easiness)
+        val end = System.currentTimeMillis() + budgetMs
+        val found = java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val workers = (0 until threads).map { w ->
+            Thread({
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                val prefix = ByteArray(4)
+                var n = w.toLong()
+                while (n <= 0xffffffffL && found.get() == null && !stop.get()) {
+                    prefix[0] = (n ushr 24).toByte(); prefix[1] = (n ushr 16).toByte(); prefix[2] = (n ushr 8).toByte(); prefix[3] = n.toByte()
+                    if (firstWord(digest, prefix, area) <= threshold) found.compareAndSet(null, prefix.copyOf())
+                    n += threads
+                }
+            }, "mega-hashcash-$w").apply { isDaemon = true; start() }
+        }
+        try {
+            while (workers.any { it.isAlive }) {
+                if (found.get() != null) break
+                if (cancelled()) throw InterruptedException("cancelled")
+                if (System.currentTimeMillis() > end) throw MegaError("busy", "MEGA asks this connection for more proof-of-work than this device managed in time (it is under load). Try again later.")
+                workers.first { it.isAlive }.join(50)
+            }
+        } finally {
+            stop.set(true)
+        }
+        val prefix = found.get() ?: throw MegaError("busy", "MEGA's proof-of-work challenge has no answer.")
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(prefix)
+    }
+
     private var sequence = Random.nextLong(1_000_000_000)
     private val STORAGE = Regex("^https://[\\w.-]+\\.userstorage\\.mega\\.co\\.nz/")
 
     /** Asks MEGA for a temporary download address. Errors are MegaError with a kind the launcher turns into a next step. */
-    fun fileInfo(link: String, http: Http = this.http, attempts: Int = 3, sleep: (Long) -> Unit = Thread::sleep): Info {
+    fun fileInfo(link: String, http: Http = this.http, attempts: Int = 3, sleep: (Long) -> Unit = Thread::sleep,
+                 onProof: (easiness: Int) -> Unit = {}, solve: (Challenge) -> String = { solveHashcash(it) }): Info {
         val parsed = parseLink(link)
         val keys = fileKey(parsed.key)
         val request = Json.write(Json.Arr(listOf(Json.Obj(mapOf("a" to Json.Str("g"), "g" to Json.Num(1.0), "ssl" to Json.Num(2.0),
             "p" to Json.Str(parsed.handle))))))
+        // One request; a 402 challenge is answered and the request sent again with the answer (at most three times).
+        fun post(): Response {
+            val url = "$API?id=${sequence++}"
+            var cash: String? = null
+            var solved = 0
+            while (true) {
+                val response = try {
+                    http.send(url, request, cash?.let { mapOf("X-Hashcash" to it) } ?: emptyMap())
+                } catch (e: IOException) {
+                    throw MegaError("network", "Could not connect to mega.nz.")
+                }
+                if (response.status != 402) return response
+                val challenge = hashcashChallenge(response.header("X-Hashcash"))
+                    ?: throw MegaError("busy", "MEGA answered 402 without a proof-of-work challenge it can be answered with. Try again later.")
+                if (solved++ >= HASHCASH_SOLVES) throw MegaError("busy", "MEGA keeps asking this connection for proof-of-work (it is under load). Try again later.")
+                onProof(challenge.easiness)
+                cash = "1:${challenge.token}:${solve(challenge)}"
+            }
+        }
         var last: MegaError? = null
         for (attempt in 0 until attempts) {
             if (attempt > 0) sleep(1000L shl attempt)
-            val response = try {
-                http.send("$API?id=${sequence++}", request)
-            } catch (e: IOException) {
-                throw MegaError("network", "Could not connect to mega.nz.")
-            }
-            if (response.status == 402 && response.header("X-Hashcash") != null)
-                throw MegaError("busy", "MEGA asks this connection for a proof-of-work challenge (it is under load). Try again later.")
+            val response = post()
             if (response.status !in 200..299) {
                 last = MegaError(if (response.status == 429) "rate" else "http", "MEGA answered HTTP ${response.status}.")
                 if (response.status >= 500 || response.status == 429) continue
@@ -165,7 +267,7 @@ object Mega {
     /** Encrypted bytes [start, end] (inclusive) from a MEGA storage address. */
     fun range(url: String, start: Long, end: Long, http: Http = this.http): ByteArray {
         val response = try {
-            http.send("$url/$start-$end", null)
+            http.send("$url/$start-$end", null, emptyMap())
         } catch (e: IOException) {
             throw MegaError("network", "The connection to mega.nz was interrupted.")
         }

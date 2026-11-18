@@ -44,6 +44,14 @@ object BrowserConsoleDiagnostics {
                 e != null && !e.unique && e.text != null && e.choices.size >= 2 && !n.contains("SHIP") && !n.contains("STORE")
             })}" +
             ",\"gate\":${xyz.znix.xftl.devutil.ConsoleGate.allowed()}" +
+            // the original's SECTOR, INDEX and LOADTEXT (tests/console.mjs): the sector and its beacon, a jump under way,
+            // another sector description to force, INDEX's number, the text reloads and a text read through the library
+            ",\"sector\":{\"number\":${game.currentBeacon.sector.sectorNumber},\"type\":${q(game.currentBeacon.sector.info.type.name)}" +
+            ",\"beacon\":${System.identityHashCode(game.currentBeacon)},\"start\":${game.currentBeacon === game.currentBeacon.sector.startBeacon}" +
+            ",\"jumping\":${game.browserJumpPending()},\"fuel\":${ship.fuelCount}" +
+            ",\"other\":${q(game.gameMap.sectorTypeNames().firstOrNull { it != game.currentBeacon.sector.info.type.name && it != "FINAL" && it != "STANDARD_SPACE" && it != "CRYSTAL_HOME" })}}" +
+            ",\"index\":${xyz.znix.xftl.hs.render.HsConsole.index},\"textReloads\":${xyz.znix.xftl.hs.render.HsConsole.textReloads}" +
+            ",\"text\":${q(game.translator["paused_text"])}" +
             ",\"multipleOver\":${xyz.znix.xftl.hs.ship.HsEquipment.multipleOver(ship)}" +
             // CommandGui::OnLanguageChange's widest system levels box and the ship and store windows' x (tests/window-places.mjs)
             ",\"screens\":{\"box\":${xyz.znix.xftl.game.ShipWindow.systemBoxWidth(game)},\"ship\":${xyz.znix.xftl.game.ShipWindow.shipScreensX(game)},\"store\":${xyz.znix.xftl.game.ShipWindow.storeScreensX(game)},\"boxes\":${xyz.znix.xftl.game.ShipWindow.systemBoxWidths(game).joinToString(",", "[", "]")},\"texts\":${list(xyz.znix.xftl.game.ShipWindow.systemBoxTexts(game))},\"equipmentInfo\":${q(xyz.znix.xftl.game.ShipWindow.diagnosticEquipmentInfo)},\"systemInfo\":${q(xyz.znix.xftl.game.ShipWindow.diagnosticSystemInfo)}}" +

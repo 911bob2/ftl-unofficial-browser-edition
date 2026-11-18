@@ -466,7 +466,10 @@ Probe steps `bg` and `savereload` check the backdrop across Save+Continue; the p
 (`gen` lines, `NativeSectorGenerator.placementTrace`) and each random load-list pick (`list` lines, `HsFlow.listTrace`:
 state, value, candidates, draws per unseeded candidate); synthetic AUGMENT_FULL/EQUIP_FULL boxes are logged by name. Oracle sessions take `probe_events` (event names): the
 tracer logs the native choice names of each (`probe_event`), used to bisect the counter
-(`tools/hs-oracle/sessions/events-names.json`).
+(`tools/hs-oracle/sessions/events-names.json`). The run seed fixes the map and the events but not the fights (they
+draw from the simulation stream, and the original's two recordings of mv-seed-12345 differ in the same fight too), so
+the probe starts that stream from the script's `rng=N` (default the run seed) and `tests/hs-events.mjs` checks that two
+other page RNG states give the same output; a retry keeps the earlier attempt's output as `<out>.attempt-N`.
 Not comparable by design: values a Lua script assigns while walking a string-keyed table with `pairs` (e.g. MV's
 astrometrics.lua on ATLAS_MENU): HS's stock Lua 5.3 seeds the string hash from time and addresses, so the key order
 changes per native run; ours is fixed (`hs-lua/hsconf.h`). Status and gaps: the events report

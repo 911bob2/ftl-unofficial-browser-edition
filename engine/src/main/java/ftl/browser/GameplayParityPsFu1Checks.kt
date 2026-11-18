@@ -21,6 +21,9 @@ import xyz.znix.xftl.sys.GameContainer
  * - CrewMember::OnLoop (1.6.14 0x482a80) walks a crew member who is not busy to the room's free console whatever state
  *   its system is in, so crew in a capped room stand idle at its console.
  * - In a nebula (sensors capped at 0) the crew member at the sensors stands idle at the console (O-B1-2).
+ * - WorldManager::CheckStatusEffects (1.6.9 0x5eea10, 1.6.14 0x613a10) ends with ShipManager::OnLoop on every ship, so
+ *   an engine cap loaded while paused takes the engines' manning bonus with the box open, before any frame (native
+ *   1.6.14 capture ps-fu1-van fu1-eng f-event: 10 % at once; O-FU1-1).
  */
 internal object GameplayParityPsFu1Checks {
     private const val DT = 0.05f
@@ -42,6 +45,7 @@ internal object GameplayParityPsFu1Checks {
             case("cappedSensors") { cappedSensors(main, container) }
             case("walkToConsole") { walkToConsole(main, container) }
             case("nebulaSensorsCrew") { nebulaSensorsCrew(main, container) }
+            case("statusWhilePaused") { statusWhilePaused(main, container) }
         } finally {
             BrowserEngine.resetInput()
             BrowserRandom.restore(rng)
@@ -200,6 +204,32 @@ internal object GameplayParityPsFu1Checks {
             "$label: at the console ${crew.currentAction}, manned ${sys.manningCrew != null}"
         }
         return "$label in $frames frames, idle"
+    }
+
+    /**
+     * SLUG_DISTRESS_PILOTING (engines limit 1, the native fu1-eng session's event) loaded while paused: with its box
+     * open and no frame run, the engines are no longer manned and the evasion has lost the engines' manning bonus.
+     */
+    private fun statusWhilePaused(main: MainGame, container: GameContainer): String {
+        val state = fresh(main, container)
+        val engines = state.player.engines ?: return "status while paused: no engines"
+        if (engines.energyLevels < 2) return "status while paused: engines at level ${engines.energyLevels}"
+        val event = state.eventManager.getOrNull("SLUG_DISTRESS_PILOTING") ?: return "status while paused: no SLUG_DISTRESS_PILOTING"
+        state.debugFlags.noEnemyFire.set = true
+        val crew = crewAt(state, engines)
+        check(engines.manningCrew === crew && engines.getBoostSkillLevel(Skill.ENGINES) != null) { "Set-up: engines not manned" }
+        val before = state.player.evasion
+        state.toggleQuickPause()
+        check(state.isPaused) { "Set-up: the game did not pause" }
+        state.shipUI.showEventDialogue(event.resolve(), 77)
+        check(engines.scriptedPowerCap == 1) { "SLUG_DISTRESS_PILOTING did not cap the engines: ${engines.scriptedPowerCap}" }
+        check(engines.manningCrew == null && engines.getBoostSkillLevel(Skill.ENGINES) == null) {
+            "engines capped while paused are still manned with the box open (${crew.currentAction})"
+        }
+        val power = engines.powerSupplied
+        val table = if (power > 0) Engines.EVASIONS.getOrNull(power - 1) ?: 0 else 0
+        check(engines.evasion == table) { "engines capped while paused give ${engines.evasion} evasion at power $power with the box open, the table says $table" }
+        return "status while paused (evasion $before -> ${state.player.evasion} with the box open)"
     }
 
     /** NEBULA_REBEL: the crew member at the sensors stays at the console, idle, with no crew slot on the box. */

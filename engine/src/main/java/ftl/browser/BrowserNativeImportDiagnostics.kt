@@ -72,6 +72,8 @@ object BrowserNativeImportDiagnostics {
         }
         val systems = ship.systems.sortedBy { it.codename }.joinToString(",") { "{\"name\":${q(it.blueprint.name)},\"level\":${it.energyLevels},\"damage\":${it.damagedEnergyLevels}}" }
         val weapons = ship.hardpoints.mapNotNull { it.weapon?.type?.name }.joinToString(",") { q(it) }
+        // Each weapon's share of a full charge (the battle tail's ProjectileFactory::SaveState), the player's and the nearby ship's.
+        fun charges(s: xyz.znix.xftl.Ship?) = s?.hardpoints?.mapNotNull { it.weapon }?.joinToString(",") { w -> String.format(java.util.Locale.ROOT, "%.3f", w.chargeProgress) } ?: ""
         val drones = ship.drones?.drones?.mapNotNull { it?.type?.name }?.joinToString(",") { q(it) } ?: ""
         val augments = ship.augments.map { it.name }.sorted().joinToString(",") { q(it) }
         val cargo = ship.cargoBlueprints.mapNotNull { it?.name }.joinToString(",") { q(it) }
@@ -82,6 +84,6 @@ object BrowserNativeImportDiagnostics {
             "\"droneParts\":${ship.dronesCount},\"scrap\":${ship.scrap},\"difficulty\":${q(game.difficulty.name)},\"ae\":${game.content.enableAdvancedEdition}," +
             "\"sector\":${sector.sectorNumber + 1},\"sectorType\":${q(sector.type.name)},\"beacons\":${sector.beacons.size},\"beacon\":${sector.beacons.indexOf(beacon)}," +
             "\"visited\":${sector.beacons.count { it.visited }},\"crew\":[$crew],\"systems\":[$systems],\"weapons\":[$weapons],\"drones\":[$drones]," +
-            "\"augments\":[$augments],\"cargo\":[$cargo],\"breaches\":${ship.rooms.sumOf { r -> r.breaches.count { it != null } }},\"enemy\":${q(game.enemy?.type?.name)},\"enemyHostile\":${game.enemy != null && game.isEnemyHostile}$hs}"
+            "\"charges\":[${charges(ship)}],\"enemyCharges\":[${charges(game.enemy)}],\"augments\":[$augments],\"cargo\":[$cargo],\"breaches\":${ship.rooms.sumOf { r -> r.breaches.count { it != null } }},\"enemy\":${q(game.enemy?.type?.name)},\"enemyHostile\":${game.enemy != null && game.isEnemyHostile}$hs}"
     }
 }

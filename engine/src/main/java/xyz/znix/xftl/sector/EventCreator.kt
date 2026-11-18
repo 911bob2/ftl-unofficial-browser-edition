@@ -290,7 +290,7 @@ class EventCreator(private val game: InGameState) {
 
     /** The automatic reward (0x5dff60): its numbers replace the event's, and its item fills an empty slot. */
     private fun applyAutoReward(created: CreatedEvent, type: xyz.znix.xftl.game.RewardType, tier: xyz.znix.xftl.game.RewardTier, level: Int) {
-        val explicit = created.weapon != null || created.drone != null || created.augment != null
+        val explicit = LootDropGenerator.blocksRandomItem(created.weapon) || LootDropGenerator.blocksRandomItem(created.drone)
         val rewards = LootDropGenerator.generateRewards(game, NativeRandom, tier, type, level, game.difficulty, explicit)
         if (rewards.fuel != 0) created.fuel = rewards.fuel
         if (rewards.missiles != 0) created.missiles = rewards.missiles

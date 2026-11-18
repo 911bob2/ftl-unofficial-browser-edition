@@ -132,7 +132,12 @@ failed and cancelled replacements preserve the previous valid copy.
 
 Play and Tests share the same asset provider. The browser assembles boot resources
 from the local DAT and an independently versioned bundle of reviewed engine-owned
-resources. Audio is read lazily from Blob slices. `tools/engine-resources.json`
+resources. Audio is read lazily from Blob slices. Decoded sounds are held as the Android app holds them
+(`web/audio.mjs`, Android's `MixerCore`): up to 192 MiB counted as 16-bit samples at the file's rate (the browser keeps
+float samples at the output's rate, about 2.2 times that: 300 to 420 MiB at 48 kHz); over that, sounds no source plays,
+waits for or is paused on are dropped, music first, least recently heard first, and decoded again when they next play
+(a large Multiverse track then starts 0.4 to 0.6 s later, as on its first play). A track is decoded only if a music
+source still wants it once the engine's step is over, at most two at a time. `tools/engine-resources.json`
 is the explicit redistributable allowlist; no commercial DAT content enters the
 Docker image or that bundle.
 

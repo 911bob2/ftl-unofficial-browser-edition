@@ -80,6 +80,17 @@ object Sync {
     fun uploaded(local: LocalSave, uploadedRun: String?, uploadedProfile: String?, revision: Long): LocalSave =
         local.copy(base = revision, dirty = local.run != uploadedRun || local.profile != uploadedProfile, nameDirty = false)
 
+    /**
+     * Whether the account's newer copy is this device's own upload whose answer never arrived (the tab hid or closed, or
+     * the network dropped after the server took it), which is no conflict: exactly one revision past the base, the same
+     * mods, and the run and profile this device sent (`sentRun`/`sentProfile`: the upload that lost its answer, or the
+     * device copy when nothing was written since). A null profile sent keeps the stored one (the server's rule).
+     * Then [uploaded] with what was sent moves the base on, and anything written since stays unsynced.
+     */
+    fun ownWrite(local: LocalSave, cloud: CloudSave, cloudRun: String?, cloudProfile: String?, sentRun: String?, sentProfile: String?): Boolean =
+        local.dirty && local.overridden == null && cloud.revision == local.base + 1 && cloud.setup.key == local.setup.key &&
+            cloudRun == sentRun && (sentProfile == null || sentProfile == cloudProfile)
+
     /** The device copy replaced by the cloud's (fetch, "Use the cloud copy", or after an override notice). */
     fun fetched(local: LocalSave?, cloud: CloudSave, run: String?, profile: String?): LocalSave = LocalSave(
         id = cloud.id, name = cloud.name, setup = cloud.setup, createdUtc = cloud.createdUtc, meta = cloud.meta,

@@ -148,7 +148,7 @@ export function mountModLibrary({root, account, role = 'user', local = false, me
   function line(entry) {
     const job = jobs.get(entry.id), have = archives.get(entry.sha256);
     if (have) return `In this browser · ${MiB(have.size)} · from ${SOURCE_LABEL[have.source] ?? 'a local file'}`;
-    if (job?.progress && !job.error) return job.progress.phase === 'hash' ? 'Checking your file…' : job.progress.phase === 'verify' ? 'Verifying checksum…' : job.progress.phase === 'store' ? 'Saving in this browser…' : job.progress.phase === 'connect' ? 'Connecting to ' + SOURCE_LABEL[job.source] + '…' : 'Downloading from ' + SOURCE_LABEL[job.source] + '…';
+    if (job?.progress && !job.error) return job.progress.phase === 'hash' ? 'Checking your file…' : job.progress.phase === 'verify' ? 'Verifying checksum…' : job.progress.phase === 'store' ? 'Saving in this browser…' : job.progress.phase === 'connect' ? 'Connecting to ' + SOURCE_LABEL[job.source] + '…' : job.progress.phase === 'proof' ? 'mega.nz is under load and asks for a proof of work: this device is solving it (up to a few minutes)…' : 'Downloading from ' + SOURCE_LABEL[job.source] + '…';
     if (job?.pending) return `Paused at ${mb(job.pending.done)} of ${mb(entry.size)}`;
     return 'Not in this browser · ' + mb(entry.size);
   }

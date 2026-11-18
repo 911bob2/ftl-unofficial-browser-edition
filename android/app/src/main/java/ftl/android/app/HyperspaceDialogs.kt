@@ -31,7 +31,7 @@ import kotlinx.coroutines.withContext
 
 const val HS_WARNING_TITLE = "Hyperspace mod without Hyperspace"
 
-fun hsWarningText(mod: ModLibrary.Mod) = "${mod.label}${mod.file.version.takeIf { it.isNotEmpty() }?.let { " $it" } ?: ""} needs Hyperspace.ftl, " +
+fun hsWarningText(mod: ModLibrary.Mod) = "${mod.heading} needs Hyperspace.ftl, " +
     "Hyperspace's own data, loaded first. Without it some Hyperspace images and text are missing."
 
 /** The warning: Enable Hyperspace, Run anyway or Cancel. save: the name of the save that is starting, or null for a new one. */

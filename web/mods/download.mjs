@@ -58,7 +58,7 @@ export const mb = n => (n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0) + ' MB';
  * A ranged reader for one catalogue file. `server`: our /api/mods/files/{id} with HTTP ranges (fetchServer is supplied
  * by the page so it carries the account header). `mega`: the catalogue's MEGA link, decrypted per range.
  */
-async function openSource(entry, source, {fetchServer, fetch = globalThis.fetch, signal}) {
+async function openSource(entry, source, {fetchServer, fetch = globalThis.fetch, signal, onProof = () => {}}) {
   if (source === 'server') {
     return {concurrency: 2, async read(start, end) {
       let r;
@@ -76,14 +76,14 @@ async function openSource(entry, source, {fetchServer, fetch = globalThis.fetch,
     }};
   }
   if (source === 'mega') {
-    let info = await megaFileInfo(entry.mega, {fetch, signal});
+    let info = await megaFileInfo(entry.mega, {fetch, signal, onProof});
     if (info.size !== entry.size) throw new DownloadError('changed', `The file behind the MEGA link changed (${mb(info.size)} instead of ${mb(entry.size)}); it is not the pinned ${entry.title} ${entry.version}.`);
     let decrypt = await createDecryptor(info.key), refreshed = false;
     return {concurrency: 3, name: info.name, async read(start, end) {
       try { return await decrypt(await slots.mega(() => megaRange(info.url, start, end, {fetch, signal})), start); }
       catch (e) {
         // The storage address is temporary: ask the API for a fresh one once per download.
-        if (e instanceof MegaError && e.kind === 'expired' && !refreshed) { refreshed = true; info = await megaFileInfo(entry.mega, {fetch, signal}); decrypt = await createDecryptor(info.key); return decrypt(await megaRange(info.url, start, end, {fetch, signal}), start); }
+        if (e instanceof MegaError && e.kind === 'expired' && !refreshed) { refreshed = true; info = await megaFileInfo(entry.mega, {fetch, signal, onProof}); decrypt = await createDecryptor(info.key); return decrypt(await megaRange(info.url, start, end, {fetch, signal}), start); }
         throw e;
       }
     }};
@@ -125,7 +125,9 @@ export async function downloadFile({entry, source, fetchServer, onProgress = () 
     await checkSpace((entry.size - state.done) * 2 + 32 * 1048576);
     navigator.storage?.persist?.().catch(() => {});
     onProgress({phase: 'connect', done: state.done, total: entry.size, rate: 0, eta: null, source});
-    const reader = await openSource(entry, source, {fetchServer, fetch, signal}).catch(e => { throw wrap(e); });
+    // MEGA under load asks for a proof of work first (web/mods/mega.mjs): the row says so while this device works on it
+    const onProof = () => onProgress({phase: 'proof', done: state.done, total: entry.size, rate: 0, eta: null, source});
+    const reader = await openSource(entry, source, {fetchServer, fetch, signal, onProof}).catch(e => { throw wrap(e); });
     await hasher.init(state.hash);
     const meter = createMeter(entry.size, state.done), inflight = new Map();
     let launched = state.parts;

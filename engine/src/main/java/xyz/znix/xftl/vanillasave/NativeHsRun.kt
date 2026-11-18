@@ -80,6 +80,12 @@ interface NativeContent {
     fun layout(blueprint: String): Pair<List<Int>, Int>
     fun isShipBlueprint(name: String): Boolean = false
 
+    /** A drone blueprint's type (DroneBlueprint.DroneType name), for the battle tail's drone states; null if unknown. */
+    fun droneType(name: String): String? = null
+
+    /** How many artillery systems the ship blueprint has (its systemList's artillery entries); -1 if unknown. */
+    fun artilleryCount(blueprint: String): Int = -1
+
     /** The original writes the crystal lockdown timers for crystal crew; Hyperspace makes a defined race a plain crew member. */
     fun hasCrystalTimers(race: String): Boolean = race == "crystal"
 

@@ -455,6 +455,27 @@ try{
  s=await run('DELETE');assert.ok(s.enemy===null||s.enemy.dead,'DELETE');
  await page.waitForTimeout(1500);await closeWindows();
  pass(mode+': STORE LOADEVENT EVENT EXIT DELETECREW DELETE');
+ // the original's prefixed words (RunCommand 0x52f7b0): INDEX writes a number nothing reads, CLEAR_ONLINE_ACH touches
+ // only a store's online achievements, LOADTEXT reads the texts again (the same texts, the language kept), SECTOR jumps
+ // away at once and makes the sector being left again as the named description, at the same number; an unknown name
+ // gives STANDARD_SPACE
+ let was=await probe();
+ s=await run('INDEX 42');assert.equal(s.index,42,'INDEX 42');s=await run('INDEX -7x');assert.equal(s.index,-7,'INDEX takes atoi');
+ s=await run('CLEAR_ONLINE_ACH ALL');assert.deepEqual(s.achievements,was.achievements,'CLEAR_ONLINE_ACH ALL leaves the profile');
+ s=await run('CLEAR_ONLINE_ACH ACH_FULL_ARSENAL');assert.deepEqual(s.achievements,was.achievements,'CLEAR_ONLINE_ACH <name> leaves the profile');
+ s=await run('LOADTEXT');assert.equal(s.textReloads,was.textReloads+1,'LOADTEXT reloads');assert.equal(s.text,was.text,'the same text after LOADTEXT');
+ s=await run('loadtext x');assert.equal(s.textReloads,was.textReloads+1,'LOADTEXT is the whole line only');
+ const forced=async(name,expect)=>{const b=await probe();assert.ok(!b.sector.jumping,'no jump under way');
+   await run('SECTOR '+name);let a;for(const end=Date.now()+hangMs(20000);;){await page.waitForTimeout(200);a=await probe();if((a.sector.beacon!==b.sector.beacon&&!a.sector.jumping)||Date.now()>end)break;}
+   console.log('SECTOR '+name+': '+JSON.stringify(b.sector)+' -> '+JSON.stringify(a.sector));
+   assert.notEqual(a.sector.beacon,b.sector.beacon,'SECTOR '+name+' jumps');assert.equal(a.sector.type,expect,'SECTOR '+name+': the description');
+   assert.equal(a.sector.number,b.sector.number,'SECTOR '+name+': the same sector number');assert.ok(a.sector.start,'SECTOR '+name+': at the start beacon');
+   assert.equal(a.sector.fuel,Math.max(0,b.sector.fuel-1),'SECTOR '+name+': JumpLeave takes a fuel');await closeWindows();};
+ await run('FUEL 5');assert.ok(was.sector.other,'another sector description');
+ await forced(was.sector.other,was.sector.other);await shot('sector');
+ await forced('NO_SUCH_SECTOR_NAME','STANDARD_SPACE');
+ s=await run('SECTOR');assert.ok(!s.sector.jumping,'SECTOR without its space is no command');
+ pass(mode+': INDEX CLEAR_ONLINE_ACH LOADTEXT SECTOR as the original ('+was.sector.other+')');
  // the Hyperspace-only ones
  const hsOnly=['FORCE_STORE','LUA','REMOVESYS','SHIP_CUSTOM','SHIP_CUSTOM_LOCK','VAR','VARIABLE','METAVAR','METAVARIABLE','MVAR','ACH_LOCK','SWITCHALL','SWITCH'];
  for(const n of hsOnly){

@@ -37,6 +37,9 @@ export function wrapSaveCore(raw) {
     /** The save after the engine wrote its profile, or null when it did not change. */
     profileWritten: (local, xml) => { const next = raw.savecoreProfileWritten(text(local), xml); return next == null ? null : parse(next); },
     uploaded: (local, uploadedRun, uploadedProfile, revision) => parse(raw.savecoreUploaded(text(local), uploadedRun ?? null, uploadedProfile ?? null, revision)),
+    /** Whether the account's newer copy (cloud with its run and profile) is this device's own upload whose answer never arrived. */
+    ownWrite: (local, cloud, cloudRun, cloudProfile, sentRun, sentProfile) =>
+      !!raw.savecoreOwnWrite(text(withoutData(local)), text(cloud), cloudRun ?? null, cloudProfile ?? null, sentRun ?? null, sentProfile ?? null),
     fetched: (local, cloud, run, profile) => parse(raw.savecoreFetched(text(local), text(cloud), run ?? null, profile ?? null)),
     keepMine: (local, cloud) => parse(raw.savecoreKeepMine(text(local), text(cloud))),
     /** The run of a save moved to other mods (Saves > Advanced). */

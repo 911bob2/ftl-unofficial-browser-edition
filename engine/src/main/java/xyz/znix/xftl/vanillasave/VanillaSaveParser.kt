@@ -46,6 +46,9 @@ class VanillaSaveData {
     // The nearby (encounter) ship, when the parse was asked to find it in the tail.
     var enemyShip: ShipData? = null
 
+    /** The tail's battle states (each weapon's charge); null when they could not be read, and for a Hyperspace run. */
+    var battle: VanillaBattleTail.Battle? = null
+
     /** What a Hyperspace run adds (NativeHsRun); null for a run of the game without mods. */
     var hs: NativeHsRun? = null
 
@@ -322,6 +325,7 @@ object VanillaSaveParser {
         out.tail = data.copyOfRange(r.pos, data.size)
         // The tail's ship sections hold Hyperspace data of their own, and are not read for a Hyperspace run.
         if (hs == null) out.enemyShip = findNearbyShip(data, r.pos, content)
+        if (hs == null) out.battle = VanillaBattleTail.read(data, r.pos, out, content)
         return out
     }
 
@@ -360,7 +364,7 @@ object VanillaSaveParser {
         return null
     }
 
-    private fun readShip(
+    internal fun readShip(
         r: VanillaSaveReader, ship: VanillaSaveData.ShipData, roomTiles: List<Int>, doorCount: Int,
         content: NativeContent, hs: NativeHsReader?, player: Boolean
     ) {

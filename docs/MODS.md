@@ -91,12 +91,21 @@ range (`<url>/<start>-<end>`) is decrypted with WebCrypto AES-128-CTR at its blo
 padded) give the file name. The integrity check is the catalogue SHA-256. The CSP adds only
 `connect-src https://g.api.mega.co.nz https://*.userstorage.mega.co.nz`.
 
+**MEGA's proof of work.** Under load MEGA's API answers HTTP 402 with `X-Hashcash: 1:<easiness>:<time>:<token>`. We
+answer it as MEGA's own public clients do (its web client `js/utils/api.js`, `gencash`; its SDK `src/hashcash.cpp`): a
+4-byte prefix whose SHA-256 over prefix + the 48-byte token 262144 times (12 MiB) starts with a big-endian word at or
+below `((e & 63) * 2 + 1) << ((e >> 6) * 7 + 3)`, then the same request again with `X-Hashcash: 1:<token>:<prefix,
+base64url>`. MEGA's CORS rules allow that header from any page. The website hashes with WebCrypto, up to 4 digests at
+once (`web/mods/mega.mjs`), Android on up to 4 threads (`android/mods/.../Mega.kt`); both give up after 270 s per
+challenge (the token lives 300 s) and after three challenges for one request, with "try again later". The file still
+comes only from the official MEGA link; nothing is hosted by us.
+
 **Downloads** (`web/mods/download.mjs`): ranges are fetched up to 2 (server) / 4 (MEGA) at a time, hashed
 incrementally in a worker and stored as parts in IndexedDB together with the resumable hash state, so a 712 MB file
 is never held twice in memory and an interrupted download resumes after its last stored part (from either source).
 The finished parts become one Blob archive only when the SHA-256 matches. Errors carry a next step: cannot connect
 (offline, firewall or extension blocking mega.nz) → Retry / other source / local file; MEGA codes (file removed or
-taken down, transfer quota with the wait time when MEGA gives one, rate limits, proof-of-work challenge) → retry later
+taken down, transfer quota with the wait time when MEGA gives one, rate limits, a proof-of-work challenge not solved in time) → retry later
 / other source; interrupted → Resume / Restart; checksum mismatch → discarded, Retry / other source; browser storage
 full (checked with `navigator.storage.estimate` before starting and on QuotaExceededError) → delete cached files.
 

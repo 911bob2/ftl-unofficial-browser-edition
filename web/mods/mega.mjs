@@ -73,21 +73,107 @@ export async function createDecryptor({aes, nonce}) {
   };
 }
 
+// ---- MEGA's proof of work (HTTP 402 with X-Hashcash), as MEGA's own public clients answer it: the web client
+// (meganz/webclient js/utils/api.js, MEGAPIRequest.fetch and gencash) and the SDK (meganz/sdk src/hashcash.cpp,
+// src/posix/net.cpp). The API asks for it when it is under load; its CORS rules let any page send the answer
+// (Access-Control-Allow-Headers and -Expose-Headers name X-Hashcash). The challenge "1:<easiness>:<time>:<token>"
+// (token: 64 base64url characters, 48 bytes) is answered by a 4-byte prefix whose SHA-256 over prefix + the token
+// 262144 times (12 MiB) starts with a big-endian 32-bit number at or below the easiness's threshold; the request is
+// sent again with "X-Hashcash: 1:<token>:<base64url prefix>".
+export const HASHCASH_REPEAT = 262144;
+/** The SDK gives up on a challenge after this long (its token lives 300 s; the SDK's own budget is 100-150 s). */
+export const HASHCASH_BUDGET_MS = 270000;
+const HASHCASH_SOLVES = 3;
+
+function b64url(bytes) {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** The challenge of an X-Hashcash answer header ({token, bytes, easiness}), or null when it is not one (the SDK's checks). */
+export function hashcashChallenge(header) {
+  const p = String(header ?? '').trim().split(':');
+  if (p.length !== 4 || Number(p[0]) !== 1) return null;
+  const easiness = Number(p[1]);
+  if (!Number.isInteger(easiness) || easiness < 0 || easiness > 255 || p[3].length !== 64 || !/^[\w-]+$/.test(p[3])) return null;
+  const bytes = b64(p[3]);
+  return bytes.length === 48 ? {token: p[3], bytes, easiness} : null;
+}
+
+/** The largest acceptable first word of the hash: ((e & 63) * 2 + 1) << ((e >> 6) * 7 + 3), as both clients compute it. */
+export const hashcashThreshold = easiness => ((((easiness & 63) << 1) + 1) << ((easiness >> 6) * 7 + 3)) >>> 0;
+
+/** prefix + token x 262144, the buffer every attempt hashes. */
+function hashcashBuffer(bytes) {
+  const buffer = new Uint8Array(4 + HASHCASH_REPEAT * 48);
+  buffer.set(bytes, 4);
+  for (let filled = 48; filled < HASHCASH_REPEAT * 48; filled *= 2) buffer.copyWithin(4 + filled, 4, 4 + Math.min(filled, HASHCASH_REPEAT * 48 - filled));
+  return buffer;
+}
+
+/** Whether `solution` (base64url of 4 bytes) answers the challenge (the SDK's validateHashcash). */
+export async function verifyHashcash(challenge, solution) {
+  const prefix = b64(solution);
+  if (prefix.length !== 4) return false;
+  const buffer = hashcashBuffer(challenge.bytes); buffer.set(prefix, 0);
+  return new DataView(await subtle().digest('SHA-256', buffer)).getUint32(0) <= hashcashThreshold(challenge.easiness);
+}
+
+/**
+ * Finds the prefix: `lanes` digests in flight at once (WebCrypto hashes off the page's thread), lane w trying the
+ * nonces w, w + lanes, ... (big-endian, as the SDK writes them). Throws MegaError('busy') after `budget` ms.
+ */
+export async function solveHashcash(challenge, {signal, lanes = Math.max(1, Math.min(4, globalThis.navigator?.hardwareConcurrency || 2)), budget = HASHCASH_BUDGET_MS, now = () => Date.now()} = {}) {
+  const threshold = hashcashThreshold(challenge.easiness), end = now() + budget;
+  let found = null, done;
+  const finished = new Promise(resolve => { done = resolve; });
+  const lane = async w => {
+    const buffer = hashcashBuffer(challenge.bytes), view = new DataView(buffer.buffer);
+    for (let n = w; found == null && n <= 0xffffffff; n += lanes) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (now() > end) throw new MegaError('busy', 'MEGA asks this connection for more proof-of-work than this device managed in time (it is under load). Try again later.');
+      view.setUint32(0, n);
+      if (new DataView(await subtle().digest('SHA-256', buffer)).getUint32(0) <= threshold) { found ??= buffer.slice(0, 4); done(); }
+    }
+  };
+  const runs = Array.from({length: lanes}, (_, w) => lane(w));
+  runs.forEach(r => r.catch(() => {}));
+  // the first answer ends every lane at its next step; a lane's error (budget, abort) ends the search
+  await Promise.race([finished, Promise.all(runs)]);
+  if (!found) throw new MegaError('busy', 'MEGA\'s proof-of-work challenge has no answer.');
+  return b64url(found);
+}
+
 let sequence = Math.floor(Math.random() * 1e9);
 /**
  * Ask MEGA for a temporary download URL. Returns {handle, size, url, name, key: {aes, nonce}}. `fetch` may be
  * injected (tests). Errors are MegaError with a kind the UI turns into a next step.
  */
-export async function megaFileInfo(link, {fetch = globalThis.fetch, signal, attempts = 3} = {}) {
+export async function megaFileInfo(link, {fetch = globalThis.fetch, signal, attempts = 3, onProof = () => {}, solve = solveHashcash} = {}) {
   const {handle, key} = parseMegaLink(link), keys = fileKey(key);
+  /** One request; a 402 challenge is answered and the request sent again with the answer (at most three times). */
+  const post = async () => {
+    const url = MEGA_API + '?id=' + (sequence++);
+    for (let solved = 0, cash = null; ; solved++) {
+      // text/plain keeps the first try a CORS "simple" request (MEGA reads the JSON body either way); the answer's
+      // X-Hashcash header is one MEGA's CORS rules allow
+      const headers = {'Content-Type': 'text/plain;charset=UTF-8', ...(cash ? {'X-Hashcash': cash} : {})};
+      let response;
+      try { response = await fetch(url, {method: 'POST', headers, body: JSON.stringify([{a: 'g', g: 1, ssl: 2, p: handle}]), signal, cache: 'no-store', credentials: 'omit'}); }
+      catch (e) { if (e?.name === 'AbortError') throw e; throw new MegaError('network', 'Could not connect to mega.nz.'); }
+      if (response.status !== 402) return response;
+      const challenge = hashcashChallenge(response.headers.get('X-Hashcash'));
+      if (!challenge) throw new MegaError('busy', 'MEGA answered 402 without a proof-of-work challenge it can be answered with. Try again later.');
+      if (solved >= HASHCASH_SOLVES) throw new MegaError('busy', 'MEGA keeps asking this connection for proof-of-work (it is under load). Try again later.');
+      onProof({easiness: challenge.easiness, threshold: hashcashThreshold(challenge.easiness)});
+      cash = '1:' + challenge.token + ':' + await solve(challenge, {signal});
+    }
+  };
   let last;
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt) await new Promise(r => setTimeout(r, 1000 * 2 ** attempt));
-    let response;
-    // text/plain keeps this a CORS "simple" request (MEGA reads the JSON body either way).
-    try { response = await fetch(MEGA_API + '?id=' + (sequence++), {method: 'POST', headers: {'Content-Type': 'text/plain;charset=UTF-8'}, body: JSON.stringify([{a: 'g', g: 1, ssl: 2, p: handle}]), signal, cache: 'no-store', credentials: 'omit'}); }
-    catch (e) { if (e?.name === 'AbortError') throw e; throw new MegaError('network', 'Could not connect to mega.nz.'); }
-    if (response.status === 402 && response.headers.get('X-Hashcash')) throw new MegaError('busy', 'MEGA asks this connection for a proof-of-work challenge (it is under load). Try again later.');
+    const response = await post();
     if (!response.ok) { last = new MegaError(response.status === 429 ? 'rate' : 'http', `MEGA answered HTTP ${response.status}.`, {status: response.status}); if (response.status >= 500 || response.status === 429) continue; throw last; }
     let body;
     try { body = await response.json(); } catch { last = new MegaError('api', 'MEGA sent an unreadable answer.'); continue; }

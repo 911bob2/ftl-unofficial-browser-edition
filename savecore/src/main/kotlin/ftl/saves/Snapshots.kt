@@ -27,6 +27,20 @@ object Snapshots {
         else -> kind.ifEmpty { "save" }
     }
 
+    /**
+     * Download: a snapshot's stored save (GET /api/saves/{id}/snapshots/{revision}) as a save file, as the website's
+     * snapshotBackup writes it (web/saves-ui.mjs); null when the snapshot does not read. Importing the file adds a save.
+     */
+    fun file(payload: Json?, savedUtc: String): String? {
+        val o = payload.objOrNull() ?: return null
+        val name = o["name"].str() ?: return null
+        val setup = o["setup"].objOrNull() ?: return null
+        return SaveFile.write(name, Setup.fromJson(setup), SaveMeta.fromJson(o["meta"]), o["run"].str(), o["profile"].str(), savedUtc)
+    }
+
+    /** "ftl-snapshot-12.json", as the website names a snapshot's file. */
+    fun fileName(revision: Long): String = "ftl-snapshot-$revision.json"
+
     /** This device's copy after a restore: the account's new revision, nothing unsynced, no takeover notice. */
     fun restored(local: LocalSave?, cloud: CloudSave, run: String?, profile: String?): LocalSave =
         Sync.fetched(local?.copy(overridden = null, dirty = false), cloud, run, profile)

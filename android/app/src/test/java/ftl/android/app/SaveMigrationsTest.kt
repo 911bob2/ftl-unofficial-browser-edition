@@ -50,15 +50,20 @@ class SaveMigrationsTest {
         set(ship, "sys", game)
         set(ship, "crew", ArrayList<Any>())
         set(game, "player", ship)
+        // Releasing a crew member walks it to its side's first free slot (CrewMember::SetMindControl); the fixture ship has
+        // no room list, so the ship-wide slot rebuild is held back as during a station batch.
+        ship.deferCrewSlotUpdates = 1
         return game to ship
     }
 
     /** A living crew member of [ship], aboard it, marked as mind controlled or not. */
     private fun crewOf(ship: Ship, controlled: Boolean, aboard: Boolean = true): LivingCrew {
         val crew = blank(CrewHuman::class.java)
-        val room = blank(Room::class.java)
-        set(room, "ship", ship)
+        // A real one-cell room, so the release can find its slot.
+        val room = Room(ship, 0, 0, 0, 1, 1)
         set(crew, "room", room)
+        // Bound for its one cell already (the fixture ship has no path finder); the walk itself is checked in ps-fu6.
+        set(crew, "pathingTarget", xyz.znix.xftl.math.RoomPoint(room, xyz.znix.xftl.math.ConstPoint.ZERO))
         set(crew, "health", 100f)
         set(crew, "ownerShip", ship)
         crew.hsMindControlled = controlled

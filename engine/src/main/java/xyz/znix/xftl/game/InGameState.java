@@ -750,9 +750,17 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             Element weaponElem = weaponElems.get(i);
             if (i < vs.getWeapons().size()) {
                 weaponElem.setAttribute("type", vs.getWeapons().get(i).getFirst());
-                // A nearby ship keeps its armed weapons; the player's are re-armed by hand.
-                weaponElem.setAttribute("powered", target == player ? "false" : Boolean.toString(vs.getWeapons().get(i).getSecond()));
-                weaponElem.setAttribute("chargeTime", "0");
+                // Armed as saved (ShipManager::ImportShip), and charged as the tail's ProjectileFactory::SaveState
+                // left it (cooldown.first, ImportBattleState 0x4a0330); without a readable tail, uncharged.
+                weaponElem.setAttribute("powered", Boolean.toString(vs.getWeapons().get(i).getSecond()));
+                java.util.List<xyz.znix.xftl.vanillasave.VanillaBattleTail.WeaponState> charges = data.getBattle() == null ? null
+                    : ownCrewIsPlayer ? data.getBattle().getPlayer() : data.getBattle().getNearby();
+                // The same share of a full charge: cooldown.second is the cooldown as the crew speeds it.
+                float charge = 0f;
+                if (charges != null && i < charges.size() && charges.get(i).getChargeGoal() > 0f
+                    && blueprintManager.getOrNull(vs.getWeapons().get(i).getFirst()) instanceof xyz.znix.xftl.weapons.AbstractWeaponBlueprint wbp)
+                    charge = Math.min(1f, charges.get(i).getCharge() / charges.get(i).getChargeGoal()) * wbp.getChargeTime();
+                weaponElem.setAttribute("chargeTime", Float.toString(charge));
                 weaponElem.removeChildren("extraCharges");
                 weaponElem.removeChildren("chainCount");
             } else {

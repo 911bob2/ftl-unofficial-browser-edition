@@ -264,6 +264,33 @@ for (const [name, type, options, users] of [['Chromium', chromium, {channel: 'ch
     await saveAndClose(a);
     assert.equal((await cloud(laptop, id)).lock, null);
     pass('changed in two places: "Use the cloud copy" takes the account\'s version and plays; "Keep this device\'s copy" while another device plays asks "In use on Pixel 8" (Cancel changes nothing), and only Override replaces the account\'s version (kept as a snapshot) and plays');
+    // ---- An upload whose answer is lost: the account takes it, the page hears nothing -----------------------------------
+    // The account is one revision ahead with this laptop's own copy: no "Changed in two places" (savecore Sync.ownWrite).
+    {
+      const before = (await cloud(laptop, id)).revision;
+      // The PUT reaches the account, its answer is cut; the page stays offline (its quick retry too) until it is looked at.
+      const saves = url => new URL(url).pathname.startsWith('/api/saves');
+      let taken = 0;
+      const lose = async route => {
+        if (taken) return route.abort('internetdisconnected');
+        if (route.request().method() !== 'PUT' || new URL(route.request().url()).pathname !== '/api/saves/' + encodeURIComponent(id)) return route.continue();
+        const answer = await route.fetch(); taken = answer.status(); return route.abort('connectionreset');
+      };
+      await a.route(saves, lose);
+      await playHere(a, id, 'laptop-lost');
+      await syncNow(a);
+      await until(async () => taken > 0, 'the upload reaches the account');
+      c = await cloud(laptop, id);
+      assert.deepEqual([taken, c.revision], [200, before + 1]); assert.match(c.run, /laptop-lost-->$/);
+      const unheard = await deviceSave(a, id);
+      assert.deepEqual([unheard.base, unheard.dirty], [before, true], 'the page never heard the answer');
+      await a.unroute(saves, lose);
+      await syncNow(a); await savesPage(a);
+      await a.waitForFunction(id => document.querySelector(`li.save-row[data-id="${id}"]`)?.dataset.status === 'SYNCED', id);
+      const heard = await deviceSave(a, id);
+      assert.deepEqual([heard.base, heard.dirty, (await cloud(laptop, id)).revision], [before + 1, false, before + 1]);
+      pass('an upload whose answer is lost (the account took it) is this device\'s own write: synced, never "Changed in two places"');
+    }
     await phoneContext.close(); await laptop.close();
 
     // ---- Mods: Verified and Custom files, a modded save that syncs, "missing mod" elsewhere -------------------------------

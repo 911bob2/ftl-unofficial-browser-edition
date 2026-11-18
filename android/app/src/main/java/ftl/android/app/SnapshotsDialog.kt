@@ -1,5 +1,9 @@
 package ftl.android.app
 
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -15,8 +19,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import ftl.android.app.net.ApiError
+import ftl.android.app.settings.SaveFileIo
 import ftl.android.app.sync.SyncEngine
 import ftl.android.app.ui.ButtonKind
 import ftl.android.app.ui.Ftl
@@ -28,13 +34,15 @@ import ftl.android.app.ui.clock
 import ftl.saves.Snapshot
 import ftl.saves.Snapshots
 import java.io.IOException
+import java.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Saves > ⋯ > Recovery snapshots (docs/SAVES.md): the account's last ten versions of a save, each with Restore, as on
- * the website. Restoring needs the network and the save's lock; the newer snapshots stay, so a restore can be undone.
+ * Saves > ⋯ > Recovery snapshots (docs/SAVES.md): the account's last ten versions of a save, each with Restore and
+ * Download, as on the website. Restoring needs the network and the save's lock; the newer snapshots stay, so a restore
+ * can be undone. Download writes the snapshot as a save file (ftl-snapshot-<revision>.json), which imports as a new save.
  */
 @Composable
 fun SnapshotsDialog(id: String, name: String, onClose: (restored: String?) -> Unit) {
@@ -44,6 +52,23 @@ fun SnapshotsDialog(id: String, name: String, onClose: (restored: String?) -> Un
     var error by remember { mutableStateOf<String?>(null) }
     var confirm by remember { mutableStateOf<Snapshot?>(null) }
     var busy by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    var downloading by remember { mutableStateOf<Long?>(null) }
+    val create = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
+        val revision = downloading
+        downloading = null
+        if (uri != null && revision != null) scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    SaveFileIo.write(context.contentResolver, uri, app.sync.snapshotFile(id, revision, Instant.now().toString()))
+                }
+                Toast.makeText(context, "Snapshot downloaded.", Toast.LENGTH_SHORT).show()
+            } catch (e: IOException) {
+                runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, uri) }
+                error = e.message ?: "The snapshot could not be written there. Try saving it somewhere else."
+            }
+        }
+    }
     LaunchedEffect(id) {
         try {
             list = withContext(Dispatchers.IO) { app.sync.snapshots(id) }
@@ -97,6 +122,7 @@ fun SnapshotsDialog(id: String, name: String, onClose: (restored: String?) -> Un
                 Txt(listOfNotNull(clock(s.createdUtc), Snapshots.kindLabel(s.kind), "revision ${s.revision}", if (s.revision == current) "current" else null)
                     .joinToString(" · "), Ftl.small, Modifier.weight(1f))
                 if (Snapshots.canRestore(s, current, playing)) FtlButton("Restore", { error = null; confirm = s })
+                FtlButton("Download", { error = null; downloading = s.revision; create.launch(Snapshots.fileName(s.revision)) }, kind = ButtonKind.GHOST)
             }
         }
     }

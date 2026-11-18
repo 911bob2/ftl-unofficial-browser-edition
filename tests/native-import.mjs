@@ -56,6 +56,10 @@ function compare(label, got, want) {
     beacons: want.beacons, crew: crew(want.crew), systems: Object.fromEntries(Object.entries(want.systems).sort()), weapons: want.weapons, drones: want.drones,
     augments: [...want.augments].sort(), cargo: want.cargo}, label);
   if (want.breaches != null) assert.equal(got.breaches, want.breaches, label + ': hull breaches');
+  // The battle tail: each weapon's share of a full charge as the original saved it (ProjectileFactory::SaveState).
+  const near = (a, b) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 0.01);
+  if (want.charges) assert.ok(near(got.charges, want.charges), label + ': weapon charges ' + JSON.stringify(got.charges) + ', saved ' + JSON.stringify(want.charges));
+  if (want.enemyCharges) assert.ok(near(got.enemyCharges, want.enemyCharges), label + ': the nearby ship weapon charges ' + JSON.stringify(got.enemyCharges) + ', saved ' + JSON.stringify(want.enemyCharges));
   if (want.enemy != null) assert.equal(got.enemy != null, want.enemy, label + ': a ship at the beacon (' + got.enemy + ')');
   if (want.enemyHostile != null) assert.equal(got.enemyHostile, want.enemyHostile, label + ': that ship is hostile');
 }

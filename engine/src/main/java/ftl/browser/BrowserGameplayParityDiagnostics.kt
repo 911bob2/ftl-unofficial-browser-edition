@@ -387,7 +387,31 @@ object BrowserGameplayParityDiagnostics {
         check(itemSeeds in 40..140) { "3% item chance gave $itemSeeds/3000" }
         val explicit = LootDropGenerator.generateRewards(state, Random(1), RewardTier.LOW, RewardType.WEAPON, 0, Difficulty.NORMAL, true)
         check(explicit.items.isEmpty()) { "Explicit item still got an auto item" }
-        return "rewards: difficulty levels, scrap rolls, item chance, explicit items"
+        // GenerateReward (1.6.14 0x5dff60, 1.6.9 0x5bbae0) skips the random item only for a named weapon or drone of
+        // a known type: an augment's blueprint type stays -1, so ENGI_VIRUS's "standard + DRONE_SPEED" can still roll
+        // a random item (O-M3-1: seed 202's Harmony map, native draws 973-976 after the sector's reseed).
+        val creator = state.eventCreator
+        fun itemCount(tag: String, name: String): Int {
+            val elem = org.jdom2.Element("event")
+                .addContent(org.jdom2.Element("autoReward").setAttribute("level", "LOW").setText("standard"))
+                .addContent(org.jdom2.Element(tag).setAttribute("name", name))
+            val event = state.eventManager.loadEmbeddedEvent(elem, "parity-autoreward-$tag").value
+            var n = 0
+            for (seed in 1..1500) {
+                NativeRandom.seed(seed)
+                val created = creator.create(event, 0, true) ?: continue
+                if (created.drone != null || created.augment?.name.let { it != null && it != name } ||
+                    created.weapon?.name.let { it != null && it != name }) n++
+            }
+            return n
+        }
+        val withAugment = itemCount("augment", "DRONE_SPEED")
+        check(withAugment in 15..90) { "A named augment blocked the random item: $withAugment/1500 random items" }
+        val withWeapon = itemCount("weapon", "LASER_BURST_1")
+        check(withWeapon == 0) { "A named weapon did not block the random item ($withWeapon/1500)" }
+        check(!LootDropGenerator.blocksRandomItem(state.blueprintManager["DRONE_SPEED"]) &&
+            LootDropGenerator.blocksRandomItem(state.blueprintManager["COMBAT_1"])) { "BrowserGameplayParityDiagnostics.kt:blocksRandomItem" }
+        return "rewards: difficulty levels, scrap rolls, item chance, explicit items (a named augment does not block)"
     }
 
     private fun spawnCrewed(state: InGameState): xyz.znix.xftl.Ship {
