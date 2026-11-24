@@ -17,6 +17,8 @@ import ftl.browser.BrowserEngine
  * tracked here and ended by hand when they cannot end any other way.
  *
  * With Settings > Magnifier on, the renderer's [Magnifier] watches the same finger events; the engine gets them unchanged.
+ * With Settings > Pinch to zoom on, the renderer's [Zoom] gets the fingers first: it keeps a pinch's and the minimap's
+ * fingers from the game and passes the rest on (GameRenderer.finger).
  */
 class Input(private val renderer: GameRenderer) {
     private fun post(action: () -> Unit) {
@@ -45,16 +47,18 @@ class Input(private val renderer: GameRenderer) {
         val rawX = e.getX(index)
         val rawY = e.getY(index)
         if (action == 3 || action == 4) down.remove(id) else down[id] = floatArrayOf(rawX, rawY)
-        post {
-            renderer.magnifierTouch(action, id, rawX, rawY, time)
-            BrowserEngine.touch(action, id, renderer.gameX(rawX), renderer.gameY(rawY), time)
-        }
+        post { renderer.finger(action, id, rawX, rawY, time) }
     }
 
     private val down = LinkedHashMap<Int, FloatArray>()
 
     /** Ends every finger still down, as the system's cancel does. For when the app goes away with fingers on it. */
     fun releaseFingers(time: Long = android.os.SystemClock.uptimeMillis()) {
+        if (renderer.zoom != null) {
+            down.clear()
+            post { renderer.cancelFingers(time) }
+            return
+        }
         for ((id, at) in down) post { BrowserEngine.touch(4, id, renderer.gameX(at[0]), renderer.gameY(at[1]), time) }
         down.clear()
         post { renderer.magnifier?.reset() }

@@ -77,7 +77,7 @@ internal object GameplayParitySaveMigrationChecks {
     }
 
     /** The ship's mind control system, added in the layout's own room when it has none. */
-    private fun mindOf(ship: Ship): MindControl? {
+    internal fun mindOf(ship: Ship): MindControl? {
         ship.mindControl?.let { return it }
         if (HS.active) {
             xyz.znix.xftl.hs.lua.LuaAdaptersWP5Ship.luaAddSystem(ship, 14)
@@ -90,7 +90,7 @@ internal object GameplayParitySaveMigrationChecks {
     }
 
     /** A fight in which the enemy's mind control system holds a crew member of the player's; null without such a pirate. */
-    private fun enemyHoldsOne(main: MainGame, container: GameContainer): Triple<InGameState, MindControl, LivingCrew>? {
+    internal fun enemyHoldsOne(main: MainGame, container: GameContainer): Triple<InGameState, MindControl, LivingCrew>? {
         val state = BrowserGameplayParityDiagnostics.fresh(main, container)
         var found: MindControl? = null
         var seed = 71

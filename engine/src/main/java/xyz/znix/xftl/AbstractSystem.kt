@@ -888,6 +888,12 @@ abstract class AbstractSystem(val blueprint: SystemBlueprint) {
         return emptyList()
     }
 
+    /**
+     * The buttons on the touch layout's open system panel, the top one first, each in its own section: by default the
+     * mouse layout's [makeExtraButtons] (one button a section).
+     */
+    open fun makeTouchPanelButtons(): List<Button> = makeExtraButtons(ConstPoint.ZERO)
+
     fun addSkillPoint(skill: Skill) {
         manningCrew?.addSkillPoint(skill)
     }

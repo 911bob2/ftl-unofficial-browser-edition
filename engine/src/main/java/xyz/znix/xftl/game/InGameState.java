@@ -4305,11 +4305,28 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         if (shipUI != null) shipUI.clearCrewSelection();
     }
 
+    /**
+     * The out-of-fuel wait takes the new-location path of a jump (WorldManager::CheckForNewLocation 0x619fc0 ->
+     * ClearLocation 0x614d00), so the ship at the beacon, never hostile then, is not saved into the event and goes, with
+     * the player's boarders aboard it (KillEveryone(true)) and its systems' ShipDestroyed. Oracle r24-nofuel: the
+     * crew-killed ship is gone when the wait's event opens. The wait's own event and hazard are JumpWindow's.
+     */
+    public void waitClearsShip() {
+        if (enemy == null || enemyIsHostile) return;
+        xyz.znix.xftl.systems.BoardersLost.clearLocation(this, enemy);
+        if (enemy.getMindControl() != null) enemy.getMindControl().shipLeftBehind();
+        setEnemy(null);
+        if (currentBeacon != null) currentBeacon.setShip(null);
+    }
+
     /** The location part of WorldManager::ClearLocation (0x614d00): the scene is kept, the hazard and the event go. */
     public void clearLocation() {
         if (currentBeacon == null) return;
         // WorldManager::ClearLocation (0x614d00): the player's boarders on a ship still here are lost (KillEveryone(true)).
         if (enemy != null) xyz.znix.xftl.systems.BoardersLost.clearLocation(this, enemy);
+        // Then every system of that ship gets ShipDestroyed (ShipManager 0x49c8c0): its mind control lets go of the
+        // player's crew (MindSystem::ShipDestroyed 0x62f860), who would stay under control with that ship's loop gone.
+        if (enemy != null && enemy.getMindControl() != null) enemy.getMindControl().shipLeftBehind();
         currentBeacon.captureSpace(gameMap);
         currentBeacon.clearEnvironment();
         // A hostile ship still here is saved into the event (ShipEvent::actualBlueprint), which ClearEvent's +0x1d0

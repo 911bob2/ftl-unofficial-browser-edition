@@ -220,6 +220,21 @@ td button { margin-right: .4rem; }
 .gamebar label { font-size: .75rem; }
 #game { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; flex: 1; min-height: 0; }
 .game-container:fullscreen #game { height: 0; }
+/* Pinch to zoom (web/zoom.mjs): the zoomed canvas is clipped to the game; the minimap floats over it. */
+.game-container.zoomed { overflow: hidden; }
+.zoom-minimap { position: absolute; z-index: 4; display: flex; flex-direction: column; border: 2px solid #8da7aa; background: #000; touch-action: none; user-select: none; box-shadow: 0 2px 10px rgba(0,0,0,.6); }
+.zoom-minimap[hidden] { display: none; }
+.zoom-minimap.bar-below { flex-direction: column-reverse; }
+.zoom-bar { display: flex; align-items: stretch; background: #19282c; cursor: grab; }
+.zoom-grip { flex: 1; background: linear-gradient(#8da7aa,#8da7aa) center 30% / 2.2em 2px no-repeat, linear-gradient(#8da7aa,#8da7aa) center 50% / 2.2em 2px no-repeat, linear-gradient(#8da7aa,#8da7aa) center 70% / 2.2em 2px no-repeat; }
+.zoom-reset { border: 0; border-left: 1px solid #8da7aa; background: #33494d; color: #ffd94d; font: 600 .9rem/1 var(--ftl-font); cursor: pointer; padding: 0; }
+.zoom-map { display: block; width: 100%; cursor: crosshair; }
+.zoom-seen { position: absolute; border: 2px solid #ffd94d; pointer-events: none; box-sizing: border-box; }
+.zoom-options { position: relative; }
+.zoom-options > summary { list-style: none; }
+.zoom-options > summary::-webkit-details-marker { display: none; }
+.zoom-options-panel { position: absolute; right: 0; top: calc(100% + .3rem); z-index: 6; display: grid; gap: .5rem; width: 16rem; padding: .7rem; background: #19282c; border: 1px solid #8da7aa; }
+.zoom-options-panel p { margin: 0; font-size: .72rem; color: #b9cbc8; }
 .game-container.header-hidden .gamebar { position: absolute; top: 0; left: 0; right: 0; transform: translateY(-100%); transition: transform 140ms ease; }
 .game-container.header-hidden.header-peek .gamebar,.game-container.header-hidden .gamebar:focus-within { transform: none; }
 .show-header { display: none; position: absolute; top: 0; left: 50%; z-index: 5; width: 72px; height: 14px; padding: 0; transform: translateX(-50%); border: 0; border-radius: 0 0 6px 6px; background: rgba(141,167,170,.55); cursor: pointer; }

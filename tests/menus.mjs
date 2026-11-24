@@ -14,6 +14,7 @@ import {optionsUiChecks,colorblindNoticeUiCheck} from './options-ui.mjs';
 import {hangarUiChecks} from './hangar-ui.mjs';
 import {presentationUiChecks} from './ui-presentation.mjs';
 import {back,enterFullscreen,gameBarUiChecks,consoleToggleUiCheck,escapeExitUiChecks,hangarEscapeCheck,saveCloseUiChecks} from './gamebar-ui.mjs';
+import {zoomUiChecks} from './zoom-ui.mjs';
 const origin=process.env.MENU_ORIGIN??'http://localhost:8084',checks=[];
 assert.ok(['http://localhost:8083','http://localhost:8084'].includes(origin),'Use an isolated menu fixture');
 const readyDeadline=Date.now()+hangMs(20000);
@@ -113,6 +114,7 @@ for(const [name,type,options,user] of [['Chromium',chromium,{channel:'chromium'}
   }
   await gameBarUiChecks(page,{pass,name});
   await escapeExitUiChecks(page,{snapshot,state,windowIs,click,pass,name});
+  await zoomUiChecks(page,{snapshot,state,windowIs,pass,name});
   await click(1180,527);await state('SettingsMenuState');await windowIs('OptionsWindow');
   await colorblindNoticeUiCheck(page,{snapshot,windowIs,click,pass,name,context:'title'});
   await click(712,370);await windowIs('HotkeysWindow');await click(1140,635);await windowIs('OptionsWindow');

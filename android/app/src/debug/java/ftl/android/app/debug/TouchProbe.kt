@@ -70,6 +70,8 @@ object TouchProbe {
         val main = BrowserEngine.getGame()
         out["state"] = main?.currentState?.javaClass?.simpleName
         out["mouse"] = main?.gameContainer?.input?.let { listOf(it.mouseX, it.mouseY) }
+        // Settings > Pinch to zoom (null when off): the zoom, the minimap's parts in view pixels (tools/android-touch/zoom.mjs)
+        out["zoom"] = ftl.android.app.game.GameRenderer.active?.zoom?.probe()
         out["snapshot"] = Raw(main?.let { ftl.browser.BrowserDebug.snapshot(it) } ?: "null")
         val game = BrowserEngine.getGame()?.currentState as? InGameState
         out["flight"] = game != null

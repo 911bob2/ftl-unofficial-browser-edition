@@ -1210,6 +1210,8 @@ class JumpWindow(val game: InGameState, showSectorMap: () -> Unit, val jump: (Be
         game.advanceFleet()
         // CommandGui::OnLoop's wait branch calls ShipManager::Wait (0x49d300): the partial jump reset.
         game.player.browserWaitOutOfFuel()
+        // The wait's location replaces this one as a jump's does: the ship still here goes (ClearLocation).
+        game.waitClearsShip()
         if (sector.isLastStand && game.browserSpawnBossHere()) {
             game.mainGame.writeRunSave(); return
         }

@@ -464,4 +464,7 @@ class LazyShipBlueprint(
     // the constructor 0x760db0 defaults them to 0 and INT_MAX).
     val minSector: Int = elem.getChildTextTrim("minSector")?.toIntOrNull() ?: 0
     val maxSector: Int = elem.getChildTextTrim("maxSector")?.toIntOrNull() ?: Int.MAX_VALUE
+
+    /** Whether the blueprint's systemList names the system [codename] (installed or not), without loading the ship. */
+    fun listsSystem(codename: String): Boolean = elem.getChild("systemList")?.getChild(codename) != null
 }

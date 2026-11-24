@@ -140,6 +140,7 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityFixCrewChecks.run") { GameplayParityFixCrewChecks.run(main, container) }
             step("GameplayParitySaveMigrationChecks.run") { GameplayParitySaveMigrationChecks.run(main, container) }
             step("GameplayParityCrewlessChecks.run") { GameplayParityCrewlessChecks.run(main, container) }
+            step("GameplayParityTemporalChecks.run") { GameplayParityTemporalChecks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)

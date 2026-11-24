@@ -1,5 +1,5 @@
 const version=new URL(import.meta.url).search;
-const [{createGL},{createAudio},{Unzlib},{createFramePacer}]=await Promise.all([import('./gl.mjs'+version),import('./audio.mjs'+version),import('./vendor/fflate-0.8.3.mjs'+version),import('./frame-pacer.mjs'+version)]);
+const [{createGL},{createAudio},{Unzlib},{createFramePacer},{createZoom}]=await Promise.all([import('./gl.mjs'+version),import('./audio.mjs'+version),import('./vendor/fflate-0.8.3.mjs'+version),import('./frame-pacer.mjs'+version),import('./zoom.mjs'+version)]);
 export async function loadGame({canvas,manifest,fetchBoot,fetchEngine=null,fetchAudio,onProgress,onSave,run=null,profile=null,settings=null,ae=true,audioContext,closeAudioContext=true,accountId="diagnostics",mods=null}){
   onProgress('Loading game resources…',{stage:'files'});const packed=await fetchBoot();const view=new DataView(packed);if(view.getUint32(0)!==0x46544c42)throw Error('Invalid asset bundle');const n=view.getUint32(4);const entries=JSON.parse(new TextDecoder().decode(new Uint8Array(packed,8,n)));const base=8+n;
   window.ftlFiles=new Map(entries.map(e=>[e.name,new Uint8Array(packed,base+e.offset,e.length)]));
@@ -38,11 +38,19 @@ export async function loadGame({canvas,manifest,fetchBoot,fetchEngine=null,fetch
   const listen=(target,name,handler,options={})=>target.addEventListener(name,handler,{...options,signal:listeners.signal});
   const position=e=>{const r=canvas.getBoundingClientRect(),scale=Math.min(r.width/1280,r.height/720),left=r.left+(r.width-1280*scale)/2,top=r.top+(r.height-720*scale)/2;return [Math.round((e.clientX-left)/scale),Math.round((e.clientY-top)/scale)];};
   listen(canvas,'contextmenu',e=>e.preventDefault());
-  listen(canvas,'pointermove',e=>{const [x,y]=position(e);events.push(()=>engine.mouse(x,y,0,0));});
-  listen(canvas,'pointerdown',e=>{audio.resume();canvas.focus({preventScroll:true});canvas.setPointerCapture(e.pointerId);const [x,y]=position(e);events.push(()=>engine.mouse(x,y,0,0),()=>engine.mouse(x,y,1,[0,2,1][e.button]));});
-  listen(canvas,'pointerup',e=>{const [x,y]=position(e);events.push(()=>engine.mouse(x,y,2,[0,2,1][e.button]));});
+  // Pinch to zoom (web/zoom.mjs): null while the setting is off, and then every pointer goes as it always did. On, it
+  // sees a touch pointer first and may hold it back; toGame then gives the game what these listeners would have.
+  let zoom=null;
+  const toGame=(kind,e,[x,y])=>{
+    if(kind==='down'){audio.resume();canvas.focus({preventScroll:true});try{canvas.setPointerCapture(e.pointerId);}catch{}events.push(()=>engine.mouse(x,y,0,0),()=>engine.mouse(x,y,1,[0,2,1][e.button]));}
+    else if(kind==='move')events.push(()=>engine.mouse(x,y,0,0));
+    else events.push(()=>engine.mouse(x,y,2,[0,2,1][e.button]));
+  };
+  listen(canvas,'pointermove',e=>{if(zoom?.take(e))return;const [x,y]=position(e);events.push(()=>engine.mouse(x,y,0,0));});
+  listen(canvas,'pointerdown',e=>{if(zoom?.take(e))return;audio.resume();canvas.focus({preventScroll:true});canvas.setPointerCapture(e.pointerId);const [x,y]=position(e);events.push(()=>engine.mouse(x,y,0,0),()=>engine.mouse(x,y,1,[0,2,1][e.button]));});
+  listen(canvas,'pointerup',e=>{if(zoom?.take(e))return;const [x,y]=position(e);events.push(()=>engine.mouse(x,y,2,[0,2,1][e.button]));});
   // the notch for the game, and the distance in screen units for the debug console's smooth scrolling (a trackpad's small steps)
-  listen(canvas,'wheel',e=>{e.preventDefault();const [x,y]=position(e),r=canvas.getBoundingClientRect(),scale=Math.min(r.width/1280,r.height/720)||1,px=e.deltaY*(e.deltaMode===1?40:e.deltaMode===2?720*scale:1)/scale,change=Math.sign(e.deltaY)*-120;events.push(()=>engine.wheel?engine.wheel(x,y,change,px):engine.mouse(x,y,3,change));},{passive:false});
+  listen(canvas,'wheel',e=>{e.preventDefault();if(zoom&&e.ctrlKey){zoom.wheel(e);return;}const [x,y]=position(e),r=canvas.getBoundingClientRect(),scale=Math.min(r.width/1280,r.height/720)||1,px=e.deltaY*(e.deltaMode===1?40:e.deltaMode===2?720*scale:1)/scale,change=Math.sign(e.deltaY)*-120;events.push(()=>engine.wheel?engine.wheel(x,y,change,px):engine.mouse(x,y,3,change));},{passive:false});
   const special={Space:32,Quote:39,Comma:44,Minus:45,Period:46,Slash:47,Semicolon:59,Equal:61,BracketLeft:91,Backslash:92,BracketRight:93,Backquote:96,Escape:256,Enter:257,Tab:258,Backspace:259,Insert:260,Delete:261,ArrowRight:262,ArrowLeft:263,ArrowDown:264,ArrowUp:265,PageUp:266,PageDown:267,Home:268,End:269,CapsLock:280,ScrollLock:281,NumLock:282,PrintScreen:283,Pause:284,Numpad0:320,Numpad1:321,Numpad2:322,Numpad3:323,Numpad4:324,Numpad5:325,Numpad6:326,Numpad7:327,Numpad8:328,Numpad9:329,NumpadDecimal:330,NumpadDivide:331,NumpadMultiply:332,NumpadSubtract:333,NumpadAdd:334,NumpadEnter:335,NumpadEqual:336,ShiftLeft:340,ControlLeft:341,AltLeft:342,MetaLeft:343,ShiftRight:344,ControlRight:345,AltRight:346,MetaRight:347};
   function key(e,down){let k=special[e.code]??(/^Key[A-Z]$/.test(e.code)?e.code.charCodeAt(3):/^Digit\d$/.test(e.code)?e.code.charCodeAt(5):/^F\d+$/.test(e.code)?289+Number(e.code.slice(1)):e.key.length===1?e.key.toUpperCase().charCodeAt(0):0);log('input',down?'key.down':'key.up',{physicalKey:e.code,character:e.key,keyId:k,modifiers:{ctrl:e.ctrlKey,shift:e.shiftKey,alt:e.altKey,meta:e.metaKey},...diagnosticContext()});if(k){e.preventDefault();events.push(()=>engine.key(k,e.key.length===1?e.key.charCodeAt(0):0,down));}}
   listen(canvas,'keydown',e=>{audio.resume();if(!e.repeat)key(e,true);});listen(canvas,'keyup',e=>key(e,false));
@@ -55,6 +63,7 @@ export async function loadGame({canvas,manifest,fetchBoot,fetchEngine=null,fetch
       benchmark?.callback(now,interval);
       const dt=Math.min(Math.max(0,interval)/1000,.05);last=now;
       if(!document.hidden){
+        zoom?.frame(now);
         renderDelta+=dt;
         const started=benchmark?performance.now():0;
         if(!suspended){for(const event of events.splice(0)){event();engine.step(0);}engine.step(dt);}else events.length=0;
@@ -69,13 +78,13 @@ export async function loadGame({canvas,manifest,fetchBoot,fetchEngine=null,fetch
       requestAnimationFrame(frame);
     }catch(e){stopped=true;benchmark?.cancel('Engine stopped: '+e);console.error(e);window.dispatchEvent(new CustomEvent('ftl-engine-error',{detail:e}));}
   }
-  const release=()=>{events.length=0;engine.resetInput();};
+  const release=()=>{events.length=0;zoom?.cancel();engine.resetInput();};
   const updateFocus=()=>engine.focusChanged(!document.hidden&&document.hasFocus()&&document.activeElement===canvas);
   listen(canvas,'blur',()=>{release();updateFocus();engine.save();});
   listen(canvas,'focus',updateFocus);
   listen(window,'blur',()=>{release();engine.focusChanged(false);engine.save();});
   listen(window,'focus',updateFocus);
-  listen(canvas,'pointercancel',release);
+  listen(canvas,'pointercancel',e=>{if(!zoom?.take(e))release();});
   for(const name of ['pointerdown','pointerup','pointermove','pointercancel','wheel'])listen(canvas,name,e=>log('input',name,{position:{x:e.clientX,y:e.clientY},gamePosition:position(e),button:e.button,pointerId:e.pointerId,...diagnosticContext(),pointerCapture:canvas.hasPointerCapture(e.pointerId)}));
   listen(document,'fullscreenchange',()=>{release();log('input','fullscreen.changed',diagnosticContext());});
   listen(canvas,'webglcontextlost',e=>{e.preventDefault();release();engine.pause();log('runtime','webgl.context.lost',{},'error');});
@@ -83,6 +92,8 @@ export async function loadGame({canvas,manifest,fetchBoot,fetchEngine=null,fetch
   listen(document,'visibilitychange',()=>{if(document.hidden){benchmark?.cancel('Keep the game visible while benchmarking');release();}updateFocus();if(document.hidden)engine.save();last=lastRendered=performance.now();updateWork=renderDelta=0;pacer.reset();});
   engine.render();requestAnimationFrame(frame);canvas.focus();onProgress('Ready');window.ftlEngine={pause:engine.pause,save:engine.save,newRun:engine.newRun,restore:engine.restore,runSave:engine.runSave,profileSave:engine.profileSave,inFlight:engine.inFlight,debugConfig:engine.debugConfig,debugSnapshot:engine.debugSnapshot,diagnosticRun:engine.diagnosticRun,diagnosticProfile:engine.diagnosticProfile,diagnosticSettings:engine.diagnosticSettings,consoleOpen:engine.consoleOpen,consoleToggle:engine.consoleToggle,consoleExecute:engine.consoleExecute,consoleConfig:engine.consoleConfig,consoleOutput:engine.consoleOutput,menuCancel:engine.menuCancel,saveKind:engine.saveKind,saveSettle:engine.saveSettle,
     frameRateLimit:engine.frameRateLimit,missingContent:engine.missingContent,
+    // Pinch to zoom on (its settings) or off (null); window.ftlZoom is the running zoom, for the browser checks.
+    setZoom(settings){if(!settings){zoom?.destroy();zoom=null;}else if(zoom)zoom.configure(settings);else zoom=createZoom({canvas,container:canvas.parentElement,position,toGame,settings:{...settings}});window.ftlZoom=zoom;},
     async benchmark(durationMs,warmupMs=2000){benchmark??=(await import('./benchmark.mjs'+version)).createBenchmark();updateWork=0;try{return await benchmark.start(durationMs,warmupMs);}finally{benchmark=null;updateWork=0;}},
-    suspend:value=>{suspended=value;release();engine.pause();},freeze:value=>{suspended=value;release();},stop:()=>{stopped=true;benchmark?.cancel('Game stopped');listeners.abort();release();engine.pause();engine.save();engine.shutdown();for(const id of audio.sources.keys())audio.call('deleteSource',id);if(closeAudioContext)audio.context.close();canvas.style.cursor='default';for(const url of cursors.values())URL.revokeObjectURL(url);}};return window.ftlEngine;
+    suspend:value=>{suspended=value;release();engine.pause();},freeze:value=>{suspended=value;release();},stop:()=>{stopped=true;benchmark?.cancel('Game stopped');listeners.abort();release();zoom?.destroy();zoom=null;window.ftlZoom=null;engine.pause();engine.save();engine.shutdown();for(const id of audio.sources.keys())audio.call('deleteSource',id);if(closeAudioContext)audio.context.close();canvas.style.cursor='default';for(const url of cursors.values())URL.revokeObjectURL(url);}};return window.ftlEngine;
 }

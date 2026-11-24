@@ -298,10 +298,7 @@ object Buttons {
         // "out of fuel" (bOutOfFuel), with tooltip_jump_noJump on hover.
         private val hsNoJump: Boolean get() = xyz.znix.xftl.hs.ship.HsShipState.enemyNoJump(game, ship)
         private val noJumpTooltip by lazy { HotkeyDelayedTooltip(game, "tooltip_jump_noJump", null) }
-        // CommandGui::OnLoop (0x536770) sets bOutOfFuel whenever the fuel is 0 and makes the button inactive with a
-        // hostile ship and no fuel or while TutorialManager::AllowJumping is false; an inactive button out of fuel shows
-        // it (Multiverse's tutorial starts with no fuel and the jump locked).
-        private val outOfFuel: Boolean get() = ship.fuelCount == 0 && (game.getEnemyOf(ship) != null || tutorialBlocked) || hsNoJump
+        private val outOfFuel: Boolean get() = outOfFuel(game, ship)
         // CommandGui::OnLoop (0x536770) sets the button inactive while TutorialManager::AllowJumping (0x4113b0) is
         // false: the tutorial shows a grey JUMP with no READY until the map lesson.
         private val tutorialBlocked: Boolean
@@ -461,6 +458,24 @@ object Buttons {
                 g.tooltip = tooltip
             } else if (rawHovered && hsNoJump) {
                 g.tooltip = noJumpTooltip
+            }
+        }
+
+        companion object {
+            /**
+             * The jump button's out-of-fuel lock, for the desktop button and the touch layout's alike. CommandGui::OnLoop
+             * (1.6.14 0x536770) sets bOutOfFuel whenever the fuel is 0, and the button active as
+             * TutorialManager::AllowJumping and not (CombatControl's current target is hostile (0x577a40: the target's
+             * ShipManager +0x10, Targetable::hostile) and the fuel is 0). Out of fuel beside a ship that is not hostile (its
+             * crew dead, its surrender taken, a neutral ship) the button stays active and opens the map with its wait
+             * and distress controls. An inactive button out of fuel shows it (Multiverse's tutorial starts with no fuel
+             * and the jump locked); so does Hyperspace's `<noJump>` enemy (CommandGui::OnLoop hook).
+             */
+            @JvmStatic
+            fun outOfFuel(game: InGameState, ship: Ship): Boolean {
+                val tutorialBlocked = game.mainGame?.tutorialAdapter?.controller?.mapOpeningAllowed == false
+                return ship.fuelCount == 0 && (game.getEnemyOf(ship) != null || tutorialBlocked) ||
+                    xyz.znix.xftl.hs.ship.HsShipState.enemyNoJump(game, ship)
             }
         }
 

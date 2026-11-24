@@ -178,8 +178,9 @@ class ConsoleReceiver : BroadcastReceiver() {
                 TouchProbe.state(cmd.substring(11))
                 return@Runnable
             }
-            if (cmd == "newrun") {
-                BrowserEngine.newRun("PLAYER_SHIP_HARD", 1)
+            if (cmd == "newrun" || cmd.startsWith("newrun ")) {
+                // newrun [ship blueprint]: a new run on that ship (default the Kestrel), normal difficulty.
+                BrowserEngine.newRun(cmd.substringAfter(' ', "PLAYER_SHIP_HARD").trim().ifEmpty { "PLAYER_SHIP_HARD" }, 1)
                 return@Runnable
             }
             if (cmd.startsWith("loadfile ")) {
@@ -216,6 +217,16 @@ class ConsoleReceiver : BroadcastReceiver() {
                 Log.i("FTL-Audio", "played " + cmd.substring(10).trim())
             }
             else if (cmd.startsWith("showevent ")) state.debugShowEvent(cmd.substring(10))
+            else if (cmd == "temporal") {
+                // The player's temporal system and its touch panel (canvas units): ready, armed, running, the box's
+                // point and the open panel's buttons.
+                val t = state.player.systems.firstOrNull { it is xyz.znix.xftl.hs.systems.Temporal } as xyz.znix.xftl.hs.systems.Temporal?
+                val hud = state.shipUI.touch
+                if (t == null || hud == null) Log.i("FTL-Temporal", "none")
+                else Log.i("FTL-Temporal", "power=${t.powerSupplied}/${t.energyLevels} ready=${t.isReady} arm=${t.armState} on=${t.turnedOn} " +
+                    "speeding=${t.isSpeeding} room=${t.currentRoom?.id} left=${t.chargeLeft} box=${hud.diagnosticBoxPoint(t)?.let { "${it.x},${it.y}" }} " +
+                    "panel=${hud.diagnosticPanelButtons(t).joinToString(";") { it.joinToString(",") }}")
+            }
             else if (cmd == "power") {
                 // Each player system's power (selected/max, ion limit, ion timer) and the free reactor power, for the haptics checks.
                 Log.i("FTL-Haptic", "power free=${state.player.powerAvailable} " + state.player.systems.filterIsInstance<xyz.znix.xftl.systems.MainSystem>()

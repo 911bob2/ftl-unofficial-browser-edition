@@ -56,6 +56,7 @@ import ftl.android.app.FtlApplication
 import ftl.android.app.ScreenDialog
 import ftl.android.app.game.Magnifier
 import ftl.android.app.game.ScreenFit
+import ftl.android.app.game.Zoom
 import ftl.android.app.icons.AppIcon
 import ftl.android.app.icons.AppIcons
 import ftl.android.app.log.DebugLog
@@ -171,6 +172,8 @@ private fun GeneralSection() {
     var language by remember { mutableStateOf(GameLanguage.read(app.store.settings())) }
     var haptics by remember { mutableStateOf(hapticsValue(context)) }
     var magnifier by remember { mutableStateOf(Magnifier.enabled(context)) }
+    var zoomOn by remember { mutableStateOf(Zoom.enabled(context)) }
+    var zoom by remember { mutableStateOf(Zoom.load(context)) }
     Panel(tab = "General") {
         val mode = when (fit.mode) {
             ScreenFit.Mode.DEFAULT -> "Default"
@@ -183,12 +186,18 @@ private fun GeneralSection() {
             Magnifier.setEnabled(context, on)
             magnifier = on
         }
+        SwitchRow("Pinch to zoom", "Two fingers pinch the game larger and move it; a two-finger tap goes back to 1x. From the next time a game starts.", zoomOn, framed = true) { on ->
+            Zoom.setEnabled(context, on)
+            zoomOn = on
+        }
+        if (zoomOn) OptionRow("Minimap", Zoom.describe(zoom), { dialog = "minimap" })
         OptionRow("Language", GameLanguage.label(language), { dialog = "language" })
         if (icons.supported) OptionRow("App icon", if (icons.random) "Random, now ${icons.current.title}" else icons.current.title, { dialog = "icon" }) { IconImage(icons.current, 36) }
     }
     when (dialog) {
         "screen" -> ScreenDialog { dialog = null; fit = ScreenFit.load(context) }
         "haptics" -> HapticsDialog { dialog = null; haptics = hapticsValue(context) }
+        "minimap" -> MinimapDialog(zoom, { s -> Zoom.save(context, s); zoom = s }) { dialog = null }
         "language" -> FtlDialog("Language", { dialog = null }, { FtlButton("Cancel", { dialog = null }) }) {
             Txt("The game's language, from the next time a game starts. This launcher stays in English.", Ftl.small)
             val shown = GameLanguage.CHOICES + listOfNotNull(language?.takeIf { code -> code != "en" && GameLanguage.CHOICES.none { it.first == code } }?.let { it to it })
@@ -203,6 +212,22 @@ private fun GeneralSection() {
         "icon" -> if (icons.supported) IconDialog(icons, scope) { dialog = null }
     }
     IconQuestions(icons)
+}
+
+/** Settings > Pinch to zoom's minimap: on or off, its size, and back to its first place. It is dragged by its bar in the game. */
+@Composable
+private fun MinimapDialog(s: Zoom.Settings, onChange: (Zoom.Settings) -> Unit, onClose: () -> Unit) {
+    FtlDialog("Minimap", onClose, { FtlButton("Done", onClose, kind = ButtonKind.PRIMARY) }) {
+        SwitchRow("Show the minimap", "While zoomed: the whole screen, small, with the part in view framed. Touch it to look elsewhere; drag its bar to move it; its 1x button goes back to 1x.", s.minimap) {
+            onChange(s.copy(minimap = it))
+        }
+        Txt("Size", Ftl.label)
+        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (size in Zoom.Size.entries) ChoiceRow(size.label, s.size == size) { onChange(s.copy(size = size)) }
+        }
+        val home = s.placeX == Zoom.DEFAULT_X && s.placeY == Zoom.DEFAULT_Y
+        FtlButton(if (home) "In its first place (top right)" else "Put it back top right", { onChange(s.copy(placeX = Zoom.DEFAULT_X, placeY = Zoom.DEFAULT_Y)) }, enabled = !home)
+    }
 }
 
 /** The icon, the Random choice and what a change may have to ask. Changes go one at a time, off the main thread; the screen moves at once. */

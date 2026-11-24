@@ -158,6 +158,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     }
 
     private val jumpButton = TouchButton(511, 0, 93, 54)
+    /** The touch JUMP button takes a tap (set by [update]); for the gameplay checks. */
+    internal val diagnosticJumpActive: Boolean get() = jumpButton.active
     private val shipButton = TouchButton(606, 0, 82, 63)
     private val storeButton = TouchButton(693, 0, 90, 53)
     private val optionsButton = TouchButton(968, 0, 56, 56)
@@ -183,7 +185,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     private val autofireFont = NativeFonts.font(game::getFont, 62)
 
     private fun updateButtons() {
-        val readyToJump = ship.isFtlReady && ship.canChargeFTL && !(ship.fuelCount == 0 && game.enemy != null) &&
+        // The desktop button's rule (CommandGui::OnLoop): out of fuel only a hostile ship keeps the jump inactive.
+        val readyToJump = ship.isFtlReady && ship.canChargeFTL && !Buttons.JumpButton.outOfFuel(game, ship) &&
             game.mainGame?.tutorialAdapter?.controller?.mapOpeningAllowed != false && !game.isPlayerJumping
         jumpButton.active = readyToJump
         shipButton.active = game.mainGame?.tutorialAdapter?.controller?.shipOpeningAllowed != false
@@ -406,7 +409,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
             }
         } else {
             val hs = xyz.znix.xftl.hs.HS.active
-            val noFuel = ship.fuelCount == 0 && game.enemy != null
+            val noFuel = Buttons.JumpButton.outOfFuel(game, ship)
             val down = !jumpButton.active && !noFuel
             g.colour = when {
                 noFuel -> if (hs) xyz.znix.xftl.hs.render.HsColors.jump(6) else Constants.WARNING_COLOUR_RED
@@ -843,7 +846,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
 
     // ---- systems: a box per system, drag for power, flick for all or nothing ----------------------------------------
     private inner class Box(val system: AbstractSystem, val x: Int, val wide: Boolean) {
-        val extras: List<Button> = system.makeExtraButtons(ConstPoint.ZERO)
+        val extras: List<Button> = system.makeTouchPanelButtons()
         val isMain get() = system is MainSystem
         val tooltip = system.createTooltip()
         val drawer = Drawer(!isMain) { (tooltip as? StandardTooltip)?.getText() }
@@ -872,7 +875,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val mannable: Boolean get() = system.info.canBeManned
         val cooldownLevel: Int get() = when (system) {
             is xyz.znix.xftl.systems.Cloaking, is BackupBattery, is Hacking, is xyz.znix.xftl.systems.MindControl,
-            is xyz.znix.xftl.systems.Artillery -> maxOf((system as? MainSystem)?.powerSupplied ?: 1, 1).coerceAtMost(4)
+            is xyz.znix.xftl.systems.Artillery, is xyz.znix.xftl.hs.systems.Temporal -> maxOf((system as? MainSystem)?.powerSupplied ?: 1, 1).coerceAtMost(4)
             else -> 0
         }
 
@@ -890,7 +893,7 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         private val sections: List<Int> get() = when (system) {
             is Doors, is Teleporter -> listOf(56, 56)
             is xyz.znix.xftl.systems.Clonebay -> List(minOf(system.queue.size, 3)) { 34 }
-            else -> if (extras.isEmpty()) emptyList() else listOf(56)
+            else -> List(extras.size) { 56 }
         }
 
         private val sectionsShare: Int get() = sections.sumOf { it + 8 }
@@ -1059,6 +1062,17 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         }
         boxCache = made
         return made
+    }
+
+    /** Tests: the canvas point a finger opens [system]'s box at, or null without a box. */
+    fun diagnosticBoxPoint(system: AbstractSystem): ConstPoint? =
+        boxes().firstOrNull { it.system === system }?.let { ConstPoint(hudX + it.x + 32, BOX_Y + 30) }
+
+    /** Tests: the canvas rectangles (x, y, w, h) of the buttons on [system]'s open panel, the top one first; none while closed. */
+    fun diagnosticPanelButtons(system: AbstractSystem): List<IntArray> {
+        val box = selected?.takeIf { it.system === system } ?: return emptyList()
+        val tops = box.buttonTops
+        return box.panelButtons.indices.mapNotNull { i -> tops.getOrNull(i)?.let { intArrayOf(hudX + box.x + 4, it, 56, 56) } }
     }
 
     private var selected: Box? = null
@@ -1418,6 +1432,8 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
     private fun cooldownFraction(box: Box): Float = when (val s = box.system) {
         is xyz.znix.xftl.systems.Clonebay -> (s.hsTimeToClone / s.cloneDuration).coerceIn(0f, 1f)
         is xyz.znix.xftl.systems.Artillery -> s.touchCharge
+        // Hyperspace's TemporalBox is a CooldownSystemBox: the dilation's time left at the effective power.
+        is xyz.znix.xftl.hs.systems.Temporal -> s.chargeLeft
         else -> {
             val b = box.extras.firstOrNull { it is SystemPowerButton } as? SystemPowerButton
             val left = b?.timeRemaining
@@ -1464,6 +1480,10 @@ class TouchHud(private val ui: PlayerShipUI, private val game: InGameState) : To
         val tops = box.buttonTops
         for ((i, b) in box.panelButtons.withIndex()) {
             val top = tops.getOrNull(i) ?: continue
+            if (b is xyz.znix.xftl.hs.systems.Temporal.TouchButton) {
+                b.drawAt(g, box.x + 4, top, b === pressedExtra)
+                continue
+            }
             val name = when (box.system) {
                 is Doors -> if (i == 0) "button_door_top" else "button_door_bottom"
                 is Teleporter -> if (i == 0) "button_tele_up" else "button_tele_down"

@@ -221,6 +221,10 @@ class GameActivity : Activity() {
             // Settings > Magnifier as it was when this game started; its haptic is Settings > Haptics' Magnifier.
             magnifier = Magnifier.forGame(Magnifier.enabled(this)),
             onMagnifier = { haptics.play(xyz.znix.xftl.game.TouchHaptics.MAGNIFIER, 1) },
+            // Settings > Pinch to zoom as it was when this game started; a minimap dragged elsewhere is kept there.
+            zoom = Zoom.load(this).let { settings ->
+                Zoom.forGame(Zoom.enabled(this), settings) { x, y -> Zoom.save(applicationContext, Zoom.load(applicationContext).copy(placeX = x, placeY = y)) }
+            },
         )
         input = Input(renderer)
         view = GameView(this, renderer).apply {

@@ -24,6 +24,10 @@ import xyz.znix.xftl.weapons.AbstractWeaponBlueprint
  *   walks to the first free slot of its room for its new side (FindSlot(iRoomId, -1, true), MoveToRoom).
  * - CrewAI::UpdateCrewMember (1.6.9 0x603410): a fight (task 7) whose slot's room has no boarders left turns idle at
  *   once, walking or not.
+ * - MindSystem::ShipDestroyed (1.6.14 0x62f860, the release 0x62f740 / Hyperspace's ReleaseCrew): the enemy's mind
+ *   control lets go of the player's crew member it holds on the frame its ship's hull is below 1 (ShipManager::OnLoop
+ *   0x4abd40 calls every system's ShipDestroyed; here ShipAI.updateIdle's release on that frame), and when the player's ship leaves it behind (WorldManager::
+ *   ClearLocation 0x614d00 -> ShipManager 0x49c8c0); the crew member is the player's again at the next beacon.
  */
 internal object GameplayParityPsFu6Checks {
     fun run(main: MainGame, container: GameContainer): String {
@@ -45,6 +49,8 @@ internal object GameplayParityPsFu6Checks {
             case("mindControlReslot") { mindControlReslot(main, container) }
             case("combatEndsWithoutBoarders") { combatEndsWithoutBoarders(main, container) }
             case("combatKeptForMindControlled") { combatKeptForMindControlled(main, container) }
+            case("mindControlEndsOnLeaving") { mindControlEndsOnLeaving(main, container) }
+            case("mindControlEndsOnDestruction") { mindControlEndsOnDestruction(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
@@ -244,5 +250,55 @@ internal object GameplayParityPsFu6Checks {
             "a fight in room ${room.id} ended although a mind-controlled crew member stands there"
         }
         return "a mind-controlled crew member keeps a fight in its room going, fighting or not"
+    }
+
+    private fun checkReleased(state: xyz.znix.xftl.game.InGameState, crew: LivingCrew, mind: xyz.znix.xftl.systems.MindControl, what: String, settled: Boolean = true) {
+        check(!crew.isMindControlled && !mind.holds(crew)) { "$what, the player's crew member is still mind controlled" }
+        check(crew.mode == AbstractCrew.SlotType.CREW && crew.playerControllable) { "$what, the player's crew member is on side ${crew.mode}" }
+        // The ship's crew lists follow in its next loop.
+        if (settled) check(state.player.intruders.none { it === crew }) { "$what, the player's crew member counts as a boarder on its own ship" }
+    }
+
+    /** The player's ship jumps away while the enemy's mind control holds one of its crew: free at the next beacon. */
+    private fun mindControlEndsOnLeaving(main: MainGame, container: GameContainer): String {
+        val (state, mind, crew) = GameplayParitySaveMigrationChecks.enemyHoldsOne(main, container)
+            ?: return "mind control over a jump (no fixture pirate has room for a mind system)"
+        val player = state.player
+        player.fuelCount = 3
+        player.ftlChargeProgress = 1f
+        val from = state.currentBeacon
+        val dest = from.neighbours.first()
+        state.beginJumpOut(dest)
+        // Under control all the way out: the original lets go only when the location is cleared.
+        check(crew.isMindControlled) { "the crew member was let go as the jump started" }
+        var frames = 0
+        while (state.currentBeacon !== dest && frames++ < 200) main.update(container, .05f)
+        check(state.currentBeacon === dest) { "no arrival after 10 s" }
+        checkReleased(state, crew, mind, "at the next beacon", settled = false)
+        repeat(20) {
+            state.shipUI.diagnosticDialogue?.selectOption(0)
+            main.update(container, .05f)
+        }
+        checkReleased(state, crew, mind, "a second after the arrival")
+        return "the enemy's mind control ends when the player's ship leaves it behind"
+    }
+
+    /** The enemy's ship is destroyed while its mind control holds a crew member of the player's: free at once. */
+    private fun mindControlEndsOnDestruction(main: MainGame, container: GameContainer): String {
+        val (state, mind, crew) = GameplayParitySaveMigrationChecks.enemyHoldsOne(main, container)
+            ?: return "mind control over the enemy's destruction (no fixture pirate has room for a mind system)"
+        val enemy = state.enemy!!
+        enemy.health = 0
+        state.updateGameState(.05f)
+        check(state.enemy === enemy && !enemy.isGone) { "Set-up: the destroyed ship is gone at once" }
+        checkReleased(state, crew, mind, "on the frame the enemy's hull reached 0", settled = false)
+        var frames = 0
+        while (state.enemy != null && frames++ < 200) {
+            state.shipUI.diagnosticDialogue?.selectOption(0)
+            main.update(container, .05f)
+        }
+        check(state.enemy == null) { "the destroyed ship never went" }
+        checkReleased(state, crew, mind, "once the destroyed ship has gone")
+        return "the enemy's mind control ends with its ship"
     }
 }

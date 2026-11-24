@@ -25,6 +25,8 @@ class GameRenderer(
     /** Settings > Magnifier, or null when it is off (then nothing here looks at the fingers); [onMagnifier]: it came up. */
     val magnifier: Magnifier? = null,
     private val onMagnifier: () -> Unit = {},
+    /** Settings > Pinch to zoom, or null when it is off (then fingers and the picture go as they always did). */
+    val zoom: Zoom? = null,
 ) {
     private var lastDropped: List<String> = xyz.znix.xftl.savegame.MissingContent.dropped
     val events = ConcurrentLinkedQueue<Runnable>()
@@ -80,6 +82,7 @@ class GameRenderer(
     fun onSurfaceChanged(width: Int, height: Int) {
         viewW = width
         viewH = height
+        zoom?.resize(width, height)
         if (TouchMode.enabled) TouchMode.canvasW = fit.canvasWidth(width, height)
         layOut(frame?.w ?: WIDTH, frame?.h ?: HEIGHT)
     }
@@ -134,6 +137,7 @@ class GameRenderer(
             frame?.let { useFrame(it) }
             // Suspended (taken over) or shut down: the last frame stays on screen and the engine is not touched again.
             if (!suspended && BrowserEngine.running()) {
+                zoom?.tick(android.os.SystemClock.uptimeMillis(), zoomedToGame)
                 while (true) {
                     val e = events.poll() ?: break
                     e.run()
@@ -143,6 +147,8 @@ class GameRenderer(
                 if (TouchMode.keyboardWanted != keyboardShown || TouchMode.keyboardFocusY != keyboardFocus) {
                     keyboardShown = TouchMode.keyboardWanted
                     keyboardFocus = TouchMode.keyboardFocusY
+                    // The keyboard's place on the picture is worked out at 1x (GameView): typing is at 1x.
+                    if (keyboardShown) zoom?.reset()
                     onKeyboard(keyboardShown, keyboardFocus)
                 }
                 val dropped = xyz.znix.xftl.savegame.MissingContent.dropped
@@ -169,10 +175,17 @@ class GameRenderer(
         GLES30.glViewport(0, 0, viewW, viewH)
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        val l = frameLeft.toInt()
-        val b = (viewH - frameTop - shown.h * frameScaleY).toInt()
-        GLES30.glBlitFramebuffer(0, 0, shown.w * pixels, shown.h * pixels, l, b, l + (shown.w * frameScaleX).toInt(), b + (shown.h * frameScaleY).toInt(),
-            GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
+        val z = zoom
+        if (z != null && z.zoomed) {
+            // Settings > Pinch to zoom: the part in view, larger.
+            val r = z.blit(shown.w, shown.h, pixels, frameLeft, frameTop, frameScaleX, frameScaleY)
+            GLES30.glBlitFramebuffer(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
+        } else {
+            val l = frameLeft.toInt()
+            val b = (viewH - frameTop - shown.h * frameScaleY).toInt()
+            GLES30.glBlitFramebuffer(0, 0, shown.w * pixels, shown.h * pixels, l, b, l + (shown.w * frameScaleX).toInt(), b + (shown.h * frameScaleY).toInt(),
+                GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
+        }
         magnifier?.let { m ->
             val lens = m.lens(android.os.SystemClock.uptimeMillis(), area(shown))
             if (m.appeared(lens)) {
@@ -181,6 +194,7 @@ class GameRenderer(
             }
             if (lens != null) drawLens(lens, shown)
         }
+        z?.minimap()?.let { drawMinimap(it, shown) }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, shown.id)
         if (!readyReported) {
             readyReported = true
@@ -188,8 +202,40 @@ class GameRenderer(
         }
     }
 
-    /** Where the frame lies on the view. */
-    private fun area(f: Frame) = Magnifier.Area(frameLeft, frameTop, f.w * frameScaleX, f.h * frameScaleY)
+    /** Where the frame lies on the view; zoomed, the part of it in view. */
+    private fun area(f: Frame): Magnifier.Area {
+        val z = zoom
+        if (z == null || !z.zoomed) return Magnifier.Area(frameLeft, frameTop, f.w * frameScaleX, f.h * frameScaleY)
+        val l = maxOf(0f, frameLeft * z.scale + z.panX)
+        val t = maxOf(0f, frameTop * z.scale + z.panY)
+        val r = minOf(viewW.toFloat(), (frameLeft + f.w * frameScaleX) * z.scale + z.panX)
+        val b = minOf(viewH.toFloat(), (frameTop + f.h * frameScaleY) * z.scale + z.panY)
+        return Magnifier.Area(l, t, r - l, b - t)
+    }
+
+    /** A finger event as the view got it (view pixels): through Settings > Pinch to zoom when it is on. Game thread. */
+    fun finger(action: Int, id: Int, x: Float, y: Float, time: Long) {
+        val z = zoom
+        if (z == null) toGame.touch(action, id, x, y, time) else z.touch(action, id, x, y, time, zoomedToGame)
+    }
+
+    /** Settings > Pinch to zoom: every finger gone without its end; the game gets the cancels of those it has. */
+    fun cancelFingers(time: Long) {
+        zoom?.cancelAll(time, zoomedToGame)
+        magnifier?.reset()
+    }
+
+    /** What reaches the game: the magnifier sees it too. */
+    private val toGame = Zoom.Sink { action, id, x, y, time ->
+        magnifierTouch(action, id, x, y, time)
+        BrowserEngine.touch(action, id, gameX(x), gameY(y), time)
+    }
+
+    /** The same from the zoom, which may pass on several held-back events at once: a zero step after each, as for any event. */
+    private val zoomedToGame = Zoom.Sink { action, id, x, y, time ->
+        toGame.touch(action, id, x, y, time)
+        BrowserEngine.step(0f)
+    }
 
     /** A finger event for the magnifier, in view pixels (game thread, before the engine gets it). */
     fun magnifierTouch(action: Int, id: Int, x: Float, y: Float, time: Long) {
@@ -210,10 +256,11 @@ class GameRenderer(
         fill(lens.x - e, lens.y - e, lens.size + 2 * e, lens.size + 2 * e, 0.55f, 0.85f, 0.95f)
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
         // The picture's pixels around the finger: view pixels to the frame's (rows counted from the bottom in GL).
-        val fx = (lens.srcX - frameLeft) / frameScaleX * pixels
-        val fy = (lens.srcY - frameTop) / frameScaleY * pixels
-        val fw = lens.srcSize / frameScaleX * pixels
-        val fh = lens.srcSize / frameScaleY * pixels
+        val s = zoom?.scale ?: 1f
+        val fx = ((zoom?.unzoomX(lens.srcX) ?: lens.srcX) - frameLeft) / frameScaleX * pixels
+        val fy = ((zoom?.unzoomY(lens.srcY) ?: lens.srcY) - frameTop) / frameScaleY * pixels
+        val fw = lens.srcSize / s / frameScaleX * pixels
+        val fh = lens.srcSize / s / frameScaleY * pixels
         val fullH = shown.h * pixels
         GLES30.glBlitFramebuffer(fx.toInt(), (fullH - fy - fh).toInt(), (fx + fw).toInt(), (fullH - fy).toInt(),
             lens.x.toInt(), (viewH - lens.y - lens.size).toInt(), (lens.x + lens.size).toInt(), (viewH - lens.y).toInt(),
@@ -232,6 +279,54 @@ class GameRenderer(
             fill(x0, y0, w, s, colour[0], colour[1], colour[2])
             fill(x0 + s - w, y0, w, s, colour[0], colour[1], colour[2])
         }
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
+    }
+
+    /**
+     * Settings > Pinch to zoom's minimap over the picture: a bar to drag it by (three grip lines and a 1x button), the
+     * whole frame, small, and an amber frame round the part in view.
+     */
+    private fun drawMinimap(m: Zoom.Minimap, shown: Frame) {
+        fun fill(b: Zoom.Box, r: Float, g: Float, bl: Float) {
+            GLES30.glScissor(b.x.toInt(), (viewH - b.y - b.h).toInt(), b.w.toInt().coerceAtLeast(1), b.h.toInt().coerceAtLeast(1))
+            GLES30.glClearColor(r, g, bl, 1f)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        }
+        fun ring(b: Zoom.Box, t: Float, r: Float, g: Float, bl: Float) {
+            fill(Zoom.Box(b.x - t, b.y - t, b.w + 2 * t, t), r, g, bl)
+            fill(Zoom.Box(b.x - t, b.y + b.h, b.w + 2 * t, t), r, g, bl)
+            fill(Zoom.Box(b.x - t, b.y, t, b.h), r, g, bl)
+            fill(Zoom.Box(b.x + b.w, b.y, t, b.h), r, g, bl)
+        }
+        val e = m.border
+        GLES30.glEnable(GLES30.GL_SCISSOR_TEST)
+        ring(m.box, e, 0.55f, 0.85f, 0.95f)
+        fill(m.bar, 0.10f, 0.16f, 0.17f)
+        // Grip: three lines in the middle of the bar's free part.
+        val gw = m.bar.h * 1.2f
+        val gx = m.bar.x + (m.bar.w - m.reset.w - gw) / 2
+        for (i in 0 until 3) fill(Zoom.Box(gx, m.bar.y + m.bar.h * (0.3f + 0.17f * i), gw, (m.bar.h * 0.07f).coerceAtLeast(2f)), 0.55f, 0.85f, 0.95f)
+        // The 1x button: "1x" in blocks on a lighter square.
+        fill(m.reset, 0.20f, 0.30f, 0.32f)
+        fill(Zoom.Box(m.reset.x, m.reset.y, (e / 2).coerceAtLeast(1f), m.reset.h), 0.55f, 0.85f, 0.95f)
+        val cell = m.reset.h * 0.6f / GLYPH_H
+        var glyphX = m.reset.x + (m.reset.w - cell * (GLYPH_W * 2 + 1)) / 2
+        val glyphY = m.reset.y + (m.reset.h - cell * GLYPH_H) / 2
+        for (glyph in listOf(GLYPH_1, GLYPH_X)) {
+            for ((row, line) in glyph.withIndex()) for ((col, c) in line.withIndex())
+                if (c == '#') fill(Zoom.Box(glyphX + col * cell, glyphY + row * cell, cell, cell), 1f, 0.85f, 0.3f)
+            glyphX += cell * (GLYPH_W + 1)
+        }
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        val map = m.map
+        GLES30.glBlitFramebuffer(0, 0, shown.w * pixels, shown.h * pixels,
+            map.x.toInt(), (viewH - map.y - map.h).toInt(), (map.x + map.w).toInt(), (viewH - map.y).toInt(),
+            GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
+        GLES30.glEnable(GLES30.GL_SCISSOR_TEST)
+        val t = (e * 0.8f).coerceAtLeast(2f)
+        val seen = m.seen
+        ring(Zoom.Box(seen.x + t, seen.y + t, seen.w - 2 * t, seen.h - 2 * t), t, 1f, 0.85f, 0.3f)
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
         GLES30.glClearColor(0f, 0f, 0f, 1f)
     }
@@ -281,9 +376,9 @@ class GameRenderer(
         }
     }
 
-    /** View pixels to game units. */
-    fun gameX(x: Float) = ((x - frameLeft) / frameScaleX).toInt()
-    fun gameY(y: Float) = ((y - frameTop) / frameScaleY).toInt()
+    /** View pixels to game units (zoomed: the point under it at 1x first). */
+    fun gameX(x: Float) = (((zoom?.unzoomX(x) ?: x) - frameLeft) / frameScaleX).toInt()
+    fun gameY(y: Float) = (((zoom?.unzoomY(y) ?: y) - frameTop) / frameScaleY).toInt()
 
     companion object {
         /** The running game's renderer (only one at a time). */
@@ -293,5 +388,11 @@ class GameRenderer(
         const val HEIGHT = 720
         /** The widest canvas the setting offers (21:9), for checking the driver can hold the doubled frame. */
         private const val MAX_CANVAS = 1792
+
+        // The minimap's "1x" in blocks.
+        private const val GLYPH_W = 5
+        private const val GLYPH_H = 7
+        private val GLYPH_1 = listOf("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###.")
+        private val GLYPH_X = listOf(".....", ".....", "#...#", ".#.#.", "..#..", ".#.#.", "#...#")
     }
 }

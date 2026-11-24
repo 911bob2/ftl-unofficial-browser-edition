@@ -687,6 +687,17 @@ sabotaging and fighting when the ship is not hostile any more, boarders aboard t
 `tools/hs-oracle/sessions/fix-crew.json` (F3 with the tracer and the probe `data/hs_oracle/fix-crew.lua`: `fx-clone`,
 `fx-doors`, `fx-spread`, `fx-sab`, `fx-jump`).
 
+Round 24 (release 2.2.3 reports), vanilla, F2, F3: `GameplayParityPsFu6Checks`' `mindControlEndsOnLeaving` and
+`mindControlEndsOnDestruction` (the enemy's mind control holds a crew member of the player's; it is the player's again
+at the next beacon after a jump, and on the frame the enemy's hull reaches 0: MindSystem::ShipDestroyed from
+WorldManager::ClearLocation and ShipManager::OnLoop, with ShipAI::OnLoop's DeactiveWeapons on a destroyed ship), and `GameplayParityFlow3Checks`' `noFuelBesideNeutralShip` (no
+fuel beside a hostile ship locks the desktop and the touch JUMP button; beside the same ship no longer hostile both stay
+active, the map opens with WAIT and the distress toggle, the toggle, the empty tank and the open button outlive a save,
+the wait clears the ship that was not hostile, as a jump's new location does, and with the beacon on draws from
+NO_FUEL_DISTRESS (vanilla data), fuel ends the lock). Native sides:
+`tools/hs-oracle/sessions/r24-fuel.json` (F3, probe `data/hs_oracle/r24-fuel.lua`, written by `gen-r24-fuel.py`:
+`r24-nofuel`, `r24-mcjump`, `r24-mcdead`).
+
 `gameplay-parity`'s `GameplayParitySaveMigrationChecks` holds the save revision and the migration step of loading a run
 ([SAVES.md](SAVES.md), "Save revision and migrations"; vanilla, F2, F3): `revisionRoundTrip` (a written run carries the
 current revision and keeps it over a load; a newer one loads unmigrated), `stuckCrewFreed` (a run written as release
@@ -695,7 +706,18 @@ the run written again is current and is not migrated again), `stuckBodyFreed` (t
 bay), `idleSystemDoesNotHold` (the same beside the enemy's mind system between two uses), `heldCrewStays` (a crew member the enemy's mind system holds stays with it), `currentRevisionKeeps` (the stuck
 state in a current run stays), `importedOriginal` (vanilla data: a run from the original game in its wrapper does not
 pass the migration step). Android: `SaveMigrationsTest` (`android :app:testDebugUnitTest`), the same shared code on a
-ship's crew without game data: the revision attribute, the migrations a revision needs, the wrapper, migration 1.
+ship's crew without game data: the revision attribute, the migrations a revision needs, the wrapper, migration 1, and
+migration 2 on a run of release 2.2.3 (revision 1).
+
+`gameplay-parity`'s `GameplayParityTemporalChecks` (vanilla, F2: no ship lists the system; F3) takes every ship
+blueprint whose systemList has Hyperspace's temporal system. Each player ship (Multiverse's C.E.L. A-C, Rhyme A-C and
+the Sylvan C, which starts without it and gets it installed from its slot) on the mouse layout (a click on the box's
+speed up button at +(9, 9) and slow down button at +(9, 35), then on a room) and on the touch layout (fingers through
+`TouchRouter`: the box, its open panel's two buttons, a room): each button arms its kind, the room starts the dilation
+(speeding up or slowing down, the room's dilation set, the time left between 1 and 0 a second on), the buttons arm
+nothing while it runs, a jump ends it and frees the system. Each enemy blueprint with the system is built with it and
+fights 30 s; at least one uses it. The touch cases failed before the temporal panel had its two buttons (one button,
+pressed at no point of the box).
 
 `gameplay-parity`'s `GameplayParityCrewlessChecks` holds report 201, ships without a starting crew (vanilla, F2, F3):
 `everyPlayerShipStarts` (player ships of the loaded data, all layouts: the run starts, two seconds on it is not over,
@@ -889,7 +911,10 @@ their own one-finger script, `tools/android-touch/extras.mjs` ([ANDROID.md](ANDR
 Multiverse storage crate's rule, the shelf's alignment and frame-to-frame stability. `tools/android-touch/tutorial.mjs`
 checks a Lua tutorial's arrows and outlines on the touch HUD (Multiverse's lessons, [ANDROID.md](ANDROID.md#testing)),
 and `tools/android-touch/reorder.mjs` the touch crew reorder (a held box slid to another place; a tap, a hold lifted in
-place and a quick slide still select or paint as before), and `tools/android-touch/hud.mjs` the status bar's warnings, a
+place and a quick slide still select or paint as before), `tools/android-touch/zoom.mjs` Settings > Pinch to zoom with two real fingers (it writes the setting itself; `--off` for
+the setting off): a pinch's fingers never reach the game, a held finger on the zoomed picture is the canvas point under it,
+zoomed taps and a slide on a crew box, the minimap's map, bar (kept) and 1x, two-finger taps; frames at 1x and zoomed;
+and `tools/android-touch/hud.mjs` the status bar's warnings, a
 finger slid from empty space onto a crew box, and adb's keys with the system keyboard staying down. `TouchRouterTest` (`:app:testDebugUnitTest`) is the
 quick check of finger routing, at the engine's call only.
 
@@ -1238,6 +1263,12 @@ positive-score abandonment without victory, duplicate answers/ended-save restore
 Main Menu/Save+Quit preservation and saved/fresh New Game. Boarding fixtures use
 a non-pilot, preserve ownership through mind control, exclude enemy-owned/dead
 crew and reject an unready drive. Both jump routes warn before opening the map.
+
+`tests/zoom-ui.mjs` (Pinch to zoom, [WEBSITE.md](WEBSITE.md#pinch-to-zoom)) is included by `tests/menus.mjs` on the main
+menu: off by default with the canvas untouched and Ctrl+wheel the game's; on, Ctrl+wheel zooms on the pointer, a zoomed
+click opens Options at its new place and not at its 1x one, the minimap's map, bar (kept), size, switch and 1×, and in
+Chromium real touch input (DevTools): a pinch begun on Options presses nothing, a zoomed tap opens it, two-finger taps, a
+held finger after the hold; then a reload keeps the setting and switching it off restores the canvas.
 
 `tests/warnings-ui.mjs` is included by `tests/menus.mjs` in the packaged Menus
 group. Chrome, Edge and Firefox use real pointer/keyboard/toolbar input with the

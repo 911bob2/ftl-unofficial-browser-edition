@@ -28,9 +28,10 @@ internal object GameplayParityFlow3Checks {
             val shields = shieldsKeepCharge(main, container)
             val battery = batteryJump(main, container)
             val wait = noFuelWait(main, container)
+            val neutral = noFuelBesideNeutralShip(main, container)
             val gameOver = gameOverWhileJumping(main, container)
             val pausedGameOver = BrowserGameplayParityDiagnostics.vanillaOnly("pausedGameOver") { gameOverWhilePaused(main, container) }
-            return "flow3 ok: $power, $fade, $fuel, $jumping, $hold, $shields, $battery, $wait, $gameOver, $continueSounds, $pausedGameOver"
+            return "flow3 ok: $power, $fade, $fuel, $jumping, $hold, $shields, $battery, $wait, $neutral, $gameOver, $continueSounds, $pausedGameOver"
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)
@@ -192,6 +193,88 @@ internal object GameplayParityFlow3Checks {
         check(player.shields!!.ionTimer == 0f && player.engines!!.ionTimer == 0f) { "The wait kept the shield/engine lock" }
         check(oxygen.ionTimer > 0f) { "The wait cleared the oxygen lock" }
         return "no-fuel wait"
+    }
+
+    /**
+     * Out of fuel beside a ship that is no longer hostile (its crew dead, its surrender taken, a neutral event ship):
+     * CommandGui::OnLoop (1.6.14 0x536770) locks the jump button with no fuel only while CombatControl's current target
+     * is hostile (0x577a40, Targetable::hostile), so the button stays active, on the desktop and the touch layout
+     * alike. It opens the map with WAIT and the distress toggle (StarMap::OnLoop: outOfFuel = fuel < 1); the toggle
+     * outlives a save; the wait clears the ship as a jump does (ClearLocation 0x614d00, oracle r24-nofuel) and with the
+     * beacon on draws NO_FUEL_DISTRESS (StarMap 0x5f4510); fuel ends it all.
+     */
+    private fun noFuelBesideNeutralShip(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        state.debugSpawnShip(state.eventManager.getShip("PIRATE"), xyz.znix.xftl.game.Difficulty.NORMAL, 2, 71)
+        state.debugFlags.noEnemyFire.set = true
+        val player = state.player
+        player.fuelCount = 0
+        player.ftlChargeProgress = 1f
+        state.updateGameState(.05f)
+        player.ftlChargeProgress = 1f
+        val desktop = state.shipUI.jumpButton ?: error("Set-up: no desktop jump button")
+        var touch = xyz.znix.xftl.game.TouchHud(state.shipUI, state)
+        touch.update(0f)
+        check(player.isFtlReady && desktop.disabled && !touch.diagnosticJumpActive) {
+            "Out of fuel beside a hostile ship: ready ${player.isFtlReady}, desktop jump open ${!desktop.disabled}, touch jump open ${touch.diagnosticJumpActive}"
+        }
+
+        // The fight ends (as when the crew die or the surrender is taken): the ship stays, no longer hostile.
+        state.browserEndHostility()
+        // and the beacon no longer keeps it, as the crew kill's end does (InGameState: it is saved as the ship nearby)
+        state.currentBeacon.ship = null
+        state.updateGameState(.05f)
+        check(state.enemy != null && state.browserCanWait()) { "Set-up: the ship left or is still hostile" }
+        touch.update(0f)
+        check(!desktop.disabled) { "Out of fuel beside a ship that is not hostile, the desktop jump button is inactive" }
+        check(touch.diagnosticJumpActive) { "Out of fuel beside a ship that is not hostile, the touch jump button is inactive" }
+
+        // The button opens the map (the touch tap calls the same openJumpMap) with the no-fuel controls.
+        state.shipUI.openJumpMap()
+        var window = state.shipUI.diagnosticJumpWindow ?: error("The jump button opened no map: ${state.shipUI.diagnosticWindows}")
+        check(window.noFuelButtons.size == 2) { "The out-of-fuel map has ${window.noFuelButtons.size} wait/distress buttons" }
+        fun press(b: xyz.znix.xftl.game.Button) =
+            check(b.mouseDown(xyz.znix.xftl.sys.Input.MOUSE_LEFT_BUTTON, b.pos.x + b.size.x / 2, b.pos.y + b.size.y / 2)) { "The button took no click" }
+        press(window.noFuelButtons[1])
+        check(state.fuelDistressBeacon) { "The distress toggle did not switch the beacon on" }
+
+        // A save keeps the toggle, the empty tank and the neutral ship: the button is still open after the load.
+        val loaded = BrowserGameplayParityDiagnostics.reload(main, state)
+        loaded.updateGameState(.05f)
+        touch = xyz.znix.xftl.game.TouchHud(loaded.shipUI, loaded)
+        touch.update(0f)
+        check(loaded.fuelDistressBeacon && loaded.player.fuelCount == 0 && loaded.enemy != null && loaded.browserCanWait()) {
+            "After a load: distress ${loaded.fuelDistressBeacon}, fuel ${loaded.player.fuelCount}, ship ${loaded.enemy != null}, not hostile ${loaded.browserCanWait()}"
+        }
+        check(touch.diagnosticJumpActive && loaded.shipUI.jumpButton?.disabled == false) { "After a load the jump button is inactive" }
+
+        // WAIT: two seconds of Waiting..., then the wait event; with the beacon on it comes from NO_FUEL_DISTRESS.
+        val stayed = loaded.enemy
+        loaded.shipUI.openJumpMap()
+        window = loaded.shipUI.diagnosticJumpWindow ?: error("After the load the jump button opened no map: ${loaded.shipUI.diagnosticWindows}")
+        press(window.noFuelButtons[0])
+        check(window.isWaiting) { "WAIT did not start the wait" }
+        var frames = 0
+        while (loaded.shipUI.diagnosticJumpWindow != null && frames++ < 100) main.update(container, .05f)
+        check(loaded.shipUI.diagnosticJumpWindow == null) { "The wait never happened" }
+        check(loaded.player.fuelCount == 0 && loaded.fuelDistressBeacon) { "The wait took fuel or switched the beacon off" }
+        // The wait is a new location (CheckForNewLocation -> ClearLocation): the ship that was not hostile goes.
+        check(loaded.enemy !== stayed && loaded.currentBeacon.ship !== stayed) { "The ship that was not hostile is still there after the wait" }
+        val distressList = BrowserGameplayParityDiagnostics.vanillaOnly("distress event") {
+            val list = loaded.eventManager["NO_FUEL_DISTRESS"] as xyz.znix.xftl.sector.EventList
+            val id = loaded.currentBeacon.event.deserialisationId
+            check(list.events.any { it is xyz.znix.xftl.sector.Event && it.deserialisationId == id }) { "The distress wait made $id, not a NO_FUEL_DISTRESS event" }
+            "NO_FUEL_DISTRESS"
+        }
+
+        // Fuel again: the map is the normal one.
+        repeat(5) {
+            loaded.shipUI.diagnosticDialogue?.selectOption(0)
+            main.update(container, .05f)
+        }
+        loaded.player.fuelCount = 1
+        check(!xyz.znix.xftl.game.Buttons.JumpButton.outOfFuel(loaded, loaded.player)) { "With fuel the jump is still out of fuel" }
+        return "no fuel beside a neutral ship: jump open (desktop, touch), map with wait and distress, kept over a load, the ship cleared by the wait, $distressList"
     }
 
     /** CheckGameover is not called while the player jumps; the lost crew ends the run once the ship has arrived. */

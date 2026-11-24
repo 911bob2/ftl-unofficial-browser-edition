@@ -27,7 +27,7 @@ import xyz.znix.xftl.systems.MindControl
  */
 object SaveMigrations {
     /** The revision this build writes: the number of the last migration in [ALL]. */
-    const val CURRENT = 1
+    const val CURRENT = 2
 
     /** The root attribute of a run (`xftlSaveGame`) that holds the revision. */
     const val ATTRIBUTE = "saveRevision"
@@ -41,6 +41,7 @@ object SaveMigrations {
     @JvmField
     val ALL: List<Migration> = listOf(
         Migration(1, "freeUnheldMindControl") { game -> freeUnheldMindControl(listOfNotNull(game.player, game.enemy)) },
+        Migration(2, "freeMindControlOfShipsGone") { game -> freeUnheldMindControl(listOfNotNull(game.player, game.enemy)) },
     )
 
     /** The revision a run was written with: 0 for a run without the attribute (2.1.1 and earlier) or one that does not read. */
@@ -86,6 +87,11 @@ object SaveMigrations {
      * its flag: the clone bay brought it back on the enemy's side, no mind control system listed it, and the run was
      * saved like that. Fixed for new deaths in LivingCrew.onFinishedDying; this frees the crew members such a run
      * still holds.
+     *
+     * Migration 2 runs the same repair on runs of release 2.2.3 (revision 1). There, under Hyperspace, a crew member of
+     * the player's that the enemy's mind control system held kept the mark when that ship was destroyed or the player's
+     * ship left it behind: the system's own loop, which would let go, stopped with the ship. Fixed for new runs in
+     * MindControl.shipDestroyed (MindSystem::ShipDestroyed, from ShipManager::OnLoop and WorldManager::ClearLocation).
      *
      * A crew member of [ships] (the player's ship and the ship at the beacon) that is marked as mind controlled while
      * no mind control system of those ships holds it ([MindControl.holds]) is released the way a system releases it

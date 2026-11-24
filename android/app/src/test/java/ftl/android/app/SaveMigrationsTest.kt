@@ -160,4 +160,17 @@ class SaveMigrationsTest {
         assertTrue(lines[0], lines[0].startsWith("1 freeUnheldMindControl: freed"))
         assertFalse(crew.isMindControlled)
     }
+
+    @Test
+    fun aRunOfRelease223GetsMigrationTwo() {
+        val (game, ship) = shipOfGame()
+        // Release 2.2.3 (revision 1): the enemy's mind control system let go of nobody when its ship was destroyed or
+        // left behind, so its crew member of the player's kept the mark with no system holding it.
+        val crew = crewOf(ship, controlled = true)
+        assertEquals(listOf("freeMindControlOfShipsGone"), SaveMigrations.pending(1).map { it.name })
+        val lines = SaveMigrations.migrate(game, 1)
+        assertEquals(1, lines.size)
+        assertTrue(lines[0], lines[0].startsWith("2 freeMindControlOfShipsGone: freed") && lines[0].contains("1 aboard, 0 waiting"))
+        assertFalse("the crew member a 2.2.3 run left under control is free", crew.isMindControlled)
+    }
 }

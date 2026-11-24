@@ -101,6 +101,9 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     private var box: TemporalBox? = null
 
+    /** Tests: the mouse layout box's corner (TemporalBox::buttonOffset), its speed button at +(9, 9), slow at +(9, 35). */
+    internal val diagnosticBoxPos: IPoint? get() = box?.pos
+
     private fun play(name: String) {
         ship.sys.sounds.getSampleOrWarn(name)?.play()
     }
@@ -249,6 +252,47 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         return listOf(b)
     }
 
+    /**
+     * The touch layout has no temporal box (the iPad game has no such system): its open system panel gets the box's two
+     * buttons, speed up on top and slow down below, as TemporalBox has them, each in its own section.
+     */
+    override fun makeTouchPanelButtons(): List<Button> = listOf(TouchButton(ship.sys, true), TouchButton(ship.sys, false))
+
+    /** What is left of the running dilation, 1 to 0 (CooldownSystemBox's GetCooldownFraction); 0 while off. */
+    val chargeLeft: Float get() = if (turnedOn && timerGoal > 0f) (1f - timerTime / timerGoal).coerceIn(0f, 1f) else 0f
+
+    /**
+     * One of TemporalBox's buttons on the touch panel. Active as the box sets bActive (IsReady while the system is off;
+     * while it is on the box shows no buttons), and a press arms as TemporalBox::LeftMouseClick does (not while locked).
+     * Drawn from the box's own button art at twice its size, the scale of the iPad art, in the panel's 56 px section.
+     */
+    inner class TouchButton(game: InGameState, val speedUp: Boolean) : Button(game, ConstPoint.ZERO, ConstPoint(56, 56)) {
+        private val images = ButtonImageSet.select2(game, if (speedUp) "img/systemUI/button_temporal_speed" else "img/systemUI/button_temporal_slow")
+
+        override val disabled: Boolean get() = !isReady
+
+        override fun draw(g: Graphics) = drawAt(g, pos.x, pos.y, false)
+
+        /** The button at ([x], [y]) on the panel; [pressed] while a finger holds it. */
+        fun drawAt(g: Graphics, x: Int, y: Int, pressed: Boolean) {
+            val img = when {
+                disabled -> images.off
+                pressed -> images.hover
+                else -> images.normal
+            }
+            val inset = (56 - img.width * 2) / 2
+            img.draw(
+                (x + inset).toFloat(), (y + inset).toFloat(), (x + inset + img.width * 2).toFloat(), (y + inset + img.height * 2).toFloat(),
+                0f, 0f, img.width.toFloat(), img.height.toFloat()
+            )
+        }
+
+        public override fun click(button: Int) {
+            if (button != Input.MOUSE_LEFT_BUTTON || !isReady) return
+            setArmed(if (speedUp) ARM_SPEED else ARM_SLOW)
+        }
+    }
+
     override fun hotkeyPressed(key: Hotkey) {
         super.hotkeyPressed(key)
         // TemporalBox::OnKeyDown: only while unlocked, and only for an active button.
@@ -378,7 +422,7 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             val imageX = powerPos.x + 23f - 6f
             val imageY = powerPos.y + 17f - 79f - 7f
             base.draw(imageX, imageY)
-            val fraction = if (timerGoal > 0f) 1f - timerTime / timerGoal else 0f
+            val fraction = chargeLeft
             if (fraction <= 0f) return
             val bars = ceil((level * 3 + 2) * fraction).toInt()
             val height = min(charge.height, 26 + bars * 4)

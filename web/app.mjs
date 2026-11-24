@@ -327,7 +327,7 @@ async function launch(save){
   const {loadGame}=await import('./game.mjs'+version);const {readSettings}=await import('./device-store.mjs'+version);
   engine=await loadGame({canvas:$('game'),manifest,accountId:me.id,fetchBoot:modLaunch?modLaunch.fetchBoot:assetProvider.fetchBoot,fetchEngine:assetProvider.fetchEngine,fetchAudio:modLaunch?modLaunch.fetchAudio:assetProvider.fetchAudio,mods:modLaunch?.overlay,onProgress:(text,detail)=>loadingUpdate(text,detail),onSave:(kind,xml)=>session?.onSave(kind,xml),run:session.run,profile:session.profileXml,settings:readSettings(),ae,audioContext});
   $('game-loading').hidden=true;$('save-status').textContent=save.name;
-  engine.debugConfig?.(diagnostics?.enabled()??false);engine.consoleConfig?.(consoleSetting.consoleEnabled());await diagnostics?.checkpoint('engine.start');
+  engine.debugConfig?.(diagnostics?.enabled()??false);engine.consoleConfig?.(consoleSetting.consoleEnabled());zoomSetting.apply();await diagnostics?.checkpoint('engine.start');
   // A save that names content these game files lack loads without it (the engine drops it); say what went.
   missingTimer=setInterval(async()=>{const names=engine?.missingContent?.();if(names)(await savesUiModule()).showMissingContent(names.split('\n'));},700);
   window.ftlExit=()=>saveAndClose().catch(e=>message(e.message));
@@ -400,6 +400,8 @@ const {initGameBar}=await import('./gamebar.mjs'+version);const gameBar=initGame
 // Logs page: the browser's "Debug console" setting (docs/CONSOLE.md), for the running game too.
 $('console-enabled').checked=consoleSetting.consoleEnabled();
 $('console-enabled').addEventListener('change',e=>{consoleSetting.setConsoleEnabled(e.target.checked);engine?.consoleConfig?.(e.target.checked);gameBar.render();});
+// The game bar's Pinch to zoom and its Minimap options (web/zoom.mjs), for the running game too.
+const zoomSetting=(await import('./zoom-setting.mjs'+version)).initZoomSetting({$,getEngine:()=>engine});
 window.addEventListener('ftl-engine-error',e=>haltGame('The engine stopped: '+(e.detail?.message??e.detail)+'.'));
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&session&&saves?.sync.cloudEnabled){const id=session.id;setTimeout(()=>session?.flush().then(()=>saves.sync.uploadNow(id)).catch(()=>{}),0);}});
 // Leaving the page: the engine saves once more; a write still queued then is kept by the session's pagehide handler

@@ -394,6 +394,25 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             releaseCrew()
     }
 
+    /**
+     * MindSystem::ShipDestroyed (1.6.14 0x62f860) on the ship still at the beacon when the player's ship leaves it:
+     * WorldManager::ClearLocation (0x614d00) runs every system's ShipDestroyed there (ShipManager 0x49c8c0, after
+     * KillEveryone), so a crew member of the player's that this ship holds is the player's again, with the end sound
+     * (the release 0x62f740, Hyperspace's MindSystem::ReleaseCrew); this ship's own loop, which would let go when its
+     * timer ends, does not run any more. On a destroyed ship the release is ShipAI's (ShipAI.updateIdle).
+     *
+     * Without the system's lock: the original rebuilds the ship it left from its event on a return (a fresh mind
+     * system), where this engine keeps the same one.
+     */
+    fun shipLeftBehind() {
+        if (xyz.znix.xftl.hs.HS.active) {
+            if (hsRebuild) hsRebuildControlled()
+            if (hsControlled.isNotEmpty()) hsReleaseCrew(lock = false)
+            return
+        }
+        if (controlledCrew != null) releaseCrew()
+    }
+
     override fun hotkeyPressed(key: Hotkey) {
         super.hotkeyPressed(key)
 
@@ -581,13 +600,13 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         ship.sys.isShipPresent(crew.room.ship) && crew.room.ship.crew.contains(crew)
 
     /** MindSystem::ReleaseCrew (Hyperspace): every crew member goes back with the end sound, then the level's lock. */
-    private fun hsReleaseCrew() {
+    private fun hsReleaseCrew(lock: Boolean = true) {
         for (crew in hsControlled) {
             setMindControl(crew, false)
             endSound.play()
         }
         hsControlled.clear()
-        hsLock(hsLevel.lock)
+        if (lock) hsLock(hsLevel.lock)
         hsTimerFirst = hsTimerSecond
         hsShowState()
     }

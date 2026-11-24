@@ -168,7 +168,7 @@ it; dialogs scroll inside what the bars and keyboard leave, with their buttons a
 The cog in the header, on every launcher screen after the notice, so the log can be reached even if sign-in or the game files
 fail. All of it belongs to the device, not to a save or an account. Settings lies over the screen it was opened from, which stays
 as it was (typed text, a mod download, the place in the list). One page in the launcher's frames, two columns where it is wide
-enough: **General** (Screen, Haptics, Language, App icon, each a row that opens its dialog, and the Magnifier switch), **Saves** (not before the game files are in),
+enough: **General** (Screen, Haptics, Language, App icon, each a row that opens its dialog, the Magnifier and Pinch to zoom switches, and with zoom on its Minimap row), **Saves** (not before the game files are in),
 **Updates** (Check for updates, the automatic check's switch), **Mod scripts** (Disable Lua sandboxing (dangerous): off by
 default, a second confirmation naming the dangers to turn it on, nothing to turn it off; [HS_LUA.md](HS_LUA.md#files-programs-and-the-sandbox)),
 **Help** (debug log, Enable debug console). The title and Back stay on screen while the page scrolls; Back, the system's back or the cog return. The
@@ -273,6 +273,35 @@ finger went down on it, so the magnifier does not help to slide onto one. A crew
 does not take a finger that slides onto it (box selection starts instead), so the magnifier does not help there. It
 comes up during drags too, as the runner's does. Settings > Haptics' **Magnifier** switch: one tick when it comes up. With
 the setting off there is no magnifier at all (`Magnifier.forGame`). The website has no touch layout turned on, so it has none.
+
+### Pinch to zoom
+
+Settings > **Pinch to zoom** (`game/Zoom.kt`, its own preferences file `zoom`, off by default, from the next game started),
+and with it on, **Minimap** (a dialog: Show the minimap, its size Small / Medium / Large, Put it back top right). Neither FTL
+on iPad nor on Windows has one, and it changes no rule of the game: it sits between the fingers and the game, and between
+the game's frame and the screen. The website has the same rules and numbers (`web/zoom.mjs`, [WEBSITE.md](WEBSITE.md#pinch-to-zoom)).
+
+- **Fingers.** The first finger is held back until it moves 2.5 % of the view's height, is held 0.15 s, or lifts; then
+  the game gets it with everything it did so far, in order and with its own times (each followed by a zero step), and
+  every later finger too until all are up, so the beam's second finger, power drags, crew box selection, doors, the
+  scrolling boxes and the hold tooltips work as without zoom. A second finger while the first is held back makes a
+  pinch, and the game gets neither finger: the zoom follows the fingers' distance, from 1x to 4x, and the point between
+  them stays under them, so moving both fingers moves the picture (kept on the screen). A pinch ending below 1.1x is
+  1x. Two fingers tapped together (lifted within 0.3 s, neither moved) go back to 1x, or at 1x zoom 2x on that point.
+  A finger's point on the zoomed picture goes back to the 1x point before `GameRenderer.gameX` / `gameY` turn it into
+  the canvas's units, so every control gets the point under the finger. The mouse is mapped the same way.
+- **Picture.** The game draws its frame as always; `GameRenderer` copies the part in view onto the view, larger
+  (`Zoom.blit`: whole frame pixels, so the picture does not shimmer as it moves). At 1x it is the original copy, unchanged.
+  The magnifier works on the zoomed picture (it shows what the screen shows, twice). When the game asks for the on-screen
+  keyboard the zoom goes back to 1x (the keyboard's place is worked out at 1x).
+- **Minimap**, while zoomed: the whole frame, small (the view's shape; Small, Medium, Large = 22, 30, 38 % of the view's
+  height), with the part in view in an amber frame, beside a bar with grip lines and a **1x** button (below the picture in the screen's top half, above it in the bottom half,
+so dragging it never starts at the screen's edge, where the system takes a swipe; it changes side when a drag ends). A finger on the
+  picture puts the view's centre there (and follows the finger); one on the bar drags the minimap (its place, as
+  fractions of the room it can take, is kept for the next game); the 1x button goes back to 1x. Its fingers never reach
+  the game. First place: the top right corner.
+- With the setting off there is no `Zoom` at all (`Zoom.forGame`): fingers, the copy and the release of fingers when the
+  app goes away take exactly the paths they took before.
 
 ### App icon
 
@@ -433,6 +462,10 @@ on yet.
   none, as the desktop's hover is blocked there.
 - Crew powers: a lone selected crystal shows a lockdown button on its room; Hyperspace's power buttons are on the panel
   beside the touched crew box.
+- Hyperspace's temporal manipulator (Multiverse's C.E.L. and Rhyme cruisers): the iPad game has no such system, so its
+  open system panel takes the desktop box's two buttons, speed up on top and slow down below, drawn from the box's own
+  art at twice its size; each arms the system for a tapped room while it is ready, as the box does. Its box shows the
+  running dilation's time left as a cooldown bar at the effective power (Hyperspace's box is a CooldownSystemBox).
 - Buttons are tapped, as on the iPad: a button acts when the finger lifts, and only if it lifts on the button it went
   down on. A finger slid off the button, or onto another one, taps nothing; other fingers do nothing. This holds on every
   screen without touch controls of its own: the main menu, its confirmation and welcome box, the options (Close, the
@@ -607,6 +640,11 @@ on yet.
   only the first finger; where it sits and what it shows; off by default and absent when off). On the emulator: debug
   builds log `FTL-Magnifier shown at ...` with the haptic's `FTL-Haptic` line; `adb shell input motionevent DOWN|MOVE|UP x y`
   holds a finger for screenshots.
+- Pinch to zoom: `ZoomTest` (off by default and absent when off; a tap, a hold and a drag reach the game with their own
+  places and times, later fingers too; a second finger while the first is held back is a pinch the game never sees; the
+  zoom's limits, snap and two-finger taps; the point under a finger and what is copied; the renderer's mapping equal to
+  the old one when off or at 1x; the minimap's place, sizes, map, bar, 1x and switch; cancels). On the emulator with
+  gRPC fingers: `node tools/android-touch/zoom.mjs --serial <serial> --grpc <port> --out <dir> [--off]` ([TESTS.md](TESTS.md#android-multi-touch-on-the-emulator)).
 - Tutorial pointers: `TouchPointersTest` (an arrow's element, its place and side; an outline over one element or several;
   the `_TOUCH` / `_IPAD` rule; the touch layers' archives) and, on the emulator in Multiverse's tutorial,
   `node tools/android-touch/tutorial.mjs --serial <serial> --out <dir> [--fight] [--only lesson,lesson]`: starts each lesson with pointers through

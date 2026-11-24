@@ -186,6 +186,29 @@ into a sign-in screen. Game and diagnostics modules load when needed. Saves are 
 this browser before anything is sent, so navigation and connection failures lose
 nothing; revisions and per-save locks protect the account's copy.
 
+## Pinch to zoom
+
+The game bar's **Pinch to zoom** (`web/zoom-setting.mjs`, `web/zoom.mjs`): off by default, a setting of this browser
+(`localStorage` `ftl-zoom`, like the debug console's), applied to the running game at once and kept for the next. With it
+on, **Minimap** in the bar opens its options: Show the minimap, its size (Small, Medium, Large) and Put it back top right.
+The rules and numbers are the Android app's ([ANDROID.md](ANDROID.md#pinch-to-zoom)):
+
+- Touch: the first finger is held back until it moves 2.5 % of the canvas's height, is held 0.15 s or lifts, then the
+  game gets it with what it did, in order; a second finger meanwhile makes a pinch (1x to 4x, the point between the
+  fingers stays under them, both fingers move the picture), and the game gets neither. Two fingers tapped together go
+  back to 1x, or at 1x zoom 2x there. A pinch ending below 1.1x is 1x. The browser's own pinch and pan are off the canvas
+  (`touch-action: none`) while the setting is on.
+- A computer: Ctrl and the mouse wheel zoom on the pointer, which is also what a trackpad's pinch sends; the minimap
+  moves the view. Without the setting Ctrl and the wheel stay the game's wheel.
+- The canvas is scaled with a CSS transform inside the game container, so its bounding box, which every pointer is mapped
+  through, is the zoomed one: a click or tap reaches the game point under it. The game draws as always.
+- The minimap (while zoomed) is the game's picture copied each frame onto a small canvas, the part in view framed, beside
+  a bar to drag it by (its place is kept; below the map in the top half, above it in the bottom half) and a 1× button; a click or finger on the picture moves the view there. Its
+  pointers never reach the game.
+- Off, there is no zoom object at all: the canvas has no transform, no `touch-action`, and every pointer goes as before.
+
+Checked by `tests/zoom-ui.mjs` in `tests/menus.mjs` (Chromium with real touch input, Firefox with the mouse and Ctrl+wheel).
+
 ## Verification and recovery
 
 Mutating acceptance scripts require disposable fixtures. Focused coverage lives
