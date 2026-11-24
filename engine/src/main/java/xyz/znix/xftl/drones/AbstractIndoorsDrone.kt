@@ -556,6 +556,13 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
             explodeSound.play()
         }
 
+        /**
+         * A save writes this body (Ship.saveToXML): it is its drone's current body and that drone's ship is still in
+         * the fight, so the drone is written with it. Otherwise the body is a leftover its next [update] removes.
+         */
+        val isSavedWithDrone: Boolean
+            get() = drone.pawn === this && drone.ownerShip.sys.isShipPresent(drone.ownerShip)
+
         override fun saveToXML(elem: Element, refs: ObjectRefs) {
             super.saveToXML(elem, refs)
 

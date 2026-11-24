@@ -288,6 +288,12 @@ are one save and draw nothing, a save made while the ship breaks up ends in the 
 augment, weapon and crew race loads without them and lists them, a sun's and a pulsar's timers come back as saved,
 and (Hyperspace) a projectile's custom damage comes back by its weapon's name. The clone queue is in the progress mode (`BrowserRunStatisticsDiagnostics`), a volley and a
 beam at a destroyed ship in `GameplaySave8Checks`, Hyperspace runs reloaded at every beacon in `reload-F2`/`reload-F3`.
+`GameplaySaveDroneBodyChecks` (release 2.2.4, "Missing object for ID: 'drone_battle2:7'"): the enemy's boarding drone
+(Multiverse: Battle Mk II, `BATTLETOG2_BOARDER`) aboard and fought when its ship is destroyed or jumps away is saved
+on that frame (the event box's autosave) and loaded: the body is not in the run and its fighter has no target, as in
+the game going on; a body whose ship is still here keeps its fight over a reload; a run of revision 2 naming a fight
+target it does not hold loads with the target dropped (migration 3). `SaveMigrationsTest` (Android) has the loader's
+rule and migration 3 on their own.
 
 Native rows: `tools/native-capture/sessions/ps-s2-native.json` (`.build/hs/sweep/vanilla/run.sh`): Continue of
 `run-cx.sav` with the HUD every 0.25 s (`s2-cx`, its browser twin through `tools/ui-capture.sh`), the autosave of an

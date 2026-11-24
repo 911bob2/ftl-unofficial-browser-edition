@@ -27,7 +27,7 @@ import xyz.znix.xftl.systems.MindControl
  */
 object SaveMigrations {
     /** The revision this build writes: the number of the last migration in [ALL]. */
-    const val CURRENT = 2
+    const val CURRENT = 3
 
     /** The root attribute of a run (`xftlSaveGame`) that holds the revision. */
     const val ATTRIBUTE = "saveRevision"
@@ -42,6 +42,7 @@ object SaveMigrations {
     val ALL: List<Migration> = listOf(
         Migration(1, "freeUnheldMindControl") { game -> freeUnheldMindControl(listOfNotNull(game.player, game.enemy)) },
         Migration(2, "freeMindControlOfShipsGone") { game -> freeUnheldMindControl(listOfNotNull(game.player, game.enemy)) },
+        Migration(3, "dropFightTargetsNotSaved") { game -> fightTargetsNotSaved(droppedOf(game)) },
     )
 
     /** The revision a run was written with: 0 for a run without the attribute (2.1.1 and earlier) or one that does not read. */
@@ -68,6 +69,9 @@ object SaveMigrations {
             log(saved, "none", "the run is of revision $saved, newer than this build's $CURRENT: loaded as it is")
             return emptyList()
         }
+        // The loader drops such a reference in a run of any revision; one in a run that should have none is logged too.
+        if (saved >= 3 && droppedOf(game).isNotEmpty())
+            log(saved, "dropFightTargetsNotSaved", "a run of revision $saved: " + fightTargetsNotSaved(droppedOf(game)))
         return pending(saved).map { migration ->
             val line = migration.revision.toString() + " " + migration.name + ": " + migration.run(game)
             log(saved, migration.name, line)
@@ -81,6 +85,26 @@ object SaveMigrations {
             "{\"from\":$saved,\"migration\":" + ftl.browser.BrowserDebug.quote(name) + ",\"result\":" + ftl.browser.BrowserDebug.quote(line) + "}"
         )
     }
+
+    /**
+     * Migration 3, repairs release 2.2.4 and earlier. A boarding drone's body aboard the player's ship stayed in that
+     * ship's crew list after its own ship was destroyed or jumped away, until its next update; the autosave of the
+     * destroyed (or escape) event's box came first, so the run gave the body an ID without writing it, and a crew
+     * member fighting it named it as its fight target: loading stopped with "Missing object for ID" (Multiverse,
+     * Battle Mk II boarders of a destroyed ship). Fixed for new saves in Ship.saveToXML and AbstractCrew.saveToXML.
+     *
+     * The loader itself drops such a target (RefLoader.asyncResolveIfSaved, in AbstractCrew.loadFromXML), as the
+     * reference can only be read while the run is read: the crew member has no target and picks one in its next combat
+     * update, as after any load (the original saves no fight target, CrewMember::SaveState 1.6.14 0x478f10). The body
+     * itself is not in the run, as in the original, which writes a crew drone's body only with its pod in a ship
+     * that is saved. This step reports what the loader dropped.
+     */
+    private fun droppedOf(game: InGameState): List<String> = game.loadDroppedRefs ?: emptyList()
+
+    @JvmStatic
+    fun fightTargetsNotSaved(dropped: List<String>): String =
+        if (dropped.isEmpty()) "no fight target named an object the run does not hold"
+        else "dropped ${dropped.size} fight target(s) the run named without writing them: " + dropped.joinToString(", ")
 
     /**
      * Migration 1, repairs release 2.1.1 (report HS105). Under Hyperspace a crew member that died mind controlled kept

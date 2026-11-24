@@ -74,6 +74,8 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
     public int loadedSaveRevision = xyz.znix.xftl.savegame.SaveMigrations.NOT_LOADED;
     /** What the migrations of this load did, one line each; the debug log has the same lines. */
     public List<String> saveMigrationLines = java.util.Collections.emptyList();
+    /** The references the loaded run named without writing their object, dropped while it was read (RefLoader.dropped). */
+    public List<String> loadDroppedRefs = java.util.Collections.emptyList();
     private ShipAI enemyAI;
 
     private LootPool lootPool;
@@ -2830,6 +2832,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
 
         // This resolves any async-resolved object references.
         refs.switchToResolveMode();
+        loadDroppedRefs = new ArrayList<>(refs.getDropped());
 
         // Load the list of visited sectors, which is used by the sector map.
         for (Element visitedElem : root.getChild("visitedSectors").getChildren("sectorInfo")) {

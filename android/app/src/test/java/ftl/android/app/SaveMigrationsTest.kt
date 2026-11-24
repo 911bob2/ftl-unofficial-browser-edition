@@ -13,6 +13,8 @@ import xyz.znix.xftl.crew.CrewHuman
 import xyz.znix.xftl.crew.LivingCrew
 import xyz.znix.xftl.game.InGameState
 import xyz.znix.xftl.layout.Room
+import xyz.znix.xftl.savegame.ISerialReferencable
+import xyz.znix.xftl.savegame.RefLoader
 import xyz.znix.xftl.savegame.SaveMigrations
 import xyz.znix.xftl.systems.Clonebay
 import xyz.znix.xftl.systems.MindControl
@@ -167,10 +169,43 @@ class SaveMigrationsTest {
         // Release 2.2.3 (revision 1): the enemy's mind control system let go of nobody when its ship was destroyed or
         // left behind, so its crew member of the player's kept the mark with no system holding it.
         val crew = crewOf(ship, controlled = true)
-        assertEquals(listOf("freeMindControlOfShipsGone"), SaveMigrations.pending(1).map { it.name })
+        assertEquals(listOf("freeMindControlOfShipsGone", "dropFightTargetsNotSaved"), SaveMigrations.pending(1).map { it.name })
         val lines = SaveMigrations.migrate(game, 1)
-        assertEquals(1, lines.size)
+        assertEquals(2, lines.size)
         assertTrue(lines[0], lines[0].startsWith("2 freeMindControlOfShipsGone: freed") && lines[0].contains("1 aboard, 0 waiting"))
         assertFalse("the crew member a 2.2.3 run left under control is free", crew.isMindControlled)
+    }
+
+    @Test
+    fun aMissingFightTargetIsDroppedEveryOtherReferenceStaysStrict() {
+        // Release 2.2.4 wrote a crew member's fight target as the ID of a drone body it did not write.
+        val body = object : ISerialReferencable {}
+        val refs = RefLoader()
+        refs.register(body, "drone_battle2:6")
+        val got = HashMap<String, ISerialReferencable?>()
+        refs.asyncResolveIfSaved(ISerialReferencable::class.java, "drone_battle2:6", "fight target of orchid:2") { got["kept"] = it }
+        refs.asyncResolveIfSaved(ISerialReferencable::class.java, "drone_battle2:7", "fight target of orchid:2") { got["dangling"] = it }
+        refs.asyncResolveIfSaved(ISerialReferencable::class.java, "null", "fight target of human:1") { got["none"] = it }
+        refs.switchToResolveMode()
+        assertTrue(got["kept"] === body)
+        assertTrue(got.containsKey("dangling") && got["dangling"] == null)
+        assertTrue(got.containsKey("none") && got["none"] == null)
+        assertEquals(listOf("fight target of orchid:2 -> drone_battle2:7"), refs.dropped)
+        // Any other reference to an ID the run does not hold still stops the load.
+        val strict = try { refs.resolve(ISerialReferencable::class.java, "drone_battle2:7"); null } catch (e: IllegalStateException) { e.message }
+        assertEquals("Missing object for ID: 'drone_battle2:7'", strict)
+    }
+
+    @Test
+    fun aRunOfRelease224GetsMigrationThree() {
+        val (game, _) = shipOfGame()
+        assertEquals(listOf("dropFightTargetsNotSaved"), SaveMigrations.pending(2).map { it.name })
+        game.loadDroppedRefs = listOf("fight target of orchid:2 -> drone_battle2:7")
+        val lines = SaveMigrations.migrate(game, 2)
+        assertEquals(1, lines.size)
+        assertTrue(lines[0], lines[0].startsWith("3 dropFightTargetsNotSaved: dropped 1 fight target") && lines[0].endsWith("-> drone_battle2:7"))
+        game.loadDroppedRefs = emptyList()
+        val clean = SaveMigrations.migrate(game, 2)
+        assertTrue(clean[0], clean[0].contains("no fight target"))
     }
 }

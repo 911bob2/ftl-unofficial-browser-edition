@@ -3567,7 +3567,16 @@ class Ship(
         // Note that events can reference crewmembers, so register them
         // into the global refs.
         val refs = ObjectRefs(globalRefs)
+        // Only what this save writes gets an ID: the crew list below and the drone bodies written with their drone
+        // (savedPawns). A body still in the list after its drone's ship went (destroyed or jumped away; its next
+        // update takes it off, but the destroyed event's box holds the game and its autosave comes first) is not
+        // written: the original writes a crew drone's body only with its pod, in its owner's drone list
+        // (BoarderPodDrone::SaveState 1.6.14 0x420a70; CrewDrone::SaveState 0x775d30 writes nothing), and a ship that
+        // is gone not at all (WorldManager::SaveGame 0x61a3a0). An ID without its object made the run unloadable
+        // ("Missing object for ID", release 2.2.4).
+        val savedPawns = crew.mapNotNull { it as? AbstractIndoorsDrone.Pawn }.filter { it.isSavedWithDrone }
         for (crew in this.crew) {
+            if (crew is AbstractIndoorsDrone.Pawn && crew !in savedPawns) continue
             globalRefs.register(crew, crew.codename)
         }
 
@@ -3669,8 +3678,7 @@ class Ship(
             drone.saveToXML(droneElem, refs)
             dronesElem.addContent(droneElem)
         }
-        for (pawn in crew.mapNotNull { it as? AbstractIndoorsDrone.Pawn }) {
-            if (!sys.isShipPresent(pawn.drone.ownerShip)) continue
+        for (pawn in savedPawns) {
             val droneElem = Element("drone")
             pawn.drone.saveToXML(droneElem, refs)
             dronesElem.addContent(droneElem)

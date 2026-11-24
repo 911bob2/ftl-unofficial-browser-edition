@@ -150,6 +150,29 @@ class RefLoader {
     }
 
     /**
+     * The references [asyncResolveIfSaved] found without their object, in the order met: "<where> -> <id>".
+     */
+    val dropped = ArrayList<String>()
+
+    /**
+     * As [asyncResolve], for a reference a run of release 2.2.4 or an earlier one could write to an object it did not
+     * write (a crew member's fight target that was a drone body left over from a ship that went, see Ship.saveToXML):
+     * an ID that no object of the run has resolves to null and is listed in [dropped] with [where], so the run loads.
+     * Every other reference stays strict.
+     */
+    fun <T : ISerialReferencable> asyncResolveIfSaved(type: Class<T>, id: String, where: String, fn: (T?) -> Unit) {
+        val resolveOrDrop = {
+            if (id != "null" && !objectIds.containsKey(id)) {
+                dropped += "$where -> $id"
+                fn(null)
+            } else {
+                fn(resolve(type, id))
+            }
+        }
+        if (resolving) resolveOrDrop() else resolveFunctions += resolveOrDrop
+    }
+
+    /**
      * Adds an arbitrary function that is run once [switchToResolveMode] is called.
      */
     fun addOnResolveFunction(fn: () -> Unit) {

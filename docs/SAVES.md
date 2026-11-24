@@ -259,7 +259,7 @@ the prefix); Steam Cloud keeps the same files there.
 
 ## Save revision and migrations
 
-Every run the engine writes carries `saveRevision` on its root element (`<xftlSaveGame saveRevision="2">`), the same on
+Every run the engine writes carries `saveRevision` on its root element (`<xftlSaveGame saveRevision="3">`), the same on
 the website and in the app; it is the engine's own data, as the whole run document is, so nothing beside the run changes.
 A run without it was written by release 2.1.1 or an earlier one and counts as revision 0. When a run loads, the
 migrations above its revision run in order on the loaded game, before the ships' first update
@@ -281,6 +281,7 @@ to it. Give it a check in `GameplayParitySaveMigrationChecks` that loads a run w
 | --- | --- | --- |
 | 1 | `freeUnheldMindControl` | Release 2.1.1, report HS105: under Hyperspace a crew member that died mind controlled came back from the clone bay still marked, on the enemy's side for good. A crew member marked as mind controlled while no mind control system of the player's ship or the ship at the beacon holds it (lists it, with its control period running) is released as a system releases it; a body waiting in a clone bay loses the mark. One that a system holds stays with the system. |
 | 2 | `freeMindControlOfShipsGone` | Release 2.2.3: under Hyperspace a crew member of the player's that the enemy's mind control system held kept the mark when that ship was destroyed or the player's ship jumped away from it (the original releases it in MindSystem::ShipDestroyed, 1.6.14 0x62f860, from ShipManager::OnLoop and WorldManager::ClearLocation). The same repair as revision 1, on runs of revision 1. |
+| 3 | `dropFightTargetsNotSaved` | Release 2.2.4 and earlier: a boarding drone's body aboard the player's ship stayed in its crew list after its own ship was destroyed or jumped away, until its next update; the event box's autosave came first and gave the body an ID without writing it, and a crew member fighting it named it as its target, so the run stopped loading ("Missing object for ID: 'drone_battle2:7'", Multiverse). Such a fight target is read as none while the run is read (`RefLoader.asyncResolveIfSaved`, in a run of any revision; the reference cannot wait for a migration); this step lists what was dropped. The crew member picks a target in its next combat update, and the body is not in the run, as in the original (a crew drone's body is written only with its pod, in a ship that is saved; no fight target is saved). New saves write neither (`Ship.saveToXML`, `AbstractCrew.saveToXML`). |
 
 ## Engine requirements
 

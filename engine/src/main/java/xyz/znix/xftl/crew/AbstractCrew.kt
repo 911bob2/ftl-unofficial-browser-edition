@@ -2557,7 +2557,10 @@ abstract class AbstractCrew(
             SaveUtil.addAttrFloat(combat, "attackTimer", attackTimer)
             SaveUtil.addAttrFloat(combat, "attackDuration", attackDuration)
             SaveUtil.addAttrFloat(combat, "damageTimer", damageTime)
-            SaveUtil.addAttrRef(combat, "enemy", refs, enemyToAttack)
+            // A target the save does not write (a drone body left over from a ship that went, see Ship.saveToXML) is
+            // written as none: the original saves no fight target at all (CrewMember::SaveState 1.6.14 0x478f10), so
+            // its crew pick one again after a load, as ours do on their next combat update.
+            SaveUtil.addAttrRef(combat, "enemy", refs, enemyToAttack?.takeIf { refs.isRegistered(it) })
             SaveUtil.addAttrBool(combat, "isPunching", isPunching)
             SaveUtil.addAttrBool(combat, "sharesHostileCell", sharesHostileCell)
             // isPunching and sharesHostileCell are only used for animations
@@ -2673,7 +2676,9 @@ abstract class AbstractCrew(
             attackTimer = combat.getAttributeValue("attackTimer")?.toFloatOrNull()
             attackDuration = SaveUtil.getAttrFloat(combat, "attackDuration")
             damageTime = SaveUtil.getAttrFloat(combat, "damageTimer")
-            SaveUtil.getAttrRef(combat, "enemy", refs, AbstractCrew::class.java) { enemyToAttack = it }
+            // A run of 2.2.4 or earlier may name a target it did not write (see saveToXML): the crew member has none.
+            val enemyRef = combat.getAttributeValue("enemy") ?: error("Missing reference attribute 'enemy'")
+            refs.asyncResolveIfSaved(AbstractCrew::class.java, enemyRef, "fight target of ${elem.getAttributeValue("oid")}") { enemyToAttack = it }
             isPunching = SaveUtil.getAttrBool(combat, "isPunching")
             sharesHostileCell = SaveUtil.getAttrBool(combat, "sharesHostileCell")
         }

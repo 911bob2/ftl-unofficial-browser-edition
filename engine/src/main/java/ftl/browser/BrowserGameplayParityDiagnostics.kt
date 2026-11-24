@@ -114,6 +114,7 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityCrewC5Checks.run") { GameplayParityCrewC5Checks.run(main, container) }
             step("GameplaySave8Checks.run") { GameplaySave8Checks.run(main, container) }
             step("GameplaySavePsS2Checks.run") { GameplaySavePsS2Checks.run(main, container) }
+            step("GameplaySaveDroneBodyChecks.run") { GameplaySaveDroneBodyChecks.run(main, container) }
             step("GameplayParityCloak7Checks.run") { GameplayParityCloak7Checks.run(main, container, graphics) }
             step("GameplayParityVanillaNativeChecks.run") { GameplayParityVanillaNativeChecks.run(main, container) }
             step("GameplayParityLockdownShardChecks.run") { GameplayParityLockdownShardChecks.run(main, container) }
