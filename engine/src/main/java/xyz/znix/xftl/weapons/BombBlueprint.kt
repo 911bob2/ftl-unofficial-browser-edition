@@ -257,10 +257,15 @@ class BombBlueprint(xml: Element) : AbstractWeaponBlueprint(xml) {
         override fun saveToXML(elem: Element, refs: ObjectRefs) {
             super.saveToXML(elem, refs)
 
+            // A bomb aimed at a ship that was destroyed or left, and (Hyperspace) the bomb queued through the fire
+            // animation at such a ship: the save holds no such ship, so the weapon is saved as done firing, as
+            // AbstractProjectileWeaponInstance does. Release 2.2.3 threw on such a queued bomb ("Unregistered object").
+            if (target != null && !refs.isRegistered(target!!.ship) || hsQueue.any { !refs.isRegistered(it.targetShip) })
+                return
+
             SaveUtil.addTagFloat(elem, "firingAnimationTimer", firingAnimationTimer, 0f)
             SaveUtil.addTagBoolIfTrue(elem, "hasFired", hasFired)
-            // The same for a bomb aimed at a ship that was destroyed or left.
-            if (target != null && refs.isRegistered(target!!.ship)) {
+            if (target != null) {
                 SaveUtil.addRoomRef(elem, "target", refs, target!!)
             }
             for (projectile in hsQueue) {

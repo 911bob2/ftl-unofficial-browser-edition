@@ -140,7 +140,7 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         queuedRoom = null
 
         if (isLocked || !functioning) return
-        if (!ship.sys.isShipPresent(room.ship)) return
+        if (!shipManagerPresent(room.ship)) return
 
         turnedOn = true
         isSpeeding = speedUp
@@ -196,8 +196,8 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
         val room = currentRoom
         // TemporalSystem_Wrapper::OnLoop stops when the target's ShipManager is gone (G_->GetShipManager is null), not
-        // when its hull reaches 0: a destroyed ship keeps the dilation until it is removed.
-        if (!functioning || isHackActive || room == null || !ship.sys.isShipPresent(room.ship)) {
+        // when its hull reaches 0: a destroyed ship keeps the dilation until the next location (shipManagerPresent).
+        if (!functioning || isHackActive || room == null || !shipManagerPresent(room.ship)) {
             stopTimeDilation()
         }
 
@@ -225,6 +225,14 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
             }
         }
     }
+
+    /**
+     * Global::GetShipManager(currentShipId) != null: the player's ship, or the enemy WorldManager keeps as
+     * playerShip->enemyShip until the next location, destroyed or not (InGameState.getBrowserRetainedEnemy; HS oracle
+     * wp4-drone-fight: `Hyperspace.ships.enemy` stays set after the kill). So a dilation on a destroyed ship's room runs
+     * on to its timer's end or the player's jump, as in Hyperspace, after the engine has dropped the ship from play.
+     */
+    private fun shipManagerPresent(target: Ship): Boolean = target === ship.sys.player || target === ship.sys.browserRetainedEnemy
 
     // TemporalSystem::_HS_Jump: StopHacking, StopTimeDilation, LockSystem(0).
     override fun onJump() {
@@ -311,7 +319,13 @@ class Temporal(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         SaveUtil.addAttrInt(elem, "strength", dilationStrength)
         SaveUtil.addAttrFloat(elem, "timer", timerTime)
         SaveUtil.addAttrFloat(elem, "goal", timerGoal)
-        currentRoom?.let { SaveUtil.addRoomRef(elem, "target", refs, it) }
+        // A room of a ship the save does not hold (a destroyed enemy, whose dilation runs on until its timer ends; the
+        // save writes no destroyed ship, WorldManager::SaveGame 1.6.14 0x61a3a0) is not named. Hyperspace writes the
+        // ship id and room id, and ImportBattleState puts the room back only on its own ship or current_target, which a
+        // load without that ship lacks: the system loads on with no room and its first OnLoop stops it with the
+        // cooldown lock (G_->GetShipManager(1) null; StopTimeDilation, AddLock). loadSystem leaves currentRoom null and
+        // update() does the same. Release 2.2.5 threw here ("Unregistered object", the game stopped).
+        currentRoom?.takeIf { refs.isRegistered(it.ship) }?.let { SaveUtil.addRoomRef(elem, "target", refs, it) }
     }
 
     override fun loadSystem(elem: Element, refs: RefLoader) {

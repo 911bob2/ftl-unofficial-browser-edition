@@ -30,6 +30,12 @@ abstract class AbstractProjectile(targetShip: Ship?, val hsNativeProjectile: Boo
         private set
 
     /**
+     * The ships other than [targetShip] this projectile's save names (its owner): a projectile whose ship the save does
+     * not hold is not saved (Ship.saveToXML), like one aimed at such a ship.
+     */
+    open val savedOwnerShips: List<Ship> get() = emptyList()
+
+    /**
      * The projectile's speed, in pixels per second.
      */
     abstract val speed: Int

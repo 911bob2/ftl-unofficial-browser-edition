@@ -31,6 +31,9 @@ object HsLua {
     private val engineErrors = LinkedHashMap<String, Int>()
     @JvmField var loadedScripts = 0
 
+    /** The engine errors a Lua call met so far (where: exception), for the crash sweep (BrowserCrashSweepDiagnostics). */
+    fun engineErrorKeys(): Set<String> = LinkedHashSet(engineErrors.keys)
+
     /** BrowserEngine.start: run the session's scripts (hyperspace.xml <scripts> order, none on plain Hyperspace) and the on_load callbacks. */
     @JvmStatic
     fun startForSession(game: MainGame, graphics: Graphics) {

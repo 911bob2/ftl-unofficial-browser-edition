@@ -4330,6 +4330,9 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         // Then every system of that ship gets ShipDestroyed (ShipManager 0x49c8c0): its mind control lets go of the
         // player's crew (MindSystem::ShipDestroyed 0x62f860), who would stay under control with that ship's loop gone.
         if (enemy != null && enemy.getMindControl() != null) enemy.getMindControl().shipLeftBehind();
+        // It ends with CompleteShip::Jump (0x40a270), which empties the player ship's teleport parties: whoever is still
+        // leaving it for the other ship is lost between ships (AbstractCrew.teleportPartyCleared).
+        if (player != null) for (AbstractCrew c : new ArrayList<>(player.getCrew())) c.teleportPartyCleared();
         currentBeacon.captureSpace(gameMap);
         currentBeacon.clearEnvironment();
         // A hostile ship still here is saved into the event (ShipEvent::actualBlueprint), which ClearEvent's +0x1d0

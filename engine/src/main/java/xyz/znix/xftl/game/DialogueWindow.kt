@@ -485,6 +485,13 @@ class DialogueWindow private constructor(val game: InGameState, val playerShip: 
     }
 
     override fun draw(g: Graphics) {
+        // A box left open with neither an event nor a synthetic box (every known path closes it in checkClosed; a
+        // 2.2.3 Android report drew one and stopped in drawContent): it closes here instead, and says what it held.
+        if (currentEvent == null && syntheticEvents.isEmpty() && hsDepth == 0) {
+            ftl.browser.BrowserDebug.record("event", "box.empty", "{\"state\":" + ftl.browser.BrowserDebug.quote(diagnosticState()) + "}")
+            checkClosed()
+            return
+        }
         // Hyperspace CHOICE_BOX render event around ChoiceBox::OnRender (fire site only)
         if (xyz.znix.xftl.hs.HS.luaActive) {
             val ren = xyz.znix.xftl.hs.render.HsRenderEvents

@@ -526,6 +526,7 @@ class DefenceDrone(type: DroneBlueprint) : AbstractExternalDrone(type, false) {
         /** A fake flak piece (Hyperspace): drawn only, it hits nothing. */
         val fake: Boolean = false
     ) : AbstractProjectile(null) {
+        override val savedOwnerShips: List<Ship> get() = listOf(ownerShip)
 
         private val sprite = ownerShip.sys.animations.getOrNull(image)?.spriteAt(ownerShip.sys, 0)
 

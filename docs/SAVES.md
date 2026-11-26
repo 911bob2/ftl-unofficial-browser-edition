@@ -283,6 +283,20 @@ to it. Give it a check in `GameplayParitySaveMigrationChecks` that loads a run w
 | 2 | `freeMindControlOfShipsGone` | Release 2.2.3: under Hyperspace a crew member of the player's that the enemy's mind control system held kept the mark when that ship was destroyed or the player's ship jumped away from it (the original releases it in MindSystem::ShipDestroyed, 1.6.14 0x62f860, from ShipManager::OnLoop and WorldManager::ClearLocation). The same repair as revision 1, on runs of revision 1. |
 | 3 | `dropFightTargetsNotSaved` | Release 2.2.4 and earlier: a boarding drone's body aboard the player's ship stayed in its crew list after its own ship was destroyed or jumped away, until its next update; the event box's autosave came first and gave the body an ID without writing it, and a crew member fighting it named it as its target, so the run stopped loading ("Missing object for ID: 'drone_battle2:7'", Multiverse). Such a fight target is read as none while the run is read (`RefLoader.asyncResolveIfSaved`, in a run of any revision; the reference cannot wait for a migration); this step lists what was dropped. The crew member picks a target in its next combat update, and the body is not in the run, as in the original (a crew drone's body is written only with its pod, in a ship that is saved; no fight target is saved). New saves write neither (`Ship.saveToXML`, `AbstractCrew.saveToXML`). |
 
+Not every save fault needs a migration. Release 2.2.5 stopped the game when an enemy was destroyed while the player's
+temporal system dilated one of its rooms: the autosave named that room, and the destroyed ship is not in the save
+("Unregistered object"). That save threw before anything was written (`MainGame.writeRunSave`), so no run holds such a
+reference and the save revision stays 3. Every writer of a ship or room reference checks that the save
+holds that ship (`ObjectRefs.isRegistered`): the player, the beacons' ships, the flagship and a crew-killed enemy
+that is not destroyed. A destroyed enemy (also one crew-killed first, while it explodes) and one that escaped are not
+held, and what aimed at them is not written: the temporal target (the system loads on and stops in its first loop
+with the cooldown lock, as Hyperspace's ImportBattleState and OnLoop do), the hacking target, a mind-controlled
+crew member (the loaded system releases and locks), a waiting teleport order, a teleport on its way, that ship's
+drones and drone bodies, and a boarding pod flying at it (`GameplaySaveRefsChecks`). A crew member still leaving for
+the enemy when the location changes is lost between ships, as in the original (`ClearLocation` ends with
+`CompleteShip::Jump`, which empties the teleport parties): its departure plays out and it leaves the crew, also after
+a reload of a run saved meanwhile (the departure is saved towards its own room).
+
 ## Engine requirements
 
 - A save that names content the loaded game files lack (an item, crew race, augment or ship of a missing mod) loads

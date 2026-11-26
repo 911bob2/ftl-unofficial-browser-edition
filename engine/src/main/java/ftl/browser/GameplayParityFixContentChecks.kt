@@ -38,6 +38,10 @@ import xyz.znix.xftl.weapons.DroneBlueprint
  *   connection in white. The beacon a finger picked is the hovered one, as on the iPad: its connections are drawn.
  * - 108, the map markers: the ship's art is beside its beacon, level with it, so it flies along its circle; the touch
  *   layout's smaller art stands where the 64 x 64 art has its ship, as on the iPad.
+ * - A crash log of 2.1.1 (Android, Multiverse): a strip on a sheet whose declared h is not whole frames. ImportAnimations
+ *   (1.6.9 0x589de0) and Animation::InitPrimitives (0x59c5f0) count the rows up from the declared bottom edge.
+ * - A crash log of 2.2.3 (Android, Multiverse): an event box drawn with neither an event nor a synthetic box stopped
+ *   the game in DialogueWindow.drawContent. Such a box closes when drawn, in touch and mouse layouts.
  */
 internal object GameplayParityFixContentChecks {
     fun run(main: MainGame, container: GameContainer): String {
@@ -72,6 +76,9 @@ internal object GameplayParityFixContentChecks {
                 case("pickedBeaconLines ${if (touch) "touch" else "mouse"}") { pickedBeaconLines(main, container, touch) }
             for (touch in listOf(false, true))
                 case("mapMarkerPlace ${if (touch) "touch" else "mouse"}") { mapMarkerPlace(main, container, touch) }
+            case("partRowSheets") { partRowSheets(main, container) }
+            for (touch in listOf(false, true))
+                case("emptyEventBox ${if (touch) "touch" else "mouse"}") { emptyEventBox(main, container, touch) }
         } finally {
             BrowserEngine.resetInput()
             BrowserRandom.restore(rng)
@@ -151,6 +158,46 @@ internal object GameplayParityFixContentChecks {
         } finally {
             info.type = before
         }
+    }
+
+    // ---- crash log of 2.1.1 (Android): a strip on a sheet that is not whole frames
+
+    /**
+     * Every strip of the loaded data whose sheet's declared h is not whole frames (Multiverse's drone_vamp_foreman: 242 of
+     * 35 px frames) gives all its frames from its real image, each where the original's rows from the declared bottom
+     * edge put it (Animations.SpriteSheetSpec.getSprite). The Foreman's walk down, a row above the sheet's whole rows,
+     * ended the run ("Failed requirement"); its other strips showed the row above their own.
+     */
+    private fun partRowSheets(main: MainGame, container: GameContainer): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        val strips = state.animations.animations.values.filter { it.sheet.frameHeight > 0 && it.sheet.sheetHeight % it.sheet.frameHeight != 0 }
+        for (spec in strips) {
+            val sheet = spec.sheet
+            val image = state.getImg(sheet.sheetPath)
+            val top = sheet.sheetHeight - (sheet.verticalCount - spec.y) * sheet.frameHeight
+            for (i in 0 until spec.length) {
+                val frame = spec.spriteAt(state, i)
+                check(frame.textureOffsetY - image.textureOffsetY == maxOf(top, 0)) { "${spec.name} frame $i: row at ${frame.textureOffsetY - image.textureOffsetY}, the original's at $top" }
+                check(frame.height == minOf(sheet.frameHeight - (maxOf(top, 0) - top), image.height)) { "${spec.name} frame $i: ${frame.height} px high" }
+            }
+        }
+        // The report's strip as a crew member walks it (AbstractCrew: crewStrip(..._walk_down).startLooping builds every frame).
+        val walk = state.animations.getOrNull("drone_vamp_foreman_walk_down")
+        if (walk != null) check(walk.startLooping(state).sprites.size == walk.length) { "the Foreman's walk down" }
+        return "part-row sheets: ${strips.map { it.sheet.sheetPath }.distinct().size} sheets, ${strips.size} strips" +
+            (if (walk != null) ", the Foreman walks down" else "")
+    }
+
+    /** An event box with neither an event nor a synthetic box (the event-less constructor alone) closes when drawn. */
+    private fun emptyEventBox(main: MainGame, container: GameContainer, touch: Boolean): String {
+        val state = BrowserGameplayParityDiagnostics.fresh(main, container)
+        TouchMode.enabled = touch
+        var closed = 0
+        val box = xyz.znix.xftl.game.DialogueWindow(state, state.player, null as xyz.znix.xftl.sector.CreatedEvent?) { closed++ }
+        check(closed == 0) { "the event-less box closed before it was drawn" }
+        box.draw(graphics)
+        check(closed == 1) { "the empty box closed $closed times when drawn" }
+        return "empty event box (${if (touch) "touch" else "mouse"}): closed when drawn"
     }
 
     // ---- MV103

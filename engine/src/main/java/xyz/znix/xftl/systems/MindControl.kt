@@ -122,6 +122,12 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         }
 
         val oldTime = timeRemaining
+        // MindSystem::OnLoop (0x630360): an empty list with the timer running (a run saved while its crew were on a ship
+        // that save does not hold) releases without a sound and locks, as checkEnemyGone would have.
+        if (oldTime != null && controlledCrew == null) {
+            switchToCooldown(playSound = false)
+            return
+        }
         if (oldTime == null || controlledCrew == null) {
             timeRemaining = null
             controlledCrew = null
@@ -434,7 +440,9 @@ class MindControl(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         SaveUtil.addTagFloat(elem, "timeRemaining", timeRemaining)
 
         val crew = controlledCrew
-        if (crew != null) {
+        // Crew aboard a ship the save does not hold (crew-killed, then destroyed and still exploding) are not named;
+        // the loaded system holds no one and its first loop releases and locks (update).
+        if (crew != null && refs.isRegistered(crew.room.ship)) {
             val shipWithEnemy = crew.room.ship
             SaveUtil.addRef(elem, "shipWithEnemy", refs, shipWithEnemy)
             SaveUtil.addTagInt(elem, "crewId", shipWithEnemy.crew.indexOf(crew))

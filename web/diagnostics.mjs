@@ -36,6 +36,7 @@ const suites=[
  ['vanilla','Vanilla layouts','18 layouts across three difficulties'],
  ['ae','AE layouts','28 layouts across three difficulties'],
  ['encounters','Encounters','137 enemy specifications, combat and save restoration'],
+ ['crash-sweep','Crash sweep','Seeded fights to destruction, crew kill, surrender, escape and jumps away with a save and reload at every change'],
  ['campaign','Campaign traversal','12 accelerated fixtures through flagship phases; not played victories'],
  ['server','Server & browser integration','Security, saves, logs, storage failures, HTTPS, menus and real-time tutorial input'],
  ['performance','Flagship benchmark','FPS and frame/update/render timing across three phases'],
@@ -253,6 +254,7 @@ async function run(ids,resumeId=null){
     else if(id==='performance')await benchmark();
     else if(id==='hs-lua'){await (await import('./hs-lua.mjs'+version)).loadHsLua(version);await record(label,()=>window.hsLuaProbe(0));}
     else if(id==='campaign'){const halves=campaignHalves();for(const ae of halves){if(ae!==halves[0])await boot(ae);for(let difficulty=0;difficulty<3;difficulty++)for(const seed of [71,537])await record(`${ae?'AE':'Vanilla'} campaign · difficulty ${difficulty} · seed ${seed}`,()=>window.campaignProbe(difficulty,seed));}}
+    else if(id==='crash-sweep'){const [from,count]=(new URLSearchParams(location.search).get('crashsweep')??'').split(',').map(Number),n=window.crashSweepCount();for(let i=from||0;i<(count?Math.min(n,(from||0)+count):n);i++)if(await record(label+' · '+window.crashSweepName(i),()=>window.crashSweepProbe(i))===undefined)await boot(true,suite.mods??null,label);/* an engine that threw is not fit for the next case */}
     else if(id==='encounters'){const [from,count]=(new URLSearchParams(location.search).get('encounters')??'').split(',').map(Number),all=window.encounterList().split('\n');for(const name of count?all.slice(from,from+count):all)if(await record('Encounter '+name,()=>window.encounterProbe(name,6))===undefined)await boot(true);/* an engine that threw is not fit for the next case */}
     else{const ships=window.shipList().split('\n');for(const ship of ships)for(let difficulty=0;difficulty<3;difficulty++)await record(ship+' · difficulty '+difficulty,()=>window.probe(ship,difficulty));}
    }

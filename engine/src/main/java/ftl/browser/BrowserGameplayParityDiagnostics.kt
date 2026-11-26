@@ -115,6 +115,7 @@ object BrowserGameplayParityDiagnostics {
             step("GameplaySave8Checks.run") { GameplaySave8Checks.run(main, container) }
             step("GameplaySavePsS2Checks.run") { GameplaySavePsS2Checks.run(main, container) }
             step("GameplaySaveDroneBodyChecks.run") { GameplaySaveDroneBodyChecks.run(main, container) }
+            step("GameplaySaveRefsChecks.run") { GameplaySaveRefsChecks.run(main, container) }
             step("GameplayParityCloak7Checks.run") { GameplayParityCloak7Checks.run(main, container, graphics) }
             step("GameplayParityVanillaNativeChecks.run") { GameplayParityVanillaNativeChecks.run(main, container) }
             step("GameplayParityLockdownShardChecks.run") { GameplayParityLockdownShardChecks.run(main, container) }
@@ -142,6 +143,7 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParitySaveMigrationChecks.run") { GameplayParitySaveMigrationChecks.run(main, container) }
             step("GameplayParityCrewlessChecks.run") { GameplayParityCrewlessChecks.run(main, container) }
             step("GameplayParityTemporalChecks.run") { GameplayParityTemporalChecks.run(main, container) }
+            step("GameplayCrashSweepChecks.run") { GameplayCrashSweepChecks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)

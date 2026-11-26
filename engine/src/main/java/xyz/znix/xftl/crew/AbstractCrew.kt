@@ -2376,6 +2376,20 @@ abstract class AbstractCrew(
     /** The departure animation of [hsTeleLimbo] has played: the crew member is between ships (currentShipId -1). */
     val hsInTeleportLimbo: Boolean get() = hsTeleLimbo && (hsTeleDone >= 2 || this !in room.ship.crew)
 
+    /**
+     * WorldManager::ClearLocation (1.6.14 0x614d00) ends with CompleteShip::Jump (0x40a270), which empties the ship's
+     * teleport parties (leavingParty, arrivingParty) after SetEnemyShip(0). A crew member still in its departure to the
+     * other ship plays it out and is then between ships: CrewMember::CheckForTeleport (0x47d3e0) sets currentShipId -1
+     * and CompleteShip::OnLoop (0x409ee0) puts only party members on a ship, so it leaves the crew as [hsTeleLimbo]
+     * does. A Hyperspace teleport armed by script ([hsTeleShip]) is not a party's and goes on.
+     */
+    fun teleportPartyCleared() {
+        val destination = teleportingTo ?: return
+        if (teleportArriving || hsTeleLimbo || hsTeleShip != -1 || destination.ship === room.ship) return
+        teleportingTo = room
+        hsTeleLimbo = true
+    }
+
     fun hsStartTeleportInPlace() {
         teleportingTo = room
         teleportTimer = 0f; hsTelePassed = false; hsTeleDone = 0
@@ -2567,7 +2581,9 @@ abstract class AbstractCrew(
             elem.addContent(combat)
         }
 
-        if (teleportingTo != null) {
+        // A teleport to a ship the save does not hold (destroyed or gone while the crew member was on the way) is not
+        // kept: the crew member loads where it stands. CrewMember::SaveState (1.6.14 0x478f10) writes no teleport.
+        if (teleportingTo != null && refs.isRegistered(teleportingTo!!.ship)) {
             val teleport = Element("teleporting")
             teleport.setAttribute("destRoom", teleportingTo!!.id.toString())
             teleport.setAttribute("destShip", refs[teleportingTo!!.ship])

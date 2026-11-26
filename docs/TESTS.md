@@ -294,11 +294,53 @@ on that frame (the event box's autosave) and loaded: the body is not in the run 
 the game going on; a body whose ship is still here keeps its fight over a reload; a run of revision 2 naming a fight
 target it does not hold loads with the target dropped (migration 3). `SaveMigrationsTest` (Android) has the loader's
 rule and migration 3 on their own.
+`GameplaySaveRefsChecks` (release 2.2.5, "Unregistered object" from `Temporal.saveSystem`): a fight ends three ways
+(destroyed; escaped; crew killed, then destroyed) and the run is saved on every frame until 40 frames after the ship
+went, then the save after it went and the last one load and step. The player aims at it: a temporal dilation on one of
+its rooms (where a player ship lists the system, Multiverse; it runs on after a destroyed ship went, ends at an
+escape's JumpLeave, and loads off and locked), and (Lanius B) a landed hacking probe pulsing, mind control on its
+crew, a teleport ordered to its rooms every frame, a boarding pod launched as the end starts, a bomb fired at its rooms
+every frame. And a crew member still leaving for the enemy when the location changes at once (a jump settled by save and
+close): it is lost between ships in play and after a reload of the run saved meanwhile.
 
 Native rows: `tools/native-capture/sessions/ps-s2-native.json` (`.build/hs/sweep/vanilla/run.sh`): Continue of
 `run-cx.sav` with the HUD every 0.25 s (`s2-cx`, its browser twin through `tools/ui-capture.sh`), the autosave of an
 event box opened after Continue (`s2-ev`: `continue.sav` holds the event) and none without one (`s2-ld`: the load
 deleted the file and nothing wrote it in 6 s).
+
+## Crash sweep (engine mode `crash-sweep`)
+
+`crash-sweep` (jobs `p-van-crash-sweep`, `p-F2-crash-sweep`, `p-F3-crash-sweep`; `BrowserCrashSweepDiagnostics`, one
+case per record, a fresh engine after a failed one; `?crashsweep=<from>,<count>` runs a slice) plays seeded fights
+through the transitions that end what another object points at, and fails on any exception in a frame, a drawing, a
+save or a load, on a load of this build's own save that needed a repair (`loadDroppedRefs`, migration lines), and with
+Hyperspace on any engine error a Lua call met (`HsLua.engineErrorKeys`). A case: a player ship (the hangar's layouts in
+a fixed shuffle; with Hyperspace also every player ship that lists the temporal system) gets every system its layout
+has room for (the console's SYS), GOD power, three weapons, three drones, two augments and two more crew; an enemy (any
+ship spec, seeded) gets the systems it has room for, boarding, combat and defence drones and full power. The fight: the
+player's weapons at its rooms, drones out, its crew teleported over, hacking, mind control, temporal and cloak at the
+enemy, an event's boarders, the enemy's own active systems at the player, and a random-action phase (power, aims,
+drones on and off, crew moves, kills on both sides, dismissals, fires, breaches, system damage and ion, a weapon to the
+hold, an event's `<remove>`, new equipment, the pointer over and clicking the screen, the touch layout's taps on every
+third case, shifted each round so every ending meets both input routes). 45 cases in vanilla, 27 with Hyperspace (five
+and three rounds of the nine endings; about 2.5, 2 and 4 min for van, F2, F3). Then one ending per case in turn: the enemy destroyed (DELETE), its crew killed, its surrender, its
+escape, its instant escape, the player jumping away mid-fight, a sector change mid-fight, the player's ship destroyed,
+or the fight going on to the end. After it the run goes on, leaves the beacon and comes back to it. Every change of the
+coarse state (beacon, enemy and its hostility, jumps, boxes, crew and drone bodies per ship and side, mind control,
+external drones, systems and hacks, hacking, cloak, temporal, clone queue; and every 240 frames) saves through
+`MainGame.writeRunSave` (as the autosave does) and loads the run, and the case goes on with the loaded game. The frame
+is `BrowserEngine.step` and `render`, so Hyperspace's Lua loops run too. Its finds are held by `gameplay-parity`'s
+`GameplayCrashSweepChecks`.
+
+`gameplay-parity`'s `GameplayCrashSweepChecks` (round 26, vanilla, F2, F3): `teleportAtCloaked*` commands a teleport at
+a cloaked enemy, which then escapes or is destroyed: the command is dropped (CombatControl::GetTeleportationCommand
+0x57f370 waits only for the current target's cloak; CombatControl::Clear 0x57d2c0 drops the target) and the run saves
+and loads. Before, the command waited on the gone ship's cloak and every save threw "Unregistered object (Ship)".
+`podAtEscapedShip` and `podAtCrewKilledShip` launch the player's boarding pod (still in the player's space) as the enemy
+escapes or its crew dies: in the frame the fight ends the pod is in no projectile list, and the run saves and loads.
+Before, a pod at a ship that went stayed a frame (its save named that ship), and a pod that died in its owner's space
+stayed listed until its next update, so a save then wrote the drone with neither pod nor body and its load threw
+(BoarderPodDrone::SaveState 0x420a70, ShipManager::SetTarget 0x4a2b30).
 
 ## Engine modes on a modded fixture
 
@@ -675,8 +717,12 @@ over-capacity slot (`overCapacitySwap`: the waiting weapon, drone or augment and
 is carried onto the other, with the mouse and with a finger through the touch router: a tap, then a press that carries);
 the beacon map (`pickedBeaconLines`: the hovered or picked beacon's connections are drawn in yellow, the ship's in
 green, and under Hyperspace with every connection shown each connection of the sector is on the map; `mapMarkerPlace`:
-the ship's and the flagship's marker art sits beside its beacon, level with it, in the mouse and the touch layout).
-Android unit test `SectorRarityTest`: the rarity list as EventsParser reads it and the weights of the pick. The store's
+the ship's and the flagship's marker art sits beside its beacon, level with it, in the mouse and the touch layout);
+`partRowSheets`, from a 2.1.1 crash log: every strip on a sheet whose declared height is not whole frames (Multiverse's
+Vampweed Foreman) gives each frame where the original's rows from the declared bottom edge put it, and the Foreman's
+walk down is built; `emptyEventBox`, from a 2.2.3 crash log: an event box with neither an event nor a synthetic box
+closes when drawn (mouse and touch layout) instead of stopping the game. Android unit tests `SectorRarityTest`: the rarity list as EventsParser reads it and the weights of
+the pick; `AnimationSheetTest`: the frame rectangles of such a sheet and of one of whole rows. The store's
 sold boxes are in `hs-ships` (the `store` probe buys the first box of every category, draws the page and draws it again
 from the store's save; a bought crew member or augment ended the run). On the emulator `tools/android-touch/overcap.mjs`
 carries the waiting augment and weapon onto an owned one and back with one finger.

@@ -181,6 +181,10 @@ public final class BrowserEngine {
     }
     @JSExport public static String shipList(){return BrowserDiagnostics.INSTANCE.shipList(game);}
     @JSExport public static String probe(String ship,int difficulty){return BrowserDiagnostics.INSTANCE.probe(game,ship,difficulty,container,graphics);}
+    /** Crash sweep (BrowserCrashSweepDiagnostics): the number of cases, a case's name, and case i. */
+    @JSExport public static int crashSweepCount(){return BrowserCrashSweepDiagnostics.INSTANCE.count(game);}
+    @JSExport public static String crashSweepName(int i){return BrowserCrashSweepDiagnostics.INSTANCE.name(i);}
+    @JSExport public static String crashSweepProbe(int i){return BrowserCrashSweepDiagnostics.INSTANCE.run(game,container,graphics,i);}
     @JSExport public static String encounterList(){return BrowserDiagnostics.INSTANCE.encounterList(game);}
     @JSExport public static String encounterProbe(String name,int sector){return BrowserDiagnostics.INSTANCE.encounterProbe(game,name,sector,container,graphics);}
     @JSExport public static String mechanicsProbe(){return BrowserDiagnostics.INSTANCE.mechanicsProbe(game,container,graphics);}

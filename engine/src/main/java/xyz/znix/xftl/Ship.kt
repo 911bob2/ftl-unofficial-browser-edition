@@ -3486,6 +3486,7 @@ class Ship(
 
     fun enemyShipUpdated() {
         drones?.enemyShipUpdated()
+        teleporter?.browserTargetChanged()
 
         val enemy = sys.getEnemyOf(this)
 
@@ -3574,7 +3575,7 @@ class Ship(
         // (BoarderPodDrone::SaveState 1.6.14 0x420a70; CrewDrone::SaveState 0x775d30 writes nothing), and a ship that
         // is gone not at all (WorldManager::SaveGame 0x61a3a0). An ID without its object made the run unloadable
         // ("Missing object for ID", release 2.2.4).
-        val savedPawns = crew.mapNotNull { it as? AbstractIndoorsDrone.Pawn }.filter { it.isSavedWithDrone }
+        val savedPawns = crew.mapNotNull { it as? AbstractIndoorsDrone.Pawn }.filter { it.isSavedWithDrone && globalRefs.isRegistered(it.drone.ownerShip) }
         for (crew in this.crew) {
             if (crew is AbstractIndoorsDrone.Pawn && crew !in savedPawns) continue
             globalRefs.register(crew, crew.codename)
@@ -3670,8 +3671,9 @@ class Ship(
         // serialised on that ship instead of this one.
         val dronesElem = Element("drones")
         for (drone in externalDrones) {
-            // Skip drones that are left over from a now-destroyed fight
-            if (!sys.isShipPresent(drone.ownerShip))
+            // Skip drones that are left over from a now-destroyed fight, and those of a ship the save does not hold (a
+            // crew-killed enemy destroyed afterwards is still in the fight while it explodes, but not saved).
+            if (!sys.isShipPresent(drone.ownerShip) || !refs.isRegistered(drone.ownerShip))
                 continue
 
             val droneElem = Element("drone")
@@ -3685,6 +3687,8 @@ class Ship(
         }
         for (flyingDrone in projectiles.mapNotNull { it as? FlyingDroneProjectile }) {
             if (!sys.isShipPresent(flyingDrone.drone.ownerShip)) continue
+            // A pod flying at a ship the save does not hold has nothing to land on (its projectile is skipped below too).
+            if (!refs.isRegistered(flyingDrone.drone.ownerShip) || flyingDrone.targetShip?.let { refs.isRegistered(it) } == false) continue
             val droneElem = Element("drone")
             flyingDrone.drone.saveToXML(droneElem, refs)
             dronesElem.addContent(droneElem)
@@ -3774,6 +3778,10 @@ class Ship(
             // A shot still flying at a ship that was destroyed or left has nothing to hit, and the save holds no
             // such ship to aim it at.
             if ((projectile as? AbstractProjectile)?.targetShip?.let { refs.isRegistered(it) } == false)
+                continue
+            // Nor one whose owner the save does not hold (an enemy's hacking probe on this hull, the enemy crew-killed
+            // and then destroyed, still exploding): its save names that ship.
+            if ((projectile as? AbstractProjectile)?.savedOwnerShips?.any { !refs.isRegistered(it) } == true)
                 continue
             // A flying drone is saved as a drone rather than a projectile,
             // though really it's kinda both.

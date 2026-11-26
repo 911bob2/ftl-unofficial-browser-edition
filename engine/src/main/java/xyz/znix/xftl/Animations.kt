@@ -283,14 +283,25 @@ class Animations {
                 else -> sheetWidth / frameWidth
             }
 
+        /**
+         * The frame in column [x], row [y] (rows from the top, [Animations.buildAnimation]: [verticalCount] - desc y - 1).
+         *
+         * The original counts a strip's rows up from the sheet's declared bottom edge: ImportAnimations (1.6.9 0x589de0)
+         * keeps the XML's w and h and sets stripStartY = desc y * fh, and Animation::InitPrimitives (0x59c5f0) samples
+         * v = 1 - (stripStartY + fh) / h to 1 - stripStartY / h. On a sheet of whole rows that is row [y] from the top. On one
+         * whose h is not whole frames (Multiverse's drone_vamp_foreman: h 242 of 35 px frames) every row sits h % fh lower,
+         * and its top strip (desc y 6, row -1 here) starts above the sheet: the part inside it is drawn.
+         */
         fun getSprite(sheetImage: Image, x: Int, y: Int): Image {
             require(x in 0 until horizontalCount)
-            require(y in 0 until verticalCount)
+            val top = sheetHeight - (verticalCount - y) * frameHeight
+            require(y < verticalCount && top + frameHeight > 0)
+            val srcTop = top.coerceAtLeast(0)
 
             // Some images, most notably some bombs, have frame heights in the XML set that are greater than
             // the image height. This was causing all sorts of trouble, most notably that bombs were shifted
             // down a bit and the bottom part of their images were cut off.
-            val effectiveFrameHeight = frameHeight.coerceAtMost(sheetImage.height)
+            val effectiveFrameHeight = (frameHeight - (srcTop - top)).coerceAtMost(sheetImage.height)
 
             // A sheet whose image is smaller than its frames (artillery_fed declares 400x100 of
             // weapons/blank.png) draws only what the image has - the original samples the transparent
@@ -299,7 +310,7 @@ class Animations {
             val effectiveFrameWidth = frameWidth.coerceAtMost(sheetImage.width - left)
 
             return sheetImage.getSubImage(
-                left, y * frameHeight,
+                left, srcTop,
                 effectiveFrameWidth, effectiveFrameHeight
             )
         }

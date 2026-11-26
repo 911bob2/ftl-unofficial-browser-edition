@@ -127,12 +127,8 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
         }
 
         // Check if the enemy ship changed, for example if it was killed.
-        val enemyShip = ownerShip.sys.getEnemyOf(ownerShip)
-        if (enemyShip == null || enemyShip != projectile.targetShip) {
-            val target = projectile.targetShip
-            if (target != null && fightEndedAt(target)) fightEnded(true) else destroy()
-            return
-        }
+        if (dropPodAtFormerTarget(projectile)) return
+        val enemyShip = ownerShip.sys.getEnemyOf(ownerShip)!!
 
         if (!ownerShip.projectiles.contains(projectile) && !enemyShip.projectiles.contains(projectile)) {
             // The projectile has vanished, for example if it was
@@ -147,7 +143,29 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
             fightEnded(p.health > 0f)
             return
         }
+        // A pod still in flight at a ship that is no longer here (destroyed or gone): CombatControl::Clear's
+        // ShipManager::SetTarget(0) (1.6.14 0x4a2b30) takes every space drone's target at the change itself, and
+        // DroneSystem::OnLoop (0x639a50) takes the pod out on its next loop. Ours goes now: a save in between (the
+        // destroyed or escaped ship's event box autosaves first) holds no such ship (WorldManager::SaveGame 0x61a3a0)
+        // to aim the pod at. A target still here (its crew died, it surrendered) keeps the next update's way.
+        val pod = projectile
+        if (p == null && !hsCrewLost && pod != null && pod.targetShip?.let { ownerShip.sys.isShipPresent(it) } == false) {
+            dropPodAtFormerTarget(pod)
+            return
+        }
         super.onEnemyShipUpdated()
+    }
+
+    /**
+     * The pod's target is no longer this ship's enemy (it was destroyed, left, or its fight ended): the pod is taken
+     * out of play, as [fightEnded] when that ship is still here and the fight with it is over, else destroyed.
+     */
+    private fun dropPodAtFormerTarget(pod: FlyingDrone): Boolean {
+        val enemyShip = ownerShip.sys.getEnemyOf(ownerShip)
+        if (enemyShip != null && enemyShip == pod.targetShip) return false
+        val target = pod.targetShip
+        if (target != null && fightEndedAt(target)) fightEnded(true) else destroy()
+        return true
     }
 
     /**
@@ -361,8 +379,13 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
             // are alive, this will cause a great deal of trouble since the drone
             // will be serialised twice - once due to being in the projectiles list,
             // and once from being in the crew list.
-            // Thus we have to remove ourselves immediately.
+            // Thus we have to remove ourselves immediately, from whichever list holds us: a pod that has not yet
+            // crossed into the target's space is still in its owner's (a dead pod left there until its next update
+            // was saved as a drone with neither pod nor body, and its load launched a pod at no enemy). The original
+            // pod is a SpaceDrone of its owner's drone list, saved with it only while deployed
+            // (BoarderPodDrone::SaveState 1.6.14 0x420a70).
             target.ship.projectiles.remove(this)
+            if (initialised) ownerShip.projectiles.remove(this)
         }
 
         override fun renderPreTranslated(g: Graphics) {

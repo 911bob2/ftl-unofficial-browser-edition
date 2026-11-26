@@ -69,6 +69,31 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     private var commandedTeleport: TeleportAction? = null
 
+    /** Diagnostics: the room of the teleport the player or the AI has commanded, null when none waits. */
+    val browserCommandedRoom: Room? get() = commandedTeleport?.room
+
+    /**
+     * CombatControl::GetTeleportationCommand (1.6.14 0x57f370): the command waits while the current target is cloaked,
+     * else it is disarmed and handed to CompleteShip::InitiateTeleport, which does nothing without an enemy ship (HS
+     * TeleporterBugFixes.cpp). The command names a room of the target; once that ship has left (CombatControl::Clear
+     * 0x57d2c0 drops the target, not the command) there is no target to be cloaked, so the command goes on the next
+     * loop and sends no one. True when the command was such a one and is dropped.
+     */
+    private fun dropCommandAtGoneShip(): Boolean {
+        val command = commandedTeleport ?: return false
+        if (ship.sys.isShipPresent(command.room.ship)) return false
+        commandedTeleport = null
+        return true
+    }
+
+    /**
+     * The other ship came or went (InGameState.setEnemy, through Ship.enemyShipUpdated): a command at a room of a ship
+     * that is no longer here goes now ([dropCommandAtGoneShip]), so a save in the same frame names no ship that is gone.
+     */
+    fun browserTargetChanged() {
+        dropCommandAtGoneShip()
+    }
+
     override fun update(dt: Float) {
         super.update(dt)
 
@@ -90,6 +115,7 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         neutralForceReady()
 
         // If there's a command ready, grab and action it
+        if (dropCommandAtGoneShip()) return
         val command = commandedTeleport ?: return
 
         // If the enemy ship is cloaked, stop now without removing the command.
@@ -442,8 +468,9 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     override fun saveSystem(elem: Element, refs: ObjectRefs) {
         // If the player has selected a destination to teleport their
-        // crew to, remember that across saves.
-        val command = commandedTeleport ?: return
+        // crew to, remember that across saves. An order to a room of a ship the save does not hold (one destroyed or
+        // gone while the order waited, e.g. behind its cloak) is not kept: there is nothing to teleport to after the load.
+        val command = commandedTeleport?.takeIf { refs.isRegistered(it.room.ship) } ?: return
 
         val commandElem = Element("teleportCommand")
         commandElem.setAttribute("roomId", command.room.id.toString())
@@ -695,6 +722,7 @@ class Teleporter(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     /** The engine's commanded teleport under Hyperspace's GetTeleportCommand / InitiateTeleport rules. */
     private fun hsUpdateCommand() {
+        if (dropCommandAtGoneShip()) return
         val command = commandedTeleport ?: return
         // Cloaking blocks the teleport, unless the AI's teleporter is hacked with teleporterHackFix.
         if (command.room.ship.isCloakActive && !(hsHackFix && !ship.isPlayerShip))

@@ -455,8 +455,10 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
     override fun saveSystem(elem: Element, refs: ObjectRefs) {
         SaveUtil.addTagFloat(elem, "timeRemaining", timeRemaining, null)
 
-        if (selectedTarget != null) {
-            SaveUtil.addRoomRef(elem, "selectedTarget", refs, selectedTarget!!)
+        // A target on a ship the save does not hold (an enemy crew-killed and then destroyed, still exploding) is not
+        // named: the game going on drops it when that ship goes (browserEnemyChanged).
+        selectedTarget?.takeIf { refs.isRegistered(it.ship) }?.let {
+            SaveUtil.addRoomRef(elem, "selectedTarget", refs, it)
         }
 
         // Don't save any reference to the projectile, because it might be
@@ -554,6 +556,9 @@ class Hacking(blueprint: SystemBlueprint) : MainSystem(blueprint) {
 
     private class HackingDroneProjectile(val target: Room) : AbstractProjectile(target.ship, false) {
         lateinit var hacking: Hacking
+
+        // The save names the owner (to find its hacking system again).
+        override val savedOwnerShips: List<Ship> get() = if (this::hacking.isInitialized) listOf(hacking.ship) else emptyList()
 
         val game: InGameState = target.ship.sys
 
