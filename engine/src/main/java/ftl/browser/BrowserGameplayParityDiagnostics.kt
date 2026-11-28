@@ -80,6 +80,7 @@ object BrowserGameplayParityDiagnostics {
             vanillaStep("GameplayParityEnemyGenChecks.run") { GameplayParityEnemyGenChecks.run(main, container) }
             step("GameplayParityEnemyAiChecks.run") { GameplayParityEnemyAiChecks.run(main, container) }
             step("GameplayParityAi2Checks.run") { GameplayParityAi2Checks.run(main, container) }
+            step("GameplayR27UnitsChecks.run") { GameplayR27UnitsChecks.run(main, container) }
             step("aeAugments") { aeAugments(main, container) }
             step("stores") { stores(main, container) }
             vanillaStep("flagshipSurges") { flagshipSurges(main, container) }
@@ -144,6 +145,7 @@ object BrowserGameplayParityDiagnostics {
             step("GameplayParityCrewlessChecks.run") { GameplayParityCrewlessChecks.run(main, container) }
             step("GameplayParityTemporalChecks.run") { GameplayParityTemporalChecks.run(main, container) }
             step("GameplayCrashSweepChecks.run") { GameplayCrashSweepChecks.run(main, container) }
+            step("GameplayR27PowersChecks.run") { GameplayR27PowersChecks.run(main, container) }
         } finally {
             BrowserRandom.restore(rng)
             NativeRandom.restore(nativeRng)

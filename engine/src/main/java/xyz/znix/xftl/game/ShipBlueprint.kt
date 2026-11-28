@@ -244,10 +244,11 @@ class ShipBlueprint @JvmOverloads constructor(
         val weaponsElem: Element? = elem.getChild("weaponList")
         if (weaponsElem != null) {
             val names = weaponsElem.children.map { it.getAttributeValue("name") }
-            // A player ship starts with the first `count` weapons (the Rock Type B
-            // lists three but the original hangar and run give it two).
+            // A ship starts with the first `count` weapons, the player's and an enemy's alike: the Rock Type B
+            // lists three but the original hangar and run give it two, and the original's MT_BOSS_TUCO_CHALLENGE
+            // (count 3, four listed) has three (r27-ships oracle probe).
             val count = weaponsElem.getAttributeValue("count")?.toIntOrNull()
-            initialWeapons = if (isPlayerShip && count != null) names.take(count) else names
+            initialWeapons = if (count != null) names.take(count) else names
         } else {
             initialWeapons = emptyList()
         }

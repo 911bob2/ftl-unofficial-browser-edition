@@ -268,7 +268,7 @@ object BrowserStatCrewDiagnostics {
         sb.append(",\"room\":").append(c.room.id)
         sb.append(",\"hp\":").append(n(c.health)).append(",\"hpMax\":").append(n(c.maxHealth))
         if (c is LivingCrew) {
-            sb.append(",\"male\":").append(!c.info.isFemale)
+            sb.append(",\"male\":").append(c.info.male)
             sb.append(",\"skills\":[")
             for ((i, s) in Skill.entries.withIndex()) {
                 if (i > 0) sb.append(',')

@@ -33,6 +33,12 @@ class HsShipState(@JvmField val ship: Ship) {
     /** Extra cargo slots and the over-capacity list (CustomEquipment). */
     @JvmField val equipment = HsEquipment.State()
 
+    /**
+     * Every name `augList` has held since this ship was made or loaded: ShipInfo::RemoveAugmentation (0x4637f0) only
+     * decrements a name's count, so a removed augment stays in the list at 0 ([HsAugments.augListWithHidden]).
+     */
+    @JvmField val augKeys = HashSet<String>()
+
     /** [HsAugments.augListWithHidden] until the augments change. */
     @JvmField var augListCache: Map<String, Int>? = null
 
@@ -152,8 +158,11 @@ class HsShipState(@JvmField val ship: Ship) {
                 val race = xyz.znix.xftl.hs.crew.HsCrewContent.crewBlueprint(manager, species, NativeRandom)
                 val factory = game.crewFactory
                 val colours = factory.drawColours(race)
-                val name = if (p.name.isNotEmpty()) p.name else factory.newName().name
-                added += HsStartingCrewMember(LivingCrewInfo(game, race, name, factory.colourIndex(race, colours, male)), p.roomId)
+                // an empty name draws one with its sex, which replaces the argument (AddCrewMemberFromString 0x4a3ee0)
+                val drawn = if (p.name.isNotEmpty()) null else factory.newName()
+                val name = drawn?.name ?: p.name
+                val sex = drawn?.male ?: male
+                added += HsStartingCrewMember(LivingCrewInfo(game, race, name, factory.colourIndex(race, colours, sex), sex), p.roomId)
             }
             return added
         }

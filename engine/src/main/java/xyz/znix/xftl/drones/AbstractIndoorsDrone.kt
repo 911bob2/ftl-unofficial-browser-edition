@@ -362,6 +362,15 @@ abstract class AbstractIndoorsDrone(type: DroneBlueprint) : AbstractDrone(type) 
         override val canSabotage: Boolean
             get() = hsFlag(xyz.znix.xftl.hs.stat.CrewStat.CAN_SABOTAGE)?.let { it && mode == SlotType.INTRUDER } ?: super.canSabotage
         override val hasDyingAnimation: Boolean get() = false
+
+        /**
+         * Hyperspace ShipManager::OnLoop (CustomCrew.cpp): a raced crew drone adds its BONUS_POWER to the system of its
+         * room while Functional (powered), as crew do (HS oracle r27u-drones1: Multiverse's MANNING, power 0 with race
+         * `manning` bonusPower 1, deployed in the drone room gives the drone system an effective power of 1).
+         */
+        override val bonusSystemPower: Int
+            get() = if (hsDefinition() != null && xyz.znix.xftl.hs.crew.HsCrew.ex(this).functional)
+                (hsStat(xyz.znix.xftl.hs.stat.CrewStat.BONUS_POWER) ?: 0f).toInt() else 0
         override val suffocationMultiplier: Float
             get() = hsFlag(xyz.znix.xftl.hs.stat.CrewStat.CAN_SUFFOCATE)?.let {
                 if (it) hsStat(xyz.znix.xftl.hs.stat.CrewStat.SUFFOCATION_MODIFIER) ?: 0f else 0f

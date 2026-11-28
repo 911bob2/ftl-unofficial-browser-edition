@@ -79,7 +79,7 @@ class HsCrewMember(blueprint: CrewBlueprint, animations: Animations, room: Room,
         get() {
             val d = CustomCrewManager.definitionOrNull(codename) ?: return codename
             @Suppress("SENSELESS_COMPARISON")
-            val female = info != null && info.isFemale
+            val female = info != null && !info.male
             return d.animSheet[if (female) 0 else 1].ifEmpty { codename }
         }
 
@@ -220,7 +220,7 @@ class HsCrewMember(blueprint: CrewBlueprint, animations: Animations, room: Room,
 
     /** CrewAnimation::GetDeathSound hook: a random <deathSound> for the gender, else the generic one. */
     override fun deathSoundName(): String? {
-        val female = info.isFemale
+        val female = !info.male
         val s = if (female) def.deathSoundsFemale else def.deathSounds
         if (s.isNotEmpty()) return s[HsCrew.random32() % s.size]
         return if (female) "femaleDeath${(1..3).random(ftl.browser.BrowserRandom)}"

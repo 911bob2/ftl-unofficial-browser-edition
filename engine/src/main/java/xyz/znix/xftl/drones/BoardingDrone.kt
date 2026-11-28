@@ -29,6 +29,8 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
     override val pawnCodename: String get() = if (isIonIntruder) "boarder_ion" else "battle"
 
     private var projectile: FlyingDrone? = null
+    /** The pod in flight's speed in px/s (checks), null once it has landed or before it launched. */
+    internal val podSpeed: Int? get() = projectile?.speed
     // HS GPL-3.0-or-later 1b05a07 CustomDamage.cpp BoarderPodDrone::CollisionMoving delivery guard.
     private var hsLastPod: FlyingDrone? = null
     var hsPodDelivered = false
@@ -316,8 +318,10 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
                 // Pause when the target is cloaked
                 target.ship.isCloakActive -> 0
 
-                // Regular speed
-                else -> 18 * 16
+                // The blueprint's <speed>, 16 px per second each, as every space drone (HS oracle r27u-pod: the pods
+                // of BOARDER 18, A55_BOARDER 20 and GANA_BOARDER 50 fly 4.8, 5.3 and 13.3 px a 1/60 s frame,
+                // SPAWN_BOARDER 999 lands within 10 frames). Every vanilla pod has 18.
+                else -> (type.speed ?: VANILLA_POD_SPEED) * 16
             }
 
         override var drawUnderShip: Boolean = true
@@ -567,6 +571,9 @@ class BoardingDrone(type: DroneBlueprint) : AbstractIndoorsDrone(type) {
     }
 
     companion object {
+        /** A pod's speed when its blueprint names none: the vanilla boarding drones' 18. */
+        const val VANILLA_POD_SPEED = 18
+
         /**
          * IonDrone::GetRoomDamage (1.6.9 0x4374b0), which ShipManager::UpdateCrewmembers asks every crew member for
          * and hands to DamageArea at the crew member's position: once the animation's FireShot is ready, a Damage of

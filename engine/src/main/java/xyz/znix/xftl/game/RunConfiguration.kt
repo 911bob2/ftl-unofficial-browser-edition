@@ -7,4 +7,5 @@ data class RunConfiguration @JvmOverloads constructor(
 )
 
 /** Hangar choices contain no live crew, simulation references or blueprint edits. */
-data class StartingCrew(val species: String, var name: String, var colour: Int)
+/** [male]: the sex of the name drawn for the member (null: from a human's colour, else male; LivingCrewInfo.male). */
+data class StartingCrew @JvmOverloads constructor(val species: String, var name: String, var colour: Int, val male: Boolean? = null)

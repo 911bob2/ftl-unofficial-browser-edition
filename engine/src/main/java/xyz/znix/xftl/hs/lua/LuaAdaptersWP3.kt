@@ -342,7 +342,7 @@ object LuaAdaptersWP3 {
                 })
             }
         })
-        LuaReg.bool(A.A_CrewBlueprint_male, { o -> (cb(o).crew as? LivingCrew)?.info?.isFemale != true })
+        LuaReg.bool(A.A_CrewBlueprint_male, { o -> (cb(o).crew as? LivingCrew)?.info?.male != false })
         // GetNameShort: crewName, CrewMember::GetName's (oracle sweep-ui11 sw5-tip ln-0, sw5-dname)
         LuaReg.method(A.M_CrewBlueprint_GetNameShort, LuaMethod {
             val c = cb(arg.obj(1)).crew

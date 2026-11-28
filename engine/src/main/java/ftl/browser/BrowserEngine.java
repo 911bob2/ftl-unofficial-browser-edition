@@ -72,6 +72,7 @@ public final class BrowserEngine {
     @JSExport public static String hsStatCrewProbe(String ships){return BrowserStatCrewDiagnostics.INSTANCE.run(game,ships);}
     /** Mods: the oracle statcrew-powers Lua scenario replayed here (BrowserStatCrewDiagnostics.luaScenario). */
     @JSExport public static String hsStatCrewLua(String code,String keys,int frames,String reloadAt){return BrowserStatCrewDiagnostics.INSTANCE.luaScenario(game,code,keys,frames,reloadAt==null?"":reloadAt);}
+    @JSExport public static String r27PowersLua(String append,String lists,String code,String keys,String pre,String parts,int frames,String reloadAt){return BrowserR27PowersDiagnostics.INSTANCE.luaRun(game,append,lists,code,keys,pre,parts,frames,reloadAt==null?"":reloadAt);}
     @JSExport public static String hsEventsProbe(String script){return BrowserHsEventsDiagnostics.INSTANCE.run(game,container,graphics,script);}
     /** Mods: a full policy-driven run over all sectors (BrowserHsFullRunDiagnostics); returns JSON lines. */
     @JSExport public static String hsFullRunProbe(String script){return BrowserHsFullRunDiagnostics.INSTANCE.run(game,container,graphics,script);}
@@ -185,6 +186,19 @@ public final class BrowserEngine {
     @JSExport public static int crashSweepCount(){return BrowserCrashSweepDiagnostics.INSTANCE.count(game);}
     @JSExport public static String crashSweepName(int i){return BrowserCrashSweepDiagnostics.INSTANCE.name(i);}
     @JSExport public static String crashSweepProbe(int i){return BrowserCrashSweepDiagnostics.INSTANCE.run(game,container,graphics,i);}
+    @JSExport public static int abilitySweepCount(){return BrowserAbilitySweepDiagnostics.INSTANCE.count(game);}
+    @JSExport public static String abilitySweepName(int i){return BrowserAbilitySweepDiagnostics.INSTANCE.name(game,i);}
+    @JSExport public static String abilitySweepProbe(int i){return BrowserAbilitySweepDiagnostics.INSTANCE.run(game,container,graphics,i);}
+    /** r27 unit sweep: every crew race and drone blueprint through spawn, use, death and destruction with save/loads. */
+    @JSExport public static int unitSweepCount(){return BrowserUnitSweepDiagnostics.INSTANCE.count(game);}
+    @JSExport public static String unitSweepName(int i){return BrowserUnitSweepDiagnostics.INSTANCE.name(game,i);}
+    @JSExport public static String unitSweepProbe(int i){return BrowserUnitSweepDiagnostics.INSTANCE.run(game,container,graphics,i);}
+    /** Ship sweep (BrowserShipSweepDiagnostics): the number of cases, a case's name, case i, and the oracle comparison's rows. */
+    @JSExport public static int shipSweepCount(){return BrowserShipSweepDiagnostics.INSTANCE.count(game);}
+    @JSExport public static String shipSweepName(int i){return BrowserShipSweepDiagnostics.INSTANCE.name(game,i);}
+    @JSExport public static String shipSweepProbe(int i){return BrowserShipSweepDiagnostics.INSTANCE.run(game,container,graphics,i);}
+    @JSExport public static String shipSweepDump(String what){return BrowserShipSweepDiagnostics.INSTANCE.probe(game,container,what);}
+    @JSExport public static void shipSweepTrace(boolean on){BrowserShipSweepDiagnostics.INSTANCE.setTrace(on);}
     @JSExport public static String encounterList(){return BrowserDiagnostics.INSTANCE.encounterList(game);}
     @JSExport public static String encounterProbe(String name,int sector){return BrowserDiagnostics.INSTANCE.encounterProbe(game,name,sector,container,graphics);}
     @JSExport public static String mechanicsProbe(){return BrowserDiagnostics.INSTANCE.mechanicsProbe(game,container,graphics);}

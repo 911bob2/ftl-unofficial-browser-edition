@@ -184,7 +184,7 @@ object LuaAdaptersSweepCrew {
             } as LuaStruct
             s.values[A.A_SCrewStats_species] = x.hsSpecies
             s.values[A.A_SCrewStats_name] = (x as? LivingCrew)?.info?.name ?: ""
-            s.values[A.A_SCrewStats_male] = (x as? LivingCrew)?.info?.isFemale != true
+            s.values[A.A_SCrewStats_male] = (x as? LivingCrew)?.info?.male != false
             s
         })
 
@@ -316,7 +316,11 @@ object LuaAdaptersSweepCrew {
             0
         })
         m(A.M_CrewMember_SetSavePosition, LuaMethod { val x = c(arg.obj(1)); x.savedPosition = x.currentSlotPoint.shipPoint; 0 })
-        m(A.M_CrewMember_SetSex, LuaMethod { crewAnimOf(c(arg.obj(1))).values[A.A_CrewAnimation_bMale] = arg.bool(2); 0 })
+        // CrewMember::SetSex (1.6.9 0x477f70): the animation's bMale (its strips set up again) and the blueprint's male
+        m(A.M_CrewMember_SetSex, LuaMethod {
+            val x = c(arg.obj(1)); crewAnimOf(x).values[A.A_CrewAnimation_bMale] = arg.bool(2)
+            (x as? LivingCrew)?.info?.male = arg.bool(2); 0
+        })
         m(A.M_CrewMember_SetSkillProgress, LuaMethod {
             val x = arg.obj(1) as? LivingCrew; val sk = xyz.znix.xftl.crew.Skill.entries.getOrNull(arg.int(2))
             if (x != null && sk != null) {
@@ -416,7 +420,7 @@ object LuaAdaptersSweepCrew {
                     MutableList<Any?>(4) { GlColorValue(1f, 1f, 1f, 1f) })
                 v[A.A_CrewAnimation_projectileColor] = GlColorValue(100f, 255f, 100f, 1f)
                 v[A.A_CrewAnimation_race] = x.hsSpecies
-                v[A.A_CrewAnimation_bMale] = (x as? LivingCrew)?.info?.isFemale != true
+                v[A.A_CrewAnimation_bMale] = (x as? LivingCrew)?.info?.male != false
             }
         } as LuaStruct
         s.values[A.A_CrewAnimation_currentShip] = (st(x)[CUR_SHIP] as? Pair<*, *>)?.takeIf { it.first === x.room.ship }?.let { (it.second as Int).toDouble() }

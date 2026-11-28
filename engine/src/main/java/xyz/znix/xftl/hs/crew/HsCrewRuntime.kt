@@ -58,7 +58,13 @@ fun HsCrew.queueEvent(name: String) {
  * gone ("Unregistered object", found by C2 for BoardersLost).
  */
 fun HsCrew.luaKill(c: AbstractCrew, noClone: Boolean) {
-    if (noClone) ex(c).noClone = true
+    // Kill(true) clears clone_ready (0x4701c0: `if (clone_ready) { if (!noClone) skip; clone_ready = 0 }`), so the
+    // clone bay never takes the body (HS oracle r27p-powers1/2 and r27u-late: the driver's Kill(true) of each scenario's
+    // crew left no clone; ours cloned them, a crew member more on the enemy every few scenarios)
+    if (noClone) {
+        ex(c).noClone = true
+        c.hsCloneReady = false
+    }
     c.health = 0f
     c.hsKilled = true
     c.hsClearFight()
@@ -401,8 +407,11 @@ fun HsCrew.addCrewMemberFromString(ship: Ship, name: String, raceName: String, i
     val race = resolveRace(game.blueprintManager, raceName, ftl.browser.BrowserRandom)
     val factory = game.crewFactory
     val colours = factory.drawColours(race)
-    val crewName = if (name.isNotEmpty()) name else factory.newName().name
-    val info = LivingCrewInfo(game, race, crewName, factory.colourIndex(race, colours, male))
+    // an empty name draws one with its sex, which replaces the argument (AddCrewMemberFromString 1.6.9 0x4a3ee0)
+    val drawn = if (name.isNotEmpty()) null else factory.newName()
+    val crewName = drawn?.name ?: name
+    val sex = drawn?.male ?: male
+    val info = LivingCrewInfo(game, race, crewName, factory.colourIndex(race, colours, sex), sex)
     val room = ship.rooms.getOrNull(roomId)
     if (!intruder) {
         return if (room != null) ship.addCrewMemberInRoom(info, room, false) else ship.addCrewMember(info, init)

@@ -88,6 +88,9 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
 
     private Image missingImage;
 
+    /** Every image path [getImg] found no file for (diagnostics: the ability sweep fails on new ones). */
+    public static final java.util.Set<String> MISSING_IMAGES = new java.util.LinkedHashSet<>();
+
     private final Point tempPoint = new Point(0, 0);
 
     private Room hoveredRoom;
@@ -686,6 +689,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             crewElem.setAttribute("ownerShip", refs.get(target));
             crewElem.setAttribute("selectedName", vc.getName());
             crewElem.setAttribute("colour", Integer.toString(vc.getColour()));
+            crewElem.setAttribute("male", Boolean.toString(vc.getMale()));
             for (Map.Entry<String, Integer> skill : vc.getSkills().entrySet()) {
                 xyz.znix.xftl.crew.Skill skillEnum = xftlSkillEnum(skill.getKey());
                 float progress = skill.getValue() * skillEnum.getAmountPerAction();
@@ -1063,7 +1067,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
                             : xyz.znix.xftl.hs.crew.HsCrewContent.crewBlueprint(blueprintManager, spec.getRace(), ftl.browser.NativeRandom.INSTANCE);
                 }
                 LivingCrewInfo info = choice == null ? LivingCrewInfo.generateRandom(race, this) :
-                        new LivingCrewInfo(this, race, choice.getName(), choice.getColour());
+                        new LivingCrewInfo(this, race, choice.getName(), choice.getColour(), choice.getMale());
                 crewIndex++;
                 crew.add(info);
             }
@@ -2298,6 +2302,11 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
         return jumpOutTarget != null && playerJumpOut > 0;
     }
 
+    /** The arrival's events still wait (the simulation holds until they open). */
+    public boolean browserArrivalPending() {
+        return arrivalEventsPending;
+    }
+
     /**
      * Save and close: completes a jump in progress at once, so the saved run holds the new beacon. The native save
      * (WorldManager 0x61a3a0) starts by finishing the pending location change (0x619fc0 with its force flag set)
@@ -2954,6 +2963,7 @@ public class InGameState extends MainGame.GameState implements TouchRouter.LiftT
             img = content.loadImage(file);
         } else {
             System.out.println("[WARN] Missing image: " + name);
+            MISSING_IMAGES.add(name);
             img = getMissingImage();
         }
         content.images.put(name, img);

@@ -318,8 +318,9 @@ class FriendlyCrewAI(private val ship: Ship) {
             }
 
             // CrewAI::UpdateCrewMember: idle crew take on their room's system unless someone else has it, so they
-            // don't count as free for any task.
-            if (task == null && crew.currentAction.isIdle) {
+            // don't count as free for any task. That is the system it mans (iManningId), so a crew member that cannot
+            // man (HS _HS_CanMan false) has none and stays idle.
+            if (task == null && crew.currentAction.isIdle && crew.canManSystem) {
                 val station = crew.room.system
                 val mannedBy = station?.manningCrew
                 if (station != null && (mannedBy == null || mannedBy === crew) && crew.room.crew.none { hasAlreadyAssignedManning(it) })
@@ -774,8 +775,13 @@ class ManningTask(ai: FriendlyCrewAI, room: Room) : AITask(ai, room) {
         return this
     }
 
+    /**
+     * HS's CrewAI::PrioritizeTask hook (CustomCrew.cpp) gives manning 1001, past any task's priority, to a crew member
+     * whose CanMan is false (_HS_CanMan: not an intruder, not stunned, the CAN_MAN stat): Multiverse's canMan false
+     * races (pony_engi_nano...) are never sent to a station. Vanilla asks nothing (every crew member can man).
+     */
     override fun isSuitable(crew: AbstractCrew): Boolean {
-        return crew.canRepair
+        return crew.canManSystem
     }
 }
 
@@ -830,9 +836,13 @@ class CombatTask(ai: FriendlyCrewAI, room: Room) : AITask(ai, room) {
         return AIUtils.systemPriority(room.system, ai) + 16
     }
 
-    override fun isSuitable(crew: AbstractCrew): Boolean {
-        return crew.canFight
-    }
+    /**
+     * CrewAI::AttemptToAssign (1.6.9 0x602e90) offers a boarder problem to every crew member it walks (no intruder,
+     * drone or player-controlled one) without asking CanFight, and HS's PrioritizeTask hook (CustomCrew.cpp) only
+     * bars manning (CanMan) and repairs (CanRepair): a crew member that cannot fight takes the problem too (HS oracle
+     * r27p-powers1 hologram: the enemy's hologram takes it and its crew member in room 2 stays at its station).
+     */
+    override fun isSuitable(crew: AbstractCrew): Boolean = true
 }
 
 class HealingTask(ai: FriendlyCrewAI, room: Room) : AITask(ai, room) {

@@ -521,11 +521,8 @@ object VanillaSaveWriter {
             w.int((progress / skill.amountPerAction(member.blueprint)).roundToInt())
         }
 
-        // Humans have a visual gender (colour < base colour count = male);
-        // every other race is genderless.
-        val male = member.blueprint.name == "human" &&
-                member.info.colour < member.blueprint.baseNumberOfColours
-        w.bool(male)
+        // The blueprint's sex, for every race (ImportShip gives it to CrewMember::SetSex, 1.6.9 0x477f70)
+        w.bool(member.info.male)
 
         // Crew stats (repairs, kills, evasions, jumps, masteries): xftl
         // doesn't track these.

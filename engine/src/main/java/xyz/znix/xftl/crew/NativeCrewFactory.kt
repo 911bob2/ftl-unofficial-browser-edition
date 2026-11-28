@@ -144,7 +144,7 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
     fun createRandom(game: xyz.znix.xftl.game.InGameState, race: CrewBlueprint, skillsForLevel: Int? = null): LivingCrewInfo {
         val colours = drawColours(race)
         val name = newName()
-        val info = layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male)), colours)
+        val info = layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male), name.male), colours)
         if (skillsForLevel != null)
             randomSkills(info, skillsForLevel)
         return info
@@ -181,7 +181,7 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
         val colours = drawColours(race)
         hsInitializeDraw(race.name)
         val crystalNeverReady = crystalPowerDraw(race.name)
-        return Boarder(layered(LivingCrewInfo(game, race, name, colourIndex(race, colours, first.male)), colours), crystalNeverReady)
+        return Boarder(layered(LivingCrewInfo(game, race, name, colourIndex(race, colours, first.male), first.male), colours), crystalNeverReady)
     }
 
     /**
@@ -199,7 +199,7 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
         val colours = drawColours(race)
         hsInitializeDraw(race.name)
         val crystalNeverReady = crystalPowerDraw(race.name)
-        return Boarder(layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male)), colours), crystalNeverReady)
+        return Boarder(layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male), name.male), colours), crystalNeverReady)
     }
 
     /**
@@ -214,7 +214,7 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
         val colours = drawColours(race)
         hsInitializeDraw(race.name)
         crystalPowerDraw(race.name)
-        return layered(LivingCrewInfo(game, race, name, colourIndex(race, colours, male)), colours)
+        return layered(LivingCrewInfo(game, race, name, colourIndex(race, colours, male), male), colours)
     }
 
     /**
@@ -230,7 +230,7 @@ class NativeCrewFactory(private val nameManager: CrewNameManager) {
         if (namedBlueprint) newName()
         val name = newName()
         val colours = drawColours(race)
-        val info = layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male)), colours)
+        val info = layered(LivingCrewInfo(game, race, name.name, colourIndex(race, colours, name.male), name.male), colours)
         randomSkills(info, worldLevel)
         return info
     }

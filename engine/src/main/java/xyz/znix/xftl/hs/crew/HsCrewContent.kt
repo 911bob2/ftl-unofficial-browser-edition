@@ -39,6 +39,7 @@ object HsCrewContent {
             else xyz.znix.xftl.hs.stat.AugmentStatBoosts.parseAugmentsNode(node)
         }
         StatBoostManager.augmentBoosts = xyz.znix.xftl.hs.stat.AugmentStatBoosts::boosts
+        HsCrewSlots.install()
         StatBoostDefs.weaponsFirst()
         // Saved crew powers and resources name their definition by index: the weapons' few (Alder's Additions has one)
         // keep the numbers after hyperspace.xml's they had before the weapons were parsed first.

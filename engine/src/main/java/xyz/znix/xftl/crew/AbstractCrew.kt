@@ -67,6 +67,10 @@ abstract class AbstractCrew(
     /** CrewAnimation picks "ghost_death" for ghosts, else "<race>_death_right". */
     protected open val deathAnimationName: String get() = "${animationRace}_death_right"
 
+    /** The race whose strips this crew member plays and its death strip (for the diagnostics' strip checks). */
+    val hsAnimationRaceName: String get() = animationRace
+    val hsDeathAnimationName: String get() = deathAnimationName
+
     /**
      * CrewAnimation::CustomDeath (vtable +0x30): the death animation is a sheet of its own (the Zoltan's green explosion),
      * drawn alone and centred on the crew member instead of as a frame of the race's strips. Hyperspace:
@@ -437,6 +441,9 @@ abstract class AbstractCrew(
     private var doorAttackPos: IPoint? = null // Where to stand when attacking the door
     private val phasedDoors = HashSet<Door>() // closed doors a phasing crew member already played the phase sound for
     private var doorToAttack: Door? = null
+
+    /** The door this crew member walks up to break (checks). */
+    internal val browserDoorToAttack: Door? get() = doorToAttack
 
     private var teleportingTo: Room? = null
     private var teleportTimer: Float = 0f
@@ -1679,8 +1686,14 @@ abstract class AbstractCrew(
             } else if (frame < CrewAim.THROW_FRAME) {
                 shootFrameThrown = false
             }
-            if (total > 0f)
-                shootStripTime = (shootStripTime + dt) % total
+            // Animation::Update (1.6.9 0x59bd50) of a looping strip: past its time the clock stops on the end, so the
+            // last frame shows for one update, and the next update starts the pass again from 0. A strip shorter than
+            // a few frames therefore still reaches frame 3 once per pass (Multiverse unique_jerry_pony: 4 frames in
+            // 0.05 s, a throw every third frame; the modulo skipped frame 3 at 60 fps, so it never threw).
+            if (total > 0f) {
+                if (shootStripTime >= total) shootStripTime = 0f
+                shootStripTime = minOf(shootStripTime + dt, total)
+            }
         } else {
             if (shotTimerGoal < 0f)
                 shotTimerGoal = rollShotTimer()
@@ -2002,8 +2015,10 @@ abstract class AbstractCrew(
                 anims.crewStrip("${animationRace}_walk_${dirAsString(direction)}").startLooping(game)
             }
 
-            // A console without a facing (a blueprint slot with no direction) keeps the current animation.
-            Action.MANNING -> anims.crewStrip("${animationRace}_type_${dirAsString(room.system!!.configuration.computerDirection ?: return)}")
+            // A console without a facing (a blueprint slot with no direction) keeps the current animation, and so does a
+            // room without a system: a save can hold a crew member at a console action standing elsewhere (a power or
+            // script moved it in the frame the save was written), and its load sets that action before any update.
+            Action.MANNING -> anims.crewStrip("${animationRace}_type_${dirAsString(room.system?.configuration?.computerDirection ?: return)}")
                 .startLooping(game)
 
             Action.REPAIRING, Action.REPAIRING_BREACH -> anims.crewStrip("${animationRace}_repair").startLooping(game)
@@ -2278,7 +2293,7 @@ abstract class AbstractCrew(
             "energy" -> "energyDeath"
             "crystal" -> "crystalDeath"
             "anaerobic" -> "shrikeDeath"
-            else -> if ((this as? LivingCrew)?.info?.isFemale == true)
+            else -> if ((this as? LivingCrew)?.info?.male == false) // GetDeathSound 0x475bb0 reads bMale, every race
                 "femaleDeath${(1..3).random(ftl.browser.BrowserRandom)}"
             else
                 "death${(1..2).random(ftl.browser.BrowserRandom)}"
@@ -2314,6 +2329,9 @@ abstract class AbstractCrew(
         // In any case, in vanilla crew don't run back to the place they died.
         nextTargetPos = null
         pathingTarget = null
+        // and a door it was breaking where it died, which may be on the other ship
+        doorToAttack = null
+        doorAttackPos = null
 
         // Switch to the cloning state immediately, so we don't spend one frame
         // with our old animation.
@@ -2548,7 +2566,10 @@ abstract class AbstractCrew(
             elem.setAttribute("browserSabotaging", "true")
         SaveUtil.addAttr(elem, "action", currentAction.name)
 
-        if (pathingTarget != null) {
+        // A crew member in the clone queue (outside its ship's list) saves no walk target and no door attack: both may
+        // be on the ship it died on, which the load would read on the clone bay's ship; cloning clears them (onCloned).
+        val inCloneQueue = this !in room.ship.crew
+        if (pathingTarget != null && !inCloneQueue) {
             SaveUtil.addRoomPoint(elem, "pathingTarget", pathingTarget!!)
         }
 
@@ -2556,7 +2577,7 @@ abstract class AbstractCrew(
             SaveUtil.addPoint(elem, "nextTargetPos", nextTargetPos!!)
         }
 
-        if (doorToAttack != null) {
+        if (doorToAttack != null && !inCloneQueue) {
             val doorAttackElem = Element("doorToAttack")
             val doorId = room.ship.doors.indexOf(doorToAttack!!)
             SaveUtil.addAttrInt(doorAttackElem, "id", doorId)
@@ -2678,8 +2699,10 @@ abstract class AbstractCrew(
             val standX = SaveUtil.getAttrInt(doorAttackElem, "standX")
             val standY = SaveUtil.getAttrInt(doorAttackElem, "standY")
 
-            doorToAttack = room.ship.doors[doorId]
-            doorAttackPos = ConstPoint(standX, standY)
+            // A save of an earlier build kept the door of a clone queue member that died aboard the other ship: its
+            // number may be past this ship's doors (that crew member walks nowhere until cloned).
+            doorToAttack = room.ship.doors.getOrNull(doorId)
+            doorAttackPos = if (doorToAttack != null) ConstPoint(standX, standY) else null
         } else {
             // Just in case this is set for the same reason as nextTargetPos.
             doorToAttack = null

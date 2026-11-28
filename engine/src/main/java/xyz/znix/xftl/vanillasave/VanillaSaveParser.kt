@@ -109,6 +109,8 @@ class VanillaSaveData {
         var savedRoom: Int = 0
         val skills = HashMap<String, Int>() // slot name to xp actions
         var colour: Int = 0
+        /** The blueprint's sex (CrewMember::SetSex on import). */
+        var male: Boolean = true
         var hs: NativeHsRun.Crew? = null
     }
 
@@ -534,7 +536,7 @@ object VanillaSaveParser {
         for (skill in skillNames) {
             crew.skills[skill] = r.int()
         }
-        r.bool() // male
+        crew.male = r.bool()
         repeat(5) { r.int() } // repairs, kills, evasions, jumps, masteries
         // CrewMember::SaveState starts here; Hyperspace writes its part first.
         if (hs != null) crew.hs = hs.crew(player)

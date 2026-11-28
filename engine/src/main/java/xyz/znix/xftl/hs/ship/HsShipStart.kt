@@ -92,6 +92,49 @@ object HsShipStart {
     fun missingWeapon(manager: BlueprintManager): AbstractWeaponBlueprint? =
         if (xyz.znix.xftl.hs.HS.active) manager.getOrNull("LASER_BURST_1") as? AbstractWeaponBlueprint else null
 
+    /** A preset with nothing in it: the generator adds the equipment itself, in the original's order ([installInOrder]). */
+    @JvmField val LATER = Equipment(emptyList(), emptyList())
+
+    /**
+     * The blueprint's equipment of a generated ship, where FUN_004b12c0 adds it (after Ship::OnInit and the starting
+     * systems): each weapon's list pick (GetWeaponBlueprint) and then the weapon's own draw, then each drone's pick and
+     * its AddDrone draws. A list entry thus picks from the stream at its own place, as the original's
+     * MU_ALKRAM_TRAPPER (LIST_WEAPONS_LEECH twice) and MT_ENGI_1 (MV_DRONES_CREW_*) do. The ship was loaded with [LATER].
+     */
+    @JvmStatic
+    fun installInOrder(ship: Ship, game: xyz.znix.xftl.game.InGameState) {
+        val manager = ship.sys.blueprintManager
+        val bp = ship.type
+        if (ship.weapons != null) {
+            for ((index, name) in bp.initialWeapons.withIndex()) {
+                val picked = pick(manager, name, NativeRandom)?.takeIf { manager.getOrNull(it) is AbstractWeaponBlueprint }
+                if (index >= ship.hardpoints.size) continue
+                val weapon = (if (picked == null) null else manager.getOrNull(picked) as? AbstractWeaponBlueprint)
+                    ?: missingWeapon(manager) ?: manager.getOrNull("")
+                if (weapon !is AbstractWeaponBlueprint) continue
+                ship.hardpoints[index].weapon = weapon.buildInstance(ship)
+                xyz.znix.xftl.shipgen.ShipConstructionDraws.weapon()
+            }
+        }
+        val drones = ship.drones ?: return
+        val names = bp.initialDrones
+        var placed = 0
+        for (i in 0 until minOf(bp.droneListCount ?: names.size, names.size)) {
+            val picked = pick(manager, names[i], NativeRandom) ?: continue
+            val drone = manager.getOrNull(picked) as? DroneBlueprint ?: continue
+            // DroneSystem::AddDrone (0x639640) drops a drone once the slots are full; the drone was made first, with its
+            // draws (the original's MTS_BOSS_OSMIAN_CHAOS: three of four, and its upgrades as when the fourth draws).
+            if (placed >= (ship.droneSlots ?: 4)) {
+                xyz.znix.xftl.shipgen.ShipConstructionDraws.drone(game, drone, null)
+                continue
+            }
+            if (drones.drones.size <= placed) drones.drones.add(null)
+            val info = Drones.DroneInfo(drone, null)
+            drones.drones[placed++] = info
+            xyz.znix.xftl.shipgen.ShipConstructionDraws.drone(game, drone, info)
+        }
+    }
+
     /** Ship.loadDefaultContents in modded sessions: install [preset] (or resolve now) into the ship's systems. */
     @JvmStatic
     fun loadEquipment(ship: Ship, preset: Equipment?) {
@@ -109,7 +152,8 @@ object HsShipStart {
         val drones = ship.drones ?: return
         for ((idx, name) in eq.drones.withIndex()) {
             val drone = manager.getOrNull(name) as? DroneBlueprint ?: continue
-            // As the engine's vanilla path: a fixed drone list gets the slots it needs.
+            // DroneSystem::AddDrone (0x639640) drops a drone once the slots are full (as Ship.loadDefaultContents).
+            if (idx >= (ship.droneSlots ?: 4)) break
             if (drones.drones.size <= idx) drones.drones.add(null)
             drones.drones[idx] = Drones.DroneInfo(drone, null)
         }

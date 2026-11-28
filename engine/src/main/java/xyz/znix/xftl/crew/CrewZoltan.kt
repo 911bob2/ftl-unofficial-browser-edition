@@ -51,7 +51,17 @@ object ZoltanEnergySource : EnergySource {
         // Note: mind-controlled zoltan provide power to their owner ship,
         // not to whoever currently controls them. Hence check ownerShip
         // rather than the current mode.
-        return system.room!!.crew.sumOf { if ((it as? LivingCrew)?.ownerShip == system.room!!.ship) it.bonusSystemPower else 0 }
+        // Hyperspace's ShipManager::OnLoop (CustomCrew.cpp) counts every crew list member of the ship in the room, crew
+        // drones too (the Multiverse Manager Drone's bonusPower 1 powers the room it stands in).
+        val room = system.room!!
+        return room.crew.sumOf {
+            val owner = when (it) {
+                is LivingCrew -> it.ownerShip
+                is xyz.znix.xftl.drones.AbstractIndoorsDrone.Pawn -> it.drone.ownerShipOrNull
+                else -> null
+            }
+            if (owner == room.ship) it.bonusSystemPower else 0
+        }
     }
 
     override fun drawSystemPowerBar(g: Graphics, system: AbstractSystem, x: Int, y: Int, width: Int, height: Int) {

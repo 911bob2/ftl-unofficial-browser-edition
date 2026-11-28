@@ -523,8 +523,32 @@ class LivingCrewInfo(
      *
      * This is how different crewmembers can have different colours.
      */
-    var colour: Int
+    var colour: Int,
+
+    /** The sex of the name the blueprint drew; null: a human's from [colour], any other race male. See [male]. */
+    male: Boolean? = null
 ) {
+    /**
+     * CrewBlueprint::male, which CrewMember's constructor (1.6.9 0x47a400) copies to CrewAnimation::bMale for every
+     * race: BlueprintManager::GetCrewBlueprint (0x5e9690) takes it from the name it draws (GetUnusedCrewName: the
+     * name table's sex), AddCrewMemberFromString (0x4a3ee0) from its argument when it is given a name. Only a human
+     * is drawn with the female sheet (CrewAnimation::SetupStrips 0x477250 compares the race with "human"), which
+     * [colour] encodes ([isFemale]); the generic death sound is femaleDeath for a woman of any race
+     * (CrewAnimation::GetDeathSound 0x475bb0), Hyperspace picks `<animSheetFemale>` and `<deathSounds>` by it, and
+     * Lua reads it (blueprint.male, crewAnim.bMale). The original makes about a fifth of every race women (MV oracle
+     * r27s sector 4: human_soldier 76 of 384, slug 107 of 484).
+     */
+    var male: Boolean
+        get() = if (race.name == "human") !isFemale else otherMale
+        set(value) {
+            otherMale = value
+            if (race.name == "human" && race.baseNumberOfColours > 0 && value == isFemale)
+                colour += if (value) -race.baseNumberOfColours else race.baseNumberOfColours
+        }
+
+    private var otherMale: Boolean =
+        male ?: !(race.name == "human" && race.baseNumberOfColours > 0 && colour >= race.baseNumberOfColours)
+
     /**
      * The colour index of each layer (CrewBlueprint colorChoices) when layers other than the largest have a choice
      * (Hyperspace races; CrewMember::CycleColorLayer moves every layer), or null while [colour] picks every layer.
@@ -579,7 +603,7 @@ class LivingCrewInfo(
      */
     private val sheetRace: String
         get() = if (!xyz.znix.xftl.hs.HS.active) race.name
-        else xyz.znix.xftl.hs.crew.CustomCrewManager.definitionOrNull(race.name)?.animSheet?.get(if (isFemale) 0 else 1)
+        else xyz.znix.xftl.hs.crew.CustomCrewManager.definitionOrNull(race.name)?.animSheet?.get(if (male) 1 else 0)
             ?.ifEmpty { null } ?: race.name
 
     private val portraitImage: Image
@@ -730,6 +754,7 @@ class LivingCrewInfo(
         }
         SaveUtil.addAttr(elem, "selectedName", name)
         SaveUtil.addAttrInt(elem, "colour", colour)
+        if (!male) elem.setAttribute("male", "false")
         hsLayerColours?.let { elem.setAttribute("hsLayerColours", it.joinToString(",")) }
         elem.addContent(browserCounters.save())
 
@@ -806,7 +831,11 @@ class LivingCrewInfo(
         fun loadFromXMLWithRace(elem: Element, race: CrewBlueprint, game: InGameState): LivingCrewInfo {
             val name = SaveUtil.getAttr(elem, "selectedName")
             val colour = SaveUtil.getAttrInt(elem, "colour")
-            val info = LivingCrewInfo(game, race, name, colour)
+            // a save without the attribute: a human's sex is in its colour, other races were all men; with it, a
+            // human's colour follows it (a native save's tint index has no female offset)
+            val male = elem.getAttributeValue("male")?.let { it != "false" }
+            val info = LivingCrewInfo(game, race, name, colour, male)
+            if (male != null) info.male = male
             elem.getAttributeValue("hsLayerColours")?.let { v ->
                 info.hsLayerColours = v.split(',').mapNotNull { it.trim().toIntOrNull() }.toIntArray()
             }

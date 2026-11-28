@@ -200,7 +200,7 @@ class WeaponPowerManager(
                 continue
 
             // Purely Zoltan-powered, can't disable manually.
-            if (forcedPower[slot] == items.getItemPowerDraw(slot))
+            if (forcedPower[slot] == items.getItemPowerDraw(slot) && items.getOwnBonusPower(slot) == 0)
                 continue
 
             setItemPower(slot, false)
@@ -226,9 +226,13 @@ class WeaponPowerManager(
 
         val powerDraw = items.getItemPowerDraw(slot)
 
-        // Purely Zoltan-powered, can't disable manually.
+        // Purely Zoltan-powered, can't disable manually. Except where the item's own crew drone body gives part of the
+        // cover: DroneSystem::DePowerDrone (1.6.9 0x611630) always succeeds and UpdateBonusPower (0x612f80) powers
+        // again only a drone the bonus still fully covers, and the body's bonus ends with its drone (Functional), so the
+        // original's off switch holds for a drone powered by its own body (oracle r27u-d2a: Multiverse DIRECTOR
+        // depowered, powered 0; r27u-drones1: MANNING_ENEMY off on DeselectArmament).
         val nonZoltanPower = powerDraw - forcedPower[slot]
-        if (!newPower && nonZoltanPower == 0)
+        if (!newPower && nonZoltanPower == 0 && items.getOwnBonusPower(slot) == 0)
             return false
 
         if (newPower) {
@@ -380,5 +384,8 @@ class WeaponPowerManager(
          * Calls [MainSystem.setSystemPower]
          */
         fun setSystemPower(level: Int): Boolean
+
+        /** The bonus power the item's own crew drone body gives this system (drones), 0 for other items. */
+        fun getOwnBonusPower(slot: Int): Int = 0
     }
 }

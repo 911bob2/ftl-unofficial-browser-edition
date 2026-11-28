@@ -836,10 +836,9 @@ class Ship(
                 continue
             }
 
-            // If the ship doesn't have enough drone slots, just give it some more.
-            // This is required for the flagship at least, but it makes sense
-            // that if there is some fixed list of included drones then there ought
-            // to be enough space for them.
+            // DroneSystem::AddDrone (0x639640) drops a drone once the slots (ShipManager+0x72c, four by default) are
+            // full: the original's MTS_BOSS_OSMIAN_CHAOS (three slots, four listed) starts with three.
+            if (idx >= (droneSlots ?: 4)) break
             if (drones!!.drones.size <= idx) {
                 drones!!.drones.add(null)
             }
@@ -1004,6 +1003,29 @@ class Ship(
             if (system.powerSelected == before)
                 break
         }
+    }
+
+    /**
+     * ShipManager::CreateSystems (0x4a96f0) on an AI ship: each system takes its reactor bars as AddSystem makes it,
+     * in the blueprint's systemList order ([browserPowerAtCreation]); the shields too, through AddSystem's
+     * InstantPowerShields at their own place in that list. [loadDefaultContents] powered the shields before the
+     * rest, so they give their bars back first. MV oracle rows (r27-ships): MU_UNION_REFUEL_DETECTIVE (reactor 7,
+     * oxygen listed before the shields) starts with oxygen 2 and shields 4, MU_MONK_WAT (reactor 4 when built, the
+     * shields last) with oxygen 1 and the shields powered only by the end-of-CreateShip InstantPowerShields.
+     */
+    fun browserPowerSystemsAtCreation() {
+        shields?.let { s ->
+            var guard = s.energyLevels + 2
+            while (s.powerSelected > 0 && guard-- > 0) {
+                val before = s.powerSelected
+                s.decreasePower()
+                if (s.powerSelected == before)
+                    break
+            }
+        }
+        for (system in mainSystems.sortedBy { xyz.znix.xftl.ai.systemOrderKey(it) })
+            browserPowerAtCreation(system)
+        shields?.instantCharge()
     }
 
     fun instantPowerShields() {
@@ -1794,9 +1816,10 @@ class Ship(
             if (destructionExplosionTimer < 0f) {
                 if (destructionExplosions.size < MAX_DESTRUCTION_EXPLOSIONS) {
                     val kind = VisualRandom.nextInt(3)
-                    val y = VisualRandom.nextInt(hullHeight.coerceAtLeast(1))
-                    val x = VisualRandom.nextInt((hullWidth - 32).coerceAtLeast(1))
-                    val pos = ConstPoint(hullOffset.x + x, hullOffset.y + y)
+                    val box = destructionBox()
+                    val y = VisualRandom.nextInt(box.h.coerceAtLeast(1))
+                    val x = VisualRandom.nextInt(nativeModRange(box.w - 32))
+                    val pos = ConstPoint(box.x + x, box.y + y)
                     if (kind == 0)
                         destructionExplosions += FloatingAnimation(sys, randomBigExplosion(), pos)
                     destructionExplosions += FloatingAnimation(sys, sys.animations["explosion1"], pos)
@@ -1811,14 +1834,31 @@ class Ship(
         destructionExplosions.removeIf { it.isFinished }
     }
 
+    private class DestructionBox(val x: Int, val y: Int, val w: Int, val h: Int)
+
+    /**
+     * ShipGraph::shipBox, where Ship::OnLoop (1.6.14 0x493f70) puts the wreck's explosions: the rooms' bounding
+     * box in the ship's pixels (not the hull image's rect).
+     */
+    private fun destructionBox(): DestructionBox {
+        if (rooms.isEmpty()) return DestructionBox(hullOffset.x, hullOffset.y, hullWidth, hullHeight)
+        val minX = rooms.minOf { it.x }; val minY = rooms.minOf { it.y }
+        return DestructionBox(minX * ROOM_SIZE, minY * ROOM_SIZE, (rooms.maxOf { it.x + it.width } - minX) * ROOM_SIZE,
+            (rooms.maxOf { it.y + it.height } - minY) * ROOM_SIZE)
+    }
+
+    /** `rand() % d` takes |d| values for a negative d (C's remainder keeps the dividend's sign); 0 would trap natively. */
+    private fun nativeModRange(d: Int): Int = kotlin.math.abs(d).coerceAtLeast(1)
+
     private fun blowApart() {
         var previous: ConstPoint? = null
+        val box = destructionBox()
         repeat(VisualRandom.nextInt(2) + 2) {
             var pos: ConstPoint
             do {
-                val y = VisualRandom.nextInt(hullHeight.coerceAtLeast(1))
-                val x = VisualRandom.nextInt((hullWidth - 128).coerceAtLeast(1))
-                pos = ConstPoint(hullOffset.x + x, hullOffset.y + y)
+                val y = VisualRandom.nextInt(box.h.coerceAtLeast(1))
+                val x = VisualRandom.nextInt(nativeModRange(box.w - 128))
+                pos = ConstPoint(box.x + x, box.y + y)
             } while (previous != null && pos.distTo(previous!!) < 64)
             previous = pos
             destructionExplosions += FloatingAnimation(sys, randomBigExplosion(), pos, 2f)
@@ -3329,9 +3369,12 @@ class Ship(
         // If two crewmembers are in, or set to be in, the same location then
         // one of them will be in the conflicts list. Make them find a new
         // free slot.
+        // The move may be refused: native callers ignore CrewMember::MoveToRoom's result, so with no free tile (a modded
+        // ship holding more crew than tiles, see findSpaceForCrew) the crew member stays stacked where it is, and
+        // Hyperspace refuses a rooted crew member's own moves (CrewVTable.cpp MoveToRoom hook).
         for (conflict in conflicts) {
             val freeSpot = findSpaceForCrew(conflict.room, conflict.mode)
-            require(conflict.setTargetRoom(freeSpot.room)) { "Failed to set target of empty room!" }
+            conflict.setTargetRoom(freeSpot.room)
         }
     }
 

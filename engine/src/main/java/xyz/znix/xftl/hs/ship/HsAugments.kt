@@ -118,16 +118,25 @@ object HsAugments {
         val st = ship.hs ?: return emptyMap()
         st.augListCache?.let { return it }
         val list = HashMap<String, Int>()
+        // A removed augment keeps its key at 0 (ShipInfo::RemoveAugmentation 0x4637f0 decrements, never erases), and
+        // UpdateAugments copies every key: HasAugmentation adds nothing for it, but GetAugmentationValue's highest
+        // (or lowest) pick over the functions still sees its value (CustomAugments.cpp; oracle r27p-smoke: SLUG_GEL
+        // 999 for NANITE_GAS after IMMUNE was removed, HasAugmentation 1).
+        for (n in st.augKeys) list[n] = 0
         for (a in ship.augments) list[a.name] = (list[a.name] ?: 0) + 1
         for ((n, c) in st.hiddenAugs) list[n] = (list[n] ?: 0) + c
+        st.augKeys.addAll(list.keys)
         st.augListCache = list
         return list
     }
 
-    /** `UpdateAugments`: called when the ship's augments change. */
+    /** `UpdateAugments`: called when the ship's augments change (the names it holds now keep a key, [augListWithHidden]). */
     @JvmStatic
     fun updateAugments(ship: Ship) {
-        ship.hs?.augListCache = null
+        val st = ship.hs ?: return
+        for (a in ship.augments) st.augKeys += a.name
+        st.augKeys.addAll(st.hiddenAugs.keys)
+        st.augListCache = null
     }
 
     /** `AugmentFunction::Functional`: no system named, or that system is installed, not hack-pulsed and powered. */

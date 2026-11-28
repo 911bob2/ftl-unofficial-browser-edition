@@ -74,6 +74,9 @@ class CrewNameManager(df: Datafile, @Suppress("unused") private val language: St
             merged.entries.map { Pair(it.key, it.value) }.sortedWith { a, b -> compareUtf8(a.first, b.first) }
         }
 
+    /** The sex the name table gives [name] (what GetUnusedCrewName answers for it), null for a name not in it. */
+    fun sexOf(name: String): Boolean? = flatNames.firstOrNull { it.first == name }?.second
+
     fun getForGender(male: Boolean?, rand: Random): String {
         val lists = names.filter {
             // If a gender is specified, filter on that

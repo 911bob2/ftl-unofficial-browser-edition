@@ -387,6 +387,14 @@ class Drones(blueprint: SystemBlueprint) : MainSystem(blueprint) {
         override fun setSystemPower(level: Int): Boolean {
             return this@Drones.setSystemPower(level)
         }
+
+        // Hyperspace ShipManager::OnLoop (CustomCrew.cpp): the drone's body adds its BONUS_POWER while standing in
+        // this system's room on its own ship, as ZoltanEnergySource counts it.
+        override fun getOwnBonusPower(slot: Int): Int {
+            val pawn = (drones.getOrNull(slot)?.instance as? xyz.znix.xftl.drones.AbstractIndoorsDrone)?.pawn ?: return 0
+            if (pawn.room !== room || pawn.drone.ownerShipOrNull !== ship) return 0
+            return pawn.bonusSystemPower
+        }
     }
 
     companion object {

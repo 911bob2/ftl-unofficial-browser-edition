@@ -262,7 +262,7 @@ class EventCreator(private val game: InGameState) {
         }
 
         val skills = if (spec.skills.isNotEmpty()) spec.skills else factory.randomSkillMap(level)
-        return CreatedCrew(race, name, factory.colourIndex(race, colours, male), skills)
+        return CreatedCrew(race, name, factory.colourIndex(race, colours, male), skills, male)
     }
 
     /** The weapon, drone or augment: RANDOM is a weighted pick, a list name draws one of its entries. */

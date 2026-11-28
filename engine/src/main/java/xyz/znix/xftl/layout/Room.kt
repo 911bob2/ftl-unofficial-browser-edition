@@ -800,7 +800,11 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
         hsObstructionsFreed = false
         if (config.obstructionPoint != null) {
             obstructions.add(config.obstructionPoint)
-            obstructionSlots.add(pointToSlot(config.obstructionPoint))
+            // ShipManager::AddSystem (1.6.9 0x49ca00) fills the medbay / clonebay machine's slot (both sides) only on
+            // the player's ship (iShipId 0): an enemy's crew may stand there (MV oracle: MU_TRAVELING_MERCHANT_*
+            // start with four <crew> members in their 2x2 medbay).
+            if (ship.isPlayerShip)
+                obstructionSlots.add(pointToSlot(config.obstructionPoint))
         }
 
         ship.updateAvailableSystems()
@@ -876,7 +880,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
      */
     fun isSlotFree(point: IPoint, type: AbstractCrew.SlotType, allow: AbstractCrew? = null): Boolean {
         // Skip obstructed cells - eg, healer in the medbay
-        if (obstructions.contains(point) && !hsObstructionsFreed)
+        if (isObstructed(point) && !hsObstructionsFreed)
             return false
 
         val slots = slotsFor(type)
@@ -886,7 +890,7 @@ data class Room(val ship: Ship, val id: Int, val x: Int, val y: Int, val width: 
     }
 
     /** Whether an obstruction (the medbay or clonebay machine) takes this cell. */
-    fun isObstructed(point: IPoint): Boolean = obstructions.contains(point)
+    fun isObstructed(point: IPoint): Boolean = obstructions.contains(point) && pointToSlot(point) in obstructionSlots
 
     /** The crew member standing in or walking to this slot for [type] (Room::slots), or null. */
     fun slotOccupier(point: IPoint, type: AbstractCrew.SlotType): AbstractCrew? = slotsFor(type)[pointToSlot(point)]

@@ -69,7 +69,8 @@ internal object GameplaySaveDroneBodyChecks {
         val enemy = checkNotNull(state.enemy) { "No enemy" }
         val player = state.player
         val drones = checkNotNull(enemy.drones) { "No generated enemy with a drone system" }
-        drones.drones.indices.forEach { drones.setDronePower(it, false); drones.drones[it]?.instance?.removeInstance() }
+        // the enemy's own drones leave the list: its drone AI would launch them again (a second boarder's body)
+        drones.drones.indices.forEach { drones.setDronePower(it, false); drones.drones[it]?.instance?.removeInstance(); drones.drones[it] = null }
         enemy.purchasedReactorPower = 25
         drones.energyLevels = 8
         enemy.updateAvailablePower()

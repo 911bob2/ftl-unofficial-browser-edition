@@ -23,3 +23,6 @@ android/*/build/
 android/*/.cxx/
 android/local.properties
 android/signing.properties
+tools/hs-oracle/tracer/data/hs_oracle/r27s-names.lua
+tools/hs-oracle/tracer/data/events_r27s.xml
+tools/hs-oracle/sessions/r27s-*.json

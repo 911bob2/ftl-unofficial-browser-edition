@@ -162,6 +162,9 @@ internal object ShipConstructionDraws {
 
             DroneBlueprint.DroneType.SHIP_REPAIR -> {
                 spaceDrone(info)
+                // ShipRepairDrone's constructor (1.6.14 0x4295c0, 1.6.9 0x4246c0) after the CombatDrone one: its lifespan
+                // (SpaceDrone+0x250), random32() % 3 + 3 (DroneRuntime.construct keeps the body's own value)
+                NativeRandom.next31()
                 // ShipManager::CreateSpaceDrone (0x4b0b60, type 5; 1.6.9 0x4a5db0) aims a hull-repair drone at its own
                 // ship straight away (0x420f60), two CombatDrone::PickDestination hops.
                 if (info != null) setMovementTarget(info)

@@ -128,7 +128,9 @@ class HangarPresentation(private val state: SelectShipState) {
             else state.blueprints.crewOrHuman(spec.race)
             val species = race.name
             val colour = if (race.numberOfColours == 0) 0 else random.nextInt(race.numberOfColours)
-            crew += StartingCrew(species, names.getForGender(if (species == "human") colour < race.baseNumberOfColours else null, random), colour)
+            val name = names.getForGender(if (species == "human") colour < race.baseNumberOfColours else null, random)
+            // AddInitialCrew's GetCrewBlueprint (1.6.9 0x5e9690) gives every race the sex of the name it draws
+            crew += StartingCrew(species, name, colour, if (species == "human") null else names.sexOf(name))
         }
     }
 

@@ -97,6 +97,9 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             // The Zoltan shield is dropped from the blueprint before OnInit on easy's first sector.
             diagnosticStep = "contents"
             diagnosticMark?.invoke("sm")
+            // modded: the equipment comes below, where the original adds it (HsShipStart.installInOrder)
+            val inOrder = xyz.znix.xftl.hs.HS.modded && ship.hsStartEquipment == null
+            if (inOrder) ship.hsStartEquipment = xyz.znix.xftl.hs.ship.HsShipStart.LATER
             ship.loadDefaultContents(omitAugment = if (!spec.fixedBlueprint && easy && level == -1) "ENERGY_SHIELD" else null)
 
             // ShipManager::Restart (0x4b1760) builds the ship from the same stream: Ship::OnInit, the starting systems,
@@ -104,8 +107,13 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             diagnosticStep = "onInit"
             ShipConstructionDraws.onInit(ship)
             ShipConstructionDraws.startingSystems(ship)
-            repeat(ship.hardpoints.count { it.weapon != null }) { ShipConstructionDraws.weapon() }
-            ship.drones?.drones?.forEach { info -> info?.let { ShipConstructionDraws.drone(sys, it.type, it) } }
+            if (inOrder) {
+                ship.hsStartEquipment = null
+                xyz.znix.xftl.hs.ship.HsShipStart.installInOrder(ship, sys)
+            } else {
+                repeat(ship.hardpoints.count { it.weapon != null }) { ShipConstructionDraws.weapon() }
+                ship.drones?.drones?.forEach { info -> info?.let { ShipConstructionDraws.drone(sys, it.type, it) } }
+            }
             // The fires come after the blueprint crew, which only a ship that skips CreateShip has (below).
             if (!spec.fixedBlueprint) {
                 ShipConstructionDraws.fires(ship)
@@ -115,17 +123,21 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             }
 
             // ShipManager::AddSystem (0x4a8370) never starts a system below one bar, and caps it at the system's maximum.
-            // Hyperspace's AddSystem hook then upgrades it to getTrueSystemStartPower (HsSystemInstall.trueStartPower).
             for (slot in ship.systemSlots) {
                 val system = slot.room.system ?: continue
                 if (!slot.isInstalled) continue
                 system.energyLevels = system.energyLevels.coerceAtLeast(1).coerceAtMost(slot.system.maxPower)
-                if (xyz.znix.xftl.hs.HS.active)
-                    system.energyLevels = max(system.energyLevels, xyz.znix.xftl.hs.systems.HsSystemInstall.trueStartPower(slot))
             }
             // CreateSystems (0x4a96f0) builds them in the blueprint's order, each powered as it is made.
-            for (system in ship.mainSystems.sortedBy { xyz.znix.xftl.ai.systemOrderKey(it) })
-                ship.browserPowerAtCreation(system)
+            ship.browserPowerSystemsAtCreation()
+            // Hyperspace's AddSystem hook upgrades each one after the original made and powered it (UpgradeSystem up to
+            // getTrueSystemStartPower, CustomSystems.cpp), so the bars above the system's maximum stay unpowered: the
+            // original's BOSS_1_HARD_DLC oxygen/medbay (power="4") are level 4 with 3 powered.
+            if (xyz.znix.xftl.hs.HS.active) for (slot in ship.systemSlots) {
+                val system = slot.room.system ?: continue
+                if (!slot.isInstalled) continue
+                system.energyLevels = max(system.energyLevels, xyz.znix.xftl.hs.systems.HsSystemInstall.trueStartPower(slot))
+            }
 
             // The blueprint's hull plus the level (not clamped), 20 at most. Hyperspace: SetMaximumHull caps it at the
             // definition's hpCap instead (none for -1, MV's default); without the HS generator, CustomShips.cpp's
@@ -373,11 +385,12 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             slot.room.setSystem(slot)
             val system = slot.room.system ?: return null
             system.energyLevels = max(1, slot.spec.startingPower).coerceAtMost(slot.system.maxPower)
-            // Hyperspace's AddSystem hook: up to getTrueSystemStartPower without the reactor (the generator pays the level
-            // it reads afterwards, ShipGenerator::UpgradeSystem 1.6.9 0x5f92b0: piVar2[0x15]).
+            ship.browserPowerAtCreation(system)
+            // Hyperspace's AddSystem hook, after the original made and powered it: up to getTrueSystemStartPower without
+            // power or the reactor (the generator pays the level it reads afterwards, ShipGenerator::UpgradeSystem 1.6.9
+            // 0x5f92b0: piVar2[0x15]).
             if (xyz.znix.xftl.hs.HS.active)
                 system.energyLevels = max(system.energyLevels, xyz.znix.xftl.hs.systems.HsSystemInstall.trueStartPower(slot))
-            ship.browserPowerAtCreation(system)
             ShipConstructionDraws.addSystem(ship, slot)
             return system
         }
@@ -770,7 +783,9 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
     private class CrewEntry(val race: String, val prop: Float, val amount: Int)
 
     private fun crewCandidatesFor(sys: InGameState, ship: Ship, race: String): List<CrewPick> {
-        if (ship.crew.size >= MAX_ENEMY_CREW || ship.isAutomated)
+        // Hyperspace's IsCrewFull hook (CustomShips.cpp) answers false for the enemy ship (iShipId 1), so the
+        // generator's members come on top of a long <crew> list: MV oracle MU_MORPH_CRUISER has 14 + 1.
+        if (!xyz.znix.xftl.hs.HS.active && (ship.crew.size >= MAX_ENEMY_CREW || ship.isAutomated))
             return emptyList()
         if (race == "random")
             return listOf(CrewPick(sys.lootPool.getCrewOrRandom(NativeRandom, "random"), null))
@@ -812,6 +827,9 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
 
         val artillery = ship.artillery.sortedBy { it.configuration.spec.systemIndex }.toMutableList()
         val present = priority.filter { if (it == ARTILLERY) artillery.isNotEmpty() else systemRoom(ship, it) != null }
+        // An artillery entry after the ship's artillery rooms ran out keeps the last one: the original's
+        // MU_ANCIENT_LIGHT_CRUISER (one artillery, five crew) puts its second and third members both in that room.
+        var lastArtillery: Room? = null
 
         for ((i, pick) in picked.withIndex()) {
             diagnosticMark?.invoke("crew")
@@ -820,7 +838,8 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             val room: Room? = if (i < present.size) {
                 val id = present[i]
                 if (id == ARTILLERY) {
-                    (if (artillery.isNotEmpty()) artillery.removeAt(0).room else null) ?: ship.piloting?.room
+                    (if (artillery.isNotEmpty()) artillery.removeAt(0).room?.also { lastArtillery = it } else null)
+                        ?: lastArtillery ?: ship.piloting?.room
                 } else {
                     systemRoom(ship, id)
                 }
@@ -834,7 +853,7 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             // CrystalAlien's constructor (0x487e70) then draws whether its lockdown ever gets ready.
             xyz.znix.xftl.crew.NativeCrewFactory.hsInitializeDraw(pick.blueprint.name)
             val crystalNeverReady = factory.crystalPowerDraw(pick.blueprint.name)
-            val info = LivingCrewInfo(sys, pick.blueprint, name.name, factory.colourIndex(pick.blueprint, colours, name.male))
+            val info = LivingCrewInfo(sys, pick.blueprint, name.name, factory.colourIndex(pick.blueprint, colours, name.male), name.male)
 
             val member = if (room != null)
                 ship.addCrewMemberInRoom(info, room, false)
@@ -884,7 +903,7 @@ class ShipGenerator(val df: Datafile, val bp: BlueprintManager) {
             val colours = factory.drawColours(race)
             xyz.znix.xftl.crew.NativeCrewFactory.hsInitializeDraw(race.name)
             val crystalNeverReady = sys.crewFactory.crystalPowerDraw(race.name)
-            val info = LivingCrewInfo(sys, race, p.name.ifEmpty { first?.name ?: "" }, factory.colourIndex(race, colours, first?.male ?: maleArg))
+            val info = LivingCrewInfo(sys, race, p.name.ifEmpty { first?.name ?: "" }, factory.colourIndex(race, colours, first?.male ?: maleArg), first?.male ?: maleArg)
             val room = ship.rooms.getOrNull(p.roomId) ?: ship.rooms[0]
             val member = ship.addCrewMemberInRoom(info, room, false)
             (member as? CrewCrystal)?.initEnemyPower(crystalNeverReady)

@@ -342,6 +342,131 @@ Before, a pod at a ship that went stayed a frame (its save named that ship), and
 stayed listed until its next update, so a save then wrote the drone with neither pod nor body and its load threw
 (BoarderPodDrone::SaveState 0x420a70, ShipManager::SetTarget 0x4a2b30).
 
+`gameplay-parity`'s `GameplayR27UnitsChecks` (round 27 unit sweep, vanilla, F2, F3; every check runs and the failures
+are listed together): crew that cannot man take no station and walk nowhere (HS PrioritizeTask prices manning 1001
+without CanMan); a boarder problem goes to the enemy's crew member that cannot fight while its guard keeps its station
+(CrewAI::AttemptToAssign asks no CanFight); a rock throws within 16 updates of half its shoot strip's time (its strip
+stops on its end for one update, Animation::Update, so frame 3 comes every pass); a crew member killed by Lua
+`Kill(true)` is not ready to clone and stays out of the clone queue (CrewMember::Kill clears clone_ready; F2/F3 only);
+an enemy's boarding pod of a blueprint with `<speed>50</speed>` flies at 800 px/s, the blueprint's speed times 16 as
+every space drone (oracle r27u-pod), not the vanilla pods' 18; and (F3) the enemy's Multiverse Manager Drone
+(MANNING_ENEMY, race bonusPower 1), powered in the drone room, gives the drone system one bonus bar (HS ShipManager::OnLoop
+counts crew drones' BONUS_POWER; oracle r27u-drones1: MANNING deployed, drone system effective power 1); a boarder
+killed breaking a door aboard the enemy waits in the player's clone bay with no door in the save, and a save that names a
+door past the clone bay ship's doors for it loads (unit sweep F3 case 19's die step: an enemy intruder queued in the
+Free Mantis clone bay, IndexOutOfBoundsException at the load); and (F3) the Manager Drone, its one bar covered by its
+own body's bonus, switches off and stays off (DroneSystem::DePowerDrone succeeds, UpdateBonusPower powers again only a
+drone still covered, and the body's bonus ends with its drone; oracle r27u-drones1 MANNING_ENEMY, r27u-d2a DIRECTOR).
+
+## Unit sweep (engine mode `unit-sweep`)
+
+`unit-sweep` (jobs `p-van-unit-sweep`, `p-F2-unit-sweep`, `p-F3-unit-sweep-1` and `-2`; `BrowserUnitSweepDiagnostics`,
+one case per record, a fresh engine after a failed one; `?unitsweep=<from>,<count>` runs a slice, and the runner's
+`BASELINE_UNITSWEEP_BATCH` / `BASELINE_UNITSWEEP_RANGE` ("first,end" case indices) run a range in slices on fresh
+pages; a `TEST unit sweep i/n` console line per case) puts every crew race (every
+crew blueprint and, with Hyperspace, every `<race>` of hyperspace.xml) and every drone blueprint of the loaded data
+through what it can meet, with a save (`MainGame.writeRunSave`) and a load of the run after every step; the case goes
+on with the loaded game. The player's ship keeps one of its own crew (healed every frame, so a case never loses the
+ship) and the player's hull stays whole. Crew cases (seven races each, so the crew stays at the limit of 8: over it the
+game holds the dismissal window open and nothing moves): each race on the player's ship, on the enemy's ship and as an
+intruder; every frame of every strip it can play (walk, type, shoot, fire in four directions, repair, punch, teleport,
+death, portrait) cut from its sheet; its store tile and info box and its crew box drawn; then walk, man a system,
+repair, fire, breach, suffocation, a fight with the intruders, a teleport to the enemy and back and the teleporter's
+send, mind control both ways, a transform to the next race and back (Hyperspace), death with the clone bay (one
+replaces the start ship's medbay, repaired and powered before the step, as an unpowered bay lets its queue die after
+3 s; each clone's wait is cut to its last tenth; a crew member already dead before the step is noted, not failed), death without, dismissal. Crew a power or
+a death effect spawns over the crew limit are dismissed, as a player would in the window the original opens too. Drone cases (three blueprints, four with Hyperspace): equipped in the player's slots and the
+enemy's, store tile and info box; deploy, an ion hit on the drone system, power back, destroyed, depowered once rebuilt (10 s), a jump away
+with the drones out, a new enemy at the next beacon. Fails on any exception in a frame, a drawing, a save or a load,
+a load of this build's own save that needed a repair, a Lua engine error, NaN or infinite health or position, negative
+health, a window other than an event box holding the game paused, a crew member whose race is no crew blueprint or Hyperspace race, an empty crew name, a walk goal on
+the other ship than the crew member stands on, a Hyperspace crew limit that does not count each crew member's
+CREW_SLOTS (noSlot crew none), a strip frame outside its sheet, a drone with an unknown weapon blueprint, or a crew member dying, teleporting or being cloned for over 16 s.
+Each PASS line lists per item what it did (the actions per step, cloned, teleported, suffocates, a strip it lacks, a
+missing sheet image): `.build/hs/r27-sweep/r27-units/` turns them into the coverage table.
+
+The oracle side of the same items is the probe `tools/hs-oracle/tracer/data/hs_oracle/r27-units.lua` (sessions from
+`tools/hs-oracle/sessions/gen-r27-units.py`, compared by `tools/hs-oracle/r27units_compare.py`): per race the
+CalculateStat value of every CrewStat on the player's, the enemy's and an intruder, the CrewMember methods, the strips'
+frame counts, the CrewDefinition and the crew blueprint; per drone its blueprint, its state deployed, after the button again, after it again, destroyed and after a new
+click, and
+its crew drone bodies; `R27U.fight` (gen-r27-units.py `--fight`) logs two fights per race (the race against a human
+boarder, and as a boarder against a human), every fighter's health every 8 ticks. `--late` sessions log the crew rows a second
+time 2 s after the spawn and ship rows (`cr`, `cr2`: the subject's room, fires, every room's oxygen, both ships' crew
+count and dead) at the end and 2 s in; `--drone` sessions turn a drone off by its box's right click (DeselectArmament) and
+log the fight state (`ds`: enemy crew and dead, enemy hull, fuel, scrap) at each drone step. A boarding pod's
+steps wait up to 600 ticks for its delivery (`dl`: the ticks waited, the pod still flying), as the original lists the
+pod's crew drone in the target's crew list from the launch and a step's kill would hit it in flight; `R27U.watch`
+(ticks) logs the drone, the enemy's hull, FTL charge, fires and the DAMAGE_AREA / DAMAGE_AREA_HIT events on it, and
+both ships' crew with their rooms' oxygen (`dw`); `R27U.heal` (gen-r27-units.py `--heal`) heals the enemy crew at every
+drone's start and logs their health before it (`dh`), so one boarder's fight does not decide the next drone's (a
+random fight left ours without enemy crew from item 35 of r27u-drones2). In a late crew session (`--heal --late`)
+`R27U.heal` also holds the enemy's FTL charge at 0 and logs its destroyed flag and hull before each race (`dj`): ours'
+enemy left mid-session otherwise (r27u-late, from item 45). The
+hacking system's drone (DRONE_HACKING) is left out of the drone sessions: deployed from a drone slot it stops the
+original's loop. The probe's
+`CalculateStat` rows compare the half of the Lua return the stat uses (the number for a number stat, the bool for a
+bool stat; the other half is not game state).
+
+## Ability sweep (engine mode `ability-sweep`)
+
+`ability-sweep` (jobs `p-van-ability-sweep`, `p-F2-ability-sweep`, `p-F3-ability-sweep`;
+`BrowserAbilitySweepDiagnostics`, one record per case, a fresh engine after a failed one; `?abilitysweep=<from>,<count>`
+runs a slice) uses every crew power, passive stat boost, stat boost definition and augment of the loaded content in a
+fight, and fails on any exception in a frame, a drawing, a save or a load, an engine error a Lua call met, a NaN or
+infinite health, stat, cooldown, duration or charge, negative health, a cooldown, duration or charge outside its range,
+a living crew member whose race has no crew blueprint, a shown power button with an empty text, a sprite path with no
+file or a power animation with no `<anim>` (`InGameState.MISSING_IMAGES`, `CrewPowers.anim`), and a save of this build
+that needs repairs or does not bring back every subject's race, side, health and power state. Cases: `races` (with
+Hyperspace, twelve races with a power or passive boosts each, on PLAYER_SHIP_MVKESTREL when the content has it): four
+copies of the race as the oracle driver places them (player crew at home, an enemy boarder beside it, enemy crew at
+home, a player boarder beside it, and a human of each side in each room), cooldowns full, the player's two press their
+ready powers through the crew box button and the enemy's are left to the AI; 1.5 s, a save and load, one ending in turn
+(none, the enemy escaping, the enemy destroyed, the player jumping away, a sector change), 1.5 s, every temporary
+effect ended, then all of them killed and gone within 10 s. `augment powers`: each augment whose stat boosts give a
+power, with a crew member of the race it names. `augments`: each augment blueprint on both ships, its
+GetAugmentationValue and those of its Hyperspace functions finite, a save and load every tenth (still installed, same
+value), then as a hidden augment. `boosts`: each stat boost definition as a timed boost on a crew member of each side,
+every stat computed. A save's crew and powers are compared one frame after the load (the stat loop applies the loaded boosts first; health within 5 + 10 %, a cooldown within two frames). A window other than an event box (one an ending opened) is closed and listed in the case's notes. On Multiverse (F3) the whole sweep, 30 cases, takes about 3 min in a 3 GB container (peak 2.95 GiB, `.build/hs/int-fixes/m-r27-powers/r27p-ab8.mem`, `r27p-ab9`). The oracle comparison of the same items is the r27-powers driver (`HS_ORACLE.md`).
+
+## Ship sweep (engine mode `ship-sweep`)
+
+`ship-sweep` (jobs `p-van-ship-sweep`, `p-F2-ship-sweep` and the shards `p-F3-ship-sweep-<n>`; `BrowserShipSweepDiagnostics`,
+one case per record, a fresh engine after a failed one; `?shipsweep=<from>,<count>` runs a slice, which
+`BASELINE_SHIPSWEEP_BATCH` / `BASELINE_SHIPSWEEP_RANGE` set like the encounters' variables) exercises every ship blueprint
+of the loaded game, then every hangar layout. As an enemy (all blueprints, sorted by name) the blueprint is an event ship
+(`<ship auto_blueprint>`) at a world level and seed of its own against the sweep's player ship (the MV Kestrel with
+Multiverse, else the Kestrel, in GOD mode); its start is checked, both ships fire and launch drones at each other for three
+seconds, the run saves (MainGame.writeRunSave, as the autosave) and loads, and then one ending in turn (destroyed, its crew
+killed, its escape) runs to its end with a save and load after it. As the player's ship (every hangar layout and its B/C
+layouts) a new run starts, saves and loads, fights a small enemy, jumps to the next beacon and saves and loads again. A
+case fails on any exception in a frame, drawing, save or load, on a load of this build's own save that needed repairs,
+with Hyperspace on a new engine error inside a Lua call, and on an invalid value of the ship: a hull outside 0..max or a
+max of 0, no rooms or an empty one, a system in no room of the ship, below one bar or powered past its level, crew with a
+NaN or negative health or in a room of no ship, an unknown weapon or drone. A missing hull image or an unnamed crew member
+is a note on the PASS line, not a failure (the original draws nothing there either). The player's own crew below half
+health are healed each frame, so a boarding enemy cannot end the run (LOOSE_CREW) before the ending's save; a run is
+reused for the next case (up to 40) only without an earlier enemy's boarders aboard (they stay when their ship escapes)
+and with all its own crew. With
+Multiverse loaded, case 0 also checks the oracle rows recorded on MV 5.5.1 (`oracleSystems` / `oracleLists`: system
+levels and power at creation, crew rooms and sexes, list picks, super shields). `?shipsweeptrace=1` (`BASELINE_SHIPSWEEP_TRACE`) prints
+each case's phases and every 50th frame, each loss, ship change, mind control or big hit of an own crew member, why a
+run was not reused, and a Lua count hook prints the traceback of a tick that runs 1e6 instructions.
+
+The comparison with the original (round 27) is outside the gate: `tests/hs-shipsweep.mjs` writes every blueprint built
+by `ShipGenerator.buildShip` with a seed (`shipSweepDump("dump <sector> <seed0> <from> <count>")`) and every hangar
+layout's start (`shipSweepDump("start <ship> [steps]")`, `SWEEP_START_FRAMES`: engine steps after the start, as the
+oracle reads its starts a second into the run) in the tracer's ship_full layout; the oracle probe
+`tools/hs-oracle/tracer/data/hs_oracle/r27-ships.lua` loads one generated event per blueprint in the original and reseeds
+the stream at Hyperspace's GENERATOR_CREATE_SHIP (`Hyperspace.setRandomSeed`, the same seed), writing the built ship at
+GENERATOR_CREATE_SHIP_POST. The probe's per-blueprint events and name list are generated from the game data and never in
+Git (`.gitignore`); the oracle's waits now end as soon as the game process is gone (`game_running`).
+
+Where a build differs, the random32 calls show where the two streams part: `SWEEP_RNG=<sector>:<seed>:<name>,...`
+(`shipSweepDump("rngtrace <sector> <seed> <name>")`) writes `rng-<name>.json`, every draw with its JS stack (map it with
+the image's `engine.js.map`); the oracle's `rngtrace` step on the rngtrace fixture exe hooks random32, and each `rngdump <tag>`
+step appends the draws since the last one (caller and 32 stack words) to `rng-calls.jsonl`.
+
 ## Engine modes on a modded fixture
 
 Memory: `HS_FULLRUN_PROBE="reload-handles 30" tools/hs-fullrun/run.sh <seed>` loads the same run 30 times on Multiverse data

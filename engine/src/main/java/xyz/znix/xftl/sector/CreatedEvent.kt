@@ -258,10 +258,12 @@ class CreatedCrew(
     val race: CrewBlueprint,
     val name: String,
     val colour: Int,
-    val skills: Map<Skill, Float>
+    val skills: Map<Skill, Float>,
+    /** The blueprint's sex (LivingCrewInfo.male). */
+    val male: Boolean = true
 ) {
     fun toInfo(game: InGameState): LivingCrewInfo {
-        val info = LivingCrewInfo(game, race, name, colour)
+        val info = LivingCrewInfo(game, race, name, colour, male)
         info.skills.putAll(skills)
         return info
     }
@@ -270,6 +272,7 @@ class CreatedCrew(
         elem.setAttribute("race", race.name)
         elem.setAttribute("name", name)
         elem.setAttribute("colour", colour.toString())
+        if (!male) elem.setAttribute("male", "false")
         for ((skill, value) in skills) {
             if (value == 0f) continue
             elem.addContent(Element("skill").setAttribute("id", skill.name).setAttribute("value", value.toString()))
@@ -283,7 +286,8 @@ class CreatedCrew(
                 skills[Skill.valueOf(skill.getAttributeValue("id"))] = skill.getAttributeValue("value").toFloat()
             return CreatedCrew(
                 game.blueprintManager[elem.getAttributeValue("race")] as CrewBlueprint,
-                elem.getAttributeValue("name"), elem.getAttributeValue("colour").toInt(), skills
+                elem.getAttributeValue("name"), elem.getAttributeValue("colour").toInt(), skills,
+                elem.getAttributeValue("male") != "false"
             )
         }
     }

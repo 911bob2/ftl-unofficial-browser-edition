@@ -86,8 +86,7 @@ class FlagshipBoss private constructor(val sector: Sector, val game: InGameState
         val flagship = Ship(blueprint, game, null, null, this)
         flagship.loadDefaultContents()
         // Every system is powered to its blueprint level as it is made (ShipSystem ctor 0x642370), before any AI frame.
-        for (system in flagship.mainSystems.sortedBy { xyz.znix.xftl.ai.systemOrderKey(it) })
-            flagship.browserPowerAtCreation(system)
+        flagship.browserPowerSystemsAtCreation()
 
         // ShipManager::ModifyDroneCount is asked for ten drone parts whenever the count isn't ten already.
         if (flagship.dronesCount != 10) {

@@ -123,11 +123,23 @@ object HsSuperShield {
         ensure()
         var best: Def? = null
         var bestValue = -1
-        for (aug in ship.augments) {
-            val d = defs[aug.name] ?: continue
+        for (name in counts(ship).keys) {
+            val d = defs[name] ?: continue
             if (d.color != null && d.value > bestValue) { bestValue = d.value; best = d }
         }
         return best
+    }
+
+    /**
+     * CustomAugmentManager::GetShipAugments: augListWithHidden, one entry per installed copy plus the hidden augments
+     * (a customShip's `<hiddenAug>`): the original's MU_MFK_FLAGSHIP_* (hidden FLAGSHIP_SHIELD) start with a 10 point
+     * super shield.
+     */
+    private fun counts(ship: Ship): Map<String, Int> {
+        val counted = HashMap<String, Int>()
+        for (aug in ship.augments) counted[aug.name] = (counted[aug.name] ?: 0) + 1
+        ship.hs?.hiddenAugs?.forEach { (n, c) -> if (c > 0) counted[n] = (counted[n] ?: 0) + c }
+        return counted
     }
 
     /** CustomAugmentManager::GetSuperShieldValue: 0 when no augment of [ship] defines a super shield. */
@@ -139,10 +151,7 @@ object HsSuperShield {
         var add = 0
         var custom = false
         var energy = false
-        // the augment counts: one entry per installed copy
-        val counted = HashMap<String, Int>()
-        for (aug in ship.augments) counted[aug.name] = (counted[aug.name] ?: 0) + 1
-        for ((name, count) in counted) {
+        for ((name, count) in counts(ship)) {
             val d = defs[name]
             if (d != null) {
                 custom = true
